@@ -1,0 +1,525 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="light">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>PiLNK</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Orbitron:wght@400;600;700&family=Share+Tech+Mono&display=swap');
+
+  /* ── LIGHT THEME (default) ───────────────────────────── */
+  :root {
+    --bg-deep:    #f0f4ff;
+    --bg-panel:   #ffffff;
+    --bg-card:    #f5f8ff;
+    --border:     #dbeafe;
+    --blue-dim:   #2563eb;
+    --blue-mid:   #3b82f6;
+    --blue-light: #1d4ed8;
+    --blue-pale:  #93c5fd;
+    --text:       #1e3a6e;
+    --text-dim:   #6b8ab0;
+    --green:      #16a34a;
+    --shadow:     0 1px 4px rgba(59,130,246,0.1);
+    --tile-filter: invert(0) hue-rotate(0deg) brightness(1) saturate(1);
+  }
+
+  /* ── DARK THEME ──────────────────────────────────────── */
+  [data-theme="dark"] {
+    --bg-deep:    #060a14;
+    --bg-panel:   #0a1020;
+    --bg-card:    #0d1526;
+    --border:     #0f2040;
+    --blue-dim:   #1d4ed8;
+    --blue-mid:   #3b82f6;
+    --blue-light: #60a5fa;
+    --blue-pale:  #93c5fd;
+    --text:       #e0e8ff;
+    --text-dim:   #3a5a8a;
+    --green:      #22c55e;
+    --shadow:     none;
+    --tile-filter: invert(1) hue-rotate(180deg) brightness(0.65) saturate(1.4);
+  }
+
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  html, body {
+    height: 100%;
+    width: 100%;
+    overflow: hidden;
+    background: var(--bg-deep);
+    color: var(--text);
+    font-family: 'Share Tech Mono', monospace;
+    transition: background 0.3s, color 0.3s;
+  }
+
+  #app {
+    display: flex;
+    flex-direction: column;
+    height: 100vh;
+    width: 100vw;
+  }
+
+  /* ── HEADER ─────────────────────────────────────────── */
+  #header {
+    flex-shrink: 0;
+    height: 52px;
+    background: var(--bg-panel);
+    border-bottom: 1px solid var(--border);
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 0 16px;
+    z-index: 1000;
+    box-shadow: var(--shadow);
+    transition: background 0.3s, border-color 0.3s;
+  }
+
+  .logo { display: flex; align-items: center; gap: 10px; }
+  .logo svg { width: 32px; height: 32px; }
+  .logo-text {
+    font-family: 'Orbitron', sans-serif;
+    font-size: 1.1rem;
+    font-weight: 700;
+    color: var(--text);
+    letter-spacing: 5px;
+  }
+
+  .header-right { display: flex; align-items: center; gap: 20px; }
+
+  .status-bar {
+    display: flex;
+    align-items: center;
+    gap: 20px;
+    font-size: 0.65rem;
+    color: var(--text-dim);
+    letter-spacing: 0.1em;
+  }
+
+  .dot {
+    display: inline-block;
+    width: 7px; height: 7px;
+    border-radius: 50%;
+    background: var(--green);
+    box-shadow: 0 0 6px var(--green);
+    margin-right: 5px;
+  }
+
+  .theme-toggle {
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: 20px;
+    padding: 4px 12px;
+    cursor: pointer;
+    font-size: 0.68rem;
+    color: var(--text-dim);
+    font-family: 'Share Tech Mono', monospace;
+    transition: all 0.2s;
+  }
+  .theme-toggle:hover { border-color: var(--blue-mid); color: var(--text); }
+
+  /* ── BODY ───────────────────────────────────────────── */
+  #body { flex: 1; display: flex; min-height: 0; }
+
+  /* ── SIDEBAR ────────────────────────────────────────── */
+  #sidebar {
+    flex-shrink: 0;
+    width: 240px;
+    background: var(--bg-panel);
+    border-right: 1px solid var(--border);
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+    transition: background 0.3s, border-color 0.3s;
+  }
+
+  .panel {
+    border-bottom: 1px solid var(--border);
+    padding: 14px;
+    flex-shrink: 0;
+  }
+
+  .panel-title {
+    font-family: 'Orbitron', sans-serif;
+    font-size: 0.55rem;
+    letter-spacing: 0.3em;
+    color: var(--blue-mid);
+    text-transform: uppercase;
+    margin-bottom: 10px;
+  }
+
+  .freq-btn {
+    width: 100%;
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: 5px;
+    color: var(--text);
+    font-family: 'Share Tech Mono', monospace;
+    font-size: 0.7rem;
+    padding: 9px 10px;
+    margin-bottom: 6px;
+    cursor: pointer;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    transition: border-color 0.2s, background 0.2s;
+  }
+  .freq-btn:hover  { border-color: var(--blue-mid); }
+  .freq-btn.active { border-color: var(--blue-mid); background: var(--border); color: var(--blue-light); }
+  .freq-mhz { color: var(--blue-mid); font-size: 0.75rem; }
+
+  .play-btn {
+    width: 100%;
+    background: var(--blue-dim);
+    border: none;
+    border-radius: 5px;
+    color: #fff;
+    font-family: 'Orbitron', sans-serif;
+    font-size: 0.65rem;
+    letter-spacing: 0.2em;
+    padding: 11px;
+    cursor: pointer;
+    transition: background 0.2s;
+    margin-bottom: 10px;
+  }
+  .play-btn:hover  { background: var(--blue-mid); }
+  .play-btn.active { background: #dc2626; }
+
+  .slider-wrap { display: flex; flex-direction: column; gap: 8px; margin-top: 4px; }
+  .slider-row  { display: flex; flex-direction: column; gap: 4px; }
+  .slider-label {
+    display: flex;
+    justify-content: space-between;
+    font-size: 0.62rem;
+    color: var(--text-dim);
+  }
+  input[type=range] { width: 100%; accent-color: var(--blue-mid); }
+
+  .vu { height: 3px; background: var(--border); border-radius: 2px; overflow: hidden; margin-top: 8px; }
+  .vu-bar {
+    height: 100%;
+    width: 0%;
+    background: linear-gradient(90deg, var(--blue-dim), var(--blue-mid), var(--blue-light));
+    border-radius: 2px;
+    transition: width 0.1s;
+  }
+
+  #audioPlayer { display: none; }
+
+  #flight-panel {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+    padding: 14px;
+  }
+
+  #flightList {
+    flex: 1;
+    overflow-y: auto;
+    display: flex;
+    flex-direction: column;
+    gap: 5px;
+  }
+
+  .flight-item {
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: 5px;
+    padding: 7px 9px;
+    cursor: pointer;
+    font-size: 0.67rem;
+    transition: border-color 0.2s;
+    flex-shrink: 0;
+  }
+  .flight-item:hover        { border-color: var(--blue-mid); }
+  .flight-item.selected     { border-color: var(--blue-mid); background: var(--border); }
+  .flight-item.transmitting { border-color: var(--blue-light); box-shadow: 0 0 8px rgba(59,130,246,0.2); }
+
+  .flight-cs      { color: var(--blue-mid); font-weight: bold; font-size: 0.75rem; }
+  .flight-details { color: var(--text-dim); margin-top: 2px; }
+  .no-flights     { color: var(--text-dim); font-size: 0.67rem; padding: 8px 0; }
+
+  /* ── MAP ────────────────────────────────────────────── */
+  #map { flex: 1; min-width: 0; min-height: 0; }
+
+  .leaflet-tile { filter: var(--tile-filter); }
+  .leaflet-container { background: var(--bg-deep) !important; }
+
+  ::-webkit-scrollbar       { width: 3px; }
+  ::-webkit-scrollbar-track { background: var(--bg-deep); }
+  ::-webkit-scrollbar-thumb { background: var(--blue-mid); border-radius: 2px; }
+
+  @keyframes sweep {
+    from { transform: rotate(0deg); }
+    to   { transform: rotate(360deg); }
+  }
+  @keyframes blip      { 0%,100%{opacity:0;} 40%,60%{opacity:1;} }
+  @keyframes blip-ring { 0%{r:3;opacity:0.8;} 100%{r:18;opacity:0;} }
+</style>
+</head>
+<body>
+
+<div id="app">
+
+  <!-- HEADER -->
+  <div id="header">
+    <div class="logo">
+      <svg viewBox="0 0 128 128" xmlns="http://www.w3.org/2000/svg">
+        <defs>
+          <radialGradient id="hsg" cx="30%" cy="30%" r="70%">
+            <stop offset="0%" stop-color="#3b82f6" stop-opacity="0.45"/>
+            <stop offset="100%" stop-color="#3b82f6" stop-opacity="0"/>
+          </radialGradient>
+          <clipPath id="hc"><circle cx="64" cy="64" r="52"/></clipPath>
+        </defs>
+        <circle cx="64" cy="64" r="52" fill="none" stroke="#bfdbfe" stroke-width="1.5"/>
+        <circle cx="64" cy="64" r="36" fill="none" stroke="#bfdbfe" stroke-width="1.5"/>
+        <circle cx="64" cy="64" r="20" fill="none" stroke="#bfdbfe" stroke-width="1.5"/>
+        <line x1="64" y1="12" x2="64" y2="116" stroke="#bfdbfe" stroke-width="1.5"/>
+        <line x1="12" y1="64" x2="116" y2="64" stroke="#bfdbfe" stroke-width="1.5"/>
+        <g clip-path="url(#hc)" style="transform-origin:64px 64px;animation:sweep 5s linear infinite;">
+          <path d="M64,64 L116,64 A52,52 0 0,0 64,12 Z" fill="url(#hsg)"/>
+        </g>
+        <circle cx="90" cy="38" r="4" fill="#3b82f6" style="animation:blip 5s ease-in-out infinite;"/>
+        <circle cx="90" cy="38" r="4" fill="none" stroke="#3b82f6" stroke-width="1" style="animation:blip-ring 5s ease-out infinite;"/>
+        <circle cx="64" cy="64" r="52" fill="none" stroke="#3b82f6" stroke-width="2"/>
+      </svg>
+      <span class="logo-text">PiLNK</span>
+    </div>
+    <div class="header-right">
+      <div class="status-bar">
+        <span><span class="dot"></span>PIAWARE</span>
+        <span id="hdr-count">-- AIRCRAFT</span>
+        <span id="hdr-freq">118.700 MHz</span>
+      </div>
+      <button class="theme-toggle" id="themeBtn" onclick="toggleTheme()">🌙 Dark</button>
+    </div>
+  </div>
+
+  <!-- BODY -->
+  <div id="body">
+
+    <!-- SIDEBAR -->
+    <div id="sidebar">
+
+      <div class="panel">
+        <div class="panel-title">AKL Frequencies</div>
+        <button class="freq-btn active" onclick="setFreq(118.7, this)">
+          <span>Tower</span><span class="freq-mhz">118.700</span>
+        </button>
+        <button class="freq-btn" onclick="setFreq(124.3, this)">
+          <span>Approach</span><span class="freq-mhz">124.300</span>
+        </button>
+        <button class="freq-btn" onclick="setFreq(121.1, this)">
+          <span>Ground</span><span class="freq-mhz">121.100</span>
+        </button>
+      </div>
+
+      <div class="panel">
+        <div class="panel-title">Audio</div>
+        <button class="play-btn" id="playBtn" onclick="toggleAudio()">▶ LISTEN</button>
+        <audio id="audioPlayer" preload="none">
+          <source src="/audio_feed" type="audio/ogg">
+        </audio>
+        <div class="slider-wrap">
+          <div class="slider-row">
+            <div class="slider-label"><span>Squelch</span><span id="sq-val">0</span></div>
+            <input type="range" min="0" max="100" value="0" oninput="updateSquelch(this.value)"/>
+          </div>
+          <div class="slider-row">
+            <div class="slider-label"><span>Gain</span><span id="gain-val">35</span></div>
+            <input type="range" min="0" max="50" value="35" oninput="updateGain(this.value)"/>
+          </div>
+        </div>
+        <div class="vu"><div class="vu-bar" id="vuBar"></div></div>
+      </div>
+
+      <div id="flight-panel">
+        <div class="panel-title">Live Traffic</div>
+        <div id="flightList">
+          <div class="no-flights">Loading aircraft...</div>
+        </div>
+      </div>
+
+    </div>
+
+    <!-- MAP -->
+    <div id="map"></div>
+
+  </div>
+</div>
+
+<script>
+// ── THEME ─────────────────────────────────────────────────
+const savedTheme = localStorage.getItem('pilnk-theme') || 'light';
+document.documentElement.setAttribute('data-theme', savedTheme);
+updateThemeBtn(savedTheme);
+
+function toggleTheme() {
+  const cur  = document.documentElement.getAttribute('data-theme');
+  const next = cur === 'light' ? 'dark' : 'light';
+  document.documentElement.setAttribute('data-theme', next);
+  localStorage.setItem('pilnk-theme', next);
+  updateThemeBtn(next);
+  map.eachLayer(l => { if (l._url) l.redraw(); });
+}
+
+function updateThemeBtn(theme) {
+  const btn = document.getElementById('themeBtn');
+  if (btn) btn.textContent = theme === 'light' ? '🌙 Dark' : '☀️ Light';
+}
+
+// ── MAP ───────────────────────────────────────────────────
+const map = L.map('map', { zoomControl: false }).setView([-36.9941, 174.7853], 9);
+L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+  attribution: '© OpenStreetMap'
+}).addTo(map);
+L.control.zoom({ position: 'bottomright' }).addTo(map);
+
+// ── STATE ─────────────────────────────────────────────────
+const markers      = {};
+let selectedFlight = null;
+let audioPlaying   = false;
+
+// ── PLANE ICON ────────────────────────────────────────────
+function planeIcon(cs, selected, transmitting) {
+  const col  = transmitting ? '#dc2626' : selected ? '#2563eb' : '#3b82f6';
+  const glow = transmitting ? 'filter:drop-shadow(0 0 6px #dc2626);' : '';
+  const bg   = document.documentElement.getAttribute('data-theme') === 'light'
+               ? 'rgba(255,255,255,0.9)' : 'rgba(6,10,20,0.85)';
+  return L.divIcon({
+    className: '',
+    html: `<div style="position:relative;${glow}">
+      <svg width="22" height="22" viewBox="0 0 24 24">
+        <polygon points="12,2 20,20 12,15 4,20" fill="${col}" stroke="white" stroke-width="1"/>
+      </svg>
+      <div style="position:absolute;top:24px;left:50%;transform:translateX(-50%);
+        white-space:nowrap;font-family:'Share Tech Mono',monospace;font-size:9px;
+        color:${col};background:${bg};padding:1px 4px;border-radius:2px;">
+        ${cs}
+      </div>
+    </div>`,
+    iconSize:   [22, 22],
+    iconAnchor: [11, 11]
+  });
+}
+
+// ── FLIGHTS ───────────────────────────────────────────────
+function updateFlights() {
+  fetch('/flights')
+    .then(r => r.json())
+    .then(data => {
+      const ac = (data.aircraft || []).filter(a => a.lat && a.lon && a.flight);
+      document.getElementById('hdr-count').textContent = ac.length + ' AIRCRAFT';
+
+      const seen = new Set();
+      ac.forEach(a => {
+        const cs  = a.flight.trim();
+        const sel = selectedFlight === cs;
+        seen.add(cs);
+        if (markers[cs]) {
+          markers[cs].setLatLng([a.lat, a.lon]);
+          markers[cs].setIcon(planeIcon(cs, sel, false));
+        } else {
+          markers[cs] = L.marker([a.lat, a.lon], { icon: planeIcon(cs, sel, false) })
+            .addTo(map).on('click', () => selectFlight(cs));
+        }
+      });
+
+      Object.keys(markers).forEach(cs => {
+        if (!seen.has(cs)) { map.removeLayer(markers[cs]); delete markers[cs]; }
+      });
+
+      const list = document.getElementById('flightList');
+      list.innerHTML = ac.length === 0
+        ? '<div class="no-flights">No aircraft found</div>'
+        : ac.map(a => {
+            const cs  = a.flight.trim();
+            const sel = selectedFlight === cs;
+            return `<div class="flight-item ${sel ? 'selected' : ''}" onclick="selectFlight('${cs}')">
+              <div class="flight-cs">${cs}</div>
+              <div class="flight-details">
+                ${a.alt_baro ? Math.round(a.alt_baro)+'ft' : '--'} &middot;
+                ${a.gs       ? Math.round(a.gs)+'kt'       : '--'} &middot;
+                ${a.track    ? Math.round(a.track)+'°'     : '--'}
+              </div>
+            </div>`;
+          }).join('');
+    }).catch(() => {});
+}
+
+function selectFlight(cs) {
+  selectedFlight = cs;
+  if (markers[cs]) map.panTo(markers[cs].getLatLng());
+  updateFlights();
+}
+
+// ── FREQUENCY ─────────────────────────────────────────────
+function setFreq(freq, btn) {
+  document.querySelectorAll('.freq-btn').forEach(b => b.classList.remove('active'));
+  btn.classList.add('active');
+  document.getElementById('hdr-freq').textContent = freq.toFixed(3) + ' MHz';
+  fetch('/set_frequency', {
+    method: 'POST', headers: {'Content-Type':'application/json'},
+    body: JSON.stringify({frequency: freq})
+  });
+  if (audioPlaying) restartAudio();
+}
+
+// ── AUDIO ──────────────────────────────────────────────────
+function toggleAudio() {
+  const btn   = document.getElementById('playBtn');
+  const audio = document.getElementById('audioPlayer');
+  if (!audioPlaying) {
+    audio.play();
+    btn.textContent = '■ STOP';
+    btn.classList.add('active');
+    audioPlaying = true;
+    animateVU();
+  } else {
+    audio.pause(); audio.load();
+    btn.textContent = '▶ LISTEN';
+    btn.classList.remove('active');
+    audioPlaying = false;
+  }
+}
+
+function restartAudio() {
+  const audio = document.getElementById('audioPlayer');
+  audio.pause(); audio.load(); audio.play();
+}
+
+function animateVU() {
+  if (!audioPlaying) { document.getElementById('vuBar').style.width = '0%'; return; }
+  document.getElementById('vuBar').style.width = (Math.random() * 35) + '%';
+  setTimeout(animateVU, 150);
+}
+
+function updateSquelch(val) {
+  document.getElementById('sq-val').textContent = val;
+  fetch('/set_squelch', {
+    method: 'POST', headers: {'Content-Type':'application/json'},
+    body: JSON.stringify({squelch: parseInt(val)})
+  });
+  if (audioPlaying) restartAudio();
+}
+
+function updateGain(val) {
+  document.getElementById('gain-val').textContent = val;
+  fetch('/set_gain', {
+    method: 'POST', headers: {'Content-Type':'application/json'},
+    body: JSON.stringify({gain: parseInt(val)})
+  });
+  if (audioPlaying) restartAudio();
+}
+
+// ── POLL ───────────────────────────────────────────────────
+updateFlights();
+setInterval(updateFlights, 5000);
+</script>
+
+</body>
+</html>
