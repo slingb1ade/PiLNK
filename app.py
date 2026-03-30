@@ -139,5 +139,17 @@ def rainviewer_proxy():
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
+# ── Planespotters.net proxy — aircraft photos ──────────────
+@app.route('/api/planespotters/<path:hex>')
+def planespotters_proxy(hex):
+    try:
+        r = requests.get('https://api.planespotters.net/pub/photos/hex/' + hex, timeout=8)
+        resp = make_response(r.content)
+        resp.headers['Content-Type'] = 'application/json'
+        resp.headers['Access-Control-Allow-Origin'] = '*'
+        return resp
+    except Exception as e:
+        return jsonify({'photos': []}), 500
+
 if __name__ == '__main__':
     socketio.run(app, host='0.0.0.0', port=5000, debug=False)

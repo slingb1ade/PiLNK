@@ -144,6 +144,212 @@
   @keyframes tx-pulse{0%,100%{transform:scale(1);}50%{transform:scale(1.2);}}
   @keyframes tt-in{from{opacity:0;transform:translate(-50%,-90%);}to{opacity:1;transform:translate(-50%,-100%);}}
   @keyframes rx-pulse{0%,100%{transform:scale(1);}50%{transform:scale(1.3);}}
+
+  /* ── CINEMATIC CARD ───────────────────────────────────── */
+  #cinematicOverlay{
+    position:fixed;inset:0;z-index:9000;
+    display:flex;align-items:center;justify-content:center;
+    background:rgba(0,0,0,0);
+    pointer-events:none;
+    transition:background 0.4s;
+  }
+  #cinematicOverlay.active{
+    background:rgba(0,0,0,0.55);
+    pointer-events:auto;
+    backdrop-filter:blur(2px);
+  }
+  #cinematicCard{
+    width:min(820px,92vw);
+    background:var(--bg-panel);
+    border:1px solid var(--blue-mid);
+    border-radius:12px;
+    overflow:hidden;
+    display:flex;
+    box-shadow:0 32px 80px rgba(0,0,0,0.5), 0 0 0 1px rgba(59,130,246,0.2);
+    opacity:0;
+    transform:translateY(32px) scale(0.97);
+    transition:opacity 0.35s ease, transform 0.35s ease;
+    position:relative;
+  }
+  #cinematicOverlay.active #cinematicCard{
+    opacity:1;
+    transform:translateY(0) scale(1);
+  }
+  /* Photo panel — left 58% */
+  .cc-photo{
+    flex:0 0 58%;
+    position:relative;
+    min-height:280px;
+    background:var(--bg-deep);
+    overflow:hidden;
+  }
+  .cc-photo img{
+    width:100%;height:100%;
+    object-fit:cover;
+    display:block;
+    transition:transform 8s ease;
+  }
+  #cinematicOverlay.active .cc-photo img{transform:scale(1.04);}
+  .cc-photo-credit{
+    position:absolute;bottom:10px;right:10px;
+    font-size:0.55rem;color:rgba(255,255,255,0.5);
+    font-family:'Share Tech Mono',monospace;
+    letter-spacing:0.05em;
+    text-shadow:0 1px 4px rgba(0,0,0,0.8);
+  }
+  .cc-photo-no-img{
+    width:100%;height:100%;
+    display:flex;align-items:center;justify-content:center;
+    font-size:4rem;opacity:0.15;
+  }
+  /* Reg watermark behind photo */
+  .cc-reg-watermark{
+    position:absolute;bottom:-10px;left:-4px;
+    font-family:'Orbitron',sans-serif;
+    font-size:clamp(3rem,8vw,5.5rem);
+    font-weight:900;
+    color:rgba(255,255,255,0.07);
+    letter-spacing:0.08em;
+    line-height:1;
+    pointer-events:none;
+    white-space:nowrap;
+    text-shadow:none;
+  }
+  /* Progress bar at top of photo */
+  .cc-timer-bar{
+    position:absolute;top:0;left:0;height:3px;
+    background:linear-gradient(90deg,var(--blue-mid),var(--blue-light));
+    width:100%;
+    transform-origin:left;
+    transform:scaleX(1);
+    transition:transform linear;
+  }
+  /* Data panel — right 42% */
+  .cc-data{
+    flex:1;
+    padding:24px 24px 20px;
+    display:flex;flex-direction:column;
+    justify-content:space-between;
+    position:relative;
+    overflow:hidden;
+  }
+  /* Subtle registration watermark in data panel */
+  .cc-data::before{
+    content:attr(data-reg);
+    position:absolute;bottom:-12px;right:-8px;
+    font-family:'Orbitron',sans-serif;
+    font-size:4.5rem;font-weight:900;
+    color:var(--border);
+    letter-spacing:0.05em;
+    line-height:1;
+    pointer-events:none;
+  }
+  .cc-top{}
+  .cc-badge{
+    display:inline-flex;align-items:center;gap:6px;
+    background:var(--border);
+    border:1px solid var(--blue-dim);
+    border-radius:4px;padding:3px 10px;
+    font-family:'Share Tech Mono',monospace;
+    font-size:0.58rem;letter-spacing:0.15em;
+    color:var(--blue-light);
+    margin-bottom:12px;
+  }
+  .cc-badge .cc-live-dot{
+    width:6px;height:6px;border-radius:50%;
+    background:#dc2626;
+    box-shadow:0 0 6px #dc2626;
+    animation:tx-pulse 1s ease-in-out infinite;
+  }
+  .cc-callsign{
+    font-family:'Orbitron',sans-serif;
+    font-size:clamp(1.2rem,3vw,1.8rem);
+    font-weight:700;letter-spacing:0.12em;
+    color:var(--text);line-height:1;
+    margin-bottom:4px;
+  }
+  .cc-route{
+    font-family:'Share Tech Mono',monospace;
+    font-size:0.85rem;color:var(--blue-mid);
+    font-weight:bold;margin-bottom:4px;letter-spacing:0.05em;
+  }
+  .cc-airline{
+    font-size:0.7rem;color:var(--text-dim);
+    margin-bottom:18px;letter-spacing:0.05em;
+  }
+  .cc-stats{
+    display:grid;grid-template-columns:1fr 1fr;
+    gap:10px;margin-bottom:16px;
+  }
+  .cc-stat{
+    background:var(--bg-card);border:1px solid var(--border);
+    border-radius:6px;padding:8px 10px;
+  }
+  .cc-stat-label{
+    font-family:'Share Tech Mono',monospace;
+    font-size:0.52rem;letter-spacing:0.2em;
+    color:var(--text-dim);text-transform:uppercase;
+    margin-bottom:3px;
+  }
+  .cc-stat-val{
+    font-family:'Orbitron',sans-serif;
+    font-size:0.85rem;font-weight:600;
+    color:var(--text);
+  }
+  .cc-meta{
+    display:flex;flex-wrap:wrap;gap:6px;
+    margin-bottom:16px;
+  }
+  .cc-tag{
+    font-family:'Share Tech Mono',monospace;
+    font-size:0.6rem;letter-spacing:0.1em;
+    color:var(--text-dim);
+    background:var(--bg-card);
+    border:1px solid var(--border);
+    border-radius:4px;padding:3px 8px;
+  }
+  /* VU waveform */
+  .cc-waveform{
+    height:28px;position:relative;
+    display:none;margin-bottom:10px;
+  }
+  .cc-waveform.active{display:block;}
+  .cc-waveform canvas{width:100%;height:100%;}
+  .cc-waveform-label{
+    position:absolute;top:0;left:0;
+    font-family:'Share Tech Mono',monospace;
+    font-size:0.52rem;letter-spacing:0.15em;
+    color:#dc2626;
+  }
+  /* Close button */
+  .cc-close{
+    position:absolute;top:12px;right:12px;
+    width:28px;height:28px;
+    background:var(--bg-card);border:1px solid var(--border);
+    border-radius:50%;cursor:pointer;
+    display:flex;align-items:center;justify-content:center;
+    font-size:0.75rem;color:var(--text-dim);
+    transition:all 0.2s;z-index:10;
+  }
+  .cc-close:hover{border-color:var(--blue-mid);color:var(--text);}
+  .cc-bottom{
+    display:flex;align-items:center;justify-content:space-between;
+  }
+  .cc-phase{
+    display:flex;align-items:center;gap:6px;
+    font-family:'Share Tech Mono',monospace;
+    font-size:0.6rem;letter-spacing:0.1em;
+  }
+  .cc-phase-dot{width:8px;height:8px;border-radius:50%;flex-shrink:0;}
+  .cc-planespotters{
+    font-family:'Share Tech Mono',monospace;
+    font-size:0.55rem;color:var(--text-dim);
+    letter-spacing:0.05em;
+  }
+  @keyframes cc-in{
+    from{opacity:0;transform:translateY(28px) scale(0.96);}
+    to{opacity:1;transform:translateY(0) scale(1);}
+  }
 </style>
 </head>
 <body>
@@ -315,6 +521,40 @@
     <div class="tt-phase" id="ttPhase"></div>
   </div>
   <div class="tt-arrow" id="ttArrow"></div>
+</div>
+
+<!-- CINEMATIC CARD -->
+<div id="cinematicOverlay" onclick="handleCCOverlayClick(event)">
+  <div id="cinematicCard">
+    <div class="cc-photo" id="ccPhoto">
+      <div class="cc-timer-bar" id="ccTimerBar"></div>
+      <div class="cc-photo-no-img" id="ccNoImg">✈</div>
+      <img id="ccImg" src="" alt="" style="display:none;" onload="ccImgLoaded()"/>
+      <div class="cc-reg-watermark" id="ccRegWatermark"></div>
+      <div class="cc-photo-credit" id="ccPhotoCredit"></div>
+    </div>
+    <div class="cc-data" id="ccData">
+      <button class="cc-close" onclick="closeCinematicCard()">✕</button>
+      <div class="cc-top">
+        <div class="cc-badge" id="ccBadge"><span>NOW PASSING</span></div>
+        <div class="cc-callsign" id="ccCallsign">–</div>
+        <div class="cc-route" id="ccRoute"></div>
+        <div class="cc-airline" id="ccAirline"></div>
+        <div class="cc-stats">
+          <div class="cc-stat"><div class="cc-stat-label">Altitude</div><div class="cc-stat-val" id="ccAlt">–</div></div>
+          <div class="cc-stat"><div class="cc-stat-label">Speed</div><div class="cc-stat-val" id="ccSpd">–</div></div>
+          <div class="cc-stat"><div class="cc-stat-label">Heading</div><div class="cc-stat-val" id="ccHdg">–</div></div>
+          <div class="cc-stat"><div class="cc-stat-label">V/Speed</div><div class="cc-stat-val" id="ccVs">–</div></div>
+        </div>
+        <div class="cc-meta" id="ccMeta"></div>
+        <div class="cc-waveform" id="ccWaveform"><span class="cc-waveform-label">● TRANSMITTING</span><canvas id="ccWaveCanvas" height="28"></canvas></div>
+      </div>
+      <div class="cc-bottom">
+        <div class="cc-phase" id="ccPhase"></div>
+        <div class="cc-planespotters">📷 Planespotters.net</div>
+      </div>
+    </div>
+  </div>
 </div>
 
 <script>
@@ -912,7 +1152,7 @@ function updateMarker(a){
   if(markers[cs]){markers[cs].setLatLng([a.lat,a.lon]);markers[cs].setIcon(makeIcon(cs,cat,a.track,col,tx));}
   else{
     var m=L.marker([a.lat,a.lon],{icon:makeIcon(cs,cat,a.track,col,tx)}).addTo(map);
-    m.on('click',function(e){L.DomEvent.stopPropagation(e);selectedFlight=cs;showTooltip(cs,m.getLatLng());updateFlights();});
+    m.on('click',function(e){L.DomEvent.stopPropagation(e);selectedFlight=cs;showTooltip(cs,m.getLatLng());updateFlights();openCinematicCard(cs,false);});
     markers[cs]=m;
   }
 }
@@ -923,7 +1163,7 @@ function updateFlights(){
     var ac=(data.aircraft||[]).filter(function(a){return a.lat&&a.lon&&a.flight;});
     document.getElementById('hdr-count').textContent=ac.length+' AIRCRAFT';
     var seen={};
-    ac.forEach(function(a){var cs=a.flight.trim();seen[cs]=true;lastAircraft[cs]=a;updateMarker(a);});
+    ac.forEach(function(a){var cs=a.flight.trim();seen[cs]=true;lastAircraft[cs]=a;updateMarker(a);checkAutoCard(a);});
     Object.keys(markers).forEach(function(cs){if(!seen[cs]){map.removeLayer(markers[cs]);delete markers[cs];delete lastAircraft[cs];removeTrail(cs,true);}});
     var list=document.getElementById('flightList');
     if(!ac.length){list.innerHTML='<div class="no-flights">No aircraft found</div>';return;}
@@ -973,6 +1213,225 @@ function highlightTransmitting(callsign){
   transmitting[callsign]=true;
   if(lastAircraft[callsign])updateMarker(lastAircraft[callsign]);updateFlights();
   setTimeout(function(){delete transmitting[callsign];if(lastAircraft[callsign])updateMarker(lastAircraft[callsign]);updateFlights();},8000);
+}
+
+// ── CINEMATIC CARD ─────────────────────────────────────────
+var ccVisible = false;
+var ccDismissTimer = null;
+var ccWaveTimer = null;
+var ccCurrentCS = null;
+var ccShownCS = {};        // tracks which callsigns have been auto-shown this session
+var photoCache = {};       // hex -> photo data
+
+var NOTABLE_TYPES = {
+  A380:1,A388:1,A389:1,
+  B741:1,B742:1,B743:1,B744:1,B748:1,B74D:1,
+  B772:1,B773:1,B778:1,B779:1,B77L:1,B77W:1,B77X:1,
+  B787:1,B788:1,B789:1,B78X:1,
+  A350:1,A359:1,A35K:1,
+  A332:1,A333:1,A338:1,A339:1,
+  B762:1,B763:1,B764:1,B752:1,B753:1,
+  C17:1,C5:1,P8:1,E3:1,KC135:1,KC10:1
+};
+
+function isNotable(a) {
+  if (!a) return false;
+  var t = (a.t||'').toUpperCase();
+  if (NOTABLE_TYPES[t]) return true;
+  // Military or special squawks
+  if (a.squawk==='7700'||a.squawk==='7600'||a.squawk==='7500') return true;
+  return false;
+}
+
+function fetchPlanePhoto(hex, callback) {
+  if (photoCache[hex] !== undefined) { callback(photoCache[hex]); return; }
+  fetch('/api/planespotters/' + hex)
+    .then(function(r){ return r.json(); })
+    .then(function(data) {
+      var photo = null;
+      if (data && data.photos && data.photos.length > 0) {
+        var p = data.photos[0];
+        photo = {
+          url: p.thumbnail_large && p.thumbnail_large.src ? p.thumbnail_large.src : (p.thumbnail && p.thumbnail.src ? p.thumbnail.src : null),
+          photographer: p.photographer || '',
+          link: p.link || ''
+        };
+      }
+      photoCache[hex] = photo;
+      callback(photo);
+    })
+    .catch(function(){ photoCache[hex] = null; callback(null); });
+}
+
+function openCinematicCard(cs, auto) {
+  var a = lastAircraft[cs];
+  if (!a) return;
+  if (ccVisible && ccCurrentCS === cs) return; // already showing this one
+  ccCurrentCS = cs;
+  ccVisible = true;
+
+  // Clear any existing dismiss timer
+  if (ccDismissTimer) { clearTimeout(ccDismissTimer); ccDismissTimer = null; }
+
+  var ph = getPhase(a, cs);
+  var col = ph.color === '#ffffff' ? '#dc2626' : ph.color;
+  var vr = a.baro_rate || a.geom_rate || 0;
+  var isTx = !!transmitting[cs];
+
+  // Populate data
+  document.getElementById('ccCallsign').textContent = cs;
+  document.getElementById('ccCallsign').style.color = col;
+  document.getElementById('ccAlt').textContent = a.alt_baro ? Math.round(a.alt_baro).toLocaleString() + ' ft' : '–';
+  document.getElementById('ccSpd').textContent = a.gs ? Math.round(a.gs) + ' kt' : '–';
+  document.getElementById('ccHdg').textContent = a.track ? Math.round(a.track) + '°' : '–';
+  document.getElementById('ccVs').textContent = vr ? (vr>0?'+':'')+Math.round(vr)+' fpm' : '–';
+
+  // Badge
+  var badge = document.getElementById('ccBadge');
+  if (auto) {
+    badge.innerHTML = '<span>NOW PASSING</span>';
+    badge.style.borderColor = col;
+    badge.style.color = col;
+  } else {
+    badge.innerHTML = '<span>AIRCRAFT DETAIL</span>';
+    badge.style.borderColor = 'var(--blue-mid)';
+    badge.style.color = 'var(--blue-light)';
+  }
+
+  // Transmitting badge
+  if (isTx) {
+    badge.innerHTML = '<span class="cc-live-dot"></span><span>TRANSMITTING</span>';
+    badge.style.borderColor = '#dc2626';
+    badge.style.color = '#dc2626';
+  }
+
+  // Route & airline
+  document.getElementById('ccRoute').textContent = '';
+  document.getElementById('ccAirline').textContent = '';
+  document.getElementById('ccData').setAttribute('data-reg', a.r || '');
+  document.getElementById('ccRegWatermark').textContent = a.r || '';
+
+  lookupRoute(cs, function(info) {
+    if (info.route) document.getElementById('ccRoute').textContent = '✈ ' + info.route;
+    if (info.reg)   document.getElementById('ccData').setAttribute('data-reg', info.reg);
+    if (info.reg)   document.getElementById('ccRegWatermark').textContent = info.reg;
+  });
+
+  // Meta tags
+  var meta = [];
+  if (a.t) meta.push(a.t);
+  if (a.r) meta.push(a.r);
+  var cat = getCat(a.t, a.category);
+  meta.push(cat.charAt(0).toUpperCase() + cat.slice(1));
+  if (a.squawk) meta.push('SQK ' + a.squawk);
+  document.getElementById('ccMeta').innerHTML = meta.map(function(m){
+    return '<span class="cc-tag">'+m+'</span>';
+  }).join('');
+
+  // Phase indicator
+  document.getElementById('ccPhase').innerHTML =
+    '<div class="cc-phase-dot" style="background:'+col+';box-shadow:0 0 6px '+col+';"></div>' +
+    '<span style="color:'+col+';">'+ph.label+'</span>';
+
+  // Waveform
+  var wf = document.getElementById('ccWaveform');
+  if (isTx) { wf.classList.add('active'); startCCWaveform(); }
+  else { wf.classList.remove('active'); stopCCWaveform(); }
+
+  // Photo — reset first
+  document.getElementById('ccImg').style.display = 'none';
+  document.getElementById('ccNoImg').style.display = 'flex';
+  document.getElementById('ccPhotoCredit').textContent = '';
+
+  if (a.hex) {
+    fetchPlanePhoto(a.hex, function(photo) {
+      if (photo && photo.url) {
+        var img = document.getElementById('ccImg');
+        img.src = photo.url;
+        // onload handles showing it
+        if (photo.photographer) {
+          document.getElementById('ccPhotoCredit').textContent = '📷 ' + photo.photographer;
+        }
+      }
+    });
+  }
+
+  // Show overlay
+  var overlay = document.getElementById('cinematicOverlay');
+  overlay.classList.add('active');
+
+  // Timer bar — auto dismiss after 14s for auto-triggered
+  if (auto) {
+    var bar = document.getElementById('ccTimerBar');
+    bar.style.transition = 'none';
+    bar.style.transform = 'scaleX(1)';
+    setTimeout(function() {
+      bar.style.transition = 'transform 14s linear';
+      bar.style.transform = 'scaleX(0)';
+    }, 50);
+    ccDismissTimer = setTimeout(closeCinematicCard, 14000);
+  } else {
+    document.getElementById('ccTimerBar').style.transform = 'scaleX(0)';
+    document.getElementById('ccTimerBar').style.transition = 'none';
+  }
+}
+
+function ccImgLoaded() {
+  document.getElementById('ccImg').style.display = 'block';
+  document.getElementById('ccNoImg').style.display = 'none';
+}
+
+function closeCinematicCard() {
+  ccVisible = false;
+  ccCurrentCS = null;
+  if (ccDismissTimer) { clearTimeout(ccDismissTimer); ccDismissTimer = null; }
+  stopCCWaveform();
+  document.getElementById('cinematicOverlay').classList.remove('active');
+}
+
+function handleCCOverlayClick(e) {
+  if (e.target === document.getElementById('cinematicOverlay')) closeCinematicCard();
+}
+
+// Waveform animation
+function startCCWaveform() {
+  var canvas = document.getElementById('ccWaveCanvas');
+  var ctx = canvas.getContext('2d');
+  canvas.width = canvas.offsetWidth || 200;
+  function draw() {
+    if (!document.getElementById('ccWaveform').classList.contains('active')) return;
+    var w = canvas.width, h = canvas.height;
+    var dark = document.documentElement.getAttribute('data-theme') === 'dark';
+    ctx.clearRect(0, 0, w, h);
+    ctx.strokeStyle = '#dc2626';
+    ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    for (var x = 0; x < w; x++) {
+      var y = h/2 + Math.sin(x * 0.15 + Date.now() * 0.006) * (Math.random() * 0.3 + 0.7) * (h/2 - 2);
+      if (x === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+    }
+    ctx.stroke();
+    ccWaveTimer = requestAnimationFrame(draw);
+  }
+  draw();
+}
+
+function stopCCWaveform() {
+  if (ccWaveTimer) { cancelAnimationFrame(ccWaveTimer); ccWaveTimer = null; }
+}
+
+// Check incoming aircraft for auto-trigger
+function checkAutoCard(a) {
+  var cs = a.flight ? a.flight.trim() : null;
+  if (!cs) return;
+  if (ccShownCS[cs]) return;      // already shown this session
+  if (ccVisible) return;           // card already open
+  if (!isNotable(a)) return;
+  // Only trigger if aircraft has a route (confirmed commercial/notable)
+  var cached = routeCache[cs];
+  if (!cached || !cached.route) return;
+  ccShownCS[cs] = true;
+  openCinematicCard(cs, true);
 }
 
 // ── INIT ───────────────────────────────────────────────────
