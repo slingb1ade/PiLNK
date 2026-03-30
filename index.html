@@ -443,62 +443,45 @@ function loadRainViewer() {
     });
 }
 
-var wxHost = '';
+var wxHost = "";
 function drawWxFrames(host) {
-  wxHost = host || 'https://tilecache.rainviewer.com';
+  wxHost = host || "https://tilecache.rainviewer.com";
   clearWxLayers();
   if (!wxFrames.length) return;
-
-  // Build a tile layer for each frame
-  wxFrames.forEach(function(frame, idx) {
-    var url = wxHost + frame.path + '/256/{z}/{x}/{y}/2/1_1.png';
+  wxFrames.forEach(function(frame) {
+    var url = wxHost + frame.path + "/256/{z}/{x}/{y}/2/1_1.png";
     var layer = L.tileLayer(url, {
       opacity: 0,
-      attribution: '© RainViewer',
-      pane: 'wxPane',
-      zIndex: 410,
+      attribution: "RainViewer",
       maxNativeZoom: 6,
-      maxZoom: 20
-    });
-    // Only add to map — don't show yet
-    layer.addTo(map);
+      maxZoom: 20,
+      zIndex: 500
+    }).addTo(map);
     wxLayers.push(layer);
   });
-
-  // Show the latest frame immediately
   wxCurrentFrame = wxFrames.length - 1;
   showWxFrame(wxCurrentFrame);
-
-  // Start animation if enabled
   if (wxAnimateOn) startWxAnimation();
 }
-
 function showWxFrame(idx) {
-  wxLayers.forEach(function(l, i) {
-    l.setOpacity(i === idx ? wxOpacity : 0);
-  });
+  wxLayers.forEach(function(l, i) { l.setOpacity(i === idx ? wxOpacity : 0); });
   var frame = wxFrames[idx];
   if (frame) {
     var d = new Date(frame.time * 1000);
-    var timeStr = d.toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'});
-    var isPast = idx < (wxFrames.length - (wxFrames.filter(function(f,i){ return i >= wxFrames.length-3; }).length));
-    document.getElementById('wxStatus').textContent =
-      (isPast ? '📡 ' : '🔮 ') + timeStr + (isPast ? ' (radar)' : ' (forecast)');
+    var timeStr = d.toLocaleTimeString([], {hour:"2-digit", minute:"2-digit"});
+    document.getElementById("wxStatus").textContent = "Radar: " + timeStr + " (" + (idx+1) + "/" + wxFrames.length + ")";
   }
 }
-
 function startWxAnimation() {
   if (wxAnimTimer) clearInterval(wxAnimTimer);
   if (!wxLayers.length) return;
   wxAnimTimer = setInterval(function() {
     wxCurrentFrame = (wxCurrentFrame + 1) % wxLayers.length;
     showWxFrame(wxCurrentFrame);
-  }, 600);
+  }, 800);
 }
-
 function stopWxAnimation() {
   if (wxAnimTimer) { clearInterval(wxAnimTimer); wxAnimTimer = null; }
-  // Show latest frame when stopped
   if (wxLayers.length) showWxFrame(wxFrames.length - 1);
 }
 
