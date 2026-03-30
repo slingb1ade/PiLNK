@@ -1152,7 +1152,7 @@ function updateMarker(a){
   if(markers[cs]){markers[cs].setLatLng([a.lat,a.lon]);markers[cs].setIcon(makeIcon(cs,cat,a.track,col,tx));}
   else{
     var m=L.marker([a.lat,a.lon],{icon:makeIcon(cs,cat,a.track,col,tx)}).addTo(map);
-    m.on('click',function(e){L.DomEvent.stopPropagation(e);selectedFlight=cs;showTooltip(cs,m.getLatLng());updateFlights();hideTooltip();openCinematicCard(cs,false);});
+    m.on('click',function(e){L.DomEvent.stopPropagation(e);selectedFlight=cs;hideTooltip();updateFlights();openCinematicCard(cs,false);});
     markers[cs]=m;
   }
 }
