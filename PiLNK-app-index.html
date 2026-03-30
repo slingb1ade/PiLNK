@@ -147,7 +147,7 @@
 
   /* ── CINEMATIC CARD ───────────────────────────────────── */
   #cinematicOverlay{
-    position:fixed;inset:0;z-index:9000;
+    position:fixed;inset:0;z-index:10000;
     display:flex;align-items:center;justify-content:center;
     background:rgba(0,0,0,0);
     pointer-events:none;
@@ -1152,7 +1152,7 @@ function updateMarker(a){
   if(markers[cs]){markers[cs].setLatLng([a.lat,a.lon]);markers[cs].setIcon(makeIcon(cs,cat,a.track,col,tx));}
   else{
     var m=L.marker([a.lat,a.lon],{icon:makeIcon(cs,cat,a.track,col,tx)}).addTo(map);
-    m.on('click',function(e){L.DomEvent.stopPropagation(e);selectedFlight=cs;showTooltip(cs,m.getLatLng());updateFlights();openCinematicCard(cs,false);});
+    m.on('click',function(e){L.DomEvent.stopPropagation(e);selectedFlight=cs;showTooltip(cs,m.getLatLng());updateFlights();hideTooltip();openCinematicCard(cs,false);});
     markers[cs]=m;
   }
 }
