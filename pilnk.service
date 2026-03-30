@@ -1,0 +1,31 @@
+[Unit]
+Description=PiLNK — Live ADS-B Flight Tracker and ATC Audio Streamer
+After=network-online.target dump1090-fa.service
+Wants=network-online.target
+Requires=dump1090-fa.service
+
+[Service]
+Type=simple
+User=aj
+WorkingDirectory=/home/aj/pilnk
+
+# Run dongle check first — waits up to 30s for both dongles
+ExecStartPre=/home/aj/pilnk/check-dongles.sh
+
+# Start PiLNK
+ExecStart=/usr/bin/python3 /home/aj/pilnk/app.py
+
+# Restart automatically if it crashes
+Restart=on-failure
+RestartSec=10
+
+# Logging
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=pilnk
+
+# Environment
+Environment=PYTHONUNBUFFERED=1
+
+[Install]
+WantedBy=multi-user.target
