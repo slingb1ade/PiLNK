@@ -1116,7 +1116,13 @@ function lightIcon(cs,h,col,tx){return mkIcon('<svg width="30" height="30" viewB
 function makeIcon(cs,cat,h,col,tx){switch(cat){case'heavy':return heavyIcon(cs,h||0,col,tx);case'heli':return heliIcon(cs,h||0,col,tx);case'light':return lightIcon(cs,h||0,col,tx);default:return mediumIcon(cs,h||0,col,tx);}}
 
 // ── TOOLTIP ───────────────────────────────────────────────
+function hideTooltip(){
+  var tt=document.getElementById('pilnkTooltip');
+  tt.style.display='none';
+  tt.style.opacity='0';
+}
 function showTooltip(cs,ll){
+  if(ccVisible) return; // never show tooltip while cinematic card is open
   var a=lastAircraft[cs];if(!a)return;
   var ph=getPhase(a,cs), vr=a.baro_rate||a.geom_rate||0, pc=ph.color==='#ffffff'?'#dc2626':ph.color;
   document.getElementById('ttFlag').textContent=getFlag(cs);
@@ -1141,7 +1147,7 @@ function showTooltip(cs,ll){
   var pt=map.latLngToContainerPoint(ll), mapR=document.getElementById('map').getBoundingClientRect();
   var tt=document.getElementById('pilnkTooltip');
   tt.style.left=(mapR.left+pt.x)+'px'; tt.style.top=(mapR.top+pt.y)+'px';
-  tt.style.display='block'; tt.style.animation='tt-in 0.15s ease forwards';
+  tt.style.display='block'; tt.style.opacity='1'; tt.style.animation='tt-in 0.15s ease forwards';
 }
 function hideTooltip(){document.getElementById('pilnkTooltip').style.display='none';}
 
