@@ -124,7 +124,7 @@
   /* Icon outline via CSS */
   .leaflet-marker-icon svg{filter:drop-shadow(0 0 1px rgba(0,0,0,0.8)) drop-shadow(0 0 0.5px rgba(0,0,0,0.6));}
   /* Tooltip */
-  #pilnkTooltip{position:fixed;z-index:9999;pointer-events:none;display:none;transform:translate(-50%,-100%);padding-bottom:10px;}
+  #pilnkTooltip{position:fixed;z-index:9500;pointer-events:none;display:none;transform:translate(-50%,-100%);padding-bottom:10px;}
   .tt-inner{background:var(--bg-panel);border:2px solid var(--blue-mid);border-radius:8px;padding:10px 14px;box-shadow:0 6px 24px rgba(0,0,0,0.15);white-space:nowrap;font-family:'Share Tech Mono',monospace;min-width:190px;}
   .tt-header{display:flex;align-items:center;gap:7px;margin-bottom:7px;padding-bottom:7px;border-bottom:1px solid var(--border);}
   .tt-flag{font-size:1.2rem;line-height:1;}
@@ -1269,6 +1269,7 @@ function openCinematicCard(cs, auto) {
   if (ccVisible && ccCurrentCS === cs) return; // already showing this one
   ccCurrentCS = cs;
   ccVisible = true;
+  hideTooltip(); // always kill tooltip when card opens
 
   // Clear any existing dismiss timer
   if (ccDismissTimer) { clearTimeout(ccDismissTimer); ccDismissTimer = null; }
