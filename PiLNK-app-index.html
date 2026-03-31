@@ -785,28 +785,23 @@ function lookupRoute(callsign, callback) {
     .then(function(r){ return r.json(); })
     .then(function(data) {
       var route = null;
+      var airline = null;
       if (data && data.response && data.response.flightroute) {
         var fr = data.response.flightroute;
         var dep = fr.origin && fr.origin.iata_code ? fr.origin.iata_code : (fr.origin && fr.origin.icao_code ? fr.origin.icao_code : null);
         var arr = fr.destination && fr.destination.iata_code ? fr.destination.iata_code : (fr.destination && fr.destination.icao_code ? fr.destination.icao_code : null);
         if (dep && arr) route = dep + ' → ' + arr;
+        // Grab airline name
+        if (fr.airline && fr.airline.name) airline = fr.airline.name;
       }
       var reg = null;
-      var model = null;
       if (data && data.response && data.response.aircraft) {
         reg = data.response.aircraft.registration || null;
-        var ac = data.response.aircraft;
-        // Build make/model string from available fields
-        var make = ac.manufacturer || '';
-        var type = ac.type || '';
-        if (make && type) model = make + ' ' + type;
-        else if (type) model = type;
-        else if (make) model = make;
       }
-      routeCache[cs] = {route: route, reg: reg, model: model};
+      routeCache[cs] = {route: route, reg: reg, airline: airline};
       callback(routeCache[cs]);
     })
-    .catch(function(){ routeCache[cs] = {route:null, reg:null}; callback(routeCache[cs]); });
+    .catch(function(){ routeCache[cs] = {route:null, reg:null, airline:null}; callback(routeCache[cs]); });
 }
 
 // ── AVIATION OVERLAY ──────────────────────────────────────
@@ -1317,10 +1312,20 @@ function fetchPlanePhoto(hex, callback) {
       var photo = null;
       if (data && data.photos && data.photos.length > 0) {
         var p = data.photos[0];
+        // Get model from aircraft data in photo response
+        var model = null;
+        if (p.aircraft) {
+          var manufacturer = p.aircraft.manufacturer || '';
+          var modelName = p.aircraft.model || '';
+          if (manufacturer && modelName) model = manufacturer + ' ' + modelName;
+          else if (modelName) model = modelName;
+          else if (manufacturer) model = manufacturer;
+        }
         photo = {
           url: p.thumbnail_large && p.thumbnail_large.src ? p.thumbnail_large.src : (p.thumbnail && p.thumbnail.src ? p.thumbnail.src : null),
           photographer: p.photographer || '',
-          link: p.link || ''
+          link: p.link || '',
+          model: model
         };
       }
       photoCache[hex] = photo;
@@ -1379,10 +1384,10 @@ function openCinematicCard(cs, auto) {
   document.getElementById('ccRegWatermark').textContent = a.r || '';
 
   lookupRoute(cs, function(info) {
-    if (info.route) document.getElementById('ccRoute').textContent = '✈ ' + info.route;
-    if (info.reg)   document.getElementById('ccData').setAttribute('data-reg', info.reg);
-    if (info.reg)   document.getElementById('ccRegWatermark').textContent = info.reg;
-    if (info.model) document.getElementById('ccAirline').textContent = info.model;
+    if (info.route)   document.getElementById('ccRoute').textContent = '✈ ' + info.route;
+    if (info.reg)     document.getElementById('ccData').setAttribute('data-reg', info.reg);
+    if (info.reg)     document.getElementById('ccRegWatermark').textContent = info.reg;
+    if (info.airline) document.getElementById('ccAirline').textContent = info.airline;
   });
 
   // Meta tags
@@ -1416,9 +1421,12 @@ function openCinematicCard(cs, auto) {
       if (photo && photo.url) {
         var img = document.getElementById('ccImg');
         img.src = photo.url;
-        // onload handles showing it
         if (photo.photographer) {
           document.getElementById('ccPhotoCredit').textContent = '📷 ' + photo.photographer;
+        }
+        // Show model if airline field is still empty
+        if (photo.model && !document.getElementById('ccAirline').textContent) {
+          document.getElementById('ccAirline').textContent = photo.model;
         }
       }
     });
