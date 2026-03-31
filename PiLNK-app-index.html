@@ -121,6 +121,18 @@
   .map-legend-row:last-child{margin-bottom:0;}
   .map-legend-dot{width:8px;height:8px;border-radius:50%;flex-shrink:0;}
   .leaflet-container{background:var(--bg-deep) !important;}
+  /* Scale bar */
+  .leaflet-control-scale-line{
+    background:var(--bg-panel);
+    border:1px solid var(--blue-mid) !important;
+    border-top:2px solid var(--blue-mid) !important;
+    color:var(--text);
+    font-family:'Share Tech Mono',monospace;
+    font-size:0.6rem;
+    padding:2px 6px;
+    letter-spacing:0.05em;
+    box-shadow:none !important;
+  }
   /* Icon outline via CSS */
   .leaflet-marker-icon svg{filter:drop-shadow(0 0 1px rgba(0,0,0,0.8)) drop-shadow(0 0 0.5px rgba(0,0,0,0.6));}
   /* Tooltip */
@@ -439,7 +451,6 @@
               <button class="tile-btn active" id="tileOsm"  onclick="setTileLayer('osm')">Street</button>
               <button class="tile-btn"        id="tileAero" onclick="setTileLayer('aero')">Aero</button>
               <button class="tile-btn"        id="tileSat"  onclick="setTileLayer('sat')">Satellite</button>
-              <button class="tile-btn"        id="tileWx"   onclick="setTileLayer('wx')">🌧 Weather</button>
             </div>
           </div>
           <div class="panel">
@@ -583,6 +594,7 @@ map.createPane('wxPane');   map.getPane('wxPane').style.zIndex   = 410;
 var osmLayer = L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',{attribution:'© OpenStreetMap'}).addTo(map);
 var currentTileLayerName = 'osm', extraLayer = null;
 L.control.zoom({position:'bottomright'}).addTo(map);
+L.control.scale({position:'bottomright', metric:true, imperial:false, maxWidth:150}).addTo(map);
 
 // Map legend
 var LegendControl = L.Control.extend({
@@ -1030,11 +1042,27 @@ function getPhase(a,cs){
 
 // ── TRAILS ────────────────────────────────────────────────
 var trails={}, trailPoly={}, trailsOn=true;
+var phaseAlt={};  // tracks last confirmed phase-change altitude per callsign
+var PHASE_ALT_THRESHOLD = 500; // ft — must gain/lose this much before colour changes
+
 function updateTrail(a){
   var cs=a.flight.trim(), ph=getPhase(a,cs);
-  if(!trails[cs])trails[cs]=[];
-  var last=trails[cs][trails[cs].length-1];
-  if(!last||last.lat!==a.lat||last.lon!==a.lon) trails[cs].push({lat:a.lat,lon:a.lon,color:ph.color});
+  if(!trails[cs]){ trails[cs]=[]; phaseAlt[cs]=a.alt_baro||a.alt_geom||0; }
+  // Smooth phase colour — only change if altitude delta exceeds threshold
+  var currentAlt = a.alt_baro||a.alt_geom||0;
+  var lastPt = trails[cs][trails[cs].length-1];
+  var useColor = ph.color;
+  if(lastPt && ph.color!==PHASE.tx.color && ph.color!==PHASE.final.color){
+    var altDelta = Math.abs(currentAlt - phaseAlt[cs]);
+    if(altDelta < PHASE_ALT_THRESHOLD){
+      useColor = lastPt.color; // keep previous colour until threshold is met
+    } else {
+      phaseAlt[cs] = currentAlt; // commit new phase
+    }
+  } else {
+    phaseAlt[cs] = currentAlt;
+  }
+  if(!lastPt||lastPt.lat!==a.lat||lastPt.lon!==a.lon) trails[cs].push({lat:a.lat,lon:a.lon,color:useColor});
   redrawTrail(cs);
 }
 function redrawTrail(cs){
