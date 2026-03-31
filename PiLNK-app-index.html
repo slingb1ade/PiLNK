@@ -709,7 +709,7 @@
           src="about:blank"></iframe>
         <div class="cc-no-camera" id="ccNoCameraMsg">
           <div class="cc-no-camera-icon">📡</div>
-          <div class="cc-no-camera-text">No live camera available<br>for this airport right now</div>
+          <div class="cc-no-camera-text">Opening live camera<br>in popup window...</div>
         </div>
       </div>
       <!-- LIVE badge -->
@@ -2329,7 +2329,8 @@ var liveCamera = (function() {
 
   var state = {
     enabled:true, active:false, icao:null,
-    timeout:null, countdown:180, countdownTimer:null
+    timeout:null, countdown:180, countdownTimer:null,
+    popup:null
   };
 
   function distNm(la1,lo1,la2,lo2) {
@@ -2387,25 +2388,18 @@ var liveCamera = (function() {
     var noCamera   = document.getElementById('ccNoCameraMsg');
     if (!iframe) return;
 
-    // Load YouTube live search for this airport
-    iframe.src = buildSrc(icao);
-    iframe.onload = function() {
-      iframe.classList.add('loaded');
-      noCamera && noCamera.classList.remove('show');
-    };
-    // Show no-camera fallback if iframe stalls after 10s
-    setTimeout(function() {
-      if (!iframe.classList.contains('loaded')) {
-        noCamera && noCamera.classList.add('show');
-      }
-    }, 10000);
+    // Open YouTube live search in popup window
+    var query = CAMS[icao] || (icao + ' airport live planespotting');
+    var ytUrl = 'https://www.youtube.com/results?search_query=' +
+                encodeURIComponent(query) + '&sp=EgJAAQ%3D%3D';
+    state.popup = window.open(ytUrl, 'pilnk-cam',
+      'width=720,height=480,top=80,left=200,toolbar=no,menubar=no,location=no');
 
-    // Crossfade: fade out photo, show camera UI
+    // Show camera badge and countdown (photo stays visible — popup is separate)
     setTimeout(function() {
-      photoLayer && photoLayer.classList.add('hidden');
-      camBadge   && camBadge.classList.add('show');
-      countdown  && countdown.classList.add('show');
-      if (camLabel) camLabel.textContent = 'LIVE · ' + icao;
+      camBadge  && camBadge.classList.add('show');
+      countdown && countdown.classList.add('show');
+      if (camLabel) camLabel.textContent = '🎥 LIVE · ' + icao;
     }, 400);
 
     // Countdown display
@@ -2441,10 +2435,11 @@ var liveCamera = (function() {
     countdown  && countdown.classList.remove('show');
     noCamera   && noCamera.classList.remove('show');
 
-    // Clear iframe after crossfade completes
-    setTimeout(function() {
-      if (iframe) { iframe.src = 'about:blank'; iframe.classList.remove('loaded'); }
-    }, 900);
+    // Close popup window if open
+    if (state.popup && !state.popup.closed) {
+      state.popup.close();
+      state.popup = null;
+    }
 
     console.log('PiLNK Camera: hidden');
   }
