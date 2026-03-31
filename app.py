@@ -1,3 +1,4 @@
+
 from flask import Flask, render_template, Response, jsonify, request, make_response
 from flask_socketio import SocketIO
 from radio import RadioStream
@@ -152,4 +153,4 @@ def planespotters_proxy(hex):
         return jsonify({'photos': []}), 500
 
 if __name__ == '__main__':
-    socketio.run(app, host='0.0.0.0', port=5000, debug=False)
+    socketio.run(app, host="0.0.0.0", port=5000, debug=False, allow_unsafe_werkzeug=True)
