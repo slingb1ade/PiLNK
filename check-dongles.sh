@@ -2,12 +2,12 @@
 # ─────────────────────────────────────────────────────────────
 # PiLNK — RTL-SDR Dongle Check
 # Verifies both dongles are present before PiLNK starts.
-# Serial 00000001 = FlightAware Pro Stick (ADS-B / 1090MHz)
-# Serial 00000002 = RTL-SDR Blog V4 (VHF Audio / 118-137MHz)
+# FlightAware Pro Stick  = 0bda:2838 (ADS-B / 1090MHz)
+# RTL-SDR Blog V4        = 0bda:2832 (VHF Audio / 118-137MHz)
 # ─────────────────────────────────────────────────────────────
 
-SERIAL_ADSB="00000001"
-SERIAL_AUDIO="00000002"
+USB_ADSB="0bda:2838"
+USB_AUDIO="0bda:2832"
 MAX_WAIT=30
 RETRY_INTERVAL=5
 LOG="/var/log/pilnk-dongles.log"
@@ -16,44 +16,26 @@ log() {
   echo "[$(date '+%Y-%m-%d %H:%M:%S')] $1" | tee -a "$LOG"
 }
 
-dongle_present() {
-  rtl_test -d "$1" -t 2>&1 | grep -q "Found"
-}
-
-check_by_serial() {
-  # Use rtl_eeprom to find dongle by serial number
-  for i in 0 1 2 3; do
-    serial=$(rtl_eeprom -d $i 2>&1 | grep "Serial number" | awk '{print $NF}' 2>/dev/null)
-    if [ "$serial" = "$1" ]; then
-      echo $i
-      return 0
-    fi
-  done
-  return 1
-}
-
 log "=== PiLNK Dongle Check Starting ==="
 
 ELAPSED=0
 ADSB_OK=false
 AUDIO_OK=false
 
-while [ $ELAPSED -lt $MAX_WAIT ]; do
+while [ $ELAPSED -le $MAX_WAIT ]; do
 
-  # Check ADS-B dongle (serial 00000001)
+  # Check ADS-B dongle
   if ! $ADSB_OK; then
-    idx=$(check_by_serial "$SERIAL_ADSB")
-    if [ $? -eq 0 ]; then
-      log "✓ ADS-B dongle found (serial $SERIAL_ADSB) at index $idx"
+    if lsusb | grep -q "$USB_ADSB"; then
+      log "✓ ADS-B dongle found (FlightAware Pro Stick $USB_ADSB)"
       ADSB_OK=true
     fi
   fi
 
-  # Check Audio dongle (serial 00000002)
+  # Check Audio dongle
   if ! $AUDIO_OK; then
-    idx=$(check_by_serial "$SERIAL_AUDIO")
-    if [ $? -eq 0 ]; then
-      log "✓ Audio dongle found (serial $SERIAL_AUDIO) at index $idx"
+    if lsusb | grep -q "$USB_AUDIO"; then
+      log "✓ Audio dongle found (RTL-SDR Blog V4 $USB_AUDIO)"
       AUDIO_OK=true
     fi
   fi
@@ -65,12 +47,10 @@ while [ $ELAPSED -lt $MAX_WAIT ]; do
   fi
 
   # Still waiting
-  if ! $ADSB_OK; then
-    log "⏳ Waiting for ADS-B dongle (serial $SERIAL_ADSB)... ${ELAPSED}s elapsed"
-  fi
-  if ! $AUDIO_OK; then
-    log "⏳ Waiting for Audio dongle (serial $SERIAL_AUDIO)... ${ELAPSED}s elapsed"
-  fi
+  [ "$ELAPSED" -gt 0 ] && {
+    ! $ADSB_OK && log "⏳ Waiting for ADS-B dongle ($USB_ADSB)... ${ELAPSED}s elapsed"
+    ! $AUDIO_OK && log "⏳ Waiting for Audio dongle ($USB_AUDIO)... ${ELAPSED}s elapsed"
+  }
 
   sleep $RETRY_INTERVAL
   ELAPSED=$((ELAPSED + RETRY_INTERVAL))
@@ -78,13 +58,7 @@ done
 
 # Timeout — log what's missing and continue anyway
 log "⚠ Dongle check timed out after ${MAX_WAIT}s"
-if ! $ADSB_OK; then
-  log "✗ ADS-B dongle (serial $SERIAL_ADSB) NOT FOUND — flight tracking may be unavailable"
-fi
-if ! $AUDIO_OK; then
-  log "✗ Audio dongle (serial $SERIAL_AUDIO) NOT FOUND — ATC audio may be unavailable"
-fi
+! $ADSB_OK && log "✗ ADS-B dongle ($USB_ADSB) NOT FOUND — flight tracking may be unavailable"
+! $AUDIO_OK && log "✗ Audio dongle ($USB_AUDIO) NOT FOUND — ATC audio may be unavailable"
 log "⚠ Starting PiLNK anyway with available hardware"
-
-# Exit 0 so systemd still starts PiLNK
 exit 0
