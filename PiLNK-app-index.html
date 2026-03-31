@@ -133,6 +133,13 @@
     letter-spacing:0.05em;
     box-shadow:none !important;
   }
+  /* Day/Night terminator */
+  .terminator-path{
+    stroke:none;
+    fill:rgba(0,0,20,0.28);
+    pointer-events:none;
+    transition:fill 1s ease;
+  }
   /* Icon outline via CSS */
   .leaflet-marker-icon svg{filter:drop-shadow(0 0 1px rgba(0,0,0,0.8)) drop-shadow(0 0 0.5px rgba(0,0,0,0.6));}
   /* Tooltip */
@@ -484,6 +491,9 @@
             <div class="panel-title">Map Options</div>
             <div class="toggle-row"><span>Flight Trails</span><label class="toggle-switch"><input type="checkbox" id="trailToggle" checked onchange="toggleTrails(this.checked)"/><span class="toggle-slider"></span></label></div>
             <div class="toggle-row"><span>Distance Rings</span><label class="toggle-switch"><input type="checkbox" id="ringToggle" checked onchange="toggleRings(this.checked)"/><span class="toggle-slider"></span></label></div>
+            <div class="toggle-row"><span>Auto Day/Night</span><label class="toggle-switch"><input type="checkbox" id="autoThemeToggle" onchange="toggleAutoTheme(this.checked)"/><span class="toggle-slider"></span></label></div>
+            <div class="toggle-row"><span>Day/Night Terminator</span><label class="toggle-switch"><input type="checkbox" id="terminatorToggle" onchange="toggleTerminator(this.checked)"/><span class="toggle-slider"></span></label></div>
+            <div id="autoThemeStatus" style="font-size:0.58rem;color:var(--text-dim);margin-top:2px;font-style:italic;display:none;"></div>
           </div>
           <div class="panel" id="ringSettings">
             <div class="panel-title">Ring Settings</div>
@@ -1469,8 +1479,267 @@ function checkAutoCard(a) {
   openCinematicCard(cs, true);
 }
 
-// ── INIT ───────────────────────────────────────────────────
-buildRingChips();
+// ── AUTO DAY/NIGHT & TERMINATOR ────────────────────────────
+var autoThemeOn = localStorage.getItem('pilnk-auto-theme') === 'true';
+var terminatorOn = localStorage.getItem('pilnk-terminator') === 'true';
+var autoThemeTimer = null;
+var terminatorLayer = null;
+var terminatorTimer = null;
+
+// Light theme CSS values
+var THEME_LIGHT = {
+  '--bg-deep':   '#f0f4ff',
+  '--bg-panel':  '#ffffff',
+  '--bg-card':   '#f5f8ff',
+  '--border':    '#dbeafe',
+  '--blue-dim':  '#2563eb',
+  '--blue-mid':  '#3b82f6',
+  '--blue-light':'#1d4ed8',
+  '--text':      '#1e3a6e',
+  '--text-dim':  '#6b8ab0',
+  '--green':     '#16a34a',
+  '--shadow':    '0 1px 4px rgba(59,130,246,0.1)'
+};
+// Dark theme CSS values
+var THEME_DARK = {
+  '--bg-deep':   '#060a14',
+  '--bg-panel':  '#0a1020',
+  '--bg-card':   '#0d1526',
+  '--border':    '#0f2040',
+  '--blue-dim':  '#1d4ed8',
+  '--blue-mid':  '#3b82f6',
+  '--blue-light':'#60a5fa',
+  '--text':      '#e0e8ff',
+  '--text-dim':  '#3a5a8a',
+  '--green':     '#22c55e',
+  '--shadow':    'none'
+};
+
+// Parse hex color to RGB
+function hexToRgb(hex) {
+  hex = hex.replace('#','');
+  if (hex.length === 3) hex = hex.split('').map(function(c){return c+c;}).join('');
+  var r = parseInt(hex.substring(0,2),16);
+  var g = parseInt(hex.substring(2,4),16);
+  var b = parseInt(hex.substring(4,6),16);
+  return [r,g,b];
+}
+
+// Interpolate between two hex colors
+function lerpColor(a, b, t) {
+  if (a==='none'||b==='none') return t < 0.5 ? a : b;
+  // Handle rgba/rgb strings — just snap
+  if (a.indexOf('rgba')>=0||a.indexOf('rgb')>=0) return t < 0.5 ? a : b;
+  try {
+    var ca = hexToRgb(a), cb = hexToRgb(b);
+    var r = Math.round(ca[0] + (cb[0]-ca[0])*t);
+    var g = Math.round(ca[1] + (cb[1]-ca[1])*t);
+    var bl = Math.round(ca[2] + (cb[2]-ca[2])*t);
+    return '#'+[r,g,bl].map(function(v){return v.toString(16).padStart(2,'0');}).join('');
+  } catch(e) { return t < 0.5 ? a : b; }
+}
+
+// Apply interpolated theme at position t (0=light, 1=dark)
+function applyThemeAt(t) {
+  var root = document.documentElement;
+  Object.keys(THEME_LIGHT).forEach(function(prop) {
+    root.style.setProperty(prop, lerpColor(THEME_LIGHT[prop], THEME_DARK[prop], t));
+  });
+  // Update data-theme for logic that checks it
+  root.setAttribute('data-theme', t > 0.5 ? 'dark' : 'light');
+  applyTileFilter();
+  if (ringsOn) drawRings();
+  if (avOverlayOn && avData) redrawAvOverlay();
+}
+
+// ── SUNRISE/SUNSET CALCULATOR ──────────────────────────────
+// Based on NOAA solar calculation equations
+function getSunTimes(lat, lon, date) {
+  var JD = date.getTime() / 86400000 + 2440587.5;
+  var n = JD - 2451545.0;
+  var L = (280.46 + 0.9856474 * n) % 360;
+  var g = ((357.528 + 0.9856003 * n) % 360) * Math.PI / 180;
+  var lambda = (L + 1.915 * Math.sin(g) + 0.02 * Math.sin(2*g)) * Math.PI / 180;
+  var epsilon = 23.439 * Math.PI / 180;
+  var decl = Math.asin(Math.sin(epsilon) * Math.sin(lambda));
+  var eqTime = (L - (Math.atan2(Math.cos(epsilon)*Math.sin(lambda), Math.cos(lambda)) * 180/Math.PI)) / 15;
+  var latR = lat * Math.PI / 180;
+  var cosH = (Math.cos(90.833 * Math.PI/180) - Math.sin(latR)*Math.sin(decl)) / (Math.cos(latR)*Math.cos(decl));
+  if (cosH > 1) return null;  // polar night
+  if (cosH < -1) return null; // midnight sun
+  var H = Math.acos(cosH) * 180 / Math.PI;
+  var sunrise = (720 - 4*(lon + H) - eqTime) * 60000; // ms from midnight UTC
+  var sunset  = (720 - 4*(lon - H) - eqTime) * 60000;
+  return { sunrise: sunrise, sunset: sunset };
+}
+
+function formatSunTime(msFromMidnightUTC) {
+  var d = new Date();
+  d.setUTCHours(0,0,0,0);
+  d.setTime(d.getTime() + msFromMidnightUTC);
+  return d.toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'});
+}
+
+// ── AUTO THEME ENGINE ──────────────────────────────────────
+var TRANSITION_DURATION = 30 * 60 * 1000; // 30 min fade
+var autoThemeManualOverride = false;
+
+function getThemeProgress() {
+  var now = new Date();
+  var times = getSunTimes(RX_LAT, RX_LON, now);
+  if (!times) return 1; // default dark if no sun times
+
+  var nowMs = now.getUTCHours()*3600000 + now.getUTCMinutes()*60000 + now.getUTCSeconds()*1000;
+  var half = TRANSITION_DURATION / 2;
+
+  // Sunrise transition: dark → light
+  var sunriseStart = times.sunrise - half;
+  var sunriseEnd   = times.sunrise + half;
+  // Sunset transition: light → dark
+  var sunsetStart  = times.sunset - half;
+  var sunsetEnd    = times.sunset + half;
+
+  if (nowMs >= sunriseStart && nowMs <= sunriseEnd) {
+    // Fading to light
+    return 1 - ((nowMs - sunriseStart) / TRANSITION_DURATION);
+  } else if (nowMs >= sunsetStart && nowMs <= sunsetEnd) {
+    // Fading to dark
+    return (nowMs - sunsetStart) / TRANSITION_DURATION;
+  } else if (nowMs > sunriseEnd && nowMs < sunsetStart) {
+    return 0; // Full day — light
+  } else {
+    return 1; // Full night — dark
+  }
+}
+
+function updateAutoTheme() {
+  if (!autoThemeOn || autoThemeManualOverride) return;
+  var t = getThemeProgress();
+  applyThemeAt(t);
+  updateThemeBtn(t > 0.5 ? 'dark' : 'light');
+
+  // Update status
+  var status = document.getElementById('autoThemeStatus');
+  if (status) {
+    var times = getSunTimes(RX_LAT, RX_LON, new Date());
+    if (times) {
+      status.textContent = '🌅 ' + formatSunTime(times.sunrise) + '  🌇 ' + formatSunTime(times.sunset);
+    }
+  }
+}
+
+function toggleAutoTheme(on) {
+  autoThemeOn = on;
+  autoThemeManualOverride = false;
+  localStorage.setItem('pilnk-auto-theme', on);
+  var status = document.getElementById('autoThemeStatus');
+  if (status) status.style.display = on ? 'block' : 'none';
+  if (on) {
+    updateAutoTheme();
+    if (autoThemeTimer) clearInterval(autoThemeTimer);
+    autoThemeTimer = setInterval(updateAutoTheme, 60000); // update every minute
+  } else {
+    if (autoThemeTimer) { clearInterval(autoThemeTimer); autoThemeTimer = null; }
+    // Restore saved manual theme
+    var saved = localStorage.getItem('pilnk-theme') || 'light';
+    document.documentElement.removeAttribute('style'); // clear inline CSS vars
+    document.documentElement.setAttribute('data-theme', saved);
+    applyTileFilter();
+    if (ringsOn) drawRings();
+    updateThemeBtn(saved);
+  }
+}
+
+// ── TERMINATOR LINE ────────────────────────────────────────
+function getSunPosition(date) {
+  var JD = date.getTime() / 86400000 + 2440587.5;
+  var n = JD - 2451545.0;
+  var L = (280.46 + 0.9856474 * n) % 360;
+  var g = ((357.528 + 0.9856003 * n) % 360) * Math.PI / 180;
+  var lambda = (L + 1.915 * Math.sin(g) + 0.02 * Math.sin(2*g)) * Math.PI / 180;
+  var epsilon = 23.439 * Math.PI / 180;
+  var decl = Math.asin(Math.sin(epsilon) * Math.sin(lambda)) * 180/Math.PI;
+  var GMST = (18.697374558 + 24.06570982441908 * n) % 24;
+  var sunLon = -(GMST * 15 - (Math.atan2(Math.cos(epsilon*Math.PI/180)*Math.sin(lambda), Math.cos(lambda)) * 180/Math.PI));
+  while (sunLon < -180) sunLon += 360;
+  while (sunLon > 180) sunLon -= 360;
+  return { lat: decl, lon: sunLon };
+}
+
+function buildTerminatorPoints(date) {
+  var sun = getSunPosition(date);
+  var sunLatR = sun.lat * Math.PI / 180;
+  var sunLonR = sun.lon * Math.PI / 180;
+  var points = [];
+  for (var i = 0; i <= 360; i++) {
+    var azR = i * Math.PI / 180;
+    var lat = Math.asin(Math.sin(sunLatR)*Math.sin(0) - Math.cos(sunLatR)*Math.cos(0)*Math.cos(azR)) * 180/Math.PI;
+    // Great circle calculation for terminator
+    var lon = sun.lon + Math.atan2(
+      -Math.cos(azR),
+      Math.sin(sunLatR) * Math.sin(azR)
+    ) * 180/Math.PI;
+    // Use spherical coords: terminator is 90deg from subsolar point
+    var termLat = Math.asin(
+      -Math.cos(azR) * Math.cos(sunLatR)
+    ) * 180/Math.PI;
+    var termLon = sun.lon + Math.atan2(
+      Math.sin(azR) * Math.cos(sunLatR),
+      Math.sin(sunLatR)
+    ) * 180/Math.PI;
+    while (termLon < -180) termLon += 360;
+    while (termLon > 180) termLon -= 360;
+    points.push([termLat, termLon]);
+  }
+  return points;
+}
+
+function drawTerminator() {
+  if (terminatorLayer) { map.removeLayer(terminatorLayer); terminatorLayer = null; }
+  if (!terminatorOn) return;
+  var pts = buildTerminatorPoints(new Date());
+  var sun = getSunPosition(new Date());
+  // Night side polygon — cover entire map and cut out day side
+  // Simple approach: draw semi-transparent polygon on night side
+  terminatorLayer = L.polygon(pts, {
+    className: 'terminator-path',
+    interactive: false,
+    pane: 'wxPane'
+  }).addTo(map);
+}
+
+function toggleTerminator(on) {
+  terminatorOn = on;
+  localStorage.setItem('pilnk-terminator', on);
+  if (on) {
+    drawTerminator();
+    if (terminatorTimer) clearInterval(terminatorTimer);
+    terminatorTimer = setInterval(drawTerminator, 5 * 60 * 1000); // refresh every 5 min
+  } else {
+    if (terminatorLayer) { map.removeLayer(terminatorLayer); terminatorLayer = null; }
+    if (terminatorTimer) { clearInterval(terminatorTimer); terminatorTimer = null; }
+  }
+}
+
+// Init auto theme and terminator from saved prefs
+document.getElementById('autoThemeToggle').checked = autoThemeOn;
+document.getElementById('terminatorToggle').checked = terminatorOn;
+if (autoThemeOn) {
+  document.getElementById('autoThemeStatus').style.display = 'block';
+  toggleAutoTheme(true);
+}
+if (terminatorOn) toggleTerminator(true);
+
+// Override manual theme toggle to pause auto theme temporarily
+var _origToggleTheme = toggleTheme;
+toggleTheme = function() {
+  if (autoThemeOn) {
+    autoThemeManualOverride = true;
+    // Remove inline styles to let data-theme take over
+    document.documentElement.removeAttribute('style');
+  }
+  _origToggleTheme();
+};
 drawRings();
 updateFlights();
 setInterval(updateFlights,5000);
