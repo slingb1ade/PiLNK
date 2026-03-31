@@ -133,7 +133,22 @@
     letter-spacing:0.05em;
     box-shadow:none !important;
   }
-  /* Day/Night terminator */
+  /* Aircraft labels */
+  .ac-label{
+    background:var(--bg-panel);
+    border:1px solid var(--border);
+    border-radius:3px;
+    padding:2px 5px;
+    font-family:'Share Tech Mono',monospace;
+    font-size:0.58rem;
+    color:var(--text);
+    white-space:nowrap;
+    pointer-events:none;
+    box-shadow:0 1px 4px rgba(0,0,0,0.3);
+    letter-spacing:0.05em;
+    line-height:1.3;
+    text-align:center;
+  }
   .terminator-path{
     stroke:none;
     fill:rgba(0,0,20,0.28);
@@ -501,6 +516,7 @@
             <div class="panel-title">Map Options</div>
             <div class="toggle-row"><span>Flight Trails</span><label class="toggle-switch"><input type="checkbox" id="trailToggle" checked onchange="toggleTrails(this.checked)"/><span class="toggle-slider"></span></label></div>
             <div class="toggle-row"><span>Distance Rings</span><label class="toggle-switch"><input type="checkbox" id="ringToggle" checked onchange="toggleRings(this.checked)"/><span class="toggle-slider"></span></label></div>
+            <div class="toggle-row"><span>Aircraft Labels</span><label class="toggle-switch"><input type="checkbox" id="labelToggle" onchange="toggleLabels(this.checked)"/><span class="toggle-slider"></span></label></div>
             <div class="toggle-row"><span>Auto Day/Night</span><label class="toggle-switch"><input type="checkbox" id="autoThemeToggle" onchange="toggleAutoTheme(this.checked)"/><span class="toggle-slider"></span></label></div>
             <div class="toggle-row"><span>Day/Night Terminator</span><label class="toggle-switch"><input type="checkbox" id="terminatorToggle" onchange="toggleTerminator(this.checked)"/><span class="toggle-slider"></span></label></div>
             <div id="autoThemeStatus" style="font-size:0.58rem;color:var(--text-dim);margin-top:2px;font-style:italic;display:none;"></div>
@@ -1149,6 +1165,7 @@ function updateThemeBtn(t){var b=document.getElementById('themeBtn');if(b)b.text
 
 // ── STATE ─────────────────────────────────────────────────
 var markers={}, lastAircraft={}, lastSeen={}, transmitting={}, selectedFlight=null, audioPlaying=false;
+var labelMarkers={}, labelsOn=false;
 
 // ── AIRCRAFT CATEGORIES ───────────────────────────────────
 var HEAVY={B741:1,B742:1,B743:1,B744:1,B748:1,B74D:1,A380:1,A388:1,A389:1,A332:1,A333:1,A338:1,A339:1,A342:1,A343:1,A345:1,A346:1,B772:1,B773:1,B778:1,B779:1,B77L:1,B77W:1,B77X:1,B762:1,B763:1,B764:1,B752:1,B753:1};
@@ -1218,6 +1235,7 @@ function updateMarker(a){
     m.on('click',function(e){L.DomEvent.stopPropagation(e);selectedFlight=cs;hideTooltip();updateFlights();openCinematicCard(cs,false);});
     markers[cs]=m;
   }
+  updateLabel(a);
 }
 
 // ── FLIGHTS ───────────────────────────────────────────────
@@ -1236,6 +1254,7 @@ function updateFlights(){
           map.removeLayer(markers[cs]);delete markers[cs];delete lastAircraft[cs];
           delete lastSeen[cs];
           removeTrail(cs);
+          removeLabel(cs);
         }
       }
     });
@@ -1366,6 +1385,7 @@ function openCinematicCard(cs, auto) {
   ccCurrentCS = cs;
   ccVisible = true;
   hideTooltip(); // always kill tooltip when card opens
+  hideAllLabels(); // hide labels while card is showing
 
   // Clear any existing dismiss timer
   if (ccDismissTimer) { clearTimeout(ccDismissTimer); ccDismissTimer = null; }
@@ -1487,6 +1507,7 @@ function closeCinematicCard() {
   if (ccDismissTimer) { clearTimeout(ccDismissTimer); ccDismissTimer = null; }
   stopCCWaveform();
   document.getElementById('cinematicOverlay').classList.remove('active');
+  showAllLabels(); // restore labels after card closes
 }
 
 function handleCCOverlayClick(e) {
@@ -1532,6 +1553,62 @@ function checkAutoCard(a) {
   if (!cached || !cached.route) return;
   ccShownCS[cs] = true;
   openCinematicCard(cs, true);
+}
+
+// ── AIRCRAFT LABELS ────────────────────────────────────────
+function getLabelText(a) {
+  var cs = a.flight ? a.flight.trim() : null;
+  if (cs) return cs;
+  if (a.r) return a.r;
+  return null;
+}
+
+function updateLabel(a) {
+  var cs = a.flight ? a.flight.trim() : a.hex;
+  if (!cs || !markers[cs]) return;
+  var text = getLabelText(a);
+  if (!text) return;
+
+  // Remove existing label
+  if (labelMarkers[cs]) { map.removeLayer(labelMarkers[cs]); delete labelMarkers[cs]; }
+  if (!labelsOn || ccVisible) return;
+
+  var icon = L.divIcon({
+    className: '',
+    html: '<div class="ac-label">' + text + '</div>',
+    iconSize: null,
+    iconAnchor: [-4, 38] // centered above aircraft icon
+  });
+  labelMarkers[cs] = L.marker([a.lat, a.lon], {
+    icon: icon,
+    interactive: false,
+    zIndexOffset: -100
+  }).addTo(map);
+}
+
+function removeLabel(cs) {
+  if (labelMarkers[cs]) { map.removeLayer(labelMarkers[cs]); delete labelMarkers[cs]; }
+}
+
+function toggleLabels(on) {
+  labelsOn = on;
+  localStorage.setItem('pilnk-labels', on);
+  if (!on) {
+    Object.keys(labelMarkers).forEach(function(cs) { map.removeLayer(labelMarkers[cs]); });
+    labelMarkers = {};
+  } else {
+    Object.keys(lastAircraft).forEach(function(cs) { updateLabel(lastAircraft[cs]); });
+  }
+}
+
+function hideAllLabels() {
+  Object.keys(labelMarkers).forEach(function(cs) { map.removeLayer(labelMarkers[cs]); });
+  labelMarkers = {};
+}
+
+function showAllLabels() {
+  if (!labelsOn) return;
+  Object.keys(lastAircraft).forEach(function(cs) { updateLabel(lastAircraft[cs]); });
 }
 
 // ── AUTO DAY/NIGHT & TERMINATOR ────────────────────────────
@@ -1799,6 +1876,10 @@ drawRings();
 updateFlights();
 setInterval(updateFlights,5000);
 loadAvData('NZAA',NZAA_LAT,NZAA_LON);
+// Restore label preference
+var savedLabels = localStorage.getItem('pilnk-labels') === 'true';
+document.getElementById('labelToggle').checked = savedLabels;
+if (savedLabels) labelsOn = true;
 </script>
 </body>
 </html>
