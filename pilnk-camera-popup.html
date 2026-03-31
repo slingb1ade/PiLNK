@@ -1,0 +1,349 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>PiLNK — Live Camera</title>
+<link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@400;600;700;900&family=Share+Tech+Mono&display=swap" rel="stylesheet">
+<style>
+*{margin:0;padding:0;box-sizing:border-box;}
+html,body{
+  width:100%;height:100%;
+  background:#060a14;
+  color:#e0e8ff;
+  font-family:'Share Tech Mono',monospace;
+  overflow:hidden;
+}
+
+/* ── SCANLINES ── */
+body::before{
+  content:'';
+  position:fixed;inset:0;
+  background:repeating-linear-gradient(0deg,transparent,transparent 2px,rgba(0,0,0,0.06) 2px,rgba(0,0,0,0.06) 3px);
+  pointer-events:none;z-index:1000;
+}
+
+/* ── GRID BG ── */
+body::after{
+  content:'';
+  position:fixed;inset:0;
+  background-image:linear-gradient(rgba(59,130,246,0.04) 1px,transparent 1px),linear-gradient(90deg,rgba(59,130,246,0.04) 1px,transparent 1px);
+  background-size:40px 40px;
+  pointer-events:none;
+}
+
+/* ── LAYOUT ── */
+#app{
+  display:flex;flex-direction:column;
+  height:100vh;width:100vw;
+  position:relative;z-index:1;
+}
+
+/* ── HEADER ── */
+#header{
+  flex-shrink:0;
+  height:52px;
+  background:rgba(10,16,32,0.95);
+  border-bottom:1px solid rgba(59,130,246,0.2);
+  display:flex;align-items:center;
+  justify-content:space-between;
+  padding:0 16px;
+  backdrop-filter:blur(8px);
+}
+.header-left{display:flex;align-items:center;gap:14px;}
+.logo{
+  font-family:'Orbitron',sans-serif;
+  font-size:0.9rem;font-weight:900;
+  letter-spacing:6px;color:#e0e8ff;
+}
+.final-badge{
+  display:flex;align-items:center;gap:6px;
+  background:rgba(220,38,38,0.15);
+  border:1px solid rgba(220,38,38,0.4);
+  border-radius:5px;padding:4px 12px;
+  font-size:0.62rem;letter-spacing:0.2em;
+  color:#ff4466;
+  animation:badge-pulse 2s ease-in-out infinite;
+}
+@keyframes badge-pulse{0%,100%{border-color:rgba(220,38,38,0.4);}50%{border-color:rgba(220,38,38,0.8);box-shadow:0 0 12px rgba(220,38,38,0.2);}}
+.live-dot{
+  width:7px;height:7px;border-radius:50%;
+  background:#ff4466;box-shadow:0 0 8px #ff4466;
+  animation:dot-pulse 1s ease-in-out infinite;
+}
+@keyframes dot-pulse{0%,100%{opacity:1;transform:scale(1);}50%{opacity:0.5;transform:scale(0.8);}}
+
+.header-right{display:flex;align-items:center;gap:16px;}
+#countdown{
+  font-family:'Orbitron',sans-serif;
+  font-size:0.85rem;font-weight:700;
+  color:#3b82f6;letter-spacing:0.1em;
+}
+#closeBtn{
+  background:rgba(59,130,246,0.15);
+  border:1px solid rgba(59,130,246,0.3);
+  border-radius:5px;color:#60a5fa;
+  font-family:'Share Tech Mono',monospace;
+  font-size:0.68rem;letter-spacing:0.1em;
+  padding:5px 12px;cursor:pointer;
+  transition:all 0.2s;
+}
+#closeBtn:hover{background:rgba(59,130,246,0.25);}
+
+/* ── FLIGHT INFO BAR ── */
+#flightBar{
+  flex-shrink:0;
+  background:rgba(13,21,38,0.95);
+  border-bottom:1px solid rgba(59,130,246,0.15);
+  padding:10px 16px;
+  display:flex;align-items:center;
+  justify-content:space-between;
+  gap:16px;flex-wrap:wrap;
+}
+.flight-main{display:flex;align-items:center;gap:16px;}
+#callsign{
+  font-family:'Orbitron',sans-serif;
+  font-size:1.3rem;font-weight:700;
+  letter-spacing:0.12em;color:#ff4466;
+}
+#route{
+  font-size:0.82rem;color:#3b82f6;
+  font-weight:bold;letter-spacing:0.05em;
+}
+#airline{font-size:0.72rem;color:#3a5a8a;letter-spacing:0.05em;}
+.flight-stats{display:flex;gap:20px;flex-wrap:wrap;}
+.stat{text-align:center;}
+.stat-label{font-size:0.52rem;color:#3a5a8a;letter-spacing:0.2em;text-transform:uppercase;display:block;margin-bottom:2px;}
+.stat-val{font-family:'Orbitron',sans-serif;font-size:0.82rem;font-weight:600;color:#e0e8ff;}
+
+/* ── VIDEO AREA ── */
+#videoWrap{
+  flex:1;position:relative;
+  background:#000;overflow:hidden;
+  min-height:0;
+}
+#ytFrame{
+  width:100%;height:100%;
+  border:none;
+  display:block;
+}
+
+/* ── LOADING OVERLAY ── */
+#loadingOverlay{
+  position:absolute;inset:0;
+  background:#060a14;
+  display:flex;flex-direction:column;
+  align-items:center;justify-content:center;
+  gap:20px;z-index:10;
+  transition:opacity 0.5s;
+}
+#loadingOverlay.hidden{opacity:0;pointer-events:none;}
+.loading-radar{
+  width:80px;height:80px;
+  animation:radar-spin 2s linear infinite;
+}
+@keyframes radar-spin{to{transform:rotate(360deg);}}
+.loading-text{
+  font-family:'Share Tech Mono',monospace;
+  font-size:0.72rem;color:#3a5a8a;
+  letter-spacing:0.3em;text-transform:uppercase;
+  animation:blink 1.5s ease-in-out infinite;
+}
+@keyframes blink{0%,100%{opacity:1;}50%{opacity:0.3;}}}
+.loading-sub{font-size:0.62rem;color:#1e3a5a;letter-spacing:0.15em;}
+
+/* ── FOOTER ── */
+#footer{
+  flex-shrink:0;height:28px;
+  background:rgba(10,16,32,0.95);
+  border-top:1px solid rgba(59,130,246,0.1);
+  display:flex;align-items:center;
+  padding:0 16px;gap:16px;
+}
+.footer-tag{font-size:0.58rem;color:#1e3a5a;letter-spacing:0.15em;text-transform:uppercase;}
+#airportName{font-size:0.58rem;color:#3b82f6;letter-spacing:0.1em;}
+
+/* ── CORNER DECORATIONS ── */
+.corner{position:fixed;width:20px;height:20px;z-index:100;}
+.corner-tl{top:0;left:0;border-top:2px solid rgba(59,130,246,0.4);border-left:2px solid rgba(59,130,246,0.4);}
+.corner-tr{top:0;right:0;border-top:2px solid rgba(59,130,246,0.4);border-right:2px solid rgba(59,130,246,0.4);}
+.corner-bl{bottom:0;left:0;border-bottom:2px solid rgba(59,130,246,0.4);border-left:2px solid rgba(59,130,246,0.4);}
+.corner-br{bottom:0;right:0;border-bottom:2px solid rgba(59,130,246,0.4);border-right:2px solid rgba(59,130,246,0.4);}
+</style>
+</head>
+<body>
+
+<div class="corner corner-tl"></div>
+<div class="corner corner-tr"></div>
+<div class="corner corner-bl"></div>
+<div class="corner corner-br"></div>
+
+<div id="app">
+
+  <!-- Header -->
+  <div id="header">
+    <div class="header-left">
+      <div class="logo">PiLNK</div>
+      <div class="final-badge">
+        <span class="live-dot"></span>
+        NOW ON FINAL
+      </div>
+    </div>
+    <div class="header-right">
+      <div id="countdown">3:00</div>
+      <button id="closeBtn" onclick="window.close()">✕ CLOSE</button>
+    </div>
+  </div>
+
+  <!-- Flight info bar -->
+  <div id="flightBar">
+    <div class="flight-main">
+      <div id="callsign">--</div>
+      <div>
+        <div id="route"></div>
+        <div id="airline"></div>
+      </div>
+    </div>
+    <div class="flight-stats">
+      <div class="stat"><span class="stat-label">Altitude</span><span class="stat-val" id="statAlt">--</span></div>
+      <div class="stat"><span class="stat-label">Speed</span><span class="stat-val" id="statSpd">--</span></div>
+      <div class="stat"><span class="stat-label">V/Speed</span><span class="stat-val" id="statVs">--</span></div>
+      <div class="stat"><span class="stat-label">Heading</span><span class="stat-val" id="statHdg">--</span></div>
+      <div class="stat"><span class="stat-label">Type</span><span class="stat-val" id="statType">--</span></div>
+    </div>
+  </div>
+
+  <!-- Video -->
+  <div id="videoWrap">
+    <div id="loadingOverlay">
+      <svg class="loading-radar" viewBox="0 0 100 100" xmlns="http://www.w3.org/2000/svg">
+        <defs><radialGradient id="sg" cx="30%" cy="30%" r="70%"><stop offset="0%" stop-color="#3b82f6" stop-opacity="0.5"/><stop offset="100%" stop-color="#3b82f6" stop-opacity="0"/></radialGradient><clipPath id="c"><circle cx="50" cy="50" r="45"/></clipPath></defs>
+        <circle cx="50" cy="50" r="45" fill="none" stroke="#0f2040" stroke-width="1.5"/>
+        <circle cx="50" cy="50" r="32" fill="none" stroke="#0f2040" stroke-width="1"/>
+        <circle cx="50" cy="50" r="18" fill="none" stroke="#0f2040" stroke-width="1"/>
+        <line x1="50" y1="5" x2="50" y2="95" stroke="#0f2040" stroke-width="1"/>
+        <line x1="5" y1="50" x2="95" y2="50" stroke="#0f2040" stroke-width="1"/>
+        <g clip-path="url(#c)"><path d="M50,50 L95,50 A45,45 0 0,0 50,5 Z" fill="url(#sg)"/></g>
+        <circle cx="50" cy="50" r="45" fill="none" stroke="#3b82f6" stroke-width="2"/>
+        <circle cx="50" cy="50" r="3" fill="#3b82f6"/>
+      </svg>
+      <div class="loading-text">Searching for live camera</div>
+      <div class="loading-sub" id="loadingSub">Loading...</div>
+    </div>
+    <iframe id="ytFrame" src="about:blank" allow="autoplay; encrypted-media; picture-in-picture" allowfullscreen></iframe>
+  </div>
+
+  <!-- Footer -->
+  <div id="footer">
+    <span class="footer-tag">📡 PiLNK Live Camera</span>
+    <span id="airportName"></span>
+    <span class="footer-tag" style="margin-left:auto;">pilnk.io</span>
+  </div>
+
+</div>
+
+<script>
+'use strict';
+
+// ── AIRPORT DATABASE ──────────────────────────────────────
+var AIRPORTS = {
+  'NZAA':{name:'Auckland International',query:'Auckland Airport AKL live planespotting'},
+  'NZCH':{name:'Christchurch International',query:'Christchurch Airport CHC live planespotting'},
+  'NZWN':{name:'Wellington International',query:'Wellington Airport WLG live planespotting'},
+  'NZQN':{name:'Queenstown',query:'Queenstown Airport ZQN live planespotting'},
+  'NZDN':{name:'Dunedin',query:'Dunedin Airport DUD live aviation'},
+  'NZHN':{name:'Hamilton',query:'Hamilton Airport HLZ live'},
+  'YSSY':{name:'Sydney Kingsford Smith',query:'Sydney Airport SYD live planespotting'},
+  'YMML':{name:'Melbourne Tullamarine',query:'Melbourne Airport MEL live planespotting'},
+  'YBBN':{name:'Brisbane',query:'Brisbane Airport BNE live planespotting'},
+  'YPPH':{name:'Perth',query:'Perth Airport PER live planespotting'},
+  'WSSS':{name:'Singapore Changi',query:'Singapore Changi Airport live stream'},
+  'VHHH':{name:'Hong Kong',query:'Hong Kong Airport HKG live planespotting'},
+  'RJTT':{name:'Tokyo Haneda',query:'Tokyo Haneda Airport HND live'},
+  'RJAA':{name:'Tokyo Narita',query:'Tokyo Narita Airport NRT live planespotting'},
+  'KLAX':{name:'Los Angeles',query:'Los Angeles LAX airport live stream'},
+  'KJFK':{name:'New York JFK',query:'JFK Airport New York live planespotting'},
+  'KSFO':{name:'San Francisco',query:'San Francisco SFO airport live'},
+  'EGLL':{name:'London Heathrow',query:'Heathrow Airport LHR live planespotting'},
+  'EHAM':{name:'Amsterdam Schiphol',query:'Amsterdam Schiphol AMS live planespotting'},
+  'LFPG':{name:'Paris Charles de Gaulle',query:'Paris CDG Airport live planespotting'},
+  'EDDF':{name:'Frankfurt',query:'Frankfurt Airport FRA live planespotting'},
+  'EGCC':{name:'Manchester',query:'Manchester Airport MAN live planespotting'},
+};
+
+// ── READ URL PARAMS ───────────────────────────────────────
+var params = new URLSearchParams(window.location.search);
+var icao    = params.get('icao')    || 'NZAA';
+var cs      = params.get('cs')      || '--';
+var route   = params.get('route')   || '';
+var alt     = params.get('alt')     || '--';
+var spd     = params.get('spd')     || '--';
+var vs      = params.get('vs')      || '--';
+var hdg     = params.get('hdg')     || '--';
+var type    = params.get('type')    || '--';
+var airline = params.get('airline') || '';
+
+// ── POPULATE FLIGHT INFO ──────────────────────────────────
+document.getElementById('callsign').textContent  = cs;
+document.getElementById('route').textContent     = route ? '✈ ' + route : '';
+document.getElementById('airline').textContent   = airline;
+document.getElementById('statAlt').textContent   = alt !== '--' ? parseInt(alt).toLocaleString() + ' ft' : '--';
+document.getElementById('statSpd').textContent   = spd !== '--' ? spd + ' kt' : '--';
+document.getElementById('statVs').textContent    = vs  !== '--' ? (parseInt(vs)>0?'+':'')+vs+' fpm' : '--';
+document.getElementById('statHdg').textContent   = hdg !== '--' ? hdg + '°' : '--';
+document.getElementById('statType').textContent  = type;
+
+var airport = AIRPORTS[icao] || {name: icao, query: icao + ' airport live planespotting'};
+document.getElementById('airportName').textContent = airport.name;
+document.getElementById('loadingSub').textContent  = airport.name;
+document.title = 'PiLNK · ' + cs + ' · Final Approach · ' + airport.name;
+
+// ── LOAD YOUTUBE ──────────────────────────────────────────
+var ytUrl = 'https://www.youtube.com/results?search_query=' +
+            encodeURIComponent(airport.query) + '&sp=EgJAAQ%3D%3D';
+
+// Small delay for dramatic effect 😄
+setTimeout(function() {
+  var frame = document.getElementById('ytFrame');
+  frame.src = ytUrl;
+  frame.onload = function() {
+    document.getElementById('loadingOverlay').classList.add('hidden');
+  };
+  // Hide loading after 4s regardless
+  setTimeout(function() {
+    document.getElementById('loadingOverlay').classList.add('hidden');
+  }, 4000);
+}, 800);
+
+// ── COUNTDOWN TIMER ───────────────────────────────────────
+var timeLeft = 180;
+var countEl  = document.getElementById('countdown');
+
+function fmtTime(s) {
+  return Math.floor(s/60) + ':' + (s%60<10?'0':'') + s%60;
+}
+
+var timer = setInterval(function() {
+  timeLeft--;
+  countEl.textContent = fmtTime(timeLeft);
+  if (timeLeft <= 30) countEl.style.color = '#ff4466';
+  if (timeLeft <= 0) {
+    clearInterval(timer);
+    window.close();
+  }
+}, 1000);
+
+// ── RECEIVE UPDATES FROM PARENT ───────────────────────────
+// Parent window can call: popup.postMessage({alt:3200, vs:-600, spd:160}, '*')
+window.addEventListener('message', function(e) {
+  var d = e.data;
+  if (!d) return;
+  if (d.alt) document.getElementById('statAlt').textContent = parseInt(d.alt).toLocaleString() + ' ft';
+  if (d.spd) document.getElementById('statSpd').textContent = d.spd + ' kt';
+  if (d.vs)  document.getElementById('statVs').textContent  = (d.vs>0?'+':'')+d.vs+' fpm';
+  if (d.hdg) document.getElementById('statHdg').textContent = d.hdg + '°';
+  if (d.close) window.close();
+});
+</script>
+</body>
+</html>

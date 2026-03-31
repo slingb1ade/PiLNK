@@ -2328,7 +2328,7 @@ var liveCamera = (function() {
   };
 
   var state = {
-    enabled:true, active:false, icao:null,
+    enabled:true, active:false, icao:null, cs:null,
     timeout:null, countdown:180, countdownTimer:null,
     popup:null
   };
@@ -2362,7 +2362,7 @@ var liveCamera = (function() {
     return Math.floor(s/60)+':'+(s%60<10?'0':'')+s%60;
   }
 
-  function show(icao) {
+  function show(icao, cs) {
     if (!state.enabled) return;
     if (state.active && state.icao === icao) return;
 
@@ -2388,12 +2388,23 @@ var liveCamera = (function() {
     var noCamera   = document.getElementById('ccNoCameraMsg');
     if (!iframe) return;
 
-    // Open YouTube live search in popup window
-    var query = CAMS[icao] || (icao + ' airport live planespotting');
-    var ytUrl = 'https://www.youtube.com/results?search_query=' +
-                encodeURIComponent(query) + '&sp=EgJAAQ%3D%3D';
-    state.popup = window.open(ytUrl, 'pilnk-cam',
-      'width=720,height=480,top=80,left=200,toolbar=no,menubar=no,location=no');
+    // Build params from aircraft data
+    var a   = (typeof lastAircraft !== 'undefined') ? (lastAircraft[cs] || {}) : {};
+    var cached = (typeof routeCache !== 'undefined') ? (routeCache[cs] || {}) : {};
+    var p = new URLSearchParams();
+    p.set('icao',    icao);
+    p.set('cs',      cs || '');
+    p.set('route',   cached.route  || '');
+    p.set('airline', cached.airline|| '');
+    p.set('alt',     a.alt_baro    || '');
+    p.set('spd',     a.gs ? Math.round(a.gs) : '');
+    p.set('vs',      a.baro_rate   || a.geom_rate || '');
+    p.set('hdg',     a.track ? Math.round(a.track) : '');
+    p.set('type',    a.t           || '');
+    // Open our styled camera popup page
+    var popupUrl = '/pilnk-camera-popup.html?' + p.toString();
+    state.popup = window.open(popupUrl, 'pilnk-cam',
+      'width=760,height=520,top=60,left=160,toolbar=no,menubar=no,location=no,scrollbars=no');
 
     // Show camera badge and countdown (photo stays visible — popup is separate)
     setTimeout(function() {
@@ -2450,9 +2461,20 @@ var liveCamera = (function() {
     var vs    = a.baro_rate || a.geom_rate || 0;
     var isFinal = (alt > 50 && alt < FINAL_ALT && vs < FINAL_VS);
     if (isFinal && !state.active) {
-      show(getDestIcao(cs || (a.flight && a.flight.trim()) || ''));
+      state.cs = cs;
+      show(getDestIcao(cs || (a.flight && a.flight.trim()) || ''), cs);
     } else if (!isFinal && state.active) {
       hide();
+    } else if (isFinal && state.active && state.popup && !state.popup.closed) {
+      // Send live updates to popup
+      try {
+        state.popup.postMessage({
+          alt: Math.round(a.alt_baro || 0),
+          spd: Math.round(a.gs || 0),
+          vs:  Math.round(a.baro_rate || a.geom_rate || 0),
+          hdg: Math.round(a.track || 0)
+        }, '*');
+      } catch(e) {}
     }
   }
 
