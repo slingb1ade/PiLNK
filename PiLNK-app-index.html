@@ -1312,14 +1312,27 @@ function fetchPlanePhoto(hex, callback) {
       var photo = null;
       if (data && data.photos && data.photos.length > 0) {
         var p = data.photos[0];
-        // Get model from aircraft data in photo response
+        // Extract model from photo link URL
+        // e.g. /zk-nni-air-new-zealand-airbus-a321-271nx → "Airbus A321-271NX"
         var model = null;
-        if (p.aircraft) {
-          var manufacturer = p.aircraft.manufacturer || '';
-          var modelName = p.aircraft.model || '';
-          if (manufacturer && modelName) model = manufacturer + ' ' + modelName;
-          else if (modelName) model = modelName;
-          else if (manufacturer) model = manufacturer;
+        if (p.link) {
+          var match = p.link.match(/\/photo\/\d+\/([^?]+)/);
+          if (match) {
+            var slug = match[1]; // e.g. "zk-nni-air-new-zealand-airbus-a321-271nx"
+            // Known manufacturers to look for
+            var makers = ['airbus','boeing','bombardier','embraer','cessna','piper','beechcraft','atr','de-havilland','mcdonnell-douglas','lockheed','saab','fokker','dash'];
+            for (var i = 0; i < makers.length; i++) {
+              var idx = slug.indexOf(makers[i]);
+              if (idx >= 0) {
+                // Take everything from manufacturer onwards, clean up
+                model = slug.substring(idx)
+                  .replace(/-/g,' ')
+                  .replace(/\b\w/g, function(c){return c.toUpperCase();})
+                  .trim();
+                break;
+              }
+            }
+          }
         }
         photo = {
           url: p.thumbnail_large && p.thumbnail_large.src ? p.thumbnail_large.src : (p.thumbnail && p.thumbnail.src ? p.thumbnail.src : null),
