@@ -290,7 +290,17 @@
   .cc-route{
     font-family:'Share Tech Mono',monospace;
     font-size:0.85rem;color:var(--blue-mid);
-    font-weight:bold;margin-bottom:4px;letter-spacing:0.05em;
+    font-weight:bold;letter-spacing:0.05em;
+  }
+  .cc-route-row{
+    display:flex;align-items:center;justify-content:space-between;
+    gap:8px;margin-bottom:4px;padding-bottom:6px;
+    border-bottom:1px solid var(--border);
+  }
+  .cc-model{
+    font-family:'Share Tech Mono',monospace;
+    font-size:0.62rem;color:var(--text-dim);
+    letter-spacing:0.05em;text-align:right;flex-shrink:0;
   }
   .cc-airline{
     font-size:0.7rem;color:var(--text-dim);
@@ -559,7 +569,10 @@
       <div class="cc-top">
         <div class="cc-badge" id="ccBadge"><span>NOW PASSING</span></div>
         <div class="cc-callsign" id="ccCallsign">–</div>
-        <div class="cc-route" id="ccRoute"></div>
+        <div class="cc-route-row">
+          <div class="cc-route" id="ccRoute"></div>
+          <div class="cc-model" id="ccModel"></div>
+        </div>
         <div class="cc-airline" id="ccAirline"></div>
         <div class="cc-stats">
           <div class="cc-stat"><div class="cc-stat-label">Altitude</div><div class="cc-stat-val" id="ccAlt">–</div></div>
@@ -1392,6 +1405,7 @@ function openCinematicCard(cs, auto) {
 
   // Route & airline
   document.getElementById('ccRoute').textContent = '';
+  document.getElementById('ccModel').textContent = '';
   document.getElementById('ccAirline').textContent = '';
   document.getElementById('ccData').setAttribute('data-reg', a.r || '');
   document.getElementById('ccRegWatermark').textContent = a.r || '';
@@ -1438,8 +1452,8 @@ function openCinematicCard(cs, auto) {
           document.getElementById('ccPhotoCredit').textContent = '📷 ' + photo.photographer;
         }
         // Show model if airline field is still empty
-        if (photo.model && !document.getElementById('ccAirline').textContent) {
-          document.getElementById('ccAirline').textContent = photo.model;
+        if (photo.model && !document.getElementById('ccModel').textContent) {
+          document.getElementById('ccModel').textContent = photo.model;
         }
       }
     });
