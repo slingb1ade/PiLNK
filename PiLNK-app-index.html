@@ -133,6 +133,31 @@
     letter-spacing:0.05em;
     box-shadow:none !important;
   }
+  /* Stats tab */
+  .streak-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-top:4px;}
+  .streak-item{background:var(--bg-card);border:1px solid var(--border);border-radius:6px;padding:10px 6px;text-align:center;}
+  .streak-num{font-family:'Orbitron',sans-serif;font-size:1.2rem;font-weight:700;color:var(--blue-mid);line-height:1;}
+  .streak-label{font-family:'Share Tech Mono',monospace;font-size:0.52rem;color:var(--text-dim);letter-spacing:0.15em;margin-top:4px;text-transform:uppercase;}
+  .lb-tabs{display:flex;gap:4px;margin-top:4px;}
+  .lb-tab{flex:1;background:var(--bg-card);border:1px solid var(--border);border-radius:4px;color:var(--text-dim);font-family:'Share Tech Mono',monospace;font-size:0.6rem;padding:5px 4px;cursor:pointer;transition:all 0.2s;text-align:center;}
+  .lb-tab.active{background:var(--border);border-color:var(--blue-mid);color:var(--blue-mid);}
+  .lb-item{display:flex;align-items:center;gap:8px;padding:6px 0;border-bottom:1px solid var(--border);font-size:0.65rem;}
+  .lb-item:last-child{border-bottom:none;}
+  .lb-rank{font-family:'Orbitron',sans-serif;font-size:0.6rem;color:var(--text-dim);width:16px;flex-shrink:0;}
+  .lb-cs{font-weight:bold;color:var(--text);flex:1;}
+  .lb-val{color:var(--blue-mid);font-family:'Share Tech Mono',monospace;font-size:0.68rem;font-weight:bold;}
+  .metar-row{display:flex;justify-content:space-between;font-size:0.65rem;margin-bottom:5px;}
+  .metar-label{color:var(--text-dim);}
+  .metar-val{color:var(--text);font-weight:bold;font-family:'Share Tech Mono',monospace;}
+  .metar-conditions{font-size:0.7rem;color:var(--blue-mid);font-family:'Share Tech Mono',monospace;margin-bottom:8px;letter-spacing:0.05em;}
+  /* Squawk alert */
+  .squawk-alert{border-radius:6px;padding:10px 12px;margin-bottom:6px;}
+  .squawk-7700{background:rgba(220,38,38,0.1);border:1px solid #dc2626;}
+  .squawk-7600{background:rgba(245,158,11,0.1);border:1px solid #f59e0b;}
+  .squawk-7500{background:rgba(234,179,8,0.1);border:1px solid #eab308;}
+  .squawk-cs{font-family:'Orbitron',sans-serif;font-size:0.75rem;font-weight:700;margin-bottom:4px;}
+  .squawk-code{font-family:'Share Tech Mono',monospace;font-size:0.65rem;}
+  .squawk-desc{font-size:0.6rem;color:var(--text-dim);margin-top:3px;}
   /* Aircraft labels */
   .ac-label{
     background:var(--bg-panel);
@@ -429,6 +454,7 @@
         <button class="tab-btn active" onclick="showTab('traffic',event)">Traffic</button>
         <button class="tab-btn" onclick="showTab('airport',event)">Airport</button>
         <button class="tab-btn" onclick="showTab('options',event)">Options</button>
+        <button class="tab-btn" onclick="showTab('stats',event)">Stats</button>
       </div>
 
       <!-- TRAFFIC TAB -->
@@ -548,6 +574,62 @@
           </div>
         </div>
       </div>
+    </div>
+
+      <!-- STATS TAB -->
+      <div class="tab-content" id="tab-stats">
+        <div class="scroll-area" style="flex:1;overflow-y:auto;">
+
+          <!-- SQUAWK ALERT -->
+          <div class="panel" id="squawkAlertPanel" style="display:none;">
+            <div class="panel-title" style="color:#dc2626;">⚠ SQUAWK ALERT</div>
+            <div id="squawkAlertContent"></div>
+          </div>
+
+          <!-- METAR -->
+          <div class="panel">
+            <div class="panel-title">Local Weather</div>
+            <div id="metarContent">
+              <div style="font-size:0.62rem;color:var(--text-dim);">Loading METAR...</div>
+            </div>
+            <div id="metarTime" style="font-size:0.55rem;color:var(--text-dim);margin-top:6px;"></div>
+          </div>
+
+          <!-- FLIGHT STREAK -->
+          <div class="panel">
+            <div class="panel-title">Flight Streak</div>
+            <div class="streak-grid" id="streakGrid">
+              <div class="streak-item">
+                <div class="streak-num" id="streakToday">0</div>
+                <div class="streak-label">Today</div>
+              </div>
+              <div class="streak-item">
+                <div class="streak-num" id="streakTotal">0</div>
+                <div class="streak-label">All Time</div>
+              </div>
+              <div class="streak-item">
+                <div class="streak-num" id="streakBest">0</div>
+                <div class="streak-label">Best Day</div>
+              </div>
+            </div>
+            <div style="font-size:0.58rem;color:var(--text-dim);margin-top:8px;">Unique aircraft tracked by hex code</div>
+          </div>
+
+          <!-- LEADERBOARD -->
+          <div class="panel">
+            <div class="panel-title">Today's Leaderboard</div>
+            <div class="lb-tabs">
+              <button class="lb-tab active" onclick="showLbTab('fast',this)">🚀 Fast</button>
+              <button class="lb-tab" onclick="showLbTab('high',this)">📈 High</button>
+              <button class="lb-tab" onclick="showLbTab('far',this)">📡 Far</button>
+            </div>
+            <div id="lbList" style="margin-top:8px;"></div>
+            <div style="font-size:0.55rem;color:var(--text-dim);margin-top:6px;">Resets at midnight</div>
+          </div>
+
+        </div>
+      </div>
+
     </div>
     <div id="map"></div>
   </div>
@@ -1245,7 +1327,17 @@ function updateFlights(){
     document.getElementById('hdr-count').textContent=ac.length+' AIRCRAFT';
     var seen={};
     var now = Date.now();
-    ac.forEach(function(a){var cs=a.flight.trim();seen[cs]=true;lastSeen[cs]=now;lastAircraft[cs]=a;updateMarker(a);checkAutoCard(a);});
+    ac.forEach(function(a){
+      var cs=a.flight.trim();
+      seen[cs]=true;
+      lastSeen[cs]=now;
+      lastAircraft[cs]=a;
+      updateMarker(a);
+      checkAutoCard(a);
+      checkSquawk(a);
+      trackStreak(a);
+      updateLeaderboard(a);
+    });
     // Only remove aircraft that haven't been seen for 60 seconds — handles brief ADS-B dropouts
     Object.keys(markers).forEach(function(cs){
       if(!seen[cs]){
@@ -1610,6 +1702,230 @@ function showAllLabels() {
   if (!labelsOn) return;
   Object.keys(lastAircraft).forEach(function(cs) { updateLabel(lastAircraft[cs]); });
 }
+
+// ── SQUAWK ALERTS ──────────────────────────────────────────
+var SQUAWK_CODES = {
+  '7700': { label: '⚠ EMERGENCY', color: '#dc2626', cls: 'squawk-7700', desc: 'General emergency declared' },
+  '7600': { label: '📡 COMMS FAILURE', color: '#f59e0b', cls: 'squawk-7600', desc: 'Radio communications failure' },
+  '7500': { label: '🚨 HIJACK', color: '#eab308', cls: 'squawk-7500', desc: 'Unlawful interference / hijack' }
+};
+var activeSquawks = {}; // cs -> squawk code
+var squawkAlertSound = null;
+
+function checkSquawk(a) {
+  var cs = a.flight ? a.flight.trim() : a.hex;
+  var sq = a.squawk;
+  if (!sq || !SQUAWK_CODES[sq]) {
+    if (activeSquawks[cs]) { delete activeSquawks[cs]; renderSquawkPanel(); }
+    return;
+  }
+  if (activeSquawks[cs] === sq) return; // already alerting
+  activeSquawks[cs] = sq;
+  renderSquawkPanel();
+  playSquawkTone(sq);
+  // Switch to stats tab to show alert
+  document.querySelectorAll('.tab-btn').forEach(function(b){b.classList.remove('active');});
+  var statsBtn = document.querySelector('.tab-btn:last-child');
+  if (statsBtn) statsBtn.classList.add('active');
+  showTab('stats', null);
+}
+
+function renderSquawkPanel() {
+  var panel = document.getElementById('squawkAlertPanel');
+  var content = document.getElementById('squawkAlertContent');
+  if (!Object.keys(activeSquawks).length) { panel.style.display = 'none'; return; }
+  panel.style.display = 'block';
+  content.innerHTML = Object.keys(activeSquawks).map(function(cs) {
+    var sq = activeSquawks[cs];
+    var info = SQUAWK_CODES[sq];
+    var a = lastAircraft[cs] || {};
+    return '<div class="squawk-alert ' + info.cls + '">' +
+      '<div class="squawk-cs" style="color:' + info.color + ';">' + info.label + ' — ' + cs + '</div>' +
+      '<div class="squawk-code">Squawk ' + sq + (a.alt_baro ? ' · ' + Math.round(a.alt_baro).toLocaleString() + 'ft' : '') + '</div>' +
+      '<div class="squawk-desc">' + info.desc + '</div>' +
+      '</div>';
+  }).join('');
+}
+
+function playSquawkTone(sq) {
+  try {
+    var ctx = new (window.AudioContext || window.webkitAudioContext)();
+    var osc = ctx.createOscillator();
+    var gain = ctx.createGain();
+    osc.connect(gain); gain.connect(ctx.destination);
+    osc.frequency.value = sq === '7700' ? 880 : sq === '7600' ? 660 : 440;
+    osc.type = 'sine';
+    gain.gain.setValueAtTime(0.3, ctx.currentTime);
+    gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 1.5);
+    osc.start(); osc.stop(ctx.currentTime + 1.5);
+  } catch(e) {}
+}
+
+// ── METAR ──────────────────────────────────────────────────
+var metarData = null;
+var METAR_STATION = 'NZAA'; // Auckland — matches RX_LAT/RX_LON
+
+function loadMETAR() {
+  fetch('https://aviationweather.gov/api/data/metar?ids=' + METAR_STATION + '&format=json')
+    .then(function(r){ return r.json(); })
+    .then(function(data) {
+      if (!data || !data.length) return;
+      var m = data[0];
+      metarData = m;
+      renderMETAR(m);
+    })
+    .catch(function() {
+      document.getElementById('metarContent').innerHTML =
+        '<div style="font-size:0.62rem;color:var(--text-dim);">METAR unavailable</div>';
+    });
+}
+
+function renderMETAR(m) {
+  var el = document.getElementById('metarContent');
+  if (!el) return;
+
+  // Wind
+  var windDir = m.wdir !== undefined ? m.wdir + '°' : '--';
+  var windSpd = m.wspd !== undefined ? m.wspd + 'kt' : '--';
+  var windGust = m.wgst ? ' G' + m.wgst + 'kt' : '';
+  var wind = windDir + ' / ' + windSpd + windGust;
+
+  // Visibility
+  var vis = m.visib !== undefined ? m.visib + ' SM' : '--';
+
+  // Temp/Dewpoint
+  var temp = m.temp !== undefined ? m.temp + '°C' : '--';
+  var dew = m.dewp !== undefined ? m.dewp + '°C' : '--';
+
+  // QNH
+  var qnh = m.altim !== undefined ? 'Q' + Math.round(m.altim * 33.8639) : '--';
+
+  // Conditions
+  var conds = (m.wxString || m.clouds || '').toString() || 'No significant weather';
+
+  el.innerHTML =
+    '<div class="metar-conditions">' + (m.rawOb ? m.rawOb.substring(0,40) : METAR_STATION) + '</div>' +
+    '<div class="metar-row"><span class="metar-label">Wind</span><span class="metar-val">' + wind + '</span></div>' +
+    '<div class="metar-row"><span class="metar-label">Visibility</span><span class="metar-val">' + vis + '</span></div>' +
+    '<div class="metar-row"><span class="metar-label">Temp / Dew</span><span class="metar-val">' + temp + ' / ' + dew + '</span></div>' +
+    '<div class="metar-row"><span class="metar-label">QNH</span><span class="metar-val">' + qnh + '</span></div>';
+
+  var timeEl = document.getElementById('metarTime');
+  if (timeEl && m.reportTime) {
+    timeEl.textContent = 'Updated: ' + new Date(m.reportTime).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'});
+  }
+}
+
+// Load METAR on start and refresh every 30 mins
+loadMETAR();
+setInterval(loadMETAR, 30 * 60 * 1000);
+
+// ── FLIGHT STREAK ──────────────────────────────────────────
+var streakData = JSON.parse(localStorage.getItem('pilnk-streak') || '{"total":0,"best":0,"today":0,"date":""}');
+var todayStr = new Date().toISOString().slice(0,10);
+if (streakData.date !== todayStr) { streakData.today = 0; streakData.date = todayStr; }
+var seenHexes = new Set(JSON.parse(localStorage.getItem('pilnk-streak-today') || '[]'));
+
+function trackStreak(a) {
+  if (!a.hex || seenHexes.has(a.hex)) return;
+  seenHexes.add(a.hex);
+  streakData.today++;
+  streakData.total++;
+  if (streakData.today > streakData.best) streakData.best = streakData.today;
+  streakData.date = todayStr;
+  localStorage.setItem('pilnk-streak', JSON.stringify(streakData));
+  localStorage.setItem('pilnk-streak-today', JSON.stringify(Array.from(seenHexes)));
+  updateStreakUI();
+}
+
+function updateStreakUI() {
+  var t = document.getElementById('streakToday');
+  var total = document.getElementById('streakTotal');
+  var best = document.getElementById('streakBest');
+  if (t) t.textContent = streakData.today.toLocaleString();
+  if (total) total.textContent = streakData.total.toLocaleString();
+  if (best) best.textContent = streakData.best.toLocaleString();
+}
+updateStreakUI();
+
+// ── LEADERBOARD ────────────────────────────────────────────
+var lbData = { fast: {}, high: {}, far: {} };
+var lbTab = 'fast';
+var LB_MAX = 5;
+
+function updateLeaderboard(a) {
+  var cs = a.flight ? a.flight.trim() : a.hex;
+  if (!cs) return;
+
+  // Fastest
+  var spd = a.gs || 0;
+  if (spd > 0) {
+    if (!lbData.fast[cs] || spd > lbData.fast[cs].val) {
+      lbData.fast[cs] = { cs: cs, val: spd, display: Math.round(spd) + ' kt' };
+    }
+  }
+
+  // Highest
+  var alt = a.alt_baro || a.alt_geom || 0;
+  if (alt > 0) {
+    if (!lbData.high[cs] || alt > lbData.high[cs].val) {
+      lbData.high[cs] = { cs: cs, val: alt, display: Math.round(alt).toLocaleString() + ' ft' };
+    }
+  }
+
+  // Furthest from receiver
+  if (a.lat && a.lon) {
+    var dist = haversineKm(RX_LAT, RX_LON, a.lat, a.lon);
+    if (!lbData.far[cs] || dist > lbData.far[cs].val) {
+      lbData.far[cs] = { cs: cs, val: dist, display: Math.round(dist) + ' km' };
+    }
+  }
+
+  renderLeaderboard();
+}
+
+function renderLeaderboard() {
+  var list = document.getElementById('lbList');
+  if (!list) return;
+  var entries = Object.values(lbData[lbTab])
+    .sort(function(a,b){ return b.val - a.val; })
+    .slice(0, LB_MAX);
+  if (!entries.length) {
+    list.innerHTML = '<div style="font-size:0.65rem;color:var(--text-dim);padding:8px 0;">No data yet</div>';
+    return;
+  }
+  var medals = ['🥇','🥈','🥉','4.','5.'];
+  list.innerHTML = entries.map(function(e, i) {
+    return '<div class="lb-item">' +
+      '<span class="lb-rank">' + medals[i] + '</span>' +
+      '<span class="lb-cs">' + e.cs + '</span>' +
+      '<span class="lb-val">' + e.display + '</span>' +
+      '</div>';
+  }).join('');
+}
+
+function showLbTab(tab, btn) {
+  lbTab = tab;
+  document.querySelectorAll('.lb-tab').forEach(function(b){b.classList.remove('active');});
+  if (btn) btn.classList.add('active');
+  renderLeaderboard();
+}
+
+// Reset leaderboard at midnight
+function checkMidnightReset() {
+  var newDay = new Date().toISOString().slice(0,10);
+  if (newDay !== todayStr) {
+    todayStr = newDay;
+    lbData = { fast:{}, high:{}, far:{} };
+    streakData.today = 0;
+    streakData.date = newDay;
+    seenHexes = new Set();
+    localStorage.setItem('pilnk-streak-today', '[]');
+    updateStreakUI();
+    renderLeaderboard();
+  }
+}
+setInterval(checkMidnightReset, 60000);
 
 // ── AUTO DAY/NIGHT & TERMINATOR ────────────────────────────
 var autoThemeOn = localStorage.getItem('pilnk-auto-theme') === 'true';
