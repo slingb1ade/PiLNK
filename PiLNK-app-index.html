@@ -1765,7 +1765,7 @@ var metarData = null;
 var METAR_STATION = 'NZAA'; // Auckland — matches RX_LAT/RX_LON
 
 function loadMETAR() {
-  fetch('https://aviationweather.gov/api/data/metar?ids=' + METAR_STATION + '&format=json')
+  fetch('/api/metar/' + METAR_STATION)
     .then(function(r){ return r.json(); })
     .then(function(data) {
       if (!data || !data.length) return;

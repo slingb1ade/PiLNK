@@ -1,4 +1,3 @@
-
 from flask import Flask, render_template, Response, jsonify, request, make_response
 from flask_socketio import SocketIO
 from radio import RadioStream
@@ -152,5 +151,21 @@ def planespotters_proxy(hex):
     except Exception as e:
         return jsonify({'photos': []}), 500
 
+# ── METAR proxy ────────────────────────────────────────────
+@app.route('/api/metar/<station>')
+def metar_proxy(station):
+    try:
+        r = requests.get(
+            'https://aviationweather.gov/api/data/metar?ids=' + station + '&format=json',
+            timeout=10,
+            headers={'User-Agent': 'PiLNK/1.0'}
+        )
+        resp = make_response(r.content)
+        resp.headers['Content-Type'] = 'application/json'
+        resp.headers['Access-Control-Allow-Origin'] = '*'
+        return resp
+    except Exception as e:
+        return jsonify([]), 500
+
 if __name__ == '__main__':
-    socketio.run(app, host="0.0.0.0", port=5000, debug=False, allow_unsafe_werkzeug=True)
+    socketio.run(app, host='0.0.0.0', port=5000, debug=False)
