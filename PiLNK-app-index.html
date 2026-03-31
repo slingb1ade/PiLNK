@@ -419,6 +419,42 @@
     from{opacity:0;transform:translateY(28px) scale(0.96);}
     to{opacity:1;transform:translateY(0) scale(1);}
   }
+
+  /* ── LIVE CAMERA PANEL ───────────────────────────────── */
+  .cc-photo-layer{position:absolute;inset:0;z-index:2;transition:opacity 0.8s ease;}
+  .cc-photo-layer.hidden{opacity:0;pointer-events:none;}
+  .cc-camera-wrap{position:absolute;inset:0;background:#000;overflow:hidden;}
+  .cc-camera-iframe{position:absolute;inset:0;width:100%;height:100%;border:none;opacity:0;transition:opacity 0.8s ease;}
+  .cc-camera-iframe.loaded{opacity:1;}
+  .cc-camera-badge{
+    position:absolute;top:12px;left:12px;z-index:10;
+    background:rgba(220,38,38,0.88);backdrop-filter:blur(4px);
+    border:1px solid rgba(255,255,255,0.2);border-radius:5px;
+    padding:4px 10px;font-family:'Share Tech Mono',monospace;
+    font-size:0.62rem;color:white;letter-spacing:0.15em;
+    display:flex;align-items:center;gap:5px;
+    opacity:0;transform:translateY(-4px);
+    transition:opacity 0.4s 0.5s,transform 0.4s 0.5s;
+  }
+  .cc-camera-badge.show{opacity:1;transform:translateY(0);}
+  .cc-cam-dot{width:6px;height:6px;border-radius:50%;background:white;box-shadow:0 0 6px white;animation:tx-pulse 1s ease-in-out infinite;}
+  .cc-no-camera{
+    position:absolute;inset:0;display:flex;flex-direction:column;
+    align-items:center;justify-content:center;gap:10px;
+    background:var(--bg-deep);z-index:5;opacity:0;transition:opacity 0.5s;
+  }
+  .cc-no-camera.show{opacity:1;}
+  .cc-no-camera-icon{font-size:2.2rem;opacity:0.25;}
+  .cc-no-camera-text{font-family:'Share Tech Mono',monospace;font-size:0.62rem;color:var(--text-dim);letter-spacing:0.08em;text-align:center;padding:0 16px;line-height:1.6;}
+  .cc-cam-countdown{
+    position:absolute;bottom:10px;right:10px;z-index:10;
+    font-family:'Orbitron',sans-serif;font-size:0.65rem;font-weight:700;
+    color:rgba(255,255,255,0.65);letter-spacing:0.05em;
+    opacity:0;transition:opacity 0.4s 0.8s;
+    text-shadow:0 1px 4px rgba(0,0,0,0.8);
+  }
+  .cc-cam-countdown.show{opacity:1;}
+  #cinematicOverlay.active .cc-photo-layer img{transform:scale(1.04);}
 </style>
 </head>
 <body>
@@ -513,6 +549,7 @@
           </div>
           <div class="panel">
             <div class="panel-title">Weather Radar</div>
+            <div class="toggle-row"><span>🎥 Live Camera on Final</span><label class="toggle-switch"><input type="checkbox" id="toggleLiveCamera" checked onchange="liveCamera.setEnabled(this.checked)"/><span class="toggle-slider"></span></label></div>
             <div class="toggle-row">
               <span>Show Rain Radar</span>
               <label class="toggle-switch"><input type="checkbox" id="wxToggle" onchange="toggleWxOverlay(this.checked)"/><span class="toggle-slider"></span></label>
@@ -655,11 +692,33 @@
 <div id="cinematicOverlay" onclick="handleCCOverlayClick(event)">
   <div id="cinematicCard">
     <div class="cc-photo" id="ccPhoto">
+      <!-- Timer bar always on top -->
       <div class="cc-timer-bar" id="ccTimerBar"></div>
-      <div class="cc-photo-no-img" id="ccNoImg">✈</div>
-      <img id="ccImg" src="" alt="" style="display:none;" onload="ccImgLoaded()"/>
-      <div class="cc-reg-watermark" id="ccRegWatermark"></div>
-      <div class="cc-photo-credit" id="ccPhotoCredit"></div>
+      <!-- Photo layer — fades out on final approach -->
+      <div class="cc-photo-layer" id="ccPhotoLayer">
+        <div class="cc-photo-no-img" id="ccNoImg">✈</div>
+        <img id="ccImg" src="" alt="" style="display:none;" onload="ccImgLoaded()"/>
+        <div class="cc-reg-watermark" id="ccRegWatermark"></div>
+        <div class="cc-photo-credit" id="ccPhotoCredit"></div>
+      </div>
+      <!-- Camera layer — fades in on final approach -->
+      <div class="cc-camera-wrap" id="ccCameraWrap">
+        <iframe id="ccCameraIframe" class="cc-camera-iframe"
+          allow="autoplay; encrypted-media; picture-in-picture"
+          allowfullscreen referrerpolicy="no-referrer"
+          src="about:blank"></iframe>
+        <div class="cc-no-camera" id="ccNoCameraMsg">
+          <div class="cc-no-camera-icon">📡</div>
+          <div class="cc-no-camera-text">No live camera available<br>for this airport right now</div>
+        </div>
+      </div>
+      <!-- LIVE badge -->
+      <div class="cc-camera-badge" id="ccCamBadge">
+        <span class="cc-cam-dot"></span>
+        <span id="ccCamLabel">LIVE CAMERA</span>
+      </div>
+      <!-- Countdown -->
+      <div class="cc-cam-countdown" id="ccCamCountdown">3:00</div>
     </div>
     <div class="cc-data" id="ccData">
       <button class="cc-close" onclick="closeCinematicCard()">✕</button>
@@ -1334,6 +1393,9 @@ function updateFlights(){
       updateMarker(a);
       checkAutoCard(a);
       checkSquawk(a);
+      if (typeof liveCamera !== 'undefined' && selectedFlight === a.flight.trim()) {
+        liveCamera.checkAircraft(a, a.flight.trim());
+      }
       trackStreak(a);
       updateLeaderboard(a);
     });
@@ -1470,6 +1532,11 @@ function fetchPlanePhoto(hex, callback) {
 }
 
 function openCinematicCard(cs, auto) {
+  // Live camera check
+  if (typeof liveCamera !== 'undefined') {
+    var a = lastAircraft[cs];
+    if (a) liveCamera.checkAircraft(a, cs);
+  }
   var a = lastAircraft[cs];
   if (!a) return;
   if (ccVisible && ccCurrentCS === cs) return; // already showing this one
@@ -1593,6 +1660,7 @@ function ccImgLoaded() {
 }
 
 function closeCinematicCard() {
+  if (typeof liveCamera !== 'undefined') liveCamera.hide();
   ccVisible = false;
   ccCurrentCS = null;
   if (ccDismissTimer) { clearTimeout(ccDismissTimer); ccDismissTimer = null; }
@@ -1765,7 +1833,7 @@ var metarData = null;
 var METAR_STATION = 'NZAA'; // Auckland — matches RX_LAT/RX_LON
 
 function loadMETAR() {
-  fetch('/api/metar/' + METAR_STATION)
+  fetch('https://aviationweather.gov/api/data/metar?ids=' + METAR_STATION + '&format=json')
     .then(function(r){ return r.json(); })
     .then(function(data) {
       if (!data || !data.length) return;
@@ -2195,6 +2263,226 @@ loadAvData('NZAA',NZAA_LAT,NZAA_LON);
 var savedLabels = localStorage.getItem('pilnk-labels') === 'true';
 document.getElementById('labelToggle').checked = savedLabels;
 if (savedLabels) labelsOn = true;
+
+// ══════════════════════════════════════════════════════════════
+// PILNK LIVE CAMERA MODULE v1.0
+// Auto-shows live airport camera when selected plane is on final
+// ══════════════════════════════════════════════════════════════
+var liveCamera = (function() {
+  'use strict';
+
+  var RX_LAT = -36.90490, RX_LON = 174.76788;
+  var MAX_DIST_NM = 80;   // only trigger for airports within this range
+  var TIMEOUT_MS  = 180000; // 3 minute max
+  var FINAL_ALT   = 4000;
+  var FINAL_VS    = -200;
+
+  // Airport camera database — ICAO → YouTube search query
+  var CAMS = {
+    'NZAA':'Auckland Airport AKL live planespotting',
+    'NZCH':'Christchurch Airport CHC live planespotting',
+    'NZWN':'Wellington Airport WLG live planespotting',
+    'NZQN':'Queenstown Airport ZQN live planespotting',
+    'NZDN':'Dunedin Airport DUD live aviation',
+    'NZHN':'Hamilton Airport HLZ live',
+    'YSSY':'Sydney Airport SYD live planespotting',
+    'YMML':'Melbourne Airport MEL live planespotting',
+    'YBBN':'Brisbane Airport BNE live planespotting',
+    'YPPH':'Perth Airport PER live planespotting',
+    'WSSS':'Singapore Changi Airport live stream',
+    'VHHH':'Hong Kong Airport HKG live planespotting',
+    'RJTT':'Tokyo Haneda Airport HND live',
+    'RJAA':'Tokyo Narita Airport NRT live planespotting',
+    'KLAX':'Los Angeles LAX airport live stream',
+    'KJFK':'JFK Airport New York live planespotting',
+    'KSFO':'San Francisco SFO airport live',
+    'EGLL':'Heathrow Airport LHR live planespotting',
+    'EHAM':'Amsterdam Schiphol AMS live planespotting',
+    'LFPG':'Paris CDG Airport live planespotting',
+    'EDDF':'Frankfurt Airport FRA live planespotting',
+    'EGCC':'Manchester Airport MAN live planespotting',
+  };
+
+  // Airport coords for distance check
+  var COORDS = {
+    'NZAA':[-37.0082,174.7917],'NZCH':[-43.4894,172.5322],
+    'NZWN':[-41.3272,174.8050],'NZQN':[-45.0211,168.7392],
+    'NZHN':[-37.8667,175.3333],'NZDN':[-45.9281,170.1983],
+    'YSSY':[-33.9399,151.1753],'YMML':[-37.6733,144.8430],
+    'YBBN':[-27.3842,153.1175],'YPPH':[-31.9403,115.9669],
+    'WSSS':[1.3502,103.9943],'VHHH':[22.3080,113.9185],
+    'RJTT':[35.5494,139.7798],'RJAA':[35.7647,140.3864],
+    'KLAX':[33.9425,-118.4081],'KJFK':[40.6413,-73.7781],
+    'KSFO':[37.6213,-122.3790],'EGLL':[51.4775,-0.4614],
+    'EHAM':[52.3086,4.7639],'LFPG':[49.0097,2.5479],
+    'EDDF':[50.0379,8.5622],'EGCC':[53.3537,-2.2750],
+  };
+
+  // IATA to ICAO mapping
+  var IATA = {
+    'AKL':'NZAA','CHC':'NZCH','WLG':'NZWN','ZQN':'NZQN','DUD':'NZDN','HLZ':'NZHN',
+    'SYD':'YSSY','MEL':'YMML','BNE':'YBBN','PER':'YPPH',
+    'SIN':'WSSS','HKG':'VHHH','NRT':'RJAA','HND':'RJTT',
+    'LAX':'KLAX','JFK':'KJFK','SFO':'KSFO',
+    'LHR':'EGLL','AMS':'EHAM','CDG':'LFPG','FRA':'EDDF','MAN':'EGCC',
+  };
+
+  var state = {
+    enabled:true, active:false, icao:null,
+    timeout:null, countdown:180, countdownTimer:null
+  };
+
+  function distNm(la1,lo1,la2,lo2) {
+    var R=3440.065, dLa=(la2-la1)*Math.PI/180, dLo=(lo2-lo1)*Math.PI/180;
+    var a=Math.sin(dLa/2)*Math.sin(dLa/2)+Math.cos(la1*Math.PI/180)*Math.cos(la2*Math.PI/180)*Math.sin(dLo/2)*Math.sin(dLo/2);
+    return R*2*Math.atan2(Math.sqrt(a),Math.sqrt(1-a));
+  }
+
+  function getDestIcao(cs) {
+    // Check route cache for destination
+    var cached = routeCache[cs];
+    if (cached && cached.route) {
+      var parts = cached.route.split('-');
+      var dest = parts[parts.length-1].trim().toUpperCase().replace(/[^A-Z]/g,'');
+      if (dest.length === 4 && COORDS[dest]) return dest;
+      if (dest.length === 3 && IATA[dest]) return IATA[dest];
+    }
+    // Default to Auckland
+    return 'NZAA';
+  }
+
+  function buildSrc(icao) {
+    var query = CAMS[icao] || (icao + ' airport live planespotting');
+    return 'https://www.youtube.com/embed?listType=search&list=' +
+           encodeURIComponent(query) + '&autoplay=1&mute=1';
+  }
+
+  function fmtTime(s) {
+    return Math.floor(s/60)+':'+(s%60<10?'0':'')+s%60;
+  }
+
+  function show(icao) {
+    if (!state.enabled) return;
+    if (state.active && state.icao === icao) return;
+
+    // Distance check
+    var coords = COORDS[icao];
+    if (coords) {
+      var d = distNm(RX_LAT, RX_LON, coords[0], coords[1]);
+      if (d > MAX_DIST_NM) {
+        console.log('PiLNK Camera: ' + icao + ' too far (' + Math.round(d) + 'nm) — skipping');
+        return;
+      }
+    }
+
+    state.active = true;
+    state.icao   = icao;
+    state.countdown = 180;
+
+    var photoLayer = document.getElementById('ccPhotoLayer');
+    var camBadge   = document.getElementById('ccCamBadge');
+    var camLabel   = document.getElementById('ccCamLabel');
+    var countdown  = document.getElementById('ccCamCountdown');
+    var iframe     = document.getElementById('ccCameraIframe');
+    var noCamera   = document.getElementById('ccNoCameraMsg');
+    if (!iframe) return;
+
+    // Load YouTube live search for this airport
+    iframe.src = buildSrc(icao);
+    iframe.onload = function() {
+      iframe.classList.add('loaded');
+      noCamera && noCamera.classList.remove('show');
+    };
+    // Show no-camera fallback if iframe stalls after 10s
+    setTimeout(function() {
+      if (!iframe.classList.contains('loaded')) {
+        noCamera && noCamera.classList.add('show');
+      }
+    }, 10000);
+
+    // Crossfade: fade out photo, show camera UI
+    setTimeout(function() {
+      photoLayer && photoLayer.classList.add('hidden');
+      camBadge   && camBadge.classList.add('show');
+      countdown  && countdown.classList.add('show');
+      if (camLabel) camLabel.textContent = 'LIVE · ' + icao;
+    }, 400);
+
+    // Countdown display
+    clearInterval(state.countdownTimer);
+    state.countdownTimer = setInterval(function() {
+      state.countdown--;
+      if (countdown) countdown.textContent = fmtTime(state.countdown);
+      if (state.countdown <= 0) { clearInterval(state.countdownTimer); hide(); }
+    }, 1000);
+
+    // Hard timeout
+    clearTimeout(state.timeout);
+    state.timeout = setTimeout(hide, TIMEOUT_MS);
+
+    console.log('PiLNK Camera: showing for ' + icao);
+  }
+
+  function hide() {
+    if (!state.active) return;
+    state.active = false;
+    state.icao   = null;
+    clearTimeout(state.timeout);
+    clearInterval(state.countdownTimer);
+
+    var photoLayer = document.getElementById('ccPhotoLayer');
+    var camBadge   = document.getElementById('ccCamBadge');
+    var countdown  = document.getElementById('ccCamCountdown');
+    var iframe     = document.getElementById('ccCameraIframe');
+    var noCamera   = document.getElementById('ccNoCameraMsg');
+
+    photoLayer && photoLayer.classList.remove('hidden');
+    camBadge   && camBadge.classList.remove('show');
+    countdown  && countdown.classList.remove('show');
+    noCamera   && noCamera.classList.remove('show');
+
+    // Clear iframe after crossfade completes
+    setTimeout(function() {
+      if (iframe) { iframe.src = 'about:blank'; iframe.classList.remove('loaded'); }
+    }, 900);
+
+    console.log('PiLNK Camera: hidden');
+  }
+
+  function checkAircraft(a, cs) {
+    if (!state.enabled || !a) { if (state.active) hide(); return; }
+    var alt   = a.alt_baro || a.alt_geom || 0;
+    var vs    = a.baro_rate || a.geom_rate || 0;
+    var isFinal = (alt > 50 && alt < FINAL_ALT && vs < FINAL_VS);
+    if (isFinal && !state.active) {
+      show(getDestIcao(cs || (a.flight && a.flight.trim()) || ''));
+    } else if (!isFinal && state.active) {
+      hide();
+    }
+  }
+
+  return {
+    show: show,
+    hide: hide,
+    checkAircraft: checkAircraft,
+    setEnabled: function(v) {
+      state.enabled = v;
+      localStorage.setItem('pilnk-livecam', v ? '1' : '0');
+      if (!v) hide();
+    },
+    init: function() {
+      var saved = localStorage.getItem('pilnk-livecam');
+      state.enabled = (saved !== '0');
+      var tog = document.getElementById('toggleLiveCamera');
+      if (tog) tog.checked = state.enabled;
+      console.log('PiLNK Camera: init, enabled=' + state.enabled);
+    }
+  };
+})();
+
+// Init on load
+liveCamera.init();
+
 </script>
 </body>
 </html>
