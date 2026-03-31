@@ -567,7 +567,7 @@
     <div class="cc-data" id="ccData">
       <button class="cc-close" onclick="closeCinematicCard()">✕</button>
       <div class="cc-top">
-        <div class="cc-badge" id="ccBadge"><span>NOW PASSING</span></div>
+        <div class="cc-badge" id="ccBadge" style="display:none;"><span>NOW PASSING</span></div>
         <div class="cc-callsign" id="ccCallsign">–</div>
         <div class="cc-route-row">
           <div class="cc-route" id="ccRoute"></div>
@@ -1329,21 +1329,20 @@ function fetchPlanePhoto(hex, callback) {
         // e.g. /zk-nni-air-new-zealand-airbus-a321-271nx → "Airbus A321-271NX"
         var model = null;
         if (p.link) {
-          var match = p.link.match(/\/photo\/\d+\/([^?]+)/);
-          if (match) {
-            var slug = match[1]; // e.g. "zk-nni-air-new-zealand-airbus-a321-271nx"
-            // Known manufacturers to look for
-            var makers = ['airbus','boeing','bombardier','embraer','cessna','piper','beechcraft','atr','de-havilland','mcdonnell-douglas','lockheed','saab','fokker','dash'];
-            for (var i = 0; i < makers.length; i++) {
-              var idx = slug.indexOf(makers[i]);
-              if (idx >= 0) {
-                // Take everything from manufacturer onwards, clean up
-                model = slug.substring(idx)
-                  .replace(/-/g,' ')
-                  .replace(/\b\w/g, function(c){return c.toUpperCase();})
-                  .trim();
-                break;
-              }
+          // Grab the last slug segment after the photo ID
+          var parts = p.link.split('/');
+          var slug = parts[parts.length - 1].split('?')[0];
+          // Known manufacturers to look for
+          var makers = ['airbus','boeing','bombardier','embraer','cessna','piper','beechcraft','atr','de-havilland','mcdonnell-douglas','lockheed','saab','fokker'];
+          for (var i = 0; i < makers.length; i++) {
+            var idx = slug.indexOf(makers[i]);
+            if (idx >= 0) {
+              model = slug.substring(idx)
+                .split('-')
+                .map(function(w){ return w.charAt(0).toUpperCase() + w.slice(1); })
+                .join(' ')
+                .trim();
+              break;
             }
           }
         }
@@ -1384,20 +1383,18 @@ function openCinematicCard(cs, auto) {
   document.getElementById('ccHdg').textContent = a.track ? Math.round(a.track) + '°' : '–';
   document.getElementById('ccVs').textContent = vr ? (vr>0?'+':'')+Math.round(vr)+' fpm' : '–';
 
-  // Badge
+  // Badge — only show for auto-triggered or transmitting
   var badge = document.getElementById('ccBadge');
+  badge.style.display = 'none';
   if (auto) {
+    badge.style.display = 'inline-flex';
     badge.innerHTML = '<span>NOW PASSING</span>';
     badge.style.borderColor = col;
     badge.style.color = col;
-  } else {
-    badge.innerHTML = '<span>AIRCRAFT DETAIL</span>';
-    badge.style.borderColor = 'var(--blue-mid)';
-    badge.style.color = 'var(--blue-light)';
   }
-
-  // Transmitting badge
+  // Transmitting badge always shows
   if (isTx) {
+    badge.style.display = 'inline-flex';
     badge.innerHTML = '<span class="cc-live-dot"></span><span>TRANSMITTING</span>';
     badge.style.borderColor = '#dc2626';
     badge.style.color = '#dc2626';
