@@ -159,6 +159,8 @@
   }
   .fs-row:last-child{border-bottom:none;}
   .fs-row:hover{background:var(--bg-card);}
+  .fs-row-live{background:rgba(59,130,246,0.06) !important;border-left:2px solid var(--blue-mid);}
+  .fs-live-dot{font-size:0.6rem;width:14px;display:inline-block;}
   .fs-dir{
     font-size:0.55rem;
     width:12px;flex-shrink:0;
@@ -1497,6 +1499,8 @@ function updateFlights(){
   fetch('/flights').then(function(r){return r.json();}).then(function(data){
     var ac=(data.aircraft||[]).filter(function(a){return a.lat&&a.lon&&a.flight;});
     document.getElementById('hdr-count').textContent=ac.length+' AIRCRAFT';
+    // Refresh FIDS live indicators
+    if (fidsData.length) renderFIDS();
     var seen={};
     var now = Date.now();
     ac.forEach(function(a){
@@ -2459,6 +2463,12 @@ function renderFIDS() {
     inner.innerHTML = '<div class="fs-loading">No flights in next 2 hours</div>';
     return;
   }
+  // Build a set of live callsigns for quick lookup
+  var liveCallsigns = {};
+  Object.keys(lastAircraft).forEach(function(cs) {
+    liveCallsigns[cs.replace(/\s/g,'')] = true;
+  });
+
   inner.innerHTML = fidsData.map(function(f) {
     var statusClass = 'on-time';
     var statusText = 'ON TIME';
@@ -2475,11 +2485,18 @@ function renderFIDS() {
     var dirIcon = f.dir === 'dep' ? '↑' : '↓';
     var dirColor = f.dir === 'dep' ? 'color:var(--blue-mid)' : 'color:var(--green)';
 
-    return '<div class="fs-row">' +
+    // Check if this flight is live on our Pi right now
+    var isLive = liveCallsigns[f.number] || false;
+    var liveIndicator = isLive
+      ? '<span class="fs-live-dot" title="Tracked by your Pi">📡</span>'
+      : '<span style="width:14px;display:inline-block;"></span>';
+
+    return '<div class="fs-row' + (isLive ? ' fs-row-live' : '') + '">' +
       '<span class="fs-dir" style="' + dirColor + '">' + dirIcon + '</span>' +
       '<span class="fs-num">' + f.number + '</span>' +
       '<span class="fs-route">' + f.airport + '</span>' +
       '<span class="fs-time">' + timeDisplay + '</span>' +
+      liveIndicator +
       '<span class="fs-status ' + statusClass + '">' + statusText + '</span>' +
       '</div>';
   }).join('');
