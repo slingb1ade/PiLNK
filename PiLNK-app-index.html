@@ -142,7 +142,7 @@
     transition:max-height 0.3s ease;
     max-height:200px;
   }
-  #flightStrip.collapsed{max-height:28px;}
+  #flightStrip.collapsed{max-height:22px;}
   #flightStripInner{
     overflow-y:auto;
     max-height:170px;
@@ -200,7 +200,8 @@
     display:flex;align-items:center;justify-content:space-between;
     padding:2px 10px;
     background:var(--bg-card);
-    border-top:1px solid var(--border);
+    border-bottom:1px solid var(--border);
+    flex-shrink:0;
   }
   #flightStripTime{
     font-family:'Share Tech Mono',monospace;
@@ -545,13 +546,14 @@
     <div id="sidebar">
 
       <!-- FLIGHT STATUS STRIP -->
+      <div id="flightStripFooter">
+        <span id="flightStripTime"></span>
+        <span style="font-family:'Share Tech Mono',monospace;font-size:0.52rem;color:var(--text-dim);">AKL · Next 2hrs</span>
+        <button class="fs-toggle" id="fsToggleBtn" onclick="toggleFlightStrip()">▲</button>
+      </div>
       <div id="flightStrip">
         <div id="flightStripInner">
           <div class="fs-loading">Loading flights...</div>
-        </div>
-        <div id="flightStripFooter">
-          <span id="flightStripTime"></span>
-          <button class="fs-toggle" onclick="toggleFlightStrip()">▲</button>
         </div>
       </div>
 
@@ -2372,7 +2374,9 @@ var fidsExpanded = true;
 function toggleFlightStrip() {
   fidsExpanded = !fidsExpanded;
   var strip = document.getElementById('flightStrip');
+  var btn = document.getElementById('fsToggleBtn');
   strip.classList.toggle('collapsed', !fidsExpanded);
+  btn.textContent = fidsExpanded ? '▲' : '▼';
 }
 
 function loadFIDS() {
