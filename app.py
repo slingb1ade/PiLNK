@@ -155,10 +155,103 @@ def set_agc():
     data = request.json
     current_agc = bool(data.get('agc', False))
     if current_agc:
-        # Set RTL-SDR to auto gain via radio module
-        current_gain = 0  # 0 = auto gain for rtl_fm
+        current_gain = 0
         radio.set_gain(0)
     return jsonify({'status': 'ok', 'agc': current_agc})
+
+# ── Signal level for squelch-aware scanner ─────────────────
+@app.route('/get_signal_level')
+def get_signal_level():
+    try:
+        level = radio.get_signal_level()
+        active = current_squelch == 0 or level > current_squelch
+    except:
+        active = False
+    return jsonify({'active': active})
+
+# ── Recordings ─────────────────────────────────────────────
+import os
+from datetime import datetime
+
+RECORDINGS_DIR = os.path.expanduser('~/pilnk/recordings')
+MAX_RECORDINGS_MB = 500
+current_recording_file = None
+
+os.makedirs(RECORDINGS_DIR, exist_ok=True)
+
+def get_recordings_size_mb():
+    total = sum(
+        os.path.getsize(os.path.join(RECORDINGS_DIR, f))
+        for f in os.listdir(RECORDINGS_DIR)
+        if os.path.isfile(os.path.join(RECORDINGS_DIR, f))
+    )
+    return total / (1024 * 1024)
+
+def cleanup_old_recordings():
+    while get_recordings_size_mb() > MAX_RECORDINGS_MB:
+        files = sorted(
+            [os.path.join(RECORDINGS_DIR, f) for f in os.listdir(RECORDINGS_DIR)],
+            key=os.path.getmtime
+        )
+        if files:
+            os.remove(files[0])
+        else:
+            break
+
+@app.route('/start_recording', methods=['POST'])
+def start_recording():
+    global current_recording_file
+    data = request.json
+    freq = str(data.get('frequency', '118.700')).replace('.', '').replace(' ', '')
+    ts = datetime.now().strftime('%Y%m%d_%H%M%S')
+    filename = 'atc_{}_{}.ogg'.format(freq, ts)
+    filepath = os.path.join(RECORDINGS_DIR, filename)
+    try:
+        radio.start_recording(filepath)
+        current_recording_file = filename
+        cleanup_old_recordings()
+        return jsonify({'status': 'ok', 'filename': filename})
+    except Exception as e:
+        return jsonify({'status': 'error', 'message': str(e)}), 500
+
+@app.route('/stop_recording', methods=['POST'])
+def stop_recording():
+    global current_recording_file
+    try:
+        radio.stop_recording()
+    except:
+        pass
+    current_recording_file = None
+    return jsonify({'status': 'ok'})
+
+@app.route('/recordings')
+def list_recordings():
+    try:
+        files = []
+        for f in sorted(os.listdir(RECORDINGS_DIR),
+                        key=lambda x: os.path.getmtime(os.path.join(RECORDINGS_DIR, x)),
+                        reverse=True):
+            if f.endswith('.ogg') or f.endswith('.mp3'):
+                fp = os.path.join(RECORDINGS_DIR, f)
+                size_mb = os.path.getsize(fp) / (1024*1024)
+                mtime = datetime.fromtimestamp(os.path.getmtime(fp))
+                files.append({
+                    'name': f,
+                    'size': '{:.1f} MB'.format(size_mb),
+                    'date': mtime.strftime('%d %b %H:%M')
+                })
+        total_mb = get_recordings_size_mb()
+        return jsonify({
+            'recordings': files,
+            'total_size': '{:.0f} MB / {}MB max'.format(total_mb, MAX_RECORDINGS_MB)
+        })
+    except Exception as e:
+        return jsonify({'recordings': [], 'total_size': '0 MB'})
+
+@app.route('/recordings/<filename>')
+def download_recording(filename):
+    from flask import send_from_directory
+    return send_from_directory(RECORDINGS_DIR, filename, as_attachment=True)
 
 # ── RainViewer proxy — avoids CORS issues in browser ──────
 @app.route('/api/rainviewer')

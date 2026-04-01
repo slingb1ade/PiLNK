@@ -140,6 +140,12 @@
   .audio-action-btn{flex:1;background:var(--bg-card);border:1px solid var(--border);border-radius:5px;color:var(--text-dim);font-family:'Share Tech Mono',monospace;font-size:0.6rem;padding:7px 6px;cursor:pointer;text-align:center;transition:all 0.2s;}
   .audio-action-btn:hover{border-color:var(--blue-mid);color:var(--text);}
   .audio-action-btn.active{border-color:#dc2626;color:#dc2626;background:rgba(220,38,38,0.08);}
+  .recording-item{display:flex;align-items:center;gap:6px;padding:5px 0;border-bottom:1px solid var(--border);font-size:0.62rem;}
+  .recording-item:last-child{border-bottom:none;}
+  .recording-name{flex:1;color:var(--text);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-family:'Share Tech Mono',monospace;font-size:0.58rem;}
+  .recording-meta{color:var(--text-dim);font-size:0.58rem;white-space:nowrap;flex-shrink:0;}
+  .recording-dl{color:var(--blue-mid);text-decoration:none;font-size:0.75rem;flex-shrink:0;padding:2px 4px;}
+  .recording-dl:hover{color:var(--blue-light);}
   /* Stats tab */
   .streak-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-top:4px;}
   .streak-item{background:var(--bg-card);border:1px solid var(--border);border-radius:6px;padding:10px 6px;text-align:center;}
@@ -532,6 +538,15 @@
             </div>
             <div id="scanStatus" style="font-size:0.58rem;color:var(--text-dim);margin-top:4px;display:none;"></div>
             <div id="recordStatus" style="font-size:0.58rem;color:#dc2626;margin-top:4px;display:none;">● Recording...</div>
+
+            <!-- Recordings list -->
+            <div style="margin-top:10px;">
+              <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;">
+                <div class="panel-title" style="margin-bottom:0;">Recordings</div>
+                <span id="recordingsSize" style="font-size:0.55rem;color:var(--text-dim);"></span>
+              </div>
+              <div id="recordingsList"><div style="font-size:0.62rem;color:var(--text-dim);">No recordings yet</div></div>
+            </div>
           </div>
         </div>
         <div id="flight-panel">
@@ -1553,6 +1568,8 @@ function startScanner() {
   if (!audioPlaying) toggleAudio();
   scannerOn = true;
   scanIdx = 0;
+  scanListening = false;
+  scanSilenceCount = 0;
   document.getElementById('scanBtn').classList.add('active');
   document.getElementById('scanBtn').textContent = '■ Stop';
   document.getElementById('scanStatus').style.display = 'block';
@@ -1561,33 +1578,88 @@ function startScanner() {
 
 function stopScanner() {
   scannerOn = false;
+  scanListening = false;
   if (scanTimer) { clearTimeout(scanTimer); scanTimer = null; }
   document.getElementById('scanBtn').classList.remove('active');
   document.getElementById('scanBtn').textContent = '⟳ Scan';
   document.getElementById('scanStatus').style.display = 'none';
 }
 
+// Squelch-aware scanner state
+var scanListening = false;   // true = stopped on active freq
+var scanSilenceCount = 0;    // counts quiet polls before moving on
+var SCAN_SILENCE_THRESHOLD = 4; // polls of silence before moving on (~2s)
+var SCAN_POLL_INTERVAL = 500;   // ms between squelch checks while listening
+var SCAN_MOVE_INTERVAL = 3000;  // ms to spend on each freq when quiet
+
 function scanStep() {
   if (!scannerOn) return;
+
   var freq = scanFreqs[scanIdx];
-  // Tune to frequency
-  fetch('/set_frequency', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({frequency: freq})});
-  document.getElementById('hdr-freq').textContent = freq.toFixed(3) + ' MHz';
-  // Highlight matching freq button
-  document.querySelectorAll('.freq-btn').forEach(function(b){b.classList.remove('active');});
-  document.querySelectorAll('.freq-btn').forEach(function(b){
-    if (b.querySelector('.freq-mhz') && parseFloat(b.querySelector('.freq-mhz').textContent) === freq) b.classList.add('active');
-  });
-  // Update status
   var names = {118.7:'Tower', 124.3:'Approach', 121.1:'Ground'};
-  document.getElementById('scanStatus').textContent = '⟳ ' + (names[freq] || freq.toFixed(3)) + ' MHz';
-  if (audioPlaying) restartAudio();
-  // Move to next after dwell time
-  scanIdx = (scanIdx + 1) % scanFreqs.length;
-  scanTimer = setTimeout(scanStep, scanDwellTime);
+
+  if (!scanListening) {
+    // Tune to this frequency
+    fetch('/set_frequency', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({frequency: freq})});
+    document.getElementById('hdr-freq').textContent = freq.toFixed(3) + ' MHz';
+    document.querySelectorAll('.freq-btn').forEach(function(b){b.classList.remove('active');});
+    document.querySelectorAll('.freq-btn').forEach(function(b){
+      if (b.querySelector('.freq-mhz') && parseFloat(b.querySelector('.freq-mhz').textContent) === freq) b.classList.add('active');
+    });
+    document.getElementById('scanStatus').textContent = '⟳ Scanning ' + (names[freq] || freq.toFixed(3)) + ' MHz...';
+    if (audioPlaying) restartAudio();
+    // Wait SCAN_MOVE_INTERVAL then check for activity
+    scanTimer = setTimeout(function() { checkScanSquelch(freq, names); }, SCAN_MOVE_INTERVAL);
+  }
+}
+
+function checkScanSquelch(freq, names) {
+  if (!scannerOn) return;
+  // Ask server if squelch is broken (signal detected)
+  fetch('/get_signal_level')
+    .then(function(r){ return r.json(); })
+    .then(function(data) {
+      if (data.active) {
+        // Signal detected — stay here
+        if (!scanListening) {
+          scanListening = true;
+          scanSilenceCount = 0;
+          document.getElementById('scanStatus').textContent = '📡 Active — ' + (names[freq] || freq.toFixed(3)) + ' MHz';
+        }
+        scanTimer = setTimeout(function() { checkScanSquelch(freq, names); }, SCAN_POLL_INTERVAL);
+      } else {
+        if (scanListening) {
+          // Was active, now quiet — count silence
+          scanSilenceCount++;
+          if (scanSilenceCount >= SCAN_SILENCE_THRESHOLD) {
+            // Move to next frequency
+            scanListening = false;
+            scanSilenceCount = 0;
+            scanIdx = (scanIdx + 1) % scanFreqs.length;
+            scanTimer = setTimeout(scanStep, 300);
+          } else {
+            // Still waiting for silence to confirm
+            document.getElementById('scanStatus').textContent = '🔇 Waiting... ' + (names[freq] || freq.toFixed(3)) + ' MHz';
+            scanTimer = setTimeout(function() { checkScanSquelch(freq, names); }, SCAN_POLL_INTERVAL);
+          }
+        } else {
+          // Quiet, move on
+          scanIdx = (scanIdx + 1) % scanFreqs.length;
+          scanTimer = setTimeout(scanStep, 300);
+        }
+      }
+    })
+    .catch(function() {
+      // Fallback — just move on after interval
+      scanIdx = (scanIdx + 1) % scanFreqs.length;
+      scanTimer = setTimeout(scanStep, SCAN_MOVE_INTERVAL);
+    });
 }
 
 // ── RECORDER ───────────────────────────────────────────────
+var MAX_RECORD_MINUTES = 60;
+var recordMaxTimer = null;
+
 function toggleRecording() {
   if (recordingOn) stopRecording();
   else startRecording();
@@ -1595,42 +1667,68 @@ function toggleRecording() {
 
 function startRecording() {
   if (!audioPlaying) toggleAudio();
-  // Use MediaRecorder on the audio element stream
-  var audio = document.getElementById('audioPlayer');
-  try {
-    var stream = audio.captureStream ? audio.captureStream() : audio.mozCaptureStream();
-    mediaRecorder = new MediaRecorder(stream);
-    recordChunks = [];
-    mediaRecorder.ondataavailable = function(e) { if (e.data.size > 0) recordChunks.push(e.data); };
-    mediaRecorder.onstop = function() { saveRecording(); };
-    mediaRecorder.start(1000);
-    recordingOn = true;
-    document.getElementById('recordBtn').classList.add('active');
-    document.getElementById('recordBtn').textContent = '⏹ Stop';
-    document.getElementById('recordStatus').style.display = 'block';
-  } catch(e) {
-    alert('Recording not supported in this browser. Try Chrome.');
-  }
+  var freq = document.getElementById('hdr-freq').textContent.replace(' MHz','').trim();
+  fetch('/start_recording', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({frequency: freq})
+  })
+  .then(function(r){ return r.json(); })
+  .then(function(data) {
+    if (data.status === 'ok') {
+      recordingOn = true;
+      document.getElementById('recordBtn').classList.add('active');
+      document.getElementById('recordBtn').textContent = '⏹ Stop';
+      document.getElementById('recordStatus').style.display = 'block';
+      document.getElementById('recordStatus').textContent = '● Recording — ' + data.filename;
+      // Auto-stop after max duration
+      recordMaxTimer = setTimeout(function() {
+        stopRecording();
+      }, MAX_RECORD_MINUTES * 60 * 1000);
+      // Refresh recordings list
+      loadRecordingsList();
+    }
+  })
+  .catch(function() {
+    alert('Recording failed — check Pi storage.');
+  });
 }
 
 function stopRecording() {
-  if (mediaRecorder && mediaRecorder.state !== 'inactive') mediaRecorder.stop();
-  recordingOn = false;
-  document.getElementById('recordBtn').classList.remove('active');
-  document.getElementById('recordBtn').textContent = '⏺ Record';
-  document.getElementById('recordStatus').style.display = 'none';
+  fetch('/stop_recording', {method:'POST'})
+    .then(function(r){ return r.json(); })
+    .then(function(data) {
+      recordingOn = false;
+      if (recordMaxTimer) { clearTimeout(recordMaxTimer); recordMaxTimer = null; }
+      document.getElementById('recordBtn').classList.remove('active');
+      document.getElementById('recordBtn').textContent = '⏺ Record';
+      document.getElementById('recordStatus').style.display = 'none';
+      loadRecordingsList();
+    });
 }
 
-function saveRecording() {
-  var blob = new Blob(recordChunks, {type:'audio/ogg'});
-  var url = URL.createObjectURL(blob);
-  var a = document.createElement('a');
-  var freq = document.getElementById('hdr-freq').textContent.replace(' MHz','').replace('.','');
-  var ts = new Date().toISOString().replace(/[:.]/g,'-').slice(0,19);
-  a.href = url;
-  a.download = 'pilnk-atc-' + freq + '-' + ts + '.ogg';
-  a.click();
-  URL.revokeObjectURL(url);
+function loadRecordingsList() {
+  fetch('/recordings')
+    .then(function(r){ return r.json(); })
+    .then(function(data) {
+      var list = document.getElementById('recordingsList');
+      if (!list) return;
+      if (!data.recordings || !data.recordings.length) {
+        list.innerHTML = '<div style="font-size:0.62rem;color:var(--text-dim);">No recordings yet</div>';
+        return;
+      }
+      list.innerHTML = data.recordings.slice(0,10).map(function(r) {
+        return '<div class="recording-item">' +
+          '<div class="recording-name">' + r.name + '</div>' +
+          '<div class="recording-meta">' + r.size + ' · ' + r.date + '</div>' +
+          '<a href="/recordings/' + r.name + '" download class="recording-dl">⬇</a>' +
+          '</div>';
+      }).join('');
+      if (data.total_size) {
+        document.getElementById('recordingsSize').textContent = 'Storage: ' + data.total_size;
+      }
+    })
+    .catch(function(){});
 }
 
 // ── TRANSMIT ───────────────────────────────────────────────
@@ -2436,6 +2534,8 @@ loadAvData('NZAA',NZAA_LAT,NZAA_LON);
 var savedLabels = localStorage.getItem('pilnk-labels') === 'true';
 document.getElementById('labelToggle').checked = savedLabels;
 if (savedLabels) labelsOn = true;
+// Load recordings list
+loadRecordingsList();
 </script>
 </body>
 </html>
