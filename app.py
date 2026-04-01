@@ -14,6 +14,10 @@ socketio = SocketIO(app, cors_allowed_origins="*")
 current_frequency = 118.7e6
 current_gain      = 35
 current_squelch   = 0
+current_agc       = False
+current_nr        = False
+current_bw_low    = 3000
+current_bw_high   = 200
 
 FREQUENCIES = {
     'ground':   {'name': 'AKL Ground',   'freq': 121.100},
@@ -46,9 +50,12 @@ def audio_feed():
             '-t', 'raw', '-r', '12k', '-e', 'signed', '-b', '16', '-c', '1', '-',
             '-t', 'ogg', '-C', '1', '-',
             'gain', str(current_gain),
-            'lowpass', '3000',
-            'highpass', '200'
+            'lowpass', str(current_bw_low),
+            'highpass', str(current_bw_high),
         ]
+        # Add noise reduction if enabled (sox noisered requires a profile — use compand as a simpler alternative)
+        if current_nr:
+            sox_cmd += ['compand', '0.1,0.2', '-inf,-50.1,-inf,-50,-50', '0', '-90', '0.1']
         sox = subprocess.Popen(sox_cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
         def feed_sox():
             while True:
@@ -126,6 +133,32 @@ def adsbdb_proxy(callsign):
         return jsonify(r.json())
     except Exception as e:
         return jsonify({'error': str(e)}), 500
+
+@app.route('/set_bandwidth', methods=['POST'])
+def set_bandwidth():
+    global current_bw_low, current_bw_high
+    data = request.json
+    current_bw_low  = int(data.get('low',  3000))
+    current_bw_high = int(data.get('high', 200))
+    return jsonify({'status': 'ok', 'low': current_bw_low, 'high': current_bw_high})
+
+@app.route('/set_nr', methods=['POST'])
+def set_nr():
+    global current_nr
+    data = request.json
+    current_nr = bool(data.get('nr', False))
+    return jsonify({'status': 'ok', 'nr': current_nr})
+
+@app.route('/set_agc', methods=['POST'])
+def set_agc():
+    global current_agc, current_gain
+    data = request.json
+    current_agc = bool(data.get('agc', False))
+    if current_agc:
+        # Set RTL-SDR to auto gain via radio module
+        current_gain = 0  # 0 = auto gain for rtl_fm
+        radio.set_gain(0)
+    return jsonify({'status': 'ok', 'agc': current_agc})
 
 # ── RainViewer proxy — avoids CORS issues in browser ──────
 @app.route('/api/rainviewer')
