@@ -1214,7 +1214,7 @@ var PHASE={
 function getPhase(a,cs){
   if(cs&&transmitting[cs])return PHASE.tx;
   var vr=a.baro_rate||a.geom_rate||0, alt=a.alt_baro||a.alt_geom||0;
-  if(alt<4000&&vr<-200)return PHASE.final;
+  if(alt<2000&&vr<-200)return PHASE.final;
   if(vr>200)return PHASE.climb;
   if(vr<-200)return PHASE.descent;
   return PHASE.cruise;
