@@ -76,8 +76,8 @@
   .wx-dot{width:8px;height:8px;border-radius:50%;flex-shrink:0;margin-right:4px;}
   .wx-opacity-row{margin-top:6px;}
   .wx-status{font-size:0.6rem;color:var(--text-dim);margin-top:6px;font-style:italic;}
-  /* Traffic tab layout - fixed height sections */
-  #tab-traffic .scroll-area{flex:0 0 auto;overflow:hidden;}
+  /* Traffic tab layout - full height flight list */
+  #tab-traffic{overflow:hidden;}
   #flight-panel{flex:1;display:flex;flex-direction:column;overflow:hidden;padding:14px;min-height:0;}
   #flightList{flex:1;overflow-y:auto;display:flex;flex-direction:column;gap:5px;min-height:0;}
   .flight-item{background:var(--bg-card);border:1px solid var(--border);border-left-width:3px !important;border-radius:5px;padding:7px 9px;cursor:pointer;font-size:0.67rem;transition:filter 0.2s;flex-shrink:0;}
@@ -465,110 +465,117 @@
     <div id="sidebar">
       <div class="tab-bar">
         <button class="tab-btn active" onclick="showTab('traffic',event)">Traffic</button>
-        <button class="tab-btn" onclick="showTab('airport',event)">Airport</button>
+        <button class="tab-btn" onclick="showTab('radio',event)">Radio</button>
         <button class="tab-btn" onclick="showTab('options',event)">Options</button>
         <button class="tab-btn" onclick="showTab('stats',event)">Stats</button>
       </div>
 
-      <!-- TRAFFIC TAB -->
+      <!-- TRAFFIC TAB — flight list only -->
       <div class="tab-content active" id="tab-traffic">
-        <div class="scroll-area">
-          <div class="panel">
-            <div class="panel-title">AKL Frequencies</div>
-            <button class="freq-btn active" onclick="setFreq(118.7,this)"><span>Tower</span><span class="freq-mhz">118.700</span></button>
-            <button class="freq-btn" onclick="setFreq(124.3,this)"><span>Approach</span><span class="freq-mhz">124.300</span></button>
-            <button class="freq-btn" onclick="setFreq(121.1,this)"><span>Ground</span><span class="freq-mhz">121.100</span></button>
-          </div>
-          <div class="panel">
-            <div class="panel-title">Audio</div>
-            <button class="play-btn" id="playBtn" onclick="toggleAudio()">▶ LISTEN</button>
-            <audio id="audioPlayer" preload="none"><source src="/audio_feed" type="audio/ogg"></audio>
-
-            <!-- VU Meter -->
-            <div class="vu"><div class="vu-bar" id="vuBar"></div></div>
-
-            <!-- Volume -->
-            <div class="slider-wrap" style="margin-top:10px;">
-              <div class="slider-row">
-                <div class="slider-label"><span>Volume</span><span id="vol-val">80%</span></div>
-                <input type="range" min="0" max="100" value="80" oninput="updateVolume(this.value)"/>
-              </div>
-
-              <!-- Gain -->
-              <div class="slider-row">
-                <div class="slider-label">
-                  <span>RF Gain</span>
-                  <span style="display:flex;align-items:center;gap:6px;">
-                    <span id="gain-val">35</span>
-                    <label style="display:flex;align-items:center;gap:3px;font-size:0.58rem;cursor:pointer;">
-                      <input type="checkbox" id="agcToggle" onchange="toggleAGC(this.checked)" style="width:10px;height:10px;accent-color:var(--blue-mid);"/> AGC
-                    </label>
-                  </span>
-                </div>
-                <input type="range" min="0" max="50" value="35" id="gainSlider" oninput="updateGain(this.value)"/>
-              </div>
-
-              <!-- Squelch -->
-              <div class="slider-row">
-                <div class="slider-label"><span>Squelch</span><span id="sq-val">0</span></div>
-                <input type="range" min="0" max="100" value="0" oninput="updateSquelch(this.value)"/>
-              </div>
-            </div>
-
-            <!-- Bandwidth presets -->
-            <div style="margin-top:10px;">
-              <div class="slider-label" style="margin-bottom:6px;"><span>Bandwidth</span></div>
-              <div class="bw-btns">
-                <button class="bw-btn" onclick="setBandwidth('narrow',this)">Narrow</button>
-                <button class="bw-btn active" onclick="setBandwidth('medium',this)">Medium</button>
-                <button class="bw-btn" onclick="setBandwidth('wide',this)">Wide</button>
-              </div>
-            </div>
-
-            <!-- Noise Reduction -->
-            <div class="toggle-row" style="margin-top:10px;">
-              <span>Noise Reduction</span>
-              <label class="toggle-switch"><input type="checkbox" id="nrToggle" onchange="toggleNR(this.checked)"/><span class="toggle-slider"></span></label>
-            </div>
-
-            <!-- Scanner -->
-            <div style="margin-top:6px;display:flex;gap:6px;">
-              <button class="audio-action-btn" id="scanBtn" onclick="toggleScanner()">⟳ Scan</button>
-              <button class="audio-action-btn" id="recordBtn" onclick="toggleRecording()">⏺ Record</button>
-            </div>
-            <div id="scanStatus" style="font-size:0.58rem;color:var(--text-dim);margin-top:4px;display:none;"></div>
-            <div id="recordStatus" style="font-size:0.58rem;color:#dc2626;margin-top:4px;display:none;">● Recording...</div>
-
-            <!-- Recordings list -->
-            <div style="margin-top:10px;">
-              <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;">
-                <div class="panel-title" style="margin-bottom:0;">Recordings</div>
-                <span id="recordingsSize" style="font-size:0.55rem;color:var(--text-dim);"></span>
-              </div>
-              <div id="recordingsList"><div style="font-size:0.62rem;color:var(--text-dim);">No recordings yet</div></div>
-            </div>
-          </div>
-        </div>
         <div id="flight-panel">
           <div class="panel-title">Live Traffic</div>
           <div id="flightList"><div class="no-flights">Loading aircraft...</div></div>
         </div>
       </div>
 
-      <!-- AIRPORT TAB -->
-      <div class="tab-content" id="tab-airport">
-        <div class="search-wrap">
-          <div class="panel-title">Airport Search</div>
-          <div class="search-input-row">
-            <input type="text" class="search-input" id="airportSearch" placeholder="City or airport name..." onkeydown="if(event.key==='Enter')searchAirports()"/>
-            <button class="search-btn" onclick="searchAirports()">🔍</button>
+      <!-- RADIO TAB — frequencies + airport search + audio controls -->
+      <div class="tab-content" id="tab-radio">
+        <div style="flex:1;display:flex;flex-direction:column;overflow:hidden;min-height:0;">
+          <div class="scroll-area" style="flex:1;overflow-y:auto;">
+
+            <!-- AKL Quick Tune -->
+            <div class="panel">
+              <div class="panel-title">AKL Quick Tune</div>
+              <button class="freq-btn active" onclick="setFreq(118.7,this)"><span>Tower</span><span class="freq-mhz">118.700</span></button>
+              <button class="freq-btn" onclick="setFreq(124.3,this)"><span>Approach</span><span class="freq-mhz">124.300</span></button>
+              <button class="freq-btn" onclick="setFreq(121.1,this)"><span>Ground</span><span class="freq-mhz">121.100</span></button>
+            </div>
+
+            <!-- Airport Search -->
+            <div class="panel">
+              <div class="panel-title">Airport Search</div>
+              <div class="search-input-row">
+                <input type="text" class="search-input" id="airportSearch" placeholder="City or airport..." onkeydown="if(event.key==='Enter')searchAirports()"/>
+                <button class="search-btn" onclick="searchAirports()">🔍</button>
+              </div>
+              <div class="search-status" id="searchStatus">Search e.g. "Auckland" or "Sydney"</div>
+              <div class="airport-list" id="airportList" style="max-height:160px;overflow-y:auto;padding:0;margin-top:6px;"></div>
+            </div>
+
+            <!-- Airport Frequencies (shown after airport selected) -->
+            <div class="freq-panel" id="freqPanel" style="display:none;border-top:none;padding-top:0;">
+              <div class="freq-panel-title" id="freqPanelTitle">FREQUENCIES</div>
+              <div id="freqList"></div>
+            </div>
+
+            <!-- Audio Controls -->
+            <div class="panel">
+              <div class="panel-title">Audio</div>
+              <button class="play-btn" id="playBtn" onclick="toggleAudio()">▶ LISTEN</button>
+              <audio id="audioPlayer" preload="none"><source src="/audio_feed" type="audio/ogg"></audio>
+
+              <!-- VU Meter -->
+              <div class="vu"><div class="vu-bar" id="vuBar"></div></div>
+
+              <!-- Sliders -->
+              <div class="slider-wrap" style="margin-top:10px;">
+                <div class="slider-row">
+                  <div class="slider-label"><span>Volume</span><span id="vol-val">80%</span></div>
+                  <input type="range" min="0" max="100" value="80" oninput="updateVolume(this.value)"/>
+                </div>
+                <div class="slider-row">
+                  <div class="slider-label">
+                    <span>RF Gain</span>
+                    <span style="display:flex;align-items:center;gap:6px;">
+                      <span id="gain-val">35</span>
+                      <label style="display:flex;align-items:center;gap:3px;font-size:0.58rem;cursor:pointer;">
+                        <input type="checkbox" id="agcToggle" onchange="toggleAGC(this.checked)" style="width:10px;height:10px;accent-color:var(--blue-mid);"/> AGC
+                      </label>
+                    </span>
+                  </div>
+                  <input type="range" min="0" max="50" value="35" id="gainSlider" oninput="updateGain(this.value)"/>
+                </div>
+                <div class="slider-row">
+                  <div class="slider-label"><span>Squelch</span><span id="sq-val">0</span></div>
+                  <input type="range" min="0" max="100" value="0" oninput="updateSquelch(this.value)"/>
+                </div>
+              </div>
+
+              <!-- Bandwidth -->
+              <div style="margin-top:10px;">
+                <div class="slider-label" style="margin-bottom:6px;"><span>Bandwidth</span></div>
+                <div class="bw-btns">
+                  <button class="bw-btn" onclick="setBandwidth('narrow',this)">Narrow</button>
+                  <button class="bw-btn active" onclick="setBandwidth('medium',this)">Medium</button>
+                  <button class="bw-btn" onclick="setBandwidth('wide',this)">Wide</button>
+                </div>
+              </div>
+
+              <!-- Noise Reduction -->
+              <div class="toggle-row" style="margin-top:10px;">
+                <span>Noise Reduction</span>
+                <label class="toggle-switch"><input type="checkbox" id="nrToggle" onchange="toggleNR(this.checked)"/><span class="toggle-slider"></span></label>
+              </div>
+
+              <!-- Scanner & Record -->
+              <div style="margin-top:6px;display:flex;gap:6px;">
+                <button class="audio-action-btn" id="scanBtn" onclick="toggleScanner()">⟳ Scan</button>
+                <button class="audio-action-btn" id="recordBtn" onclick="toggleRecording()">⏺ Record</button>
+              </div>
+              <div id="scanStatus" style="font-size:0.58rem;color:var(--text-dim);margin-top:4px;display:none;"></div>
+              <div id="recordStatus" style="font-size:0.58rem;color:#dc2626;margin-top:4px;display:none;">● Recording...</div>
+            </div>
+
+            <!-- Recordings -->
+            <div class="panel">
+              <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;">
+                <div class="panel-title" style="margin-bottom:0;">Recordings</div>
+                <span id="recordingsSize" style="font-size:0.55rem;color:var(--text-dim);"></span>
+              </div>
+              <div id="recordingsList"><div style="font-size:0.62rem;color:var(--text-dim);">No recordings yet</div></div>
+            </div>
+
           </div>
-          <div class="search-status" id="searchStatus">Search by city e.g. "Auckland" or "London"</div>
-        </div>
-        <div class="airport-list" id="airportList"><div class="no-airports">Enter a city name to find airports</div></div>
-        <div class="freq-panel" id="freqPanel" style="display:none;">
-          <div class="freq-panel-title" id="freqPanelTitle">FREQUENCIES</div>
-          <div id="freqList"></div>
         </div>
       </div>
 
