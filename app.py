@@ -277,6 +277,34 @@ def planespotters_proxy(hex):
     except Exception as e:
         return jsonify({'photos': []}), 500
 
+# ── AeroDataBox FIDS proxy ─────────────────────────────────
+AERODATABOX_KEY = '1b21053b5cmsha60f2e2a02b5dcep19d59bjsn94d2eba60b85'
+
+@app.route('/api/fids')
+def fids_proxy():
+    try:
+        url = 'https://aerodatabox.p.rapidapi.com/flights/airports/icao/NZAA'
+        params = {
+            'offsetMinutes': '0',
+            'durationMinutes': '120',
+            'withLeg': 'true',
+            'withCancelled': 'true',
+            'withCodeshared': 'false',
+            'withCargo': 'false',
+            'withPrivate': 'false'
+        }
+        headers = {
+            'x-rapidapi-host': 'aerodatabox.p.rapidapi.com',
+            'x-rapidapi-key': AERODATABOX_KEY
+        }
+        r = requests.get(url, params=params, headers=headers, timeout=10)
+        resp = make_response(r.content)
+        resp.headers['Content-Type'] = 'application/json'
+        resp.headers['Access-Control-Allow-Origin'] = '*'
+        return resp
+    except Exception as e:
+        return jsonify({'departures': [], 'arrivals': [], 'error': str(e)}), 500
+
 # ── METAR proxy ────────────────────────────────────────────
 @app.route('/api/metar/<station>')
 def metar_proxy(station):

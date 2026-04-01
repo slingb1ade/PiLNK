@@ -133,6 +133,86 @@
     letter-spacing:0.05em;
     box-shadow:none !important;
   }
+  /* Flight Status Strip */
+  #flightStrip{
+    flex-shrink:0;
+    background:var(--bg-panel);
+    border-bottom:1px solid var(--border);
+    overflow:hidden;
+    transition:max-height 0.3s ease;
+    max-height:200px;
+  }
+  #flightStrip.collapsed{max-height:28px;}
+  #flightStripInner{
+    overflow-y:auto;
+    max-height:170px;
+  }
+  .fs-row{
+    display:flex;align-items:center;
+    padding:5px 10px;
+    border-bottom:1px solid var(--border);
+    font-family:'Share Tech Mono',monospace;
+    font-size:0.6rem;
+    gap:6px;
+    cursor:default;
+    transition:background 0.15s;
+  }
+  .fs-row:last-child{border-bottom:none;}
+  .fs-row:hover{background:var(--bg-card);}
+  .fs-dir{
+    font-size:0.55rem;
+    width:12px;flex-shrink:0;
+    color:var(--text-dim);
+  }
+  .fs-num{
+    font-weight:bold;
+    color:var(--text);
+    width:54px;flex-shrink:0;
+    letter-spacing:0.05em;
+  }
+  .fs-route{
+    flex:1;color:var(--text-dim);
+    overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
+  }
+  .fs-time{
+    width:38px;flex-shrink:0;
+    text-align:right;color:var(--text-dim);
+  }
+  .fs-status{
+    width:52px;flex-shrink:0;
+    text-align:right;
+    font-size:0.55rem;
+    font-weight:bold;
+    letter-spacing:0.05em;
+  }
+  .fs-status.on-time{color:var(--green);}
+  .fs-status.delayed{color:#f59e0b;}
+  .fs-status.late{color:#dc2626;}
+  .fs-status.boarding{color:var(--blue-mid);}
+  .fs-status.cancelled{color:#dc2626;text-decoration:line-through;}
+  .fs-status.landed{color:var(--text-dim);}
+  .fs-loading{
+    font-family:'Share Tech Mono',monospace;
+    font-size:0.6rem;color:var(--text-dim);
+    padding:8px 10px;
+  }
+  #flightStripFooter{
+    display:flex;align-items:center;justify-content:space-between;
+    padding:2px 10px;
+    background:var(--bg-card);
+    border-top:1px solid var(--border);
+  }
+  #flightStripTime{
+    font-family:'Share Tech Mono',monospace;
+    font-size:0.52rem;color:var(--text-dim);
+    letter-spacing:0.05em;
+  }
+  .fs-toggle{
+    background:none;border:none;cursor:pointer;
+    color:var(--text-dim);font-size:0.6rem;
+    padding:0 4px;transition:transform 0.3s;
+  }
+  #flightStrip.collapsed .fs-toggle{transform:rotate(180deg);}
   /* Audio controls */
   .bw-btns{display:flex;gap:4px;}
   .bw-btn{flex:1;background:var(--bg-card);border:1px solid var(--border);border-radius:4px;color:var(--text-dim);font-family:'Share Tech Mono',monospace;font-size:0.6rem;padding:5px 4px;cursor:pointer;text-align:center;transition:all 0.2s;}
@@ -463,6 +543,18 @@
   </div>
   <div id="body">
     <div id="sidebar">
+
+      <!-- FLIGHT STATUS STRIP -->
+      <div id="flightStrip">
+        <div id="flightStripInner">
+          <div class="fs-loading">Loading flights...</div>
+        </div>
+        <div id="flightStripFooter">
+          <span id="flightStripTime"></span>
+          <button class="fs-toggle" onclick="toggleFlightStrip()">▲</button>
+        </div>
+      </div>
+
       <div class="tab-bar">
         <button class="tab-btn active" onclick="showTab('traffic',event)">Traffic</button>
         <button class="tab-btn" onclick="showTab('radio',event)">Radio</button>
@@ -2271,6 +2363,127 @@ function checkMidnightReset() {
   }
 }
 setInterval(checkMidnightReset, 60000);
+
+// ── FLIGHT STATUS STRIP ────────────────────────────────────
+var FIDS_KEY = '1b21053b5cmsha60f2e2a02b5dcep19d59bjsn94d2eba60b85';
+var fidsData = [];
+var fidsExpanded = true;
+
+function toggleFlightStrip() {
+  fidsExpanded = !fidsExpanded;
+  var strip = document.getElementById('flightStrip');
+  strip.classList.toggle('collapsed', !fidsExpanded);
+}
+
+function loadFIDS() {
+  fetch('/api/fids')
+    .then(function(r){ return r.json(); })
+    .then(function(data) {
+      fidsData = [];
+      // Process departures
+      (data.departures || []).forEach(function(f) {
+        fidsData.push(parseFlight(f, 'dep'));
+      });
+      // Process arrivals
+      (data.arrivals || []).forEach(function(f) {
+        fidsData.push(parseFlight(f, 'arr'));
+      });
+      // Sort: delayed first, then by time
+      fidsData.sort(function(a, b) {
+        if (b.delayMins !== a.delayMins) return b.delayMins - a.delayMins;
+        return a.scheduledTs - b.scheduledTs;
+      });
+      renderFIDS();
+      var now = new Date().toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'});
+      document.getElementById('flightStripTime').textContent = 'Updated ' + now;
+    })
+    .catch(function() {
+      document.getElementById('flightStripInner').innerHTML =
+        '<div class="fs-loading">Flight data unavailable</div>';
+    });
+}
+
+function parseFlight(f, dir) {
+  var isDep = dir === 'dep';
+  var sched = isDep ? f.departure : f.arrival;
+  var other = isDep ? f.arrival   : f.departure;
+  var schedTime = sched && sched.scheduledTime && sched.scheduledTime.local
+    ? sched.scheduledTime.local.slice(11, 16) : '--:--';
+  var revisedTime = sched && sched.revisedTime && sched.revisedTime.local
+    ? sched.revisedTime.local.slice(11, 16) : null;
+  var scheduledTs = sched && sched.scheduledTime && sched.scheduledTime.utc
+    ? new Date(sched.scheduledTime.utc).getTime() : 0;
+
+  // Calculate delay in minutes
+  var delayMins = 0;
+  if (sched && sched.scheduledTime && sched.revisedTime) {
+    var s = new Date(sched.scheduledTime.utc).getTime();
+    var r = new Date(sched.revisedTime.utc).getTime();
+    delayMins = Math.max(0, Math.round((r - s) / 60000));
+  }
+
+  // Status
+  var status = (f.status || '').toLowerCase();
+  var cancelled = status.includes('cancel');
+  var landed = status.includes('landed') || status.includes('arrived');
+  var boarding = status.includes('boarding') || status.includes('gate');
+
+  // Airport
+  var airport = other && other.airport
+    ? (other.airport.iata || other.airport.icao || other.airport.name || '')
+    : '';
+
+  return {
+    dir: dir,
+    number: (f.number || '').replace(' ', ''),
+    airline: f.airline ? f.airline.name : '',
+    airport: airport,
+    schedTime: schedTime,
+    revisedTime: revisedTime,
+    delayMins: delayMins,
+    scheduledTs: scheduledTs,
+    cancelled: cancelled,
+    landed: landed,
+    boarding: boarding,
+    status: f.status || ''
+  };
+}
+
+function renderFIDS() {
+  var inner = document.getElementById('flightStripInner');
+  if (!fidsData.length) {
+    inner.innerHTML = '<div class="fs-loading">No flights in next 2 hours</div>';
+    return;
+  }
+  inner.innerHTML = fidsData.map(function(f) {
+    var statusClass = 'on-time';
+    var statusText = 'ON TIME';
+    if (f.cancelled) { statusClass = 'cancelled'; statusText = 'CNCLD'; }
+    else if (f.landed) { statusClass = 'landed'; statusText = 'LANDED'; }
+    else if (f.boarding) { statusClass = 'boarding'; statusText = 'BRDG'; }
+    else if (f.delayMins >= 30) { statusClass = 'late'; statusText = '+' + f.delayMins + 'm'; }
+    else if (f.delayMins >= 5)  { statusClass = 'delayed'; statusText = '+' + f.delayMins + 'm'; }
+
+    var timeDisplay = f.delayMins > 0 && f.revisedTime
+      ? '<span style="text-decoration:line-through;opacity:0.5;">' + f.schedTime + '</span> ' + f.revisedTime
+      : f.schedTime;
+
+    var dirIcon = f.dir === 'dep' ? '↑' : '↓';
+    var dirColor = f.dir === 'dep' ? 'color:var(--blue-mid)' : 'color:var(--green)';
+
+    return '<div class="fs-row">' +
+      '<span class="fs-dir" style="' + dirColor + '">' + dirIcon + '</span>' +
+      '<span class="fs-num">' + f.number + '</span>' +
+      '<span class="fs-route">' + f.airport + '</span>' +
+      '<span class="fs-time">' + timeDisplay + '</span>' +
+      '<span class="fs-status ' + statusClass + '">' + statusText + '</span>' +
+      '</div>';
+  }).join('');
+}
+
+// Load on start, refresh every 3 minutes
+loadFIDS();
+setInterval(loadFIDS, 3 * 60 * 1000);
 
 // ── AUTO DAY/NIGHT & TERMINATOR ────────────────────────────
 var autoThemeOn = localStorage.getItem('pilnk-auto-theme') === 'true';
