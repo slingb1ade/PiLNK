@@ -76,8 +76,8 @@
   .wx-dot{width:8px;height:8px;border-radius:50%;flex-shrink:0;margin-right:4px;}
   .wx-opacity-row{margin-top:6px;}
   .wx-status{font-size:0.6rem;color:var(--text-dim);margin-top:6px;font-style:italic;}
-  /* Traffic tab layout - fixed height sections */
-  #tab-traffic .scroll-area{flex:0 0 auto;overflow:hidden;}
+  /* Traffic tab layout - full height flight list */
+  #tab-traffic{overflow:hidden;}
   #flight-panel{flex:1;display:flex;flex-direction:column;overflow:hidden;padding:14px;min-height:0;}
   #flightList{flex:1;overflow-y:auto;display:flex;flex-direction:column;gap:5px;min-height:0;}
   .flight-item{background:var(--bg-card);border:1px solid var(--border);border-left-width:3px !important;border-radius:5px;padding:7px 9px;cursor:pointer;font-size:0.67rem;transition:filter 0.2s;flex-shrink:0;}
@@ -121,10 +121,163 @@
   .map-legend-row:last-child{margin-bottom:0;}
   .map-legend-dot{width:8px;height:8px;border-radius:50%;flex-shrink:0;}
   .leaflet-container{background:var(--bg-deep) !important;}
+  /* Scale bar */
+  .leaflet-control-scale-line{
+    background:var(--bg-panel);
+    border:1px solid var(--blue-mid) !important;
+    border-top:2px solid var(--blue-mid) !important;
+    color:var(--text);
+    font-family:'Share Tech Mono',monospace;
+    font-size:0.6rem;
+    padding:2px 6px;
+    letter-spacing:0.05em;
+    box-shadow:none !important;
+  }
+  /* Flight Status Strip */
+  #flightStrip{
+    flex-shrink:0;
+    background:var(--bg-panel);
+    border-bottom:1px solid var(--border);
+    overflow:hidden;
+    transition:max-height 0.3s ease;
+    max-height:200px;
+  }
+  #flightStrip.collapsed{max-height:22px;}
+  #flightStripInner{
+    overflow-y:auto;
+    max-height:170px;
+  }
+  .fs-row{
+    display:flex;align-items:center;
+    padding:5px 10px;
+    border-bottom:1px solid var(--border);
+    font-family:'Share Tech Mono',monospace;
+    font-size:0.6rem;
+    gap:6px;
+    cursor:default;
+    transition:background 0.15s;
+  }
+  .fs-row:last-child{border-bottom:none;}
+  .fs-row:hover{background:var(--bg-card);}
+  .fs-dir{
+    font-size:0.55rem;
+    width:12px;flex-shrink:0;
+    color:var(--text-dim);
+  }
+  .fs-num{
+    font-weight:bold;
+    color:var(--text);
+    width:54px;flex-shrink:0;
+    letter-spacing:0.05em;
+  }
+  .fs-route{
+    flex:1;color:var(--text-dim);
+    overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
+  }
+  .fs-time{
+    width:38px;flex-shrink:0;
+    text-align:right;color:var(--text-dim);
+  }
+  .fs-status{
+    width:52px;flex-shrink:0;
+    text-align:right;
+    font-size:0.55rem;
+    font-weight:bold;
+    letter-spacing:0.05em;
+  }
+  .fs-status.on-time{color:var(--green);}
+  .fs-status.delayed{color:#f59e0b;}
+  .fs-status.late{color:#dc2626;}
+  .fs-status.boarding{color:var(--blue-mid);}
+  .fs-status.cancelled{color:#dc2626;text-decoration:line-through;}
+  .fs-status.landed{color:var(--text-dim);}
+  .fs-loading{
+    font-family:'Share Tech Mono',monospace;
+    font-size:0.6rem;color:var(--text-dim);
+    padding:8px 10px;
+  }
+  #flightStripFooter{
+    display:flex;align-items:center;justify-content:space-between;
+    padding:2px 10px;
+    background:var(--bg-card);
+    border-bottom:1px solid var(--border);
+    flex-shrink:0;
+  }
+  #flightStripTime{
+    font-family:'Share Tech Mono',monospace;
+    font-size:0.52rem;color:var(--text-dim);
+    letter-spacing:0.05em;
+  }
+  .fs-toggle{
+    background:none;border:none;cursor:pointer;
+    color:var(--text-dim);font-size:0.6rem;
+    padding:0 4px;transition:transform 0.3s;
+  }
+  #flightStrip.collapsed .fs-toggle{transform:rotate(180deg);}
+  /* Audio controls */
+  .bw-btns{display:flex;gap:4px;}
+  .bw-btn{flex:1;background:var(--bg-card);border:1px solid var(--border);border-radius:4px;color:var(--text-dim);font-family:'Share Tech Mono',monospace;font-size:0.6rem;padding:5px 4px;cursor:pointer;text-align:center;transition:all 0.2s;}
+  .bw-btn.active{background:var(--border);border-color:var(--blue-mid);color:var(--blue-mid);}
+  .audio-action-btn{flex:1;background:var(--bg-card);border:1px solid var(--border);border-radius:5px;color:var(--text-dim);font-family:'Share Tech Mono',monospace;font-size:0.6rem;padding:7px 6px;cursor:pointer;text-align:center;transition:all 0.2s;}
+  .audio-action-btn:hover{border-color:var(--blue-mid);color:var(--text);}
+  .audio-action-btn.active{border-color:#dc2626;color:#dc2626;background:rgba(220,38,38,0.08);}
+  .recording-item{display:flex;align-items:center;gap:6px;padding:5px 0;border-bottom:1px solid var(--border);font-size:0.62rem;}
+  .recording-item:last-child{border-bottom:none;}
+  .recording-name{flex:1;color:var(--text);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-family:'Share Tech Mono',monospace;font-size:0.58rem;}
+  .recording-meta{color:var(--text-dim);font-size:0.58rem;white-space:nowrap;flex-shrink:0;}
+  .recording-dl{color:var(--blue-mid);text-decoration:none;font-size:0.75rem;flex-shrink:0;padding:2px 4px;}
+  .recording-dl:hover{color:var(--blue-light);}
+  /* Stats tab */
+  .streak-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-top:4px;}
+  .streak-item{background:var(--bg-card);border:1px solid var(--border);border-radius:6px;padding:10px 6px;text-align:center;}
+  .streak-num{font-family:'Orbitron',sans-serif;font-size:1.2rem;font-weight:700;color:var(--blue-mid);line-height:1;}
+  .streak-label{font-family:'Share Tech Mono',monospace;font-size:0.52rem;color:var(--text-dim);letter-spacing:0.15em;margin-top:4px;text-transform:uppercase;}
+  .lb-tabs{display:flex;gap:4px;margin-top:4px;}
+  .lb-tab{flex:1;background:var(--bg-card);border:1px solid var(--border);border-radius:4px;color:var(--text-dim);font-family:'Share Tech Mono',monospace;font-size:0.6rem;padding:5px 4px;cursor:pointer;transition:all 0.2s;text-align:center;}
+  .lb-tab.active{background:var(--border);border-color:var(--blue-mid);color:var(--blue-mid);}
+  .lb-item{display:flex;align-items:center;gap:8px;padding:6px 0;border-bottom:1px solid var(--border);font-size:0.65rem;}
+  .lb-item:last-child{border-bottom:none;}
+  .lb-rank{font-family:'Orbitron',sans-serif;font-size:0.6rem;color:var(--text-dim);width:16px;flex-shrink:0;}
+  .lb-cs{font-weight:bold;color:var(--text);flex:1;}
+  .lb-val{color:var(--blue-mid);font-family:'Share Tech Mono',monospace;font-size:0.68rem;font-weight:bold;}
+  .metar-row{display:flex;justify-content:space-between;font-size:0.65rem;margin-bottom:5px;}
+  .metar-label{color:var(--text-dim);}
+  .metar-val{color:var(--text);font-weight:bold;font-family:'Share Tech Mono',monospace;}
+  .metar-conditions{font-size:0.7rem;color:var(--blue-mid);font-family:'Share Tech Mono',monospace;margin-bottom:8px;letter-spacing:0.05em;}
+  /* Squawk alert */
+  .squawk-alert{border-radius:6px;padding:10px 12px;margin-bottom:6px;}
+  .squawk-7700{background:rgba(220,38,38,0.1);border:1px solid #dc2626;}
+  .squawk-7600{background:rgba(245,158,11,0.1);border:1px solid #f59e0b;}
+  .squawk-7500{background:rgba(234,179,8,0.1);border:1px solid #eab308;}
+  .squawk-cs{font-family:'Orbitron',sans-serif;font-size:0.75rem;font-weight:700;margin-bottom:4px;}
+  .squawk-code{font-family:'Share Tech Mono',monospace;font-size:0.65rem;}
+  .squawk-desc{font-size:0.6rem;color:var(--text-dim);margin-top:3px;}
+  /* Aircraft labels */
+  .ac-label{
+    background:var(--bg-panel);
+    border:1px solid var(--border);
+    border-radius:3px;
+    padding:2px 5px;
+    font-family:'Share Tech Mono',monospace;
+    font-size:0.58rem;
+    color:var(--text);
+    white-space:nowrap;
+    pointer-events:none;
+    box-shadow:0 1px 4px rgba(0,0,0,0.3);
+    letter-spacing:0.05em;
+    line-height:1.3;
+    text-align:center;
+  }
+  .terminator-path{
+    stroke:none;
+    fill:rgba(0,0,20,0.28);
+    pointer-events:none;
+    transition:fill 1s ease;
+  }
   /* Icon outline via CSS */
   .leaflet-marker-icon svg{filter:drop-shadow(0 0 1px rgba(0,0,0,0.8)) drop-shadow(0 0 0.5px rgba(0,0,0,0.6));}
   /* Tooltip */
-  #pilnkTooltip{position:fixed;z-index:9999;pointer-events:none;display:none;transform:translate(-50%,-100%);padding-bottom:10px;}
+  #pilnkTooltip{position:fixed;z-index:9500;pointer-events:none;display:none;transform:translate(-50%,-100%);padding-bottom:10px;}
   .tt-inner{background:var(--bg-panel);border:2px solid var(--blue-mid);border-radius:8px;padding:10px 14px;box-shadow:0 6px 24px rgba(0,0,0,0.15);white-space:nowrap;font-family:'Share Tech Mono',monospace;min-width:190px;}
   .tt-header{display:flex;align-items:center;gap:7px;margin-bottom:7px;padding-bottom:7px;border-bottom:1px solid var(--border);}
   .tt-flag{font-size:1.2rem;line-height:1;}
@@ -144,6 +297,222 @@
   @keyframes tx-pulse{0%,100%{transform:scale(1);}50%{transform:scale(1.2);}}
   @keyframes tt-in{from{opacity:0;transform:translate(-50%,-90%);}to{opacity:1;transform:translate(-50%,-100%);}}
   @keyframes rx-pulse{0%,100%{transform:scale(1);}50%{transform:scale(1.3);}}
+
+  /* ── CINEMATIC CARD ───────────────────────────────────── */
+  #cinematicOverlay{
+    position:fixed;inset:0;z-index:10000;
+    display:flex;align-items:center;justify-content:center;
+    background:rgba(0,0,0,0);
+    pointer-events:none;
+    transition:background 0.4s;
+  }
+  #cinematicOverlay.active{
+    background:rgba(0,0,0,0.55);
+    pointer-events:auto;
+    backdrop-filter:blur(2px);
+  }
+  #cinematicCard{
+    width:min(820px,92vw);
+    background:var(--bg-panel);
+    border:1px solid var(--blue-mid);
+    border-radius:12px;
+    overflow:hidden;
+    display:flex;
+    box-shadow:0 32px 80px rgba(0,0,0,0.5), 0 0 0 1px rgba(59,130,246,0.2);
+    opacity:0;
+    transform:translateY(32px) scale(0.97);
+    transition:opacity 0.35s ease, transform 0.35s ease;
+    position:relative;
+  }
+  #cinematicOverlay.active #cinematicCard{
+    opacity:1;
+    transform:translateY(0) scale(1);
+  }
+  /* Photo panel — left 58% */
+  .cc-photo{
+    flex:0 0 58%;
+    position:relative;
+    min-height:280px;
+    background:var(--bg-deep);
+    overflow:hidden;
+  }
+  .cc-photo img{
+    width:100%;height:100%;
+    object-fit:cover;
+    display:block;
+    transition:transform 8s ease;
+  }
+  #cinematicOverlay.active .cc-photo img{transform:scale(1.04);}
+  .cc-photo-credit{
+    position:absolute;bottom:10px;right:10px;
+    font-size:0.55rem;color:rgba(255,255,255,0.5);
+    font-family:'Share Tech Mono',monospace;
+    letter-spacing:0.05em;
+    text-shadow:0 1px 4px rgba(0,0,0,0.8);
+  }
+  .cc-photo-no-img{
+    width:100%;height:100%;
+    display:flex;align-items:center;justify-content:center;
+    font-size:4rem;opacity:0.15;
+  }
+  /* Reg watermark behind photo */
+  .cc-reg-watermark{
+    position:absolute;bottom:-10px;left:-4px;
+    font-family:'Orbitron',sans-serif;
+    font-size:clamp(3rem,8vw,5.5rem);
+    font-weight:900;
+    color:rgba(255,255,255,0.07);
+    letter-spacing:0.08em;
+    line-height:1;
+    pointer-events:none;
+    white-space:nowrap;
+    text-shadow:none;
+  }
+  /* Progress bar at top of photo */
+  .cc-timer-bar{
+    position:absolute;top:0;left:0;height:3px;
+    background:linear-gradient(90deg,var(--blue-mid),var(--blue-light));
+    width:100%;
+    transform-origin:left;
+    transform:scaleX(1);
+    transition:transform linear;
+  }
+  /* Data panel — right 42% */
+  .cc-data{
+    flex:1;
+    padding:24px 24px 20px;
+    display:flex;flex-direction:column;
+    justify-content:space-between;
+    position:relative;
+    overflow:hidden;
+  }
+  /* Subtle registration watermark in data panel */
+  .cc-data::before{
+    content:attr(data-reg);
+    position:absolute;bottom:-12px;right:-8px;
+    font-family:'Orbitron',sans-serif;
+    font-size:4.5rem;font-weight:900;
+    color:var(--border);
+    letter-spacing:0.05em;
+    line-height:1;
+    pointer-events:none;
+  }
+  .cc-top{}
+  .cc-badge{
+    display:inline-flex;align-items:center;gap:6px;
+    background:var(--border);
+    border:1px solid var(--blue-dim);
+    border-radius:4px;padding:3px 10px;
+    font-family:'Share Tech Mono',monospace;
+    font-size:0.58rem;letter-spacing:0.15em;
+    color:var(--blue-light);
+    margin-bottom:12px;
+  }
+  .cc-badge .cc-live-dot{
+    width:6px;height:6px;border-radius:50%;
+    background:#dc2626;
+    box-shadow:0 0 6px #dc2626;
+    animation:tx-pulse 1s ease-in-out infinite;
+  }
+  .cc-callsign{
+    font-family:'Orbitron',sans-serif;
+    font-size:clamp(1.2rem,3vw,1.8rem);
+    font-weight:700;letter-spacing:0.12em;
+    color:var(--text);line-height:1;
+    margin-bottom:4px;
+  }
+  .cc-route{
+    font-family:'Share Tech Mono',monospace;
+    font-size:0.85rem;color:var(--blue-mid);
+    font-weight:bold;letter-spacing:0.05em;
+  }
+  .cc-route-row{
+    display:flex;align-items:center;justify-content:space-between;
+    gap:8px;margin-bottom:4px;padding-bottom:6px;
+    border-bottom:1px solid var(--border);
+  }
+  .cc-model{
+    font-family:'Share Tech Mono',monospace;
+    font-size:0.62rem;color:var(--text-dim);
+    letter-spacing:0.05em;text-align:right;flex-shrink:0;
+  }
+  .cc-airline{
+    font-size:0.7rem;color:var(--text-dim);
+    margin-bottom:18px;letter-spacing:0.05em;
+  }
+  .cc-stats{
+    display:grid;grid-template-columns:1fr 1fr;
+    gap:10px;margin-bottom:16px;
+  }
+  .cc-stat{
+    background:var(--bg-card);border:1px solid var(--border);
+    border-radius:6px;padding:8px 10px;
+  }
+  .cc-stat-label{
+    font-family:'Share Tech Mono',monospace;
+    font-size:0.52rem;letter-spacing:0.2em;
+    color:var(--text-dim);text-transform:uppercase;
+    margin-bottom:3px;
+  }
+  .cc-stat-val{
+    font-family:'Orbitron',sans-serif;
+    font-size:0.85rem;font-weight:600;
+    color:var(--text);
+  }
+  .cc-meta{
+    display:flex;flex-wrap:wrap;gap:6px;
+    margin-bottom:16px;
+  }
+  .cc-tag{
+    font-family:'Share Tech Mono',monospace;
+    font-size:0.6rem;letter-spacing:0.1em;
+    color:var(--text-dim);
+    background:var(--bg-card);
+    border:1px solid var(--border);
+    border-radius:4px;padding:3px 8px;
+  }
+  /* VU waveform */
+  .cc-waveform{
+    height:28px;position:relative;
+    display:none;margin-bottom:10px;
+  }
+  .cc-waveform.active{display:block;}
+  .cc-waveform canvas{width:100%;height:100%;}
+  .cc-waveform-label{
+    position:absolute;top:0;left:0;
+    font-family:'Share Tech Mono',monospace;
+    font-size:0.52rem;letter-spacing:0.15em;
+    color:#dc2626;
+  }
+  /* Close button */
+  .cc-close{
+    position:absolute;top:12px;right:12px;
+    width:28px;height:28px;
+    background:var(--bg-card);border:1px solid var(--border);
+    border-radius:50%;cursor:pointer;
+    display:flex;align-items:center;justify-content:center;
+    font-size:0.75rem;color:var(--text-dim);
+    transition:all 0.2s;z-index:10;
+  }
+  .cc-close:hover{border-color:var(--blue-mid);color:var(--text);}
+  .cc-bottom{
+    display:flex;align-items:center;justify-content:space-between;
+  }
+  .cc-phase{
+    display:flex;align-items:center;gap:6px;
+    font-family:'Share Tech Mono',monospace;
+    font-size:0.6rem;letter-spacing:0.1em;
+  }
+  .cc-phase-dot{width:8px;height:8px;border-radius:50%;flex-shrink:0;}
+  .cc-planespotters{
+    font-family:'Share Tech Mono',monospace;
+    font-size:0.55rem;color:var(--text-dim);
+    letter-spacing:0.05em;
+  }
+  @keyframes cc-in{
+    from{opacity:0;transform:translateY(28px) scale(0.96);}
+    to{opacity:1;transform:translateY(0) scale(1);}
+  }
 </style>
 </head>
 <body>
@@ -175,30 +544,54 @@
   </div>
   <div id="body">
     <div id="sidebar">
-      <div class="tab-bar">
-        <button class="tab-btn active" onclick="showTab('traffic',event)">Traffic</button>
-        <button class="tab-btn" onclick="showTab('airport',event)">Airport</button>
-        <button class="tab-btn" onclick="showTab('options',event)">Options</button>
+
+      <!-- FLIGHT STATUS STRIP -->
+      <div id="flightStripFooter">
+        <span id="flightStripTime"></span>
+        <span style="font-family:'Share Tech Mono',monospace;font-size:0.52rem;color:var(--text-dim);">AKL · Next 2hrs</span>
+        <button class="fs-toggle" id="fsToggleBtn" onclick="toggleFlightStrip()">▲</button>
+      </div>
+      <div id="flightStrip">
+        <div id="flightStripInner">
+          <div class="fs-loading">Loading flights...</div>
+        </div>
       </div>
 
-      <!-- TRAFFIC TAB -->
+      <div class="tab-bar">
+        <button class="tab-btn active" onclick="showTab('traffic',event)">Traffic</button>
+        <button class="tab-btn" onclick="showTab('radio',event)">Radio</button>
+        <button class="tab-btn" onclick="showTab('options',event)">Options</button>
+        <button class="tab-btn" onclick="showTab('stats',event)">Stats</button>
+      </div>
+
+      <!-- TRAFFIC TAB — audio + flight list -->
       <div class="tab-content active" id="tab-traffic">
-        <div class="scroll-area">
-          <div class="panel">
-            <div class="panel-title">AKL Frequencies</div>
-            <button class="freq-btn active" onclick="setFreq(118.7,this)"><span>Tower</span><span class="freq-mhz">118.700</span></button>
-            <button class="freq-btn" onclick="setFreq(124.3,this)"><span>Approach</span><span class="freq-mhz">124.300</span></button>
-            <button class="freq-btn" onclick="setFreq(121.1,this)"><span>Ground</span><span class="freq-mhz">121.100</span></button>
-          </div>
-          <div class="panel">
-            <div class="panel-title">Audio</div>
-            <button class="play-btn" id="playBtn" onclick="toggleAudio()">▶ LISTEN</button>
-            <audio id="audioPlayer" preload="none"><source src="/audio_feed" type="audio/ogg"></audio>
-            <div class="slider-wrap">
-              <div class="slider-row"><div class="slider-label"><span>Squelch</span><span id="sq-val">0</span></div><input type="range" min="0" max="100" value="0" oninput="updateSquelch(this.value)"/></div>
-              <div class="slider-row"><div class="slider-label"><span>Gain</span><span id="gain-val">35</span></div><input type="range" min="0" max="50" value="35" oninput="updateGain(this.value)"/></div>
+        <div class="panel" style="flex-shrink:0;">
+          <div class="panel-title">Audio</div>
+          <button class="play-btn" id="playBtn" onclick="toggleAudio()">▶ LISTEN</button>
+          <audio id="audioPlayer" preload="none"><source src="/audio_feed" type="audio/ogg"></audio>
+          <div class="vu"><div class="vu-bar" id="vuBar"></div></div>
+          <div class="slider-wrap" style="margin-top:10px;">
+            <div class="slider-row">
+              <div class="slider-label"><span>Volume</span><span id="vol-val">80%</span></div>
+              <input type="range" min="0" max="100" value="80" oninput="updateVolume(this.value)"/>
             </div>
-            <div class="vu"><div class="vu-bar" id="vuBar"></div></div>
+            <div class="slider-row">
+              <div class="slider-label">
+                <span>RF Gain</span>
+                <span style="display:flex;align-items:center;gap:6px;">
+                  <span id="gain-val">35</span>
+                  <label style="display:flex;align-items:center;gap:3px;font-size:0.58rem;cursor:pointer;">
+                    <input type="checkbox" id="agcToggle" onchange="toggleAGC(this.checked)" style="width:10px;height:10px;accent-color:var(--blue-mid);"/> AGC
+                  </label>
+                </span>
+              </div>
+              <input type="range" min="0" max="50" value="35" id="gainSlider" oninput="updateGain(this.value)"/>
+            </div>
+            <div class="slider-row">
+              <div class="slider-label"><span>Squelch</span><span id="sq-val">0</span></div>
+              <input type="range" min="0" max="100" value="0" oninput="updateSquelch(this.value)"/>
+            </div>
           </div>
         </div>
         <div id="flight-panel">
@@ -207,20 +600,75 @@
         </div>
       </div>
 
-      <!-- AIRPORT TAB -->
-      <div class="tab-content" id="tab-airport">
-        <div class="search-wrap">
-          <div class="panel-title">Airport Search</div>
-          <div class="search-input-row">
-            <input type="text" class="search-input" id="airportSearch" placeholder="City or airport name..." onkeydown="if(event.key==='Enter')searchAirports()"/>
-            <button class="search-btn" onclick="searchAirports()">🔍</button>
+      <!-- RADIO TAB — frequencies + airport search + audio controls -->
+      <div class="tab-content" id="tab-radio">
+        <div style="flex:1;display:flex;flex-direction:column;overflow:hidden;min-height:0;">
+          <div class="scroll-area" style="flex:1;overflow-y:auto;">
+
+            <!-- AKL Quick Tune -->
+            <div class="panel">
+              <div class="panel-title">AKL Quick Tune</div>
+              <button class="freq-btn active" onclick="setFreq(118.7,this)"><span>Tower</span><span class="freq-mhz">118.700</span></button>
+              <button class="freq-btn" onclick="setFreq(124.3,this)"><span>Approach</span><span class="freq-mhz">124.300</span></button>
+              <button class="freq-btn" onclick="setFreq(121.1,this)"><span>Ground</span><span class="freq-mhz">121.100</span></button>
+            </div>
+
+            <!-- Airport Search -->
+            <div class="panel">
+              <div class="panel-title">Airport Search</div>
+              <div class="search-input-row">
+                <input type="text" class="search-input" id="airportSearch" placeholder="City or airport..." onkeydown="if(event.key==='Enter')searchAirports()"/>
+                <button class="search-btn" onclick="searchAirports()">🔍</button>
+              </div>
+              <div class="search-status" id="searchStatus">Search e.g. "Auckland" or "Sydney"</div>
+              <div class="airport-list" id="airportList" style="max-height:160px;overflow-y:auto;padding:0;margin-top:6px;"></div>
+            </div>
+
+            <!-- Airport Frequencies (shown after airport selected) -->
+            <div class="freq-panel" id="freqPanel" style="display:none;border-top:none;padding-top:0;">
+              <div class="freq-panel-title" id="freqPanelTitle">FREQUENCIES</div>
+              <div id="freqList"></div>
+            </div>
+
+            <!-- Audio Controls (advanced) -->
+            <div class="panel">
+              <div class="panel-title">Audio</div>
+
+              <!-- Bandwidth -->
+              <div>
+                <div class="slider-label" style="margin-bottom:6px;"><span>Bandwidth</span></div>
+                <div class="bw-btns">
+                  <button class="bw-btn" onclick="setBandwidth('narrow',this)">Narrow</button>
+                  <button class="bw-btn active" onclick="setBandwidth('medium',this)">Medium</button>
+                  <button class="bw-btn" onclick="setBandwidth('wide',this)">Wide</button>
+                </div>
+              </div>
+
+              <!-- Noise Reduction -->
+              <div class="toggle-row" style="margin-top:10px;">
+                <span>Noise Reduction</span>
+                <label class="toggle-switch"><input type="checkbox" id="nrToggle" onchange="toggleNR(this.checked)"/><span class="toggle-slider"></span></label>
+              </div>
+
+              <!-- Scanner & Record -->
+              <div style="margin-top:6px;display:flex;gap:6px;">
+                <button class="audio-action-btn" id="scanBtn" onclick="toggleScanner()">⟳ Scan</button>
+                <button class="audio-action-btn" id="recordBtn" onclick="toggleRecording()">⏺ Record</button>
+              </div>
+              <div id="scanStatus" style="font-size:0.58rem;color:var(--text-dim);margin-top:4px;display:none;"></div>
+              <div id="recordStatus" style="font-size:0.58rem;color:#dc2626;margin-top:4px;display:none;">● Recording...</div>
+            </div>
+
+            <!-- Recordings -->
+            <div class="panel">
+              <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;">
+                <div class="panel-title" style="margin-bottom:0;">Recordings</div>
+                <span id="recordingsSize" style="font-size:0.55rem;color:var(--text-dim);"></span>
+              </div>
+              <div id="recordingsList"><div style="font-size:0.62rem;color:var(--text-dim);">No recordings yet</div></div>
+            </div>
+
           </div>
-          <div class="search-status" id="searchStatus">Search by city e.g. "Auckland" or "London"</div>
-        </div>
-        <div class="airport-list" id="airportList"><div class="no-airports">Enter a city name to find airports</div></div>
-        <div class="freq-panel" id="freqPanel" style="display:none;">
-          <div class="freq-panel-title" id="freqPanelTitle">FREQUENCIES</div>
-          <div id="freqList"></div>
         </div>
       </div>
 
@@ -233,7 +681,6 @@
               <button class="tile-btn active" id="tileOsm"  onclick="setTileLayer('osm')">Street</button>
               <button class="tile-btn"        id="tileAero" onclick="setTileLayer('aero')">Aero</button>
               <button class="tile-btn"        id="tileSat"  onclick="setTileLayer('sat')">Satellite</button>
-              <button class="tile-btn"        id="tileWx"   onclick="setTileLayer('wx')">🌧 Weather</button>
             </div>
           </div>
           <div class="panel">
@@ -267,6 +714,10 @@
             <div class="panel-title">Map Options</div>
             <div class="toggle-row"><span>Flight Trails</span><label class="toggle-switch"><input type="checkbox" id="trailToggle" checked onchange="toggleTrails(this.checked)"/><span class="toggle-slider"></span></label></div>
             <div class="toggle-row"><span>Distance Rings</span><label class="toggle-switch"><input type="checkbox" id="ringToggle" checked onchange="toggleRings(this.checked)"/><span class="toggle-slider"></span></label></div>
+            <div class="toggle-row"><span>Aircraft Labels</span><label class="toggle-switch"><input type="checkbox" id="labelToggle" onchange="toggleLabels(this.checked)"/><span class="toggle-slider"></span></label></div>
+            <div class="toggle-row"><span>Auto Day/Night</span><label class="toggle-switch"><input type="checkbox" id="autoThemeToggle" onchange="toggleAutoTheme(this.checked)"/><span class="toggle-slider"></span></label></div>
+            <div class="toggle-row"><span>Day/Night Terminator</span><label class="toggle-switch"><input type="checkbox" id="terminatorToggle" onchange="toggleTerminator(this.checked)"/><span class="toggle-slider"></span></label></div>
+            <div id="autoThemeStatus" style="font-size:0.58rem;color:var(--text-dim);margin-top:2px;font-style:italic;display:none;"></div>
           </div>
           <div class="panel" id="ringSettings">
             <div class="panel-title">Ring Settings</div>
@@ -295,7 +746,62 @@
           </div>
         </div>
       </div>
-    </div>
+
+      <!-- STATS TAB -->
+      <div class="tab-content" id="tab-stats">
+        <div class="scroll-area" style="flex:1;overflow-y:auto;">
+
+          <!-- SQUAWK ALERT -->
+          <div class="panel" id="squawkAlertPanel" style="display:none;">
+            <div class="panel-title" style="color:#dc2626;">⚠ SQUAWK ALERT</div>
+            <div id="squawkAlertContent"></div>
+          </div>
+
+          <!-- METAR -->
+          <div class="panel">
+            <div class="panel-title">Local Weather</div>
+            <div id="metarContent">
+              <div style="font-size:0.62rem;color:var(--text-dim);">Loading METAR...</div>
+            </div>
+            <div id="metarTime" style="font-size:0.55rem;color:var(--text-dim);margin-top:6px;"></div>
+          </div>
+
+          <!-- FLIGHT STREAK -->
+          <div class="panel">
+            <div class="panel-title">Flight Streak</div>
+            <div class="streak-grid" id="streakGrid">
+              <div class="streak-item">
+                <div class="streak-num" id="streakToday">0</div>
+                <div class="streak-label">Today</div>
+              </div>
+              <div class="streak-item">
+                <div class="streak-num" id="streakTotal">0</div>
+                <div class="streak-label">All Time</div>
+              </div>
+              <div class="streak-item">
+                <div class="streak-num" id="streakBest">0</div>
+                <div class="streak-label">Best Day</div>
+              </div>
+            </div>
+            <div style="font-size:0.58rem;color:var(--text-dim);margin-top:8px;">Unique aircraft tracked by hex code</div>
+          </div>
+
+          <!-- LEADERBOARD -->
+          <div class="panel">
+            <div class="panel-title">Today's Leaderboard</div>
+            <div class="lb-tabs">
+              <button class="lb-tab active" onclick="showLbTab('fast',this)">🚀 Fast</button>
+              <button class="lb-tab" onclick="showLbTab('high',this)">📈 High</button>
+              <button class="lb-tab" onclick="showLbTab('far',this)">📡 Far</button>
+            </div>
+            <div id="lbList" style="margin-top:8px;"></div>
+            <div style="font-size:0.55rem;color:var(--text-dim);margin-top:6px;">Resets at midnight</div>
+          </div>
+
+        </div>
+      </div>
+
+    </div><!-- end sidebar -->
     <div id="map"></div>
   </div>
 </div>
@@ -315,6 +821,43 @@
     <div class="tt-phase" id="ttPhase"></div>
   </div>
   <div class="tt-arrow" id="ttArrow"></div>
+</div>
+
+<!-- CINEMATIC CARD -->
+<div id="cinematicOverlay" onclick="handleCCOverlayClick(event)">
+  <div id="cinematicCard">
+    <div class="cc-photo" id="ccPhoto">
+      <div class="cc-timer-bar" id="ccTimerBar"></div>
+      <div class="cc-photo-no-img" id="ccNoImg">✈</div>
+      <img id="ccImg" src="" alt="" style="display:none;" onload="ccImgLoaded()"/>
+      <div class="cc-reg-watermark" id="ccRegWatermark"></div>
+      <div class="cc-photo-credit" id="ccPhotoCredit"></div>
+    </div>
+    <div class="cc-data" id="ccData">
+      <button class="cc-close" onclick="closeCinematicCard()">✕</button>
+      <div class="cc-top">
+        <div class="cc-badge" id="ccBadge" style="display:none;"><span>NOW PASSING</span></div>
+        <div class="cc-callsign" id="ccCallsign">–</div>
+        <div class="cc-route-row">
+          <div class="cc-route" id="ccRoute"></div>
+          <div class="cc-model" id="ccModel"></div>
+        </div>
+        <div class="cc-airline" id="ccAirline"></div>
+        <div class="cc-stats">
+          <div class="cc-stat"><div class="cc-stat-label">Altitude</div><div class="cc-stat-val" id="ccAlt">–</div></div>
+          <div class="cc-stat"><div class="cc-stat-label">Speed</div><div class="cc-stat-val" id="ccSpd">–</div></div>
+          <div class="cc-stat"><div class="cc-stat-label">Heading</div><div class="cc-stat-val" id="ccHdg">–</div></div>
+          <div class="cc-stat"><div class="cc-stat-label">V/Speed</div><div class="cc-stat-val" id="ccVs">–</div></div>
+        </div>
+        <div class="cc-meta" id="ccMeta"></div>
+        <div class="cc-waveform" id="ccWaveform"><span class="cc-waveform-label">● TRANSMITTING</span><canvas id="ccWaveCanvas" height="28"></canvas></div>
+      </div>
+      <div class="cc-bottom">
+        <div class="cc-phase" id="ccPhase"></div>
+        <div class="cc-planespotters">📷 Planespotters.net</div>
+      </div>
+    </div>
+  </div>
 </div>
 
 <script>
@@ -343,6 +886,7 @@ map.createPane('wxPane');   map.getPane('wxPane').style.zIndex   = 410;
 var osmLayer = L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',{attribution:'© OpenStreetMap'}).addTo(map);
 var currentTileLayerName = 'osm', extraLayer = null;
 L.control.zoom({position:'bottomright'}).addTo(map);
+L.control.scale({position:'bottomright', metric:true, imperial:false, maxWidth:150}).addTo(map);
 
 // Map legend
 var LegendControl = L.Control.extend({
@@ -390,130 +934,128 @@ function setTileLayer(name) {
 }
 
 // ── RAINVIEWER WEATHER RADAR ──────────────────────────────
-var wxOverlayOn = false;
-var wxLayers = [];
-var wxFrames = [];
+var wxOverlayOn  = false;
+var wxAnimateOn  = true;
+var wxOpacity    = 0.8;
+var wxAnimTimer  = null;
 var wxCurrentFrame = 0;
-var wxAnimTimer = null;
-var wxAnimateOn = true;
-var wxOpacity = 0.8;
-var wxLoaded = false;
+var wxLayers     = [];   // Leaflet tile layers, one per frame
+var wxFrames     = [];   // {time, path} from API — never cleared except on fresh load
+var wxHost       = 'https://tilecache.rainviewer.com';
+var wxRefreshTimer = null;
 
+// Toggle the whole radar on/off
 function toggleWxOverlay(on) {
   wxOverlayOn = on;
   var sub = document.getElementById('wxSubToggles');
-  sub.style.opacity = on ? '1' : '0.4';
+  sub.style.opacity    = on ? '1'    : '0.4';
   sub.style.pointerEvents = on ? 'auto' : 'none';
   if (!on) {
-    clearWxLayers();
-    if (wxAnimTimer) { clearInterval(wxAnimTimer); wxAnimTimer = null; }
+    stopWxAnimation();
+    removeWxLayers();
+    if (wxRefreshTimer) { clearInterval(wxRefreshTimer); wxRefreshTimer = null; }
     document.getElementById('wxStatus').textContent = 'Enable to show live RainViewer radar';
-    // If we activated via the Weather tile btn, switch tile btn highlight back to osm
-    if (currentTileLayerName === 'wx') {
-      currentTileLayerName = 'osm';
-      document.querySelectorAll('.tile-btn').forEach(function(b){b.classList.remove('active');});
-      document.getElementById('tileOsm').classList.add('active');
-    }
   } else {
     document.getElementById('wxStatus').textContent = 'Loading radar data...';
     loadRainViewer();
+    // Refresh every 5 minutes while on
+    wxRefreshTimer = setInterval(function() { loadRainViewer(); }, 5 * 60 * 1000);
   }
 }
 
+// Fetch frame list from API then build layers
 function loadRainViewer() {
-  fetch('https://api.rainviewer.com/public/weather-maps.json')
-    .then(function(r){ return r.json(); })
+  fetch('/api/rainviewer')
+    .then(function(r) { return r.json(); })
     .then(function(data) {
-      wxFrames = [];
-      // Get past frames (up to 6) + nowcast frames
-      var past = data.radar.past || [];
-      var nowcast = data.radar.nowcast || [];
-      // Use last 6 past frames + all nowcast
-      var allFrames = past.slice(-6).concat(nowcast);
-      allFrames.forEach(function(f) {
-        wxFrames.push({ time: f.time, path: f.path });
+      wxHost = data.host || 'https://tilecache.rainviewer.com';
+      // Grab last 6 past frames only (keep it simple, no nowcast)
+      var past = (data.radar && data.radar.past) ? data.radar.past : [];
+      wxFrames = past.slice(-6).map(function(f) {
+        return { time: f.time, path: f.path };
       });
-      wxLoaded = true;
-      document.getElementById('wxStatus').textContent =
-        'Radar: ' + wxFrames.length + ' frames loaded';
-      drawWxFrames(data.host);
+      if (!wxFrames.length) {
+        document.getElementById('wxStatus').textContent = 'No radar frames available';
+        return;
+      }
+      buildWxLayers();
     })
-    .catch(function(e) {
-      document.getElementById('wxStatus').textContent = 'Radar load failed — check connection';
+    .catch(function() {
+      document.getElementById('wxStatus').textContent = 'Radar load failed';
     });
 }
 
-var wxHost = "";
-function drawWxFrames(host) {
-  wxHost = host || "https://tilecache.rainviewer.com";
-  clearWxLayers();
-  if (!wxFrames.length) return;
+// Remove existing tile layers from map
+function removeWxLayers() {
+  wxLayers.forEach(function(l) { map.removeLayer(l); });
+  wxLayers = [];
+}
+
+// Build one tile layer per frame, show the latest
+function buildWxLayers() {
+  stopWxAnimation();
+  removeWxLayers();
   wxFrames.forEach(function(frame) {
-    var url = wxHost + frame.path + "/256/{z}/{x}/{y}/2/1_1.png";
+    var url = wxHost + frame.path + '/256/{z}/{x}/{y}/2/1_1.png';
     var layer = L.tileLayer(url, {
       opacity: 0,
-      attribution: "RainViewer",
+      attribution: '© RainViewer',
       maxNativeZoom: 6,
       maxZoom: 20,
-      zIndex: 500
-    }).addTo(map);
+      zIndex: 500,
+      crossOrigin: true
+    });
+    layer.addTo(map);
     wxLayers.push(layer);
   });
-  wxCurrentFrame = wxFrames.length - 1;
+  // Show latest frame
+  wxCurrentFrame = wxLayers.length - 1;
   showWxFrame(wxCurrentFrame);
+  document.getElementById('wxStatus').textContent =
+    'Radar: ' + wxFrames.length + ' frames — ' + wxFrameTime(wxCurrentFrame);
   if (wxAnimateOn) startWxAnimation();
 }
+
+// Make one frame visible, hide all others
 function showWxFrame(idx) {
-  wxLayers.forEach(function(l, i) { l.setOpacity(i === idx ? wxOpacity : 0); });
-  var frame = wxFrames[idx];
-  if (frame) {
-    var d = new Date(frame.time * 1000);
-    var timeStr = d.toLocaleTimeString([], {hour:"2-digit", minute:"2-digit"});
-    document.getElementById("wxStatus").textContent = "Radar: " + timeStr + " (" + (idx+1) + "/" + wxFrames.length + ")";
-  }
+  wxLayers.forEach(function(l, i) {
+    l.setOpacity(i === idx ? wxOpacity : 0);
+  });
+  wxCurrentFrame = idx;
 }
+
+// Format frame timestamp for display
+function wxFrameTime(idx) {
+  if (!wxFrames[idx]) return '';
+  return new Date(wxFrames[idx].time * 1000).toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'});
+}
+
 function startWxAnimation() {
   if (wxAnimTimer) clearInterval(wxAnimTimer);
   if (!wxLayers.length) return;
   wxAnimTimer = setInterval(function() {
-    wxCurrentFrame = (wxCurrentFrame + 1) % wxLayers.length;
-    showWxFrame(wxCurrentFrame);
+    var next = (wxCurrentFrame + 1) % wxLayers.length;
+    showWxFrame(next);
+    document.getElementById('wxStatus').textContent =
+      'Radar: frame ' + (next+1) + '/' + wxLayers.length + ' — ' + wxFrameTime(next);
   }, 800);
 }
+
 function stopWxAnimation() {
   if (wxAnimTimer) { clearInterval(wxAnimTimer); wxAnimTimer = null; }
-  if (wxLayers.length) showWxFrame(wxFrames.length - 1);
 }
 
 function toggleWxAnimation(on) {
   wxAnimateOn = on;
   if (on && wxOverlayOn && wxLayers.length) startWxAnimation();
-  else stopWxAnimation();
+  else { stopWxAnimation(); if (wxLayers.length) showWxFrame(wxLayers.length - 1); }
 }
 
 function setWxOpacity(val) {
   wxOpacity = val / 100;
   document.getElementById('wx-opacity-val').textContent = val + '%';
-  // Update the currently visible frame's opacity
   if (wxLayers[wxCurrentFrame]) wxLayers[wxCurrentFrame].setOpacity(wxOpacity);
 }
-
-function clearWxLayers() {
-  wxLayers.forEach(function(l) { map.removeLayer(l); });
-  wxLayers = [];
-  wxFrames = [];
-  wxLoaded = false;
-  wxCurrentFrame = 0;
-}
-
-// Refresh radar every 5 minutes
-setInterval(function() {
-  if (wxOverlayOn) {
-    if (wxAnimTimer) { clearInterval(wxAnimTimer); wxAnimTimer = null; }
-    clearWxLayers();
-    loadRainViewer();
-  }
-}, 5 * 60 * 1000);
 
 // ── ADSBDB ROUTE LOOKUP ───────────────────────────────────
 var routeCache = {};
@@ -525,20 +1067,23 @@ function lookupRoute(callsign, callback) {
     .then(function(r){ return r.json(); })
     .then(function(data) {
       var route = null;
+      var airline = null;
       if (data && data.response && data.response.flightroute) {
         var fr = data.response.flightroute;
         var dep = fr.origin && fr.origin.iata_code ? fr.origin.iata_code : (fr.origin && fr.origin.icao_code ? fr.origin.icao_code : null);
         var arr = fr.destination && fr.destination.iata_code ? fr.destination.iata_code : (fr.destination && fr.destination.icao_code ? fr.destination.icao_code : null);
         if (dep && arr) route = dep + ' → ' + arr;
+        // Grab airline name
+        if (fr.airline && fr.airline.name) airline = fr.airline.name;
       }
       var reg = null;
       if (data && data.response && data.response.aircraft) {
         reg = data.response.aircraft.registration || null;
       }
-      routeCache[cs] = {route: route, reg: reg};
+      routeCache[cs] = {route: route, reg: reg, airline: airline};
       callback(routeCache[cs]);
     })
-    .catch(function(){ routeCache[cs] = {route:null, reg:null}; callback(routeCache[cs]); });
+    .catch(function(){ routeCache[cs] = {route:null, reg:null, airline:null}; callback(routeCache[cs]); });
 }
 
 // ── AVIATION OVERLAY ──────────────────────────────────────
@@ -784,7 +1329,7 @@ var PHASE={
 function getPhase(a,cs){
   if(cs&&transmitting[cs])return PHASE.tx;
   var vr=a.baro_rate||a.geom_rate||0, alt=a.alt_baro||a.alt_geom||0;
-  if(alt<4000&&vr<-200)return PHASE.final;
+  if(alt<2000&&vr<-200)return PHASE.final;
   if(vr>200)return PHASE.climb;
   if(vr<-200)return PHASE.descent;
   return PHASE.cruise;
@@ -792,11 +1337,27 @@ function getPhase(a,cs){
 
 // ── TRAILS ────────────────────────────────────────────────
 var trails={}, trailPoly={}, trailsOn=true;
+var phaseAlt={};  // tracks last confirmed phase-change altitude per callsign
+var PHASE_ALT_THRESHOLD = 500; // ft — must gain/lose this much before colour changes
+
 function updateTrail(a){
   var cs=a.flight.trim(), ph=getPhase(a,cs);
-  if(!trails[cs])trails[cs]=[];
-  var last=trails[cs][trails[cs].length-1];
-  if(!last||last.lat!==a.lat||last.lon!==a.lon) trails[cs].push({lat:a.lat,lon:a.lon,color:ph.color});
+  if(!trails[cs]){ trails[cs]=[]; phaseAlt[cs]=a.alt_baro||a.alt_geom||0; }
+  // Smooth phase colour — only change if altitude delta exceeds threshold
+  var currentAlt = a.alt_baro||a.alt_geom||0;
+  var lastPt = trails[cs][trails[cs].length-1];
+  var useColor = ph.color;
+  if(lastPt && ph.color!==PHASE.tx.color && ph.color!==PHASE.final.color){
+    var altDelta = Math.abs(currentAlt - phaseAlt[cs]);
+    if(altDelta < PHASE_ALT_THRESHOLD){
+      useColor = lastPt.color; // keep previous colour until threshold is met
+    } else {
+      phaseAlt[cs] = currentAlt; // commit new phase
+    }
+  } else {
+    phaseAlt[cs] = currentAlt;
+  }
+  if(!lastPt||lastPt.lat!==a.lat||lastPt.lon!==a.lon) trails[cs].push({lat:a.lat,lon:a.lon,color:useColor});
   redrawTrail(cs);
 }
 function redrawTrail(cs){
@@ -807,7 +1368,10 @@ function redrawTrail(cs){
   trailPoly[cs]=g;
 }
 function removeTrail(cs,fade){
-  if(trailPoly[cs]){if(fade)trailPoly[cs].eachLayer(function(l){l.setStyle({opacity:l.options.opacity*0.25});});else{map.removeLayer(trailPoly[cs]);delete trailPoly[cs];delete trails[cs];}}
+  // Always fully remove — no fading, trails stay until aircraft gone
+  if(trailPoly[cs]){map.removeLayer(trailPoly[cs]);delete trailPoly[cs];}
+  delete trails[cs];
+  delete phaseAlt[cs];
 }
 function toggleTrails(on){trailsOn=on;if(on)Object.keys(trails).forEach(function(cs){redrawTrail(cs);});else Object.keys(trailPoly).forEach(function(cs){map.removeLayer(trailPoly[cs]);delete trailPoly[cs];});}
 
@@ -853,7 +1417,8 @@ function toggleTheme(){
 function updateThemeBtn(t){var b=document.getElementById('themeBtn');if(b)b.textContent=t==='light'?'🌙 Dark':'☀ Light';}
 
 // ── STATE ─────────────────────────────────────────────────
-var markers={}, lastAircraft={}, transmitting={}, selectedFlight=null, audioPlaying=false;
+var markers={}, lastAircraft={}, lastSeen={}, transmitting={}, selectedFlight=null, audioPlaying=false;
+var labelMarkers={}, labelsOn=false;
 
 // ── AIRCRAFT CATEGORIES ───────────────────────────────────
 var HEAVY={B741:1,B742:1,B743:1,B744:1,B748:1,B74D:1,A380:1,A388:1,A389:1,A332:1,A333:1,A338:1,A339:1,A342:1,A343:1,A345:1,A346:1,B772:1,B773:1,B778:1,B779:1,B77L:1,B77W:1,B77X:1,B762:1,B763:1,B764:1,B752:1,B753:1};
@@ -878,7 +1443,13 @@ function lightIcon(cs,h,col,tx){return mkIcon('<svg width="30" height="30" viewB
 function makeIcon(cs,cat,h,col,tx){switch(cat){case'heavy':return heavyIcon(cs,h||0,col,tx);case'heli':return heliIcon(cs,h||0,col,tx);case'light':return lightIcon(cs,h||0,col,tx);default:return mediumIcon(cs,h||0,col,tx);}}
 
 // ── TOOLTIP ───────────────────────────────────────────────
+function hideTooltip(){
+  var tt=document.getElementById('pilnkTooltip');
+  tt.style.display='none';
+  tt.style.opacity='0';
+}
 function showTooltip(cs,ll){
+  if(ccVisible) return; // never show tooltip while cinematic card is open
   var a=lastAircraft[cs];if(!a)return;
   var ph=getPhase(a,cs), vr=a.baro_rate||a.geom_rate||0, pc=ph.color==='#ffffff'?'#dc2626':ph.color;
   document.getElementById('ttFlag').textContent=getFlag(cs);
@@ -903,7 +1474,7 @@ function showTooltip(cs,ll){
   var pt=map.latLngToContainerPoint(ll), mapR=document.getElementById('map').getBoundingClientRect();
   var tt=document.getElementById('pilnkTooltip');
   tt.style.left=(mapR.left+pt.x)+'px'; tt.style.top=(mapR.top+pt.y)+'px';
-  tt.style.display='block'; tt.style.animation='tt-in 0.15s ease forwards';
+  tt.style.display='block'; tt.style.opacity='1'; tt.style.animation='tt-in 0.15s ease forwards';
 }
 function hideTooltip(){document.getElementById('pilnkTooltip').style.display='none';}
 
@@ -914,9 +1485,10 @@ function updateMarker(a){
   if(markers[cs]){markers[cs].setLatLng([a.lat,a.lon]);markers[cs].setIcon(makeIcon(cs,cat,a.track,col,tx));}
   else{
     var m=L.marker([a.lat,a.lon],{icon:makeIcon(cs,cat,a.track,col,tx)}).addTo(map);
-    m.on('click',function(e){L.DomEvent.stopPropagation(e);selectedFlight=cs;showTooltip(cs,m.getLatLng());updateFlights();});
+    m.on('click',function(e){L.DomEvent.stopPropagation(e);selectedFlight=cs;hideTooltip();updateFlights();openCinematicCard(cs,false);});
     markers[cs]=m;
   }
+  updateLabel(a);
 }
 
 // ── FLIGHTS ───────────────────────────────────────────────
@@ -925,8 +1497,30 @@ function updateFlights(){
     var ac=(data.aircraft||[]).filter(function(a){return a.lat&&a.lon&&a.flight;});
     document.getElementById('hdr-count').textContent=ac.length+' AIRCRAFT';
     var seen={};
-    ac.forEach(function(a){var cs=a.flight.trim();seen[cs]=true;lastAircraft[cs]=a;updateMarker(a);});
-    Object.keys(markers).forEach(function(cs){if(!seen[cs]){map.removeLayer(markers[cs]);delete markers[cs];delete lastAircraft[cs];removeTrail(cs,true);}});
+    var now = Date.now();
+    ac.forEach(function(a){
+      var cs=a.flight.trim();
+      seen[cs]=true;
+      lastSeen[cs]=now;
+      lastAircraft[cs]=a;
+      updateMarker(a);
+      checkAutoCard(a);
+      checkSquawk(a);
+      trackStreak(a);
+      updateLeaderboard(a);
+    });
+    // Only remove aircraft that haven't been seen for 60 seconds — handles brief ADS-B dropouts
+    Object.keys(markers).forEach(function(cs){
+      if(!seen[cs]){
+        var age = now - (lastSeen[cs]||0);
+        if(age > 60000){
+          map.removeLayer(markers[cs]);delete markers[cs];delete lastAircraft[cs];
+          delete lastSeen[cs];
+          removeTrail(cs);
+          removeLabel(cs);
+        }
+      }
+    });
     var list=document.getElementById('flightList');
     if(!ac.length){list.innerHTML='<div class="no-flights">No aircraft found</div>';return;}
     list.innerHTML=ac.map(function(a){
@@ -960,15 +1554,282 @@ function setFreq(freq,btn){
 }
 
 // ── AUDIO ──────────────────────────────────────────────────
+var audioVolume = 0.8;
+var agcOn = false;
+var nrOn = false;
+var currentBandwidth = 'medium';
+var scannerOn = false;
+var scanTimer = null;
+var scanFreqs = [118.7, 124.3, 121.1]; // AKL frequencies to scan
+var scanIdx = 0;
+var scanDwellTime = 5000; // ms per frequency
+var mediaRecorder = null;
+var recordChunks = [];
+var recordingOn = false;
+
+// Bandwidth presets — lowpass/highpass values for sox
+var BW_PRESETS = {
+  narrow: { low: 2500,  high: 300,  label: 'Narrow' },
+  medium: { low: 3000,  high: 200,  label: 'Medium' },
+  wide:   { low: 3500,  high: 100,  label: 'Wide'   }
+};
+
 function toggleAudio(){
-  var btn=document.getElementById('playBtn'),audio=document.getElementById('audioPlayer');
-  if(!audioPlaying){audio.play();btn.textContent='■ STOP';btn.classList.add('active');audioPlaying=true;animateVU();}
-  else{audio.pause();audio.load();btn.textContent='▶ LISTEN';btn.classList.remove('active');audioPlaying=false;}
+  var btn=document.getElementById('playBtn');
+  var audio=document.getElementById('audioPlayer');
+  if(!audioPlaying){
+    audio.volume = audioVolume;
+    audio.play();
+    btn.textContent='■ STOP';btn.classList.add('active');
+    audioPlaying=true;animateVU();
+  } else {
+    audio.pause();audio.load();
+    btn.textContent='▶ LISTEN';btn.classList.remove('active');
+    audioPlaying=false;
+    stopScanner();
+  }
 }
-function restartAudio(){var a=document.getElementById('audioPlayer');a.pause();a.load();a.play();}
-function animateVU(){if(!audioPlaying){document.getElementById('vuBar').style.width='0%';return;}document.getElementById('vuBar').style.width=(Math.random()*35)+'%';setTimeout(animateVU,150);}
-function updateSquelch(val){document.getElementById('sq-val').textContent=val;fetch('/set_squelch',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({squelch:parseInt(val)})});}
-function updateGain(val){document.getElementById('gain-val').textContent=val;fetch('/set_gain',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({gain:parseInt(val)})});if(audioPlaying)restartAudio();}
+
+function restartAudio(){
+  var a=document.getElementById('audioPlayer');
+  a.pause();a.load();
+  a.volume = audioVolume;
+  a.play();
+}
+
+function animateVU(){
+  if(!audioPlaying){document.getElementById('vuBar').style.width='0%';return;}
+  document.getElementById('vuBar').style.width=(Math.random()*35)+'%';
+  setTimeout(animateVU,150);
+}
+
+function updateVolume(val) {
+  audioVolume = val / 100;
+  document.getElementById('vol-val').textContent = val + '%';
+  var audio = document.getElementById('audioPlayer');
+  if (audio) audio.volume = audioVolume;
+}
+
+function updateSquelch(val){
+  document.getElementById('sq-val').textContent=val;
+  fetch('/set_squelch',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({squelch:parseInt(val)})});
+}
+
+function updateGain(val){
+  document.getElementById('gain-val').textContent=val;
+  fetch('/set_gain',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({gain:parseInt(val)})});
+  if(audioPlaying)restartAudio();
+}
+
+function toggleAGC(on) {
+  agcOn = on;
+  var slider = document.getElementById('gainSlider');
+  var label = document.getElementById('gain-val');
+  if (on) {
+    slider.disabled = true;
+    slider.style.opacity = '0.4';
+    label.textContent = 'AUTO';
+    fetch('/set_agc', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({agc: true})});
+  } else {
+    slider.disabled = false;
+    slider.style.opacity = '1';
+    var val = slider.value;
+    label.textContent = val;
+    fetch('/set_agc', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({agc: false})});
+    if(audioPlaying) restartAudio();
+  }
+}
+
+function setBandwidth(preset, btn) {
+  currentBandwidth = preset;
+  document.querySelectorAll('.bw-btn').forEach(function(b){b.classList.remove('active');});
+  if (btn) btn.classList.add('active');
+  fetch('/set_bandwidth', {
+    method:'POST',
+    headers:{'Content-Type':'application/json'},
+    body: JSON.stringify(BW_PRESETS[preset])
+  });
+  if (audioPlaying) restartAudio();
+}
+
+function toggleNR(on) {
+  nrOn = on;
+  fetch('/set_nr', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({nr: on})});
+  if (audioPlaying) restartAudio();
+}
+
+// ── SCANNER ────────────────────────────────────────────────
+function toggleScanner() {
+  if (scannerOn) stopScanner();
+  else startScanner();
+}
+
+function startScanner() {
+  if (!audioPlaying) toggleAudio();
+  scannerOn = true;
+  scanIdx = 0;
+  scanListening = false;
+  scanSilenceCount = 0;
+  document.getElementById('scanBtn').classList.add('active');
+  document.getElementById('scanBtn').textContent = '■ Stop';
+  document.getElementById('scanStatus').style.display = 'block';
+  scanStep();
+}
+
+function stopScanner() {
+  scannerOn = false;
+  scanListening = false;
+  if (scanTimer) { clearTimeout(scanTimer); scanTimer = null; }
+  document.getElementById('scanBtn').classList.remove('active');
+  document.getElementById('scanBtn').textContent = '⟳ Scan';
+  document.getElementById('scanStatus').style.display = 'none';
+}
+
+// Squelch-aware scanner state
+var scanListening = false;   // true = stopped on active freq
+var scanSilenceCount = 0;    // counts quiet polls before moving on
+var SCAN_SILENCE_THRESHOLD = 4; // polls of silence before moving on (~2s)
+var SCAN_POLL_INTERVAL = 500;   // ms between squelch checks while listening
+var SCAN_MOVE_INTERVAL = 3000;  // ms to spend on each freq when quiet
+
+function scanStep() {
+  if (!scannerOn) return;
+
+  var freq = scanFreqs[scanIdx];
+  var names = {118.7:'Tower', 124.3:'Approach', 121.1:'Ground'};
+
+  if (!scanListening) {
+    // Tune to this frequency
+    fetch('/set_frequency', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({frequency: freq})});
+    document.getElementById('hdr-freq').textContent = freq.toFixed(3) + ' MHz';
+    document.querySelectorAll('.freq-btn').forEach(function(b){b.classList.remove('active');});
+    document.querySelectorAll('.freq-btn').forEach(function(b){
+      if (b.querySelector('.freq-mhz') && parseFloat(b.querySelector('.freq-mhz').textContent) === freq) b.classList.add('active');
+    });
+    document.getElementById('scanStatus').textContent = '⟳ Scanning ' + (names[freq] || freq.toFixed(3)) + ' MHz...';
+    if (audioPlaying) restartAudio();
+    // Wait SCAN_MOVE_INTERVAL then check for activity
+    scanTimer = setTimeout(function() { checkScanSquelch(freq, names); }, SCAN_MOVE_INTERVAL);
+  }
+}
+
+function checkScanSquelch(freq, names) {
+  if (!scannerOn) return;
+  // Ask server if squelch is broken (signal detected)
+  fetch('/get_signal_level')
+    .then(function(r){ return r.json(); })
+    .then(function(data) {
+      if (data.active) {
+        // Signal detected — stay here
+        if (!scanListening) {
+          scanListening = true;
+          scanSilenceCount = 0;
+          document.getElementById('scanStatus').textContent = '📡 Active — ' + (names[freq] || freq.toFixed(3)) + ' MHz';
+        }
+        scanTimer = setTimeout(function() { checkScanSquelch(freq, names); }, SCAN_POLL_INTERVAL);
+      } else {
+        if (scanListening) {
+          // Was active, now quiet — count silence
+          scanSilenceCount++;
+          if (scanSilenceCount >= SCAN_SILENCE_THRESHOLD) {
+            // Move to next frequency
+            scanListening = false;
+            scanSilenceCount = 0;
+            scanIdx = (scanIdx + 1) % scanFreqs.length;
+            scanTimer = setTimeout(scanStep, 300);
+          } else {
+            // Still waiting for silence to confirm
+            document.getElementById('scanStatus').textContent = '🔇 Waiting... ' + (names[freq] || freq.toFixed(3)) + ' MHz';
+            scanTimer = setTimeout(function() { checkScanSquelch(freq, names); }, SCAN_POLL_INTERVAL);
+          }
+        } else {
+          // Quiet, move on
+          scanIdx = (scanIdx + 1) % scanFreqs.length;
+          scanTimer = setTimeout(scanStep, 300);
+        }
+      }
+    })
+    .catch(function() {
+      // Fallback — just move on after interval
+      scanIdx = (scanIdx + 1) % scanFreqs.length;
+      scanTimer = setTimeout(scanStep, SCAN_MOVE_INTERVAL);
+    });
+}
+
+// ── RECORDER ───────────────────────────────────────────────
+var MAX_RECORD_MINUTES = 60;
+var recordMaxTimer = null;
+
+function toggleRecording() {
+  if (recordingOn) stopRecording();
+  else startRecording();
+}
+
+function startRecording() {
+  if (!audioPlaying) toggleAudio();
+  var freq = document.getElementById('hdr-freq').textContent.replace(' MHz','').trim();
+  fetch('/start_recording', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({frequency: freq})
+  })
+  .then(function(r){ return r.json(); })
+  .then(function(data) {
+    if (data.status === 'ok') {
+      recordingOn = true;
+      document.getElementById('recordBtn').classList.add('active');
+      document.getElementById('recordBtn').textContent = '⏹ Stop';
+      document.getElementById('recordStatus').style.display = 'block';
+      document.getElementById('recordStatus').textContent = '● Recording — ' + data.filename;
+      // Auto-stop after max duration
+      recordMaxTimer = setTimeout(function() {
+        stopRecording();
+      }, MAX_RECORD_MINUTES * 60 * 1000);
+      // Refresh recordings list
+      loadRecordingsList();
+    }
+  })
+  .catch(function() {
+    alert('Recording failed — check Pi storage.');
+  });
+}
+
+function stopRecording() {
+  fetch('/stop_recording', {method:'POST'})
+    .then(function(r){ return r.json(); })
+    .then(function(data) {
+      recordingOn = false;
+      if (recordMaxTimer) { clearTimeout(recordMaxTimer); recordMaxTimer = null; }
+      document.getElementById('recordBtn').classList.remove('active');
+      document.getElementById('recordBtn').textContent = '⏺ Record';
+      document.getElementById('recordStatus').style.display = 'none';
+      loadRecordingsList();
+    });
+}
+
+function loadRecordingsList() {
+  fetch('/recordings')
+    .then(function(r){ return r.json(); })
+    .then(function(data) {
+      var list = document.getElementById('recordingsList');
+      if (!list) return;
+      if (!data.recordings || !data.recordings.length) {
+        list.innerHTML = '<div style="font-size:0.62rem;color:var(--text-dim);">No recordings yet</div>';
+        return;
+      }
+      list.innerHTML = data.recordings.slice(0,10).map(function(r) {
+        return '<div class="recording-item">' +
+          '<div class="recording-name">' + r.name + '</div>' +
+          '<div class="recording-meta">' + r.size + ' · ' + r.date + '</div>' +
+          '<a href="/recordings/' + r.name + '" download class="recording-dl">⬇</a>' +
+          '</div>';
+      }).join('');
+      if (data.total_size) {
+        document.getElementById('recordingsSize').textContent = 'Storage: ' + data.total_size;
+      }
+    })
+    .catch(function(){});
+}
 
 // ── TRANSMIT ───────────────────────────────────────────────
 function highlightTransmitting(callsign){
@@ -977,12 +1838,927 @@ function highlightTransmitting(callsign){
   setTimeout(function(){delete transmitting[callsign];if(lastAircraft[callsign])updateMarker(lastAircraft[callsign]);updateFlights();},8000);
 }
 
-// ── INIT ───────────────────────────────────────────────────
-buildRingChips();
+// ── CINEMATIC CARD ─────────────────────────────────────────
+var ccVisible = false;
+var ccDismissTimer = null;
+var ccWaveTimer = null;
+var ccCurrentCS = null;
+var ccShownCS = {};        // tracks which callsigns have been auto-shown this session
+var photoCache = {};       // hex -> photo data
+
+var NOTABLE_TYPES = {
+  A380:1,A388:1,A389:1,
+  B741:1,B742:1,B743:1,B744:1,B748:1,B74D:1,
+  B772:1,B773:1,B778:1,B779:1,B77L:1,B77W:1,B77X:1,
+  B787:1,B788:1,B789:1,B78X:1,
+  A350:1,A359:1,A35K:1,
+  A332:1,A333:1,A338:1,A339:1,
+  B762:1,B763:1,B764:1,B752:1,B753:1,
+  C17:1,C5:1,P8:1,E3:1,KC135:1,KC10:1
+};
+
+function isNotable(a) {
+  if (!a) return false;
+  var t = (a.t||'').toUpperCase();
+  if (NOTABLE_TYPES[t]) return true;
+  // Military or special squawks
+  if (a.squawk==='7700'||a.squawk==='7600'||a.squawk==='7500') return true;
+  return false;
+}
+
+function fetchPlanePhoto(hex, callback) {
+  if (photoCache[hex] !== undefined) { callback(photoCache[hex]); return; }
+  fetch('/api/planespotters/' + hex)
+    .then(function(r){ return r.json(); })
+    .then(function(data) {
+      var photo = null;
+      if (data && data.photos && data.photos.length > 0) {
+        var p = data.photos[0];
+        // Extract model from photo link URL
+        // e.g. /zk-nni-air-new-zealand-airbus-a321-271nx → "Airbus A321-271NX"
+        var model = null;
+        if (p.link) {
+          // Grab the last slug segment after the photo ID
+          var parts = p.link.split('/');
+          var slug = parts[parts.length - 1].split('?')[0];
+          // Known manufacturers to look for
+          var makers = ['airbus','boeing','bombardier','embraer','cessna','piper','beechcraft','atr','de-havilland','mcdonnell-douglas','lockheed','saab','fokker'];
+          for (var i = 0; i < makers.length; i++) {
+            var idx = slug.indexOf(makers[i]);
+            if (idx >= 0) {
+              model = slug.substring(idx)
+                .split('-')
+                .map(function(w){ return w.charAt(0).toUpperCase() + w.slice(1); })
+                .join(' ')
+                .trim();
+              break;
+            }
+          }
+        }
+        photo = {
+          url: p.thumbnail_large && p.thumbnail_large.src ? p.thumbnail_large.src : (p.thumbnail && p.thumbnail.src ? p.thumbnail.src : null),
+          photographer: p.photographer || '',
+          link: p.link || '',
+          model: model
+        };
+      }
+      photoCache[hex] = photo;
+      callback(photo);
+    })
+    .catch(function(){ photoCache[hex] = null; callback(null); });
+}
+
+function openCinematicCard(cs, auto) {
+  var a = lastAircraft[cs];
+  if (!a) return;
+  if (ccVisible && ccCurrentCS === cs) return; // already showing this one
+  ccCurrentCS = cs;
+  ccVisible = true;
+  hideTooltip(); // always kill tooltip when card opens
+  hideAllLabels(); // hide labels while card is showing
+
+  // Clear any existing dismiss timer
+  if (ccDismissTimer) { clearTimeout(ccDismissTimer); ccDismissTimer = null; }
+
+  var ph = getPhase(a, cs);
+  var col = ph.color === '#ffffff' ? '#dc2626' : ph.color;
+  var vr = a.baro_rate || a.geom_rate || 0;
+  var isTx = !!transmitting[cs];
+
+  // Populate data
+  document.getElementById('ccCallsign').textContent = cs;
+  document.getElementById('ccCallsign').style.color = col;
+  document.getElementById('ccAlt').textContent = a.alt_baro ? Math.round(a.alt_baro).toLocaleString() + ' ft' : '–';
+  document.getElementById('ccSpd').textContent = a.gs ? Math.round(a.gs) + ' kt' : '–';
+  document.getElementById('ccHdg').textContent = a.track ? Math.round(a.track) + '°' : '–';
+  document.getElementById('ccVs').textContent = vr ? (vr>0?'+':'')+Math.round(vr)+' fpm' : '–';
+
+  // Badge — only show for auto-triggered or transmitting
+  var badge = document.getElementById('ccBadge');
+  badge.style.display = 'none';
+  if (auto) {
+    badge.style.display = 'inline-flex';
+    badge.innerHTML = '<span>NOW PASSING</span>';
+    badge.style.borderColor = col;
+    badge.style.color = col;
+  }
+  // Transmitting badge always shows
+  if (isTx) {
+    badge.style.display = 'inline-flex';
+    badge.innerHTML = '<span class="cc-live-dot"></span><span>TRANSMITTING</span>';
+    badge.style.borderColor = '#dc2626';
+    badge.style.color = '#dc2626';
+  }
+
+  // Route & airline
+  document.getElementById('ccRoute').textContent = '';
+  document.getElementById('ccModel').textContent = '';
+  document.getElementById('ccAirline').textContent = '';
+  document.getElementById('ccData').setAttribute('data-reg', a.r || '');
+  document.getElementById('ccRegWatermark').textContent = a.r || '';
+
+  lookupRoute(cs, function(info) {
+    if (info.route)   document.getElementById('ccRoute').textContent = '✈ ' + info.route;
+    if (info.reg)     document.getElementById('ccData').setAttribute('data-reg', info.reg);
+    if (info.reg)     document.getElementById('ccRegWatermark').textContent = info.reg;
+    if (info.airline) document.getElementById('ccAirline').textContent = info.airline;
+  });
+
+  // Meta tags
+  var meta = [];
+  if (a.t) meta.push(a.t);
+  if (a.r) meta.push(a.r);
+  var cat = getCat(a.t, a.category);
+  meta.push(cat.charAt(0).toUpperCase() + cat.slice(1));
+  if (a.squawk) meta.push('SQK ' + a.squawk);
+  document.getElementById('ccMeta').innerHTML = meta.map(function(m){
+    return '<span class="cc-tag">'+m+'</span>';
+  }).join('');
+
+  // Phase indicator
+  document.getElementById('ccPhase').innerHTML =
+    '<div class="cc-phase-dot" style="background:'+col+';box-shadow:0 0 6px '+col+';"></div>' +
+    '<span style="color:'+col+';">'+ph.label+'</span>';
+
+  // Waveform
+  var wf = document.getElementById('ccWaveform');
+  if (isTx) { wf.classList.add('active'); startCCWaveform(); }
+  else { wf.classList.remove('active'); stopCCWaveform(); }
+
+  // Photo — reset first
+  document.getElementById('ccImg').style.display = 'none';
+  document.getElementById('ccNoImg').style.display = 'flex';
+  document.getElementById('ccPhotoCredit').textContent = '';
+
+  if (a.hex) {
+    fetchPlanePhoto(a.hex, function(photo) {
+      if (photo && photo.url) {
+        var img = document.getElementById('ccImg');
+        img.src = photo.url;
+        if (photo.photographer) {
+          document.getElementById('ccPhotoCredit').textContent = '📷 ' + photo.photographer;
+        }
+        // Show model if airline field is still empty
+        if (photo.model && !document.getElementById('ccModel').textContent) {
+          document.getElementById('ccModel').textContent = photo.model;
+        }
+      }
+    });
+  }
+
+  // Show overlay
+  var overlay = document.getElementById('cinematicOverlay');
+  overlay.classList.add('active');
+
+  // Timer bar — auto dismiss after 14s for auto-triggered
+  if (auto) {
+    var bar = document.getElementById('ccTimerBar');
+    bar.style.transition = 'none';
+    bar.style.transform = 'scaleX(1)';
+    setTimeout(function() {
+      bar.style.transition = 'transform 14s linear';
+      bar.style.transform = 'scaleX(0)';
+    }, 50);
+    ccDismissTimer = setTimeout(closeCinematicCard, 14000);
+  } else {
+    document.getElementById('ccTimerBar').style.transform = 'scaleX(0)';
+    document.getElementById('ccTimerBar').style.transition = 'none';
+  }
+}
+
+function ccImgLoaded() {
+  document.getElementById('ccImg').style.display = 'block';
+  document.getElementById('ccNoImg').style.display = 'none';
+}
+
+function closeCinematicCard() {
+  ccVisible = false;
+  ccCurrentCS = null;
+  if (ccDismissTimer) { clearTimeout(ccDismissTimer); ccDismissTimer = null; }
+  stopCCWaveform();
+  document.getElementById('cinematicOverlay').classList.remove('active');
+  showAllLabels(); // restore labels after card closes
+}
+
+function handleCCOverlayClick(e) {
+  if (e.target === document.getElementById('cinematicOverlay')) closeCinematicCard();
+}
+
+// Waveform animation
+function startCCWaveform() {
+  var canvas = document.getElementById('ccWaveCanvas');
+  var ctx = canvas.getContext('2d');
+  canvas.width = canvas.offsetWidth || 200;
+  function draw() {
+    if (!document.getElementById('ccWaveform').classList.contains('active')) return;
+    var w = canvas.width, h = canvas.height;
+    var dark = document.documentElement.getAttribute('data-theme') === 'dark';
+    ctx.clearRect(0, 0, w, h);
+    ctx.strokeStyle = '#dc2626';
+    ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    for (var x = 0; x < w; x++) {
+      var y = h/2 + Math.sin(x * 0.15 + Date.now() * 0.006) * (Math.random() * 0.3 + 0.7) * (h/2 - 2);
+      if (x === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+    }
+    ctx.stroke();
+    ccWaveTimer = requestAnimationFrame(draw);
+  }
+  draw();
+}
+
+function stopCCWaveform() {
+  if (ccWaveTimer) { cancelAnimationFrame(ccWaveTimer); ccWaveTimer = null; }
+}
+
+// Check incoming aircraft for auto-trigger
+function checkAutoCard(a) {
+  var cs = a.flight ? a.flight.trim() : null;
+  if (!cs) return;
+  if (ccShownCS[cs]) return;      // already shown this session
+  if (ccVisible) return;           // card already open
+  if (!isNotable(a)) return;
+  // Only trigger if aircraft has a route (confirmed commercial/notable)
+  var cached = routeCache[cs];
+  if (!cached || !cached.route) return;
+  ccShownCS[cs] = true;
+  openCinematicCard(cs, true);
+}
+
+// ── AIRCRAFT LABELS ────────────────────────────────────────
+function getLabelText(a) {
+  var cs = a.flight ? a.flight.trim() : null;
+  if (cs) return cs;
+  if (a.r) return a.r;
+  return null;
+}
+
+function updateLabel(a) {
+  var cs = a.flight ? a.flight.trim() : a.hex;
+  if (!cs || !markers[cs]) return;
+  var text = getLabelText(a);
+  if (!text) return;
+
+  // Remove existing label
+  if (labelMarkers[cs]) { map.removeLayer(labelMarkers[cs]); delete labelMarkers[cs]; }
+  if (!labelsOn || ccVisible) return;
+
+  var icon = L.divIcon({
+    className: '',
+    html: '<div class="ac-label">' + text + '</div>',
+    iconSize: null,
+    iconAnchor: [-4, 38] // centered above aircraft icon
+  });
+  labelMarkers[cs] = L.marker([a.lat, a.lon], {
+    icon: icon,
+    interactive: false,
+    zIndexOffset: -100
+  }).addTo(map);
+}
+
+function removeLabel(cs) {
+  if (labelMarkers[cs]) { map.removeLayer(labelMarkers[cs]); delete labelMarkers[cs]; }
+}
+
+function toggleLabels(on) {
+  labelsOn = on;
+  localStorage.setItem('pilnk-labels', on);
+  if (!on) {
+    Object.keys(labelMarkers).forEach(function(cs) { map.removeLayer(labelMarkers[cs]); });
+    labelMarkers = {};
+  } else {
+    Object.keys(lastAircraft).forEach(function(cs) { updateLabel(lastAircraft[cs]); });
+  }
+}
+
+function hideAllLabels() {
+  Object.keys(labelMarkers).forEach(function(cs) { map.removeLayer(labelMarkers[cs]); });
+  labelMarkers = {};
+}
+
+function showAllLabels() {
+  if (!labelsOn) return;
+  Object.keys(lastAircraft).forEach(function(cs) { updateLabel(lastAircraft[cs]); });
+}
+
+// ── SQUAWK ALERTS ──────────────────────────────────────────
+var SQUAWK_CODES = {
+  '7700': { label: '⚠ EMERGENCY', color: '#dc2626', cls: 'squawk-7700', desc: 'General emergency declared' },
+  '7600': { label: '📡 COMMS FAILURE', color: '#f59e0b', cls: 'squawk-7600', desc: 'Radio communications failure' },
+  '7500': { label: '🚨 HIJACK', color: '#eab308', cls: 'squawk-7500', desc: 'Unlawful interference / hijack' }
+};
+var activeSquawks = {}; // cs -> squawk code
+var squawkAlertSound = null;
+
+function checkSquawk(a) {
+  var cs = a.flight ? a.flight.trim() : a.hex;
+  var sq = a.squawk;
+  if (!sq || !SQUAWK_CODES[sq]) {
+    if (activeSquawks[cs]) { delete activeSquawks[cs]; renderSquawkPanel(); }
+    return;
+  }
+  if (activeSquawks[cs] === sq) return; // already alerting
+  activeSquawks[cs] = sq;
+  renderSquawkPanel();
+  playSquawkTone(sq);
+  // Switch to stats tab to show alert
+  document.querySelectorAll('.tab-btn').forEach(function(b){b.classList.remove('active');});
+  var statsBtn = document.querySelector('.tab-btn:last-child');
+  if (statsBtn) statsBtn.classList.add('active');
+  showTab('stats', null);
+}
+
+function renderSquawkPanel() {
+  var panel = document.getElementById('squawkAlertPanel');
+  var content = document.getElementById('squawkAlertContent');
+  if (!Object.keys(activeSquawks).length) { panel.style.display = 'none'; return; }
+  panel.style.display = 'block';
+  content.innerHTML = Object.keys(activeSquawks).map(function(cs) {
+    var sq = activeSquawks[cs];
+    var info = SQUAWK_CODES[sq];
+    var a = lastAircraft[cs] || {};
+    return '<div class="squawk-alert ' + info.cls + '">' +
+      '<div class="squawk-cs" style="color:' + info.color + ';">' + info.label + ' — ' + cs + '</div>' +
+      '<div class="squawk-code">Squawk ' + sq + (a.alt_baro ? ' · ' + Math.round(a.alt_baro).toLocaleString() + 'ft' : '') + '</div>' +
+      '<div class="squawk-desc">' + info.desc + '</div>' +
+      '</div>';
+  }).join('');
+}
+
+function playSquawkTone(sq) {
+  try {
+    var ctx = new (window.AudioContext || window.webkitAudioContext)();
+    var osc = ctx.createOscillator();
+    var gain = ctx.createGain();
+    osc.connect(gain); gain.connect(ctx.destination);
+    osc.frequency.value = sq === '7700' ? 880 : sq === '7600' ? 660 : 440;
+    osc.type = 'sine';
+    gain.gain.setValueAtTime(0.3, ctx.currentTime);
+    gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 1.5);
+    osc.start(); osc.stop(ctx.currentTime + 1.5);
+  } catch(e) {}
+}
+
+// ── METAR ──────────────────────────────────────────────────
+var metarData = null;
+var METAR_STATION = 'NZAA'; // Auckland — matches RX_LAT/RX_LON
+
+function loadMETAR() {
+  fetch('/api/metar/' + METAR_STATION)
+    .then(function(r){ return r.json(); })
+    .then(function(data) {
+      if (!data || !data.length) return;
+      var m = data[0];
+      metarData = m;
+      renderMETAR(m);
+    })
+    .catch(function() {
+      document.getElementById('metarContent').innerHTML =
+        '<div style="font-size:0.62rem;color:var(--text-dim);">METAR unavailable</div>';
+    });
+}
+
+function renderMETAR(m) {
+  var el = document.getElementById('metarContent');
+  if (!el) return;
+
+  // Wind
+  var windDir = m.wdir !== undefined ? m.wdir + '°' : '--';
+  var windSpd = m.wspd !== undefined ? m.wspd + 'kt' : '--';
+  var windGust = m.wgst ? ' G' + m.wgst + 'kt' : '';
+  var wind = windDir + ' / ' + windSpd + windGust;
+
+  // Visibility
+  var vis = m.visib !== undefined ? m.visib + ' SM' : '--';
+
+  // Temp/Dewpoint
+  var temp = m.temp !== undefined ? m.temp + '°C' : '--';
+  var dew = m.dewp !== undefined ? m.dewp + '°C' : '--';
+
+  // QNH
+  var qnh = m.altim !== undefined ? 'Q' + Math.round(m.altim * 33.8639) : '--';
+
+  // Conditions
+  var conds = (m.wxString || m.clouds || '').toString() || 'No significant weather';
+
+  el.innerHTML =
+    '<div class="metar-conditions">' + (m.rawOb ? m.rawOb.substring(0,40) : METAR_STATION) + '</div>' +
+    '<div class="metar-row"><span class="metar-label">Wind</span><span class="metar-val">' + wind + '</span></div>' +
+    '<div class="metar-row"><span class="metar-label">Visibility</span><span class="metar-val">' + vis + '</span></div>' +
+    '<div class="metar-row"><span class="metar-label">Temp / Dew</span><span class="metar-val">' + temp + ' / ' + dew + '</span></div>' +
+    '<div class="metar-row"><span class="metar-label">QNH</span><span class="metar-val">' + qnh + '</span></div>';
+
+  var timeEl = document.getElementById('metarTime');
+  if (timeEl && m.reportTime) {
+    timeEl.textContent = 'Updated: ' + new Date(m.reportTime).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'});
+  }
+}
+
+// Load METAR on start and refresh every 30 mins
+loadMETAR();
+setInterval(loadMETAR, 30 * 60 * 1000);
+
+// ── FLIGHT STREAK ──────────────────────────────────────────
+var streakData = JSON.parse(localStorage.getItem('pilnk-streak') || '{"total":0,"best":0,"today":0,"date":""}');
+var todayStr = new Date().toISOString().slice(0,10);
+if (streakData.date !== todayStr) { streakData.today = 0; streakData.date = todayStr; }
+var seenHexes = new Set(JSON.parse(localStorage.getItem('pilnk-streak-today') || '[]'));
+
+function trackStreak(a) {
+  if (!a.hex || seenHexes.has(a.hex)) return;
+  seenHexes.add(a.hex);
+  streakData.today++;
+  streakData.total++;
+  if (streakData.today > streakData.best) streakData.best = streakData.today;
+  streakData.date = todayStr;
+  localStorage.setItem('pilnk-streak', JSON.stringify(streakData));
+  localStorage.setItem('pilnk-streak-today', JSON.stringify(Array.from(seenHexes)));
+  updateStreakUI();
+}
+
+function updateStreakUI() {
+  var t = document.getElementById('streakToday');
+  var total = document.getElementById('streakTotal');
+  var best = document.getElementById('streakBest');
+  if (t) t.textContent = streakData.today.toLocaleString();
+  if (total) total.textContent = streakData.total.toLocaleString();
+  if (best) best.textContent = streakData.best.toLocaleString();
+}
+updateStreakUI();
+
+// ── LEADERBOARD ────────────────────────────────────────────
+var lbData = { fast: {}, high: {}, far: {} };
+var lbTab = 'fast';
+var LB_MAX = 5;
+
+function updateLeaderboard(a) {
+  var cs = a.flight ? a.flight.trim() : a.hex;
+  if (!cs) return;
+
+  // Fastest
+  var spd = a.gs || 0;
+  if (spd > 0) {
+    if (!lbData.fast[cs] || spd > lbData.fast[cs].val) {
+      lbData.fast[cs] = { cs: cs, val: spd, display: Math.round(spd) + ' kt' };
+    }
+  }
+
+  // Highest
+  var alt = a.alt_baro || a.alt_geom || 0;
+  if (alt > 0) {
+    if (!lbData.high[cs] || alt > lbData.high[cs].val) {
+      lbData.high[cs] = { cs: cs, val: alt, display: Math.round(alt).toLocaleString() + ' ft' };
+    }
+  }
+
+  // Furthest from receiver
+  if (a.lat && a.lon) {
+    var dist = haversineKm(RX_LAT, RX_LON, a.lat, a.lon);
+    if (!lbData.far[cs] || dist > lbData.far[cs].val) {
+      lbData.far[cs] = { cs: cs, val: dist, display: Math.round(dist) + ' km' };
+    }
+  }
+
+  renderLeaderboard();
+}
+
+function renderLeaderboard() {
+  var list = document.getElementById('lbList');
+  if (!list) return;
+  var entries = Object.values(lbData[lbTab])
+    .sort(function(a,b){ return b.val - a.val; })
+    .slice(0, LB_MAX);
+  if (!entries.length) {
+    list.innerHTML = '<div style="font-size:0.65rem;color:var(--text-dim);padding:8px 0;">No data yet</div>';
+    return;
+  }
+  var medals = ['🥇','🥈','🥉','4.','5.'];
+  list.innerHTML = entries.map(function(e, i) {
+    return '<div class="lb-item">' +
+      '<span class="lb-rank">' + medals[i] + '</span>' +
+      '<span class="lb-cs">' + e.cs + '</span>' +
+      '<span class="lb-val">' + e.display + '</span>' +
+      '</div>';
+  }).join('');
+}
+
+function showLbTab(tab, btn) {
+  lbTab = tab;
+  document.querySelectorAll('.lb-tab').forEach(function(b){b.classList.remove('active');});
+  if (btn) btn.classList.add('active');
+  renderLeaderboard();
+}
+
+// Reset leaderboard at midnight
+function checkMidnightReset() {
+  var newDay = new Date().toISOString().slice(0,10);
+  if (newDay !== todayStr) {
+    todayStr = newDay;
+    lbData = { fast:{}, high:{}, far:{} };
+    streakData.today = 0;
+    streakData.date = newDay;
+    seenHexes = new Set();
+    localStorage.setItem('pilnk-streak-today', '[]');
+    updateStreakUI();
+    renderLeaderboard();
+  }
+}
+setInterval(checkMidnightReset, 60000);
+
+// ── FLIGHT STATUS STRIP ────────────────────────────────────
+var FIDS_KEY = '1b21053b5cmsha60f2e2a02b5dcep19d59bjsn94d2eba60b85';
+var fidsData = [];
+var fidsExpanded = true;
+
+function toggleFlightStrip() {
+  fidsExpanded = !fidsExpanded;
+  var strip = document.getElementById('flightStrip');
+  var btn = document.getElementById('fsToggleBtn');
+  strip.classList.toggle('collapsed', !fidsExpanded);
+  btn.textContent = fidsExpanded ? '▲' : '▼';
+}
+
+function loadFIDS() {
+  fetch('/api/fids')
+    .then(function(r){ return r.json(); })
+    .then(function(data) {
+      fidsData = [];
+      // Process departures
+      (data.departures || []).forEach(function(f) {
+        fidsData.push(parseFlight(f, 'dep'));
+      });
+      // Process arrivals
+      (data.arrivals || []).forEach(function(f) {
+        fidsData.push(parseFlight(f, 'arr'));
+      });
+      // Sort: delayed first, then by time
+      fidsData.sort(function(a, b) {
+        if (b.delayMins !== a.delayMins) return b.delayMins - a.delayMins;
+        return a.scheduledTs - b.scheduledTs;
+      });
+      renderFIDS();
+      var now = new Date().toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'});
+      document.getElementById('flightStripTime').textContent = 'Updated ' + now;
+    })
+    .catch(function() {
+      document.getElementById('flightStripInner').innerHTML =
+        '<div class="fs-loading">Flight data unavailable</div>';
+    });
+}
+
+function parseFlight(f, dir) {
+  var isDep = dir === 'dep';
+  var sched = isDep ? f.departure : f.arrival;
+  var other = isDep ? f.arrival   : f.departure;
+  var schedTime = sched && sched.scheduledTime && sched.scheduledTime.local
+    ? sched.scheduledTime.local.slice(11, 16) : '--:--';
+  var revisedTime = sched && sched.revisedTime && sched.revisedTime.local
+    ? sched.revisedTime.local.slice(11, 16) : null;
+  var scheduledTs = sched && sched.scheduledTime && sched.scheduledTime.utc
+    ? new Date(sched.scheduledTime.utc).getTime() : 0;
+
+  // Calculate delay in minutes
+  var delayMins = 0;
+  if (sched && sched.scheduledTime && sched.revisedTime) {
+    var s = new Date(sched.scheduledTime.utc).getTime();
+    var r = new Date(sched.revisedTime.utc).getTime();
+    delayMins = Math.max(0, Math.round((r - s) / 60000));
+  }
+
+  // Status
+  var status = (f.status || '').toLowerCase();
+  var cancelled = status.includes('cancel');
+  var landed = status.includes('landed') || status.includes('arrived');
+  var boarding = status.includes('boarding') || status.includes('gate');
+
+  // Airport
+  var airport = other && other.airport
+    ? (other.airport.iata || other.airport.icao || other.airport.name || '')
+    : '';
+
+  return {
+    dir: dir,
+    number: (f.number || '').replace(' ', ''),
+    airline: f.airline ? f.airline.name : '',
+    airport: airport,
+    schedTime: schedTime,
+    revisedTime: revisedTime,
+    delayMins: delayMins,
+    scheduledTs: scheduledTs,
+    cancelled: cancelled,
+    landed: landed,
+    boarding: boarding,
+    status: f.status || ''
+  };
+}
+
+function renderFIDS() {
+  var inner = document.getElementById('flightStripInner');
+  if (!fidsData.length) {
+    inner.innerHTML = '<div class="fs-loading">No flights in next 2 hours</div>';
+    return;
+  }
+  inner.innerHTML = fidsData.map(function(f) {
+    var statusClass = 'on-time';
+    var statusText = 'ON TIME';
+    if (f.cancelled) { statusClass = 'cancelled'; statusText = 'CNCLD'; }
+    else if (f.landed) { statusClass = 'landed'; statusText = 'LANDED'; }
+    else if (f.boarding) { statusClass = 'boarding'; statusText = 'BRDG'; }
+    else if (f.delayMins >= 30) { statusClass = 'late'; statusText = '+' + f.delayMins + 'm'; }
+    else if (f.delayMins >= 5)  { statusClass = 'delayed'; statusText = '+' + f.delayMins + 'm'; }
+
+    var timeDisplay = f.delayMins > 0 && f.revisedTime
+      ? '<span style="text-decoration:line-through;opacity:0.5;">' + f.schedTime + '</span> ' + f.revisedTime
+      : f.schedTime;
+
+    var dirIcon = f.dir === 'dep' ? '↑' : '↓';
+    var dirColor = f.dir === 'dep' ? 'color:var(--blue-mid)' : 'color:var(--green)';
+
+    return '<div class="fs-row">' +
+      '<span class="fs-dir" style="' + dirColor + '">' + dirIcon + '</span>' +
+      '<span class="fs-num">' + f.number + '</span>' +
+      '<span class="fs-route">' + f.airport + '</span>' +
+      '<span class="fs-time">' + timeDisplay + '</span>' +
+      '<span class="fs-status ' + statusClass + '">' + statusText + '</span>' +
+      '</div>';
+  }).join('');
+}
+
+// Load on start, refresh every 3 minutes
+loadFIDS();
+setInterval(loadFIDS, 3 * 60 * 1000);
+
+// ── AUTO DAY/NIGHT & TERMINATOR ────────────────────────────
+var autoThemeOn = localStorage.getItem('pilnk-auto-theme') === 'true';
+var terminatorOn = localStorage.getItem('pilnk-terminator') === 'true';
+var autoThemeTimer = null;
+var terminatorLayer = null;
+var terminatorTimer = null;
+
+// Light theme CSS values
+var THEME_LIGHT = {
+  '--bg-deep':   '#f0f4ff',
+  '--bg-panel':  '#ffffff',
+  '--bg-card':   '#f5f8ff',
+  '--border':    '#dbeafe',
+  '--blue-dim':  '#2563eb',
+  '--blue-mid':  '#3b82f6',
+  '--blue-light':'#1d4ed8',
+  '--text':      '#1e3a6e',
+  '--text-dim':  '#6b8ab0',
+  '--green':     '#16a34a',
+  '--shadow':    '0 1px 4px rgba(59,130,246,0.1)'
+};
+// Dark theme CSS values
+var THEME_DARK = {
+  '--bg-deep':   '#060a14',
+  '--bg-panel':  '#0a1020',
+  '--bg-card':   '#0d1526',
+  '--border':    '#0f2040',
+  '--blue-dim':  '#1d4ed8',
+  '--blue-mid':  '#3b82f6',
+  '--blue-light':'#60a5fa',
+  '--text':      '#e0e8ff',
+  '--text-dim':  '#3a5a8a',
+  '--green':     '#22c55e',
+  '--shadow':    'none'
+};
+
+// Parse hex color to RGB
+function hexToRgb(hex) {
+  hex = hex.replace('#','');
+  if (hex.length === 3) hex = hex.split('').map(function(c){return c+c;}).join('');
+  var r = parseInt(hex.substring(0,2),16);
+  var g = parseInt(hex.substring(2,4),16);
+  var b = parseInt(hex.substring(4,6),16);
+  return [r,g,b];
+}
+
+// Interpolate between two hex colors
+function lerpColor(a, b, t) {
+  if (a==='none'||b==='none') return t < 0.5 ? a : b;
+  // Handle rgba/rgb strings — just snap
+  if (a.indexOf('rgba')>=0||a.indexOf('rgb')>=0) return t < 0.5 ? a : b;
+  try {
+    var ca = hexToRgb(a), cb = hexToRgb(b);
+    var r = Math.round(ca[0] + (cb[0]-ca[0])*t);
+    var g = Math.round(ca[1] + (cb[1]-ca[1])*t);
+    var bl = Math.round(ca[2] + (cb[2]-ca[2])*t);
+    return '#'+[r,g,bl].map(function(v){return v.toString(16).padStart(2,'0');}).join('');
+  } catch(e) { return t < 0.5 ? a : b; }
+}
+
+// Apply interpolated theme at position t (0=light, 1=dark)
+function applyThemeAt(t) {
+  var root = document.documentElement;
+  Object.keys(THEME_LIGHT).forEach(function(prop) {
+    root.style.setProperty(prop, lerpColor(THEME_LIGHT[prop], THEME_DARK[prop], t));
+  });
+  // Update data-theme for logic that checks it
+  root.setAttribute('data-theme', t > 0.5 ? 'dark' : 'light');
+  applyTileFilter();
+  if (ringsOn) drawRings();
+  if (avOverlayOn && avData) redrawAvOverlay();
+}
+
+// ── SUNRISE/SUNSET CALCULATOR ──────────────────────────────
+// Based on NOAA solar calculation equations
+function getSunTimes(lat, lon, date) {
+  var JD = date.getTime() / 86400000 + 2440587.5;
+  var n = JD - 2451545.0;
+  var L = (280.46 + 0.9856474 * n) % 360;
+  var g = ((357.528 + 0.9856003 * n) % 360) * Math.PI / 180;
+  var lambda = (L + 1.915 * Math.sin(g) + 0.02 * Math.sin(2*g)) * Math.PI / 180;
+  var epsilon = 23.439 * Math.PI / 180;
+  var decl = Math.asin(Math.sin(epsilon) * Math.sin(lambda));
+  var eqTime = (L - (Math.atan2(Math.cos(epsilon)*Math.sin(lambda), Math.cos(lambda)) * 180/Math.PI)) / 15;
+  var latR = lat * Math.PI / 180;
+  var cosH = (Math.cos(90.833 * Math.PI/180) - Math.sin(latR)*Math.sin(decl)) / (Math.cos(latR)*Math.cos(decl));
+  if (cosH > 1) return null;  // polar night
+  if (cosH < -1) return null; // midnight sun
+  var H = Math.acos(cosH) * 180 / Math.PI;
+  var sunrise = (720 - 4*(lon + H) - eqTime) * 60000; // ms from midnight UTC
+  var sunset  = (720 - 4*(lon - H) - eqTime) * 60000;
+  return { sunrise: sunrise, sunset: sunset };
+}
+
+function formatSunTime(msFromMidnightUTC) {
+  var d = new Date();
+  d.setUTCHours(0,0,0,0);
+  d.setTime(d.getTime() + msFromMidnightUTC);
+  return d.toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'});
+}
+
+// ── AUTO THEME ENGINE ──────────────────────────────────────
+var TRANSITION_DURATION = 30 * 60 * 1000; // 30 min fade
+var autoThemeManualOverride = false;
+
+function getThemeProgress() {
+  var now = new Date();
+  var times = getSunTimes(RX_LAT, RX_LON, now);
+  if (!times) return 1; // default dark if no sun times
+
+  var nowMs = now.getUTCHours()*3600000 + now.getUTCMinutes()*60000 + now.getUTCSeconds()*1000;
+  var half = TRANSITION_DURATION / 2;
+
+  // Sunrise transition: dark → light
+  var sunriseStart = times.sunrise - half;
+  var sunriseEnd   = times.sunrise + half;
+  // Sunset transition: light → dark
+  var sunsetStart  = times.sunset - half;
+  var sunsetEnd    = times.sunset + half;
+
+  if (nowMs >= sunriseStart && nowMs <= sunriseEnd) {
+    // Fading to light
+    return 1 - ((nowMs - sunriseStart) / TRANSITION_DURATION);
+  } else if (nowMs >= sunsetStart && nowMs <= sunsetEnd) {
+    // Fading to dark
+    return (nowMs - sunsetStart) / TRANSITION_DURATION;
+  } else if (nowMs > sunriseEnd && nowMs < sunsetStart) {
+    return 0; // Full day — light
+  } else {
+    return 1; // Full night — dark
+  }
+}
+
+function updateAutoTheme() {
+  if (!autoThemeOn || autoThemeManualOverride) return;
+  var t = getThemeProgress();
+  applyThemeAt(t);
+  updateThemeBtn(t > 0.5 ? 'dark' : 'light');
+
+  // Update status
+  var status = document.getElementById('autoThemeStatus');
+  if (status) {
+    var times = getSunTimes(RX_LAT, RX_LON, new Date());
+    if (times) {
+      status.textContent = '🌅 ' + formatSunTime(times.sunrise) + '  🌇 ' + formatSunTime(times.sunset);
+    }
+  }
+}
+
+function toggleAutoTheme(on) {
+  autoThemeOn = on;
+  autoThemeManualOverride = false;
+  localStorage.setItem('pilnk-auto-theme', on);
+  var status = document.getElementById('autoThemeStatus');
+  if (status) status.style.display = on ? 'block' : 'none';
+  if (on) {
+    updateAutoTheme();
+    if (autoThemeTimer) clearInterval(autoThemeTimer);
+    autoThemeTimer = setInterval(updateAutoTheme, 60000); // update every minute
+  } else {
+    if (autoThemeTimer) { clearInterval(autoThemeTimer); autoThemeTimer = null; }
+    // Restore saved manual theme
+    var saved = localStorage.getItem('pilnk-theme') || 'light';
+    document.documentElement.removeAttribute('style'); // clear inline CSS vars
+    document.documentElement.setAttribute('data-theme', saved);
+    applyTileFilter();
+    if (ringsOn) drawRings();
+    updateThemeBtn(saved);
+  }
+}
+
+// ── TERMINATOR LINE ────────────────────────────────────────
+function getSunPosition(date) {
+  var JD = date.getTime() / 86400000 + 2440587.5;
+  var n = JD - 2451545.0;
+  var L = (280.46 + 0.9856474 * n) % 360;
+  var g = ((357.528 + 0.9856003 * n) % 360) * Math.PI / 180;
+  var lambda = (L + 1.915 * Math.sin(g) + 0.02 * Math.sin(2*g)) * Math.PI / 180;
+  var epsilon = 23.439 * Math.PI / 180;
+  var decl = Math.asin(Math.sin(epsilon) * Math.sin(lambda)) * 180/Math.PI;
+  var GMST = (18.697374558 + 24.06570982441908 * n) % 24;
+  var sunLon = -(GMST * 15 - (Math.atan2(Math.cos(epsilon*Math.PI/180)*Math.sin(lambda), Math.cos(lambda)) * 180/Math.PI));
+  while (sunLon < -180) sunLon += 360;
+  while (sunLon > 180) sunLon -= 360;
+  return { lat: decl, lon: sunLon };
+}
+
+function buildTerminatorPoints(date) {
+  var sun = getSunPosition(date);
+  var sunLatR = sun.lat * Math.PI / 180;
+  var sunLonR = sun.lon * Math.PI / 180;
+  var points = [];
+  for (var i = 0; i <= 360; i++) {
+    var azR = i * Math.PI / 180;
+    var lat = Math.asin(Math.sin(sunLatR)*Math.sin(0) - Math.cos(sunLatR)*Math.cos(0)*Math.cos(azR)) * 180/Math.PI;
+    // Great circle calculation for terminator
+    var lon = sun.lon + Math.atan2(
+      -Math.cos(azR),
+      Math.sin(sunLatR) * Math.sin(azR)
+    ) * 180/Math.PI;
+    // Use spherical coords: terminator is 90deg from subsolar point
+    var termLat = Math.asin(
+      -Math.cos(azR) * Math.cos(sunLatR)
+    ) * 180/Math.PI;
+    var termLon = sun.lon + Math.atan2(
+      Math.sin(azR) * Math.cos(sunLatR),
+      Math.sin(sunLatR)
+    ) * 180/Math.PI;
+    while (termLon < -180) termLon += 360;
+    while (termLon > 180) termLon -= 360;
+    points.push([termLat, termLon]);
+  }
+  return points;
+}
+
+function drawTerminator() {
+  if (terminatorLayer) { map.removeLayer(terminatorLayer); terminatorLayer = null; }
+  if (!terminatorOn) return;
+  var pts = buildTerminatorPoints(new Date());
+  var sun = getSunPosition(new Date());
+  // Night side polygon — cover entire map and cut out day side
+  // Simple approach: draw semi-transparent polygon on night side
+  terminatorLayer = L.polygon(pts, {
+    className: 'terminator-path',
+    interactive: false,
+    pane: 'wxPane'
+  }).addTo(map);
+}
+
+function toggleTerminator(on) {
+  terminatorOn = on;
+  localStorage.setItem('pilnk-terminator', on);
+  if (on) {
+    drawTerminator();
+    if (terminatorTimer) clearInterval(terminatorTimer);
+    terminatorTimer = setInterval(drawTerminator, 5 * 60 * 1000); // refresh every 5 min
+  } else {
+    if (terminatorLayer) { map.removeLayer(terminatorLayer); terminatorLayer = null; }
+    if (terminatorTimer) { clearInterval(terminatorTimer); terminatorTimer = null; }
+  }
+}
+
+// Init auto theme and terminator from saved prefs
+document.getElementById('autoThemeToggle').checked = autoThemeOn;
+document.getElementById('terminatorToggle').checked = terminatorOn;
+if (autoThemeOn) {
+  document.getElementById('autoThemeStatus').style.display = 'block';
+  toggleAutoTheme(true);
+}
+if (terminatorOn) toggleTerminator(true);
+
+// Override manual theme toggle to pause auto theme temporarily
+var _origToggleTheme = toggleTheme;
+toggleTheme = function() {
+  if (autoThemeOn) {
+    autoThemeManualOverride = true;
+    // Remove inline styles to let data-theme take over
+    document.documentElement.removeAttribute('style');
+  }
+  _origToggleTheme();
+};
 drawRings();
 updateFlights();
 setInterval(updateFlights,5000);
 loadAvData('NZAA',NZAA_LAT,NZAA_LON);
+// Restore label preference
+var savedLabels = localStorage.getItem('pilnk-labels') === 'true';
+document.getElementById('labelToggle').checked = savedLabels;
+if (savedLabels) labelsOn = true;
+// Load recordings list
+loadRecordingsList();
 </script>
 </body>
 </html>
