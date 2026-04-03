@@ -189,6 +189,39 @@ def metar_proxy(station):
     except Exception as e:
         return jsonify([]), 500
 
+# ── TAF proxy ──────────────────────────────────────────────
+@app.route('/api/taf/<station>')
+def taf_proxy(station):
+    try:
+        r = requests.get(
+            'https://aviationweather.gov/api/data/taf?ids=' + station + '&format=json',
+            timeout=10,
+            headers={'User-Agent': 'PiLNK/1.0'}
+        )
+        resp = make_response(r.content)
+        resp.headers['Content-Type'] = 'application/json'
+        resp.headers['Access-Control-Allow-Origin'] = '*'
+        return resp
+    except Exception as e:
+        return jsonify([]), 500
+
+# ── PiLNK.io API Proxy — avoids CORS from local IP ───────
+@app.route('/api/pilnkio/<path:endpoint>', methods=['GET','POST','OPTIONS'])
+def pilnkio_proxy(endpoint):
+    url = 'https://pilnk.io/api/' + endpoint
+    try:
+        if request.method == 'POST':
+            r = requests.post(url, json=request.get_json(), timeout=10,
+                headers={'Content-Type': 'application/json'})
+        else:
+            r = requests.get(url, params=request.args.to_dict(), timeout=10)
+        resp = make_response(r.content)
+        resp.headers['Content-Type'] = 'application/json'
+        resp.headers['Access-Control-Allow-Origin'] = '*'
+        return resp
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
 # ── FIDS stub — flight information display ────────────────
 @app.route('/api/fids')
 def fids():

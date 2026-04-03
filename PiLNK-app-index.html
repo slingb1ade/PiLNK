@@ -43,7 +43,11 @@
   .slider-wrap{display:flex;flex-direction:column;gap:8px;margin-top:4px;}
   .slider-row{display:flex;flex-direction:column;gap:4px;}
   .slider-label{display:flex;justify-content:space-between;font-size:0.62rem;color:var(--text-dim);}
-  input[type=range]{width:100%;accent-color:var(--blue-mid);}
+  input[type=range]{width:100%;accent-color:var(--blue-mid);height:22px;cursor:pointer;-webkit-appearance:none;appearance:none;background:transparent;}
+  input[type=range]::-webkit-slider-runnable-track{height:6px;background:var(--bg-card);border-radius:3px;border:1px solid var(--border);}
+  input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;appearance:none;width:22px;height:22px;border-radius:50%;background:var(--blue-mid);cursor:pointer;margin-top:-8px;border:2px solid var(--bg-panel);}
+  input[type=range]::-moz-range-track{height:6px;background:var(--bg-card);border-radius:3px;border:1px solid var(--border);}
+  input[type=range]::-moz-range-thumb{width:22px;height:22px;border-radius:50%;background:var(--blue-mid);cursor:pointer;border:2px solid var(--bg-panel);}
   .vu{height:3px;background:var(--border);border-radius:2px;overflow:hidden;margin-top:8px;}
   .vu-bar{height:100%;width:0%;background:linear-gradient(90deg,var(--blue-dim),var(--blue-mid),var(--blue-light));border-radius:2px;transition:width 0.1s;}
   #audioPlayer{display:none;}
@@ -723,6 +727,89 @@
     font-size:0.7rem;color:#00ff88;
     margin-bottom:14px;
   }
+
+  /* ── WEATHER PANEL (W button) ───────────────────────── */
+  #wxBtn{
+    position:fixed;right:16px;top:50%;transform:translateY(-50%);
+    z-index:5000;
+    width:36px;height:36px;
+    background:var(--bg-panel);
+    border:1px solid var(--border2);
+    border-radius:8px;
+    color:var(--blue2);
+    font-family:'Orbitron',sans-serif;
+    font-size:0.75rem;font-weight:700;
+    cursor:pointer;
+    display:flex;align-items:center;justify-content:center;
+    transition:all 0.2s;
+    box-shadow:0 2px 8px rgba(0,0,0,0.3);
+  }
+  #wxBtn:hover{background:var(--blue-dim);border-color:var(--blue-mid);color:white;}
+  #wxBtn.active{background:var(--blue-dim);border-color:var(--blue-mid);color:white;}
+
+  #wxPanel{
+    position:fixed;right:60px;top:50%;transform:translateY(-50%);
+    z-index:4999;
+    width:min(340px,90vw);
+    max-height:80vh;
+    overflow-y:auto;
+    background:var(--bg-panel);
+    border:1px solid var(--border2);
+    border-radius:12px;
+    padding:16px;
+    box-shadow:0 8px 32px rgba(0,0,0,0.4);
+    display:none;
+    scrollbar-width:thin;
+  }
+  #wxPanel.show{display:block;animation:wxSlideIn 0.2s ease;}
+  @keyframes wxSlideIn{from{opacity:0;transform:translateY(-50%) translateX(10px);}to{opacity:1;transform:translateY(-50%) translateX(0);}}
+
+  .wx-section-title{
+    font-family:'Orbitron',sans-serif;
+    font-size:0.6rem;letter-spacing:0.2em;
+    color:var(--text-dim);text-transform:uppercase;
+    margin:12px 0 6px;padding-bottom:4px;
+    border-bottom:1px solid var(--border);
+  }
+  .wx-section-title:first-child{margin-top:0;}
+  .wx-raw{
+    font-family:'Share Tech Mono',monospace;
+    font-size:0.65rem;color:var(--blue2);
+    word-break:break-all;line-height:1.6;
+    background:var(--bg-card);
+    border-radius:6px;padding:8px;
+    margin-bottom:8px;
+  }
+  .wx-row{display:flex;justify-content:space-between;font-size:0.68rem;margin-bottom:4px;}
+  .wx-lbl{color:var(--text-dim);}
+  .wx-val{color:var(--text);font-family:'Share Tech Mono',monospace;font-weight:bold;}
+  .wx-flight-rule{
+    display:inline-block;
+    font-family:'Orbitron',sans-serif;
+    font-size:0.6rem;font-weight:700;
+    letter-spacing:0.15em;
+    padding:3px 10px;border-radius:4px;
+    margin-bottom:10px;
+  }
+  .wx-VFR{background:rgba(0,255,136,0.15);color:#00ff88;border:1px solid rgba(0,255,136,0.3);}
+  .wx-MVFR{background:rgba(56,189,248,0.15);color:#38bdf8;border:1px solid rgba(56,189,248,0.3);}
+  .wx-IFR{background:rgba(248,113,113,0.15);color:#f87171;border:1px solid rgba(248,113,113,0.3);}
+  .wx-LIFR{background:rgba(167,139,250,0.15);color:#a78bfa;border:1px solid rgba(167,139,250,0.3);}
+  .taf-period{
+    background:var(--bg-card);border-radius:6px;
+    padding:8px 10px;margin-bottom:6px;
+    font-size:0.65rem;line-height:1.7;
+    font-family:'Share Tech Mono',monospace;
+    color:var(--text-dim);
+  }
+  .taf-period strong{color:var(--text);}
+  .wx-station{
+    font-family:'Orbitron',sans-serif;
+    font-size:0.85rem;font-weight:700;
+    color:var(--text);margin-bottom:4px;
+  }
+  .wx-time{font-size:0.6rem;color:var(--text-dim);margin-bottom:10px;}
+  .wx-loading{font-size:0.7rem;color:var(--text-dim);text-align:center;padding:20px;}
 </style>
 </head>
 <body>
@@ -922,6 +1009,11 @@
           </div>
           <div class="panel">
             <div class="panel-title">Map Options</div>
+            <div class="panel-title">Node</div>
+            <div class="toggle-row" style="margin-bottom:12px;">
+              <span>📡 Node Registration</span>
+              <button onclick="nodeReg.open()" style="background:var(--blue-dim);border:none;border-radius:5px;color:white;font-family:'Share Tech Mono',monospace;font-size:0.62rem;letter-spacing:0.1em;padding:5px 10px;cursor:pointer;">Open</button>
+            </div>
             <div class="toggle-row"><span>Flight Trails</span><label class="toggle-switch"><input type="checkbox" id="trailToggle" checked onchange="toggleTrails(this.checked)"/><span class="toggle-slider"></span></label></div>
             <div class="toggle-row"><span>Distance Rings</span><label class="toggle-switch"><input type="checkbox" id="ringToggle" checked onchange="toggleRings(this.checked)"/><span class="toggle-slider"></span></label></div>
             <div class="toggle-row"><span>Aircraft Labels</span><label class="toggle-switch"><input type="checkbox" id="labelToggle" onchange="toggleLabels(this.checked)"/><span class="toggle-slider"></span></label></div>
@@ -967,14 +1059,7 @@
             <div id="squawkAlertContent"></div>
           </div>
 
-          <!-- METAR -->
-          <div class="panel">
-            <div class="panel-title">Local Weather</div>
-            <div id="metarContent">
-              <div style="font-size:0.62rem;color:var(--text-dim);">Loading METAR...</div>
-            </div>
-            <div id="metarTime" style="font-size:0.55rem;color:var(--text-dim);margin-top:6px;"></div>
-          </div>
+          <!-- METAR moved to W button panel -->
 
           <!-- FLIGHT STREAK -->
           <div class="panel">
@@ -3458,24 +3543,29 @@ var approach3D = (function() {
 
 
 // ══════════════════════════════════════════════════════════════
-// PILNK NODE REGISTRATION MODULE
+// PILNK NODE REGISTRATION MODULE v2
+// Full flow: register → verify email → auto connect — no terminal!
 // ══════════════════════════════════════════════════════════════
 var nodeReg = (function() {
   'use strict';
 
-  var API = 'https://pilnk.io/api';
-  var currentTab = 'register';
+  var API = '/api/pilnkio';
+  var savedEmail = '';
+  var savedPassword = '';
+  var savedCallsign = '';
 
   function open() {
     var overlay = document.getElementById('nodeRegOverlay');
     if (!overlay) return;
-
-    // If already registered show status
+    // If already connected show success state
     var code = localStorage.getItem('pilnk-verify-code');
-    var callsign = localStorage.getItem('pilnk-callsign');
-    if (code && callsign) {
-      setStatus('regStatus', 'success',
-        '✓ Node registered as ' + callsign + '\nVerify code: ' + code);
+    if (code) {
+      showStep(3);
+      var cs = localStorage.getItem('pilnk-callsign') || 'YOUR NODE';
+      var el = document.getElementById('successCallsign');
+      if (el) el.textContent = cs;
+    } else {
+      showStep(1);
     }
     overlay.classList.add('active');
   }
@@ -3490,31 +3580,26 @@ var nodeReg = (function() {
     close();
   }
 
+  function showStep(n) {
+    [1,2,3].forEach(function(i) {
+      var el = document.getElementById('regStep'+i);
+      if (el) el.style.display = i === n ? 'block' : 'none';
+    });
+  }
+
   function showTab(tab, el) {
-    currentTab = tab;
-    document.querySelectorAll('.reg-tab').forEach(function(t) {
-      t.classList.remove('active');
-    });
-    document.querySelectorAll('.reg-panel').forEach(function(p) {
-      p.classList.remove('active');
-    });
+    document.querySelectorAll('.reg-tab').forEach(function(t) { t.classList.remove('active'); });
     if (el) el.classList.add('active');
-    var panel = document.getElementById('regPanel' + tab.charAt(0).toUpperCase() + tab.slice(1));
-    if (panel) panel.classList.add('active');
+    document.getElementById('regPanelNew').style.display      = tab === 'new'      ? 'block' : 'none';
+    document.getElementById('regPanelExisting').style.display = tab === 'existing' ? 'block' : 'none';
   }
 
   function setStatus(id, type, msg) {
     var el = document.getElementById(id);
     if (!el) return;
     el.className = 'reg-status ' + type;
-    el.innerHTML = msg.replace(/\n/g, '<br>');
-  }
-
-  function setBtn(id, text, disabled) {
-    var btn = document.getElementById(id);
-    if (!btn) return;
-    btn.textContent = text;
-    btn.disabled = disabled;
+    el.innerHTML = msg.replace(/
+/g, '<br>');
   }
 
   function register() {
@@ -3526,91 +3611,122 @@ var nodeReg = (function() {
     if (!email || !email.includes('@')) { setStatus('regStatus','error','Please enter a valid email'); return; }
     if (!password || password.length < 6) { setStatus('regStatus','error','Password must be at least 6 characters'); return; }
 
-    setBtn('regSubmitBtn', '⏳ Registering...', true);
-    setStatus('regStatus', 'info', 'Connecting to PiLNK Network...');
+    savedEmail    = email;
+    savedPassword = password;
+    savedCallsign = callsign;
+
+    var btn = document.getElementById('regSubmitBtn');
+    if (btn) { btn.textContent = '⏳ Creating account...'; btn.disabled = true; }
+    setStatus('regStatus','info','Connecting to PiLNK Network...');
 
     fetch(API + '/register.php', {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({
-        callsign: callsign,
-        email: email,
-        password: password,
-        node_name: callsign
-      })
+      body: JSON.stringify({ callsign: callsign, email: email, password: password })
     })
     .then(function(r) { return r.json(); })
     .then(function(d) {
-      setBtn('regSubmitBtn', '📡 Register My Node', false);
-      if (d.success) {
-        localStorage.setItem('pilnk-callsign', callsign);
-        localStorage.setItem('pilnk-email', email);
-        if (d.verify_code) {
-          localStorage.setItem('pilnk-verify-code', d.verify_code);
-          setStatus('regStatus', 'success',
-            '✓ Registered! Your verify code is:\n' +
-            '<div class="reg-verify-code">' + d.verify_code + '</div>' +
-            'Check your email for the verification link!');
-        } else {
-          setStatus('regStatus', 'success',
-            '✓ Registered! Check your email to verify your account.');
-        }
+      if (btn) { btn.textContent = '📡 Create Account & Register Node'; btn.disabled = false; }
+      if (d.success || d.message) {
+        // Show step 2 — check email
+        var emailDisplay = document.getElementById('regEmailDisplay');
+        if (emailDisplay) emailDisplay.textContent = email;
+        showStep(2);
       } else {
-        setStatus('regStatus', 'error', d.error || 'Registration failed — please try again');
+        setStatus('regStatus','error', d.error || 'Registration failed — please try again');
       }
     })
-    .catch(function(e) {
-      setBtn('regSubmitBtn', '📡 Register My Node', false);
-      setStatus('regStatus', 'error', 'Connection error — check your internet connection');
+    .catch(function() {
+      if (btn) { btn.textContent = '📡 Create Account & Register Node'; btn.disabled = false; }
+      setStatus('regStatus','error','Connection error — check your internet connection');
     });
   }
 
-  function verify() {
-    var code = (document.getElementById('verifyCode').value || '').trim().toUpperCase();
-    if (!code || code.length < 6) { setStatus('verifyStatus','error','Please enter your verify code'); return; }
-    pingNode(code, 'verifyStatus');
-  }
+  function connectAfterVerify() {
+    setStatus('connectStatus','info','Logging in and connecting your node...');
 
-  function connectExisting() {
-    var code = (document.getElementById('existingCode').value || '').trim().toUpperCase();
-    if (!code || code.length < 6) { setStatus('existingStatus','error','Please enter your verify code'); return; }
-    pingNode(code, 'existingStatus');
-  }
-
-  function pingNode(code, statusId) {
-    setStatus(statusId, 'info', 'Connecting to PiLNK Network...');
-
-    fetch(API + '/node.php', {
+    // Login with saved credentials
+    fetch(API + '/login.php', {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({
-        action: 'ping',
-        verify_code: code,
-        aircraft_count: Object.keys(typeof lastAircraft !== 'undefined' ? lastAircraft : {}).length
-      })
+      body: JSON.stringify({ identifier: savedEmail, password: savedPassword })
+    })
+    .then(function(r) { return r.json(); })
+    .then(function(d) {
+      if (d.success) {
+        // Now ping/register node
+        return fetch(API + '/node.php', {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({
+            action: 'ping',
+            verify_code: d.node && d.node.verify_code ? d.node.verify_code : '',
+            callsign: savedCallsign,
+            aircraft_count: Object.keys(typeof lastAircraft !== 'undefined' ? lastAircraft : {}).length
+          })
+        });
+      } else {
+        throw new Error(d.error || 'Login failed — have you verified your email?');
+      }
     })
     .then(function(r) { return r.json(); })
     .then(function(d) {
       if (d.success || d.status === 'ok') {
-        localStorage.setItem('pilnk-verify-code', code);
-        setStatus(statusId, 'success',
-          '✓ Node connected to PiLNK Network!\n' +
-          'Your node is now live on pilnk.io/network');
-        // Start regular pings
-        startPinging(code);
-        // Close after 3 seconds
-        setTimeout(close, 3000);
+        // Save and show success
+        localStorage.setItem('pilnk-callsign', savedCallsign);
+        if (d.verify_code) localStorage.setItem('pilnk-verify-code', d.verify_code);
+        var el = document.getElementById('successCallsign');
+        if (el) el.textContent = savedCallsign;
+        showStep(3);
+        // Start pinging
+        if (d.verify_code) startPinging(d.verify_code);
       } else {
-        setStatus(statusId, 'error', d.error || 'Invalid verify code — check and try again');
+        setStatus('connectStatus','error', d.error || 'Could not connect node — please try again');
+      }
+    })
+    .catch(function(e) {
+      setStatus('connectStatus','error', e.message || 'Connection error — have you verified your email?');
+    });
+  }
+
+  function loginAndConnect() {
+    var identifier = (document.getElementById('existingIdentifier').value || '').trim();
+    var password   = (document.getElementById('existingPassword').value   || '').trim();
+
+    if (!identifier) { setStatus('existingStatus','error','Please enter your email or callsign'); return; }
+    if (!password)   { setStatus('existingStatus','error','Please enter your password'); return; }
+
+    setStatus('existingStatus','info','Connecting...');
+
+    fetch(API + '/login.php', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ identifier: identifier, password: password })
+    })
+    .then(function(r) { return r.json(); })
+    .then(function(d) {
+      if (d.success) {
+        savedCallsign = d.callsign;
+        localStorage.setItem('pilnk-callsign', d.callsign);
+        // Get verify code from node data
+        var code = d.node && d.node.verify_code ? d.node.verify_code : '';
+        if (code) {
+          localStorage.setItem('pilnk-verify-code', code);
+          startPinging(code);
+        }
+        var el = document.getElementById('successCallsign');
+        if (el) el.textContent = d.callsign;
+        showStep(3);
+      } else {
+        setStatus('existingStatus','error', d.error || 'Login failed — check your credentials');
       }
     })
     .catch(function() {
-      setStatus(statusId, 'error', 'Connection error — check your internet connection');
+      setStatus('existingStatus','error','Connection error');
     });
   }
 
   function startPinging(code) {
-    // Ping every 5 minutes
     setInterval(function() {
       fetch(API + '/node.php', {
         method: 'POST',
@@ -3625,92 +3741,274 @@ var nodeReg = (function() {
   }
 
   function init() {
-    // Check if should show on first load
-    var registered = localStorage.getItem('pilnk-verify-code');
-    var skipped    = localStorage.getItem('pilnk-reg-skipped');
-
-    if (!registered && !skipped) {
-      // First time — show after 3 second delay
+    var code     = localStorage.getItem('pilnk-verify-code');
+    var skipped  = localStorage.getItem('pilnk-reg-skipped');
+    if (code) {
+      startPinging(code);
+    } else if (!skipped) {
       setTimeout(open, 3000);
-    } else if (registered) {
-      // Already registered — start pinging silently
-      startPinging(registered);
     }
   }
 
   return {
-    open: open,
-    close: close,
-    skip: skip,
-    showTab: showTab,
-    register: register,
-    verify: verify,
-    connectExisting: connectExisting,
+    open: open, close: close, skip: skip,
+    showTab: showTab, register: register,
+    connectAfterVerify: connectAfterVerify,
+    loginAndConnect: loginAndConnect,
     init: init
   };
 })();
 
-// Init on load
 nodeReg.init();
+
+
+// ══════════════════════════════════════════════════════════════
+// WEATHER PANEL — METAR + TAF via W button
+// ══════════════════════════════════════════════════════════════
+var wxPanel = (function() {
+  'use strict';
+
+  var visible = false;
+  var loaded = false;
+  var station = 'NZAA'; // default — will update from config
+
+  // Try to get nearest airport from receiver location
+  function getNearestStation() {
+    try {
+      var cfg = JSON.parse(localStorage.getItem('pilnk-config') || '{}');
+      // Simple lookup based on lat/lon
+      var lat = cfg.rx_lat || -37.008;
+      var lon = cfg.rx_lon || 174.791;
+      // NZ airports
+      var airports = [
+        {icao:'NZAA', lat:-37.008, lon:174.791},
+        {icao:'NZCH', lat:-43.489, lon:172.532},
+        {icao:'NZWN', lat:-41.327, lon:174.805},
+        {icao:'NZQN', lat:-45.021, lon:168.739},
+        {icao:'NZDN', lat:-45.928, lon:170.197},
+        {icao:'NZPM', lat:-40.320, lon:175.617},
+        {icao:'NZNP', lat:-39.008, lon:174.179},
+        {icao:'NZHN', lat:-37.867, lon:175.332},
+      ];
+      var nearest = airports[0];
+      var minDist = 9999;
+      airports.forEach(function(a) {
+        var d = Math.sqrt(Math.pow(a.lat-lat,2) + Math.pow(a.lon-lon,2));
+        if (d < minDist) { minDist = d; nearest = a; }
+      });
+      return nearest.icao;
+    } catch(e) { return 'NZAA'; }
+  }
+
+  function toggle() {
+    visible = !visible;
+    var panel = document.getElementById('wxPanel');
+    var btn   = document.getElementById('wxBtn');
+    if (visible) {
+      panel.classList.add('show');
+      btn.classList.add('active');
+      if (!loaded) load();
+      // Click outside to close
+      setTimeout(function() {
+        document.addEventListener('click', outsideClick);
+      }, 100);
+    } else {
+      close();
+    }
+  }
+
+  function close() {
+    visible = false;
+    document.getElementById('wxPanel').classList.remove('show');
+    document.getElementById('wxBtn').classList.remove('active');
+    document.removeEventListener('click', outsideClick);
+  }
+
+  function outsideClick(e) {
+    var panel = document.getElementById('wxPanel');
+    var btn   = document.getElementById('wxBtn');
+    if (!panel.contains(e.target) && !btn.contains(e.target)) {
+      close();
+    }
+  }
+
+  function load() {
+    station = getNearestStation();
+    loaded = true;
+
+    // Fetch METAR
+    fetch('/api/metar/' + station)
+      .then(function(r) { return r.json(); })
+      .then(function(data) {
+        var metar = Array.isArray(data) ? data[0] : data;
+        renderMetar(metar);
+      })
+      .catch(function() {
+        document.getElementById('wxLoading').innerHTML = 
+          '<span style="color:var(--text-dim)">Could not load weather data</span>';
+      });
+
+    // Fetch TAF
+    fetch('/api/taf/' + station)
+      .then(function(r) { return r.json(); })
+      .then(function(data) {
+        var taf = Array.isArray(data) ? data[0] : data;
+        renderTaf(taf);
+      })
+      .catch(function() {});
+  }
+
+  function flightRule(vis, ceiling) {
+    if (ceiling < 500 || vis < 1) return 'LIFR';
+    if (ceiling < 1000 || vis < 3) return 'IFR';
+    if (ceiling < 3000 || vis < 5) return 'MVFR';
+    return 'VFR';
+  }
+
+  function renderMetar(m) {
+    if (!m) return;
+    document.getElementById('wxLoading').style.display = 'none';
+    var content = document.getElementById('wxContent');
+    content.style.display = 'block';
+
+    var raw = m.rawOb || m.raw_text || m.metar || 'N/A';
+    var temp = m.temp !== undefined ? m.temp + '°C' : 'N/A';
+    var dewp = m.dewp !== undefined ? m.dewp + '°C' : 'N/A';
+    var alt  = m.altim !== undefined ? m.altim.toFixed(0) + ' hPa' : (m.altimeter ? m.altimeter + ' inHg' : 'N/A');
+    var vis  = m.visib !== undefined ? m.visib + ' SM' : 'N/A';
+    var wdir = m.wdir !== undefined ? m.wdir + '°' : 'N/A';
+    var wspd = m.wspd !== undefined ? m.wspd + ' kt' : 'N/A';
+    var wgst = m.wgst ? ' G' + m.wgst + 'kt' : '';
+    var ceil = m.cloud_base_ft_agl || 9999;
+    var visNum = parseFloat(m.visib) || 10;
+    var fr = flightRule(visNum, ceil);
+
+    var clouds = '';
+    if (m.sky_condition) {
+      var sky = Array.isArray(m.sky_condition) ? m.sky_condition : [m.sky_condition];
+      clouds = sky.map(function(s) {
+        return (s.sky_cover || '') + ' ' + (s.cloud_base_ft_agl ? s.cloud_base_ft_agl + 'ft' : '');
+      }).join(' · ');
+    }
+
+    var html = '<div class="wx-station">' + station + '</div>';
+    html += '<div class="wx-time">' + (m.observation_time || m.reportTime || '') + '</div>';
+    html += '<span class="wx-flight-rule wx-' + fr + '">' + fr + '</span>';
+    html += '<div class="wx-section-title">METAR</div>';
+    html += '<div class="wx-raw">' + raw + '</div>';
+    html += '<div class="wx-row"><span class="wx-lbl">Wind</span><span class="wx-val">' + wdir + ' / ' + wspd + wgst + '</span></div>';
+    html += '<div class="wx-row"><span class="wx-lbl">Visibility</span><span class="wx-val">' + vis + '</span></div>';
+    if (clouds) html += '<div class="wx-row"><span class="wx-lbl">Clouds</span><span class="wx-val">' + clouds + '</span></div>';
+    html += '<div class="wx-row"><span class="wx-lbl">Temp / Dew</span><span class="wx-val">' + temp + ' / ' + dewp + '</span></div>';
+    html += '<div class="wx-row"><span class="wx-lbl">QNH</span><span class="wx-val">' + alt + '</span></div>';
+
+    content.innerHTML = html;
+  }
+
+  function renderTaf(t) {
+    if (!t) return;
+    var content = document.getElementById('wxContent');
+    var raw = t.rawTAF || t.raw_text || '';
+    if (!raw) return;
+
+    var html = '<div class="wx-section-title">TAF</div>';
+    html += '<div class="wx-raw">' + raw + '</div>';
+    content.innerHTML += html;
+  }
+
+  return { toggle: toggle, close: close, load: load };
+})();
 
 </script>
 
 <!-- NODE REGISTRATION MODAL -->
 <div id="nodeRegOverlay">
   <div id="nodeRegModal">
-    <div class="reg-title">📡 Register Your Node</div>
-    <p class="reg-sub">Join the PiLNK Network and appear on the global node map. Takes 30 seconds!</p>
 
-    <div class="reg-tabs">
-      <div class="reg-tab active" onclick="nodeReg.showTab('register',this)">New Node</div>
-      <div class="reg-tab" onclick="nodeReg.showTab('verify',this)">Verify</div>
-      <div class="reg-tab" onclick="nodeReg.showTab('existing',this)">Already Registered</div>
-    </div>
-
-    <!-- REGISTER TAB -->
-    <div class="reg-panel active" id="regPanelRegister">
-      <div class="reg-field">
-        <label class="reg-label">Callsign</label>
-        <input class="reg-input" id="regCallsign" type="text" placeholder="e.g. MYNODE1" maxlength="10" oninput="this.value=this.value.toUpperCase()"/>
+    <!-- STEP 1: Register -->
+    <div id="regStep1" class="reg-panel active">
+      <div class="reg-title">📡 Join the PiLNK Network</div>
+      <p class="reg-sub">Register your node and appear on the global map. Takes 60 seconds — all from right here!</p>
+      <div class="reg-tabs">
+        <div class="reg-tab active" onclick="nodeReg.showTab('new',this)" id="tabNew">New Account</div>
+        <div class="reg-tab" onclick="nodeReg.showTab('existing',this)" id="tabExisting">Already Registered</div>
       </div>
-      <div class="reg-field">
-        <label class="reg-label">Email</label>
-        <input class="reg-input" id="regEmail" type="email" placeholder="your@email.com"/>
+      <!-- New Account -->
+      <div id="regPanelNew" class="reg-panel active">
+        <div class="reg-field">
+          <label class="reg-label">Callsign</label>
+          <input class="reg-input" id="regCallsign" type="text" placeholder="e.g. AUCKLAND01" maxlength="10" oninput="this.value=this.value.toUpperCase()"/>
+        </div>
+        <div class="reg-field">
+          <label class="reg-label">Email</label>
+          <input class="reg-input" id="regEmail" type="email" placeholder="your@email.com"/>
+        </div>
+        <div class="reg-field">
+          <label class="reg-label">Password</label>
+          <input class="reg-input" id="regPassword" type="password" placeholder="Choose a password"/>
+        </div>
+        <button class="reg-btn" id="regSubmitBtn" onclick="nodeReg.register()">📡 Create Account & Register Node</button>
+        <div class="reg-status" id="regStatus"></div>
       </div>
-      <div class="reg-field">
-        <label class="reg-label">Password</label>
-        <input class="reg-input" id="regPassword" type="password" placeholder="Choose a password"/>
+      <!-- Already Registered -->
+      <div id="regPanelExisting" class="reg-panel" style="display:none;">
+        <p style="font-size:0.75rem;color:var(--text-dim);margin-bottom:14px;line-height:1.6;">Already have a pilnk.io account? Log in to connect this node.</p>
+        <div class="reg-field">
+          <label class="reg-label">Email or Callsign</label>
+          <input class="reg-input" id="existingIdentifier" type="text" placeholder="your@email.com or CALLSIGN"/>
+        </div>
+        <div class="reg-field">
+          <label class="reg-label">Password</label>
+          <input class="reg-input" id="existingPassword" type="password" placeholder="Your password"/>
+        </div>
+        <button class="reg-btn" onclick="nodeReg.loginAndConnect()">🔗 Connect This Node</button>
+        <div class="reg-status" id="existingStatus"></div>
       </div>
-      <button class="reg-btn" id="regSubmitBtn" onclick="nodeReg.register()">📡 Register My Node</button>
-      <div class="reg-status" id="regStatus"></div>
       <button class="reg-skip" onclick="nodeReg.skip()">Skip for now — I'll do this later</button>
     </div>
 
-    <!-- VERIFY TAB -->
-    <div class="reg-panel" id="regPanelVerify">
-      <p style="font-size:0.75rem;color:var(--text-dim);margin-bottom:14px;line-height:1.6;">Enter the verify code from your registration email, or the code shown after registering above.</p>
-      <div class="reg-field">
-        <label class="reg-label">Verify Code</label>
-        <input class="reg-input" id="verifyCode" type="text" placeholder="e.g. 1FF3B870" maxlength="8" oninput="this.value=this.value.toUpperCase()"/>
-      </div>
-      <button class="reg-btn" onclick="nodeReg.verify()">✓ Verify My Node</button>
-      <div class="reg-status" id="verifyStatus"></div>
+    <!-- STEP 2: Check Email -->
+    <div id="regStep2" class="reg-panel" style="display:none;">
+      <div class="reg-title">📧 Check Your Phone!</div>
+      <p class="reg-sub" style="margin-bottom:20px;">We've sent a verification email to <strong id="regEmailDisplay" style="color:var(--blue2);"></strong></p>
+      <div style="text-align:center;font-size:2.5rem;margin:16px 0;">📱</div>
+      <p style="font-size:0.78rem;color:var(--text-dim);text-align:center;line-height:1.8;margin-bottom:20px;">
+        Open the email on your phone and click the verification link.<br>
+        Then come back here and tap the button below!
+      </p>
+      <button class="reg-btn" onclick="nodeReg.connectAfterVerify()" style="background:#00aa55;">
+        ✓ I've Verified My Email — Connect My Node!
+      </button>
+      <div class="reg-status" id="connectStatus"></div>
       <button class="reg-skip" onclick="nodeReg.skip()">Skip for now</button>
     </div>
 
-    <!-- ALREADY REGISTERED TAB -->
-    <div class="reg-panel" id="regPanelExisting">
-      <p style="font-size:0.75rem;color:var(--text-dim);margin-bottom:14px;line-height:1.6;">Already have a PiLNK account? Enter your verify code to connect this node.</p>
-      <div class="reg-field">
-        <label class="reg-label">Your Verify Code</label>
-        <input class="reg-input" id="existingCode" type="text" placeholder="e.g. 1FF3B870" maxlength="8" oninput="this.value=this.value.toUpperCase()"/>
+    <!-- STEP 3: Success -->
+    <div id="regStep3" class="reg-panel" style="display:none;">
+      <div style="text-align:center;padding:16px 0;">
+        <div style="font-size:3rem;margin-bottom:12px;">🎉</div>
+        <div class="reg-title" style="color:#00ff88;">Node Connected!</div>
+        <p style="font-size:0.8rem;color:var(--text-mid);margin:12px 0 20px;line-height:1.7;">
+          Your node is now live on the PiLNK Network!<br>
+          You'll appear on the map at <strong style="color:var(--blue2);">pilnk.io/network</strong>
+        </p>
+        <div style="background:rgba(0,255,136,0.08);border:1px solid rgba(0,255,136,0.2);border-radius:8px;padding:14px;margin-bottom:20px;">
+          <div style="font-family:'Share Tech Mono',monospace;font-size:0.62rem;color:var(--text-dim);margin-bottom:4px;">YOUR CALLSIGN</div>
+          <div style="font-family:'Orbitron',sans-serif;font-size:1.2rem;font-weight:700;color:#00ff88;" id="successCallsign">--</div>
+        </div>
+        <button class="reg-btn" onclick="nodeReg.close()" style="background:#00aa55;">✓ Let's Go!</button>
       </div>
-      <button class="reg-btn" onclick="nodeReg.connectExisting()">🔗 Connect This Node</button>
-      <div class="reg-status" id="existingStatus"></div>
-      <button class="reg-skip" onclick="nodeReg.skip()">Skip for now</button>
     </div>
 
   </div>
+</div>
+
+
+<!-- WEATHER W BUTTON -->
+<button id="wxBtn" onclick="wxPanel.toggle()" title="Weather (METAR/TAF)">W</button>
+<div id="wxPanel">
+  <div class="wx-loading" id="wxLoading">Loading weather data...</div>
+  <div id="wxContent" style="display:none;"></div>
 </div>
 
 </body>
