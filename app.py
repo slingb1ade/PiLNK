@@ -14,16 +14,34 @@ socketio = SocketIO(app, cors_allowed_origins="*")
 current_frequency = 118.7e6
 current_gain      = 35
 current_squelch   = 0
-current_agc       = False
-current_nr        = False
-current_bw_low    = 3000
-current_bw_high   = 200
 
 FREQUENCIES = {
     'ground':   {'name': 'AKL Ground',   'freq': 121.100},
     'tower':    {'name': 'AKL Tower',    'freq': 118.700},
     'approach': {'name': 'AKL Approach', 'freq': 124.300},
 }
+
+# ── Enable bias tee on RTL-SDR V4 to power LNA ───────────
+def enable_bias_tee():
+    try:
+        result = subprocess.run(
+            ['rtl_biast', '-d', '00000002', '-b', '1'],
+            capture_output=True, text=True, timeout=5
+        )
+        if result.returncode == 0:
+            print('[PILNK] Bias tee enabled — LNA powered')
+        else:
+            print('[PILNK] Bias tee note:', result.stderr.strip())
+    except FileNotFoundError:
+        print('[PILNK] rtl_biast not found — skipping bias tee')
+    except Exception as e:
+        print('[PILNK] Bias tee error:', e)
+
+# Small delay then enable bias tee in background
+# (must run before rtl_fm starts using the device)
+bias_thread = threading.Thread(target=enable_bias_tee, daemon=True)
+bias_thread.start()
+bias_thread.join(timeout=3)  # wait up to 3s
 
 radio   = RadioStream()
 whisper = ATCWhisper(socketio)
@@ -50,12 +68,9 @@ def audio_feed():
             '-t', 'raw', '-r', '12k', '-e', 'signed', '-b', '16', '-c', '1', '-',
             '-t', 'ogg', '-C', '1', '-',
             'gain', str(current_gain),
-            'lowpass', str(current_bw_low),
-            'highpass', str(current_bw_high),
+            'lowpass', '3000',
+            'highpass', '200'
         ]
-        # Add noise reduction if enabled (sox noisered requires a profile — use compand as a simpler alternative)
-        if current_nr:
-            sox_cmd += ['compand', '0.1,0.2', '-inf,-50.1,-inf,-50,-50', '0', '-90', '0.1']
         sox = subprocess.Popen(sox_cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
         def feed_sox():
             while True:
@@ -134,125 +149,6 @@ def adsbdb_proxy(callsign):
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
-@app.route('/set_bandwidth', methods=['POST'])
-def set_bandwidth():
-    global current_bw_low, current_bw_high
-    data = request.json
-    current_bw_low  = int(data.get('low',  3000))
-    current_bw_high = int(data.get('high', 200))
-    return jsonify({'status': 'ok', 'low': current_bw_low, 'high': current_bw_high})
-
-@app.route('/set_nr', methods=['POST'])
-def set_nr():
-    global current_nr
-    data = request.json
-    current_nr = bool(data.get('nr', False))
-    return jsonify({'status': 'ok', 'nr': current_nr})
-
-@app.route('/set_agc', methods=['POST'])
-def set_agc():
-    global current_agc, current_gain
-    data = request.json
-    current_agc = bool(data.get('agc', False))
-    if current_agc:
-        current_gain = 0
-        radio.set_gain(0)
-    return jsonify({'status': 'ok', 'agc': current_agc})
-
-# ── Signal level for squelch-aware scanner ─────────────────
-@app.route('/get_signal_level')
-def get_signal_level():
-    try:
-        level = radio.get_signal_level()
-        active = current_squelch == 0 or level > current_squelch
-    except:
-        active = False
-    return jsonify({'active': active})
-
-# ── Recordings ─────────────────────────────────────────────
-import os
-from datetime import datetime
-
-RECORDINGS_DIR = os.path.expanduser('~/pilnk/recordings')
-MAX_RECORDINGS_MB = 500
-current_recording_file = None
-
-os.makedirs(RECORDINGS_DIR, exist_ok=True)
-
-def get_recordings_size_mb():
-    total = sum(
-        os.path.getsize(os.path.join(RECORDINGS_DIR, f))
-        for f in os.listdir(RECORDINGS_DIR)
-        if os.path.isfile(os.path.join(RECORDINGS_DIR, f))
-    )
-    return total / (1024 * 1024)
-
-def cleanup_old_recordings():
-    while get_recordings_size_mb() > MAX_RECORDINGS_MB:
-        files = sorted(
-            [os.path.join(RECORDINGS_DIR, f) for f in os.listdir(RECORDINGS_DIR)],
-            key=os.path.getmtime
-        )
-        if files:
-            os.remove(files[0])
-        else:
-            break
-
-@app.route('/start_recording', methods=['POST'])
-def start_recording():
-    global current_recording_file
-    data = request.json
-    freq = str(data.get('frequency', '118.700')).replace('.', '').replace(' ', '')
-    ts = datetime.now().strftime('%Y%m%d_%H%M%S')
-    filename = 'atc_{}_{}.ogg'.format(freq, ts)
-    filepath = os.path.join(RECORDINGS_DIR, filename)
-    try:
-        radio.start_recording(filepath)
-        current_recording_file = filename
-        cleanup_old_recordings()
-        return jsonify({'status': 'ok', 'filename': filename})
-    except Exception as e:
-        return jsonify({'status': 'error', 'message': str(e)}), 500
-
-@app.route('/stop_recording', methods=['POST'])
-def stop_recording():
-    global current_recording_file
-    try:
-        radio.stop_recording()
-    except:
-        pass
-    current_recording_file = None
-    return jsonify({'status': 'ok'})
-
-@app.route('/recordings')
-def list_recordings():
-    try:
-        files = []
-        for f in sorted(os.listdir(RECORDINGS_DIR),
-                        key=lambda x: os.path.getmtime(os.path.join(RECORDINGS_DIR, x)),
-                        reverse=True):
-            if f.endswith('.ogg') or f.endswith('.mp3'):
-                fp = os.path.join(RECORDINGS_DIR, f)
-                size_mb = os.path.getsize(fp) / (1024*1024)
-                mtime = datetime.fromtimestamp(os.path.getmtime(fp))
-                files.append({
-                    'name': f,
-                    'size': '{:.1f} MB'.format(size_mb),
-                    'date': mtime.strftime('%d %b %H:%M')
-                })
-        total_mb = get_recordings_size_mb()
-        return jsonify({
-            'recordings': files,
-            'total_size': '{:.0f} MB / {}MB max'.format(total_mb, MAX_RECORDINGS_MB)
-        })
-    except Exception as e:
-        return jsonify({'recordings': [], 'total_size': '0 MB'})
-
-@app.route('/recordings/<filename>')
-def download_recording(filename):
-    from flask import send_from_directory
-    return send_from_directory(RECORDINGS_DIR, filename, as_attachment=True)
-
 # ── RainViewer proxy — avoids CORS issues in browser ──────
 @app.route('/api/rainviewer')
 def rainviewer_proxy():
@@ -277,34 +173,6 @@ def planespotters_proxy(hex):
     except Exception as e:
         return jsonify({'photos': []}), 500
 
-# ── AeroDataBox FIDS proxy ─────────────────────────────────
-AERODATABOX_KEY = '1b21053b5cmsha60f2e2a02b5dcep19d59bjsn94d2eba60b85'
-
-@app.route('/api/fids')
-def fids_proxy():
-    try:
-        url = 'https://aerodatabox.p.rapidapi.com/flights/airports/icao/NZAA'
-        params = {
-            'offsetMinutes': '0',
-            'durationMinutes': '120',
-            'withLeg': 'true',
-            'withCancelled': 'true',
-            'withCodeshared': 'false',
-            'withCargo': 'false',
-            'withPrivate': 'false'
-        }
-        headers = {
-            'x-rapidapi-host': 'aerodatabox.p.rapidapi.com',
-            'x-rapidapi-key': AERODATABOX_KEY
-        }
-        r = requests.get(url, params=params, headers=headers, timeout=10)
-        resp = make_response(r.content)
-        resp.headers['Content-Type'] = 'application/json'
-        resp.headers['Access-Control-Allow-Origin'] = '*'
-        return resp
-    except Exception as e:
-        return jsonify({'departures': [], 'arrivals': [], 'error': str(e)}), 500
-
 # ── METAR proxy ────────────────────────────────────────────
 @app.route('/api/metar/<station>')
 def metar_proxy(station):
@@ -320,6 +188,38 @@ def metar_proxy(station):
         return resp
     except Exception as e:
         return jsonify([]), 500
+
+# ── FIDS stub — flight information display ────────────────
+@app.route('/api/fids')
+def fids():
+    return jsonify([])
+
+# ── Recordings ────────────────────────────────────────────
+@app.route('/recordings')
+def recordings():
+    import os, glob
+    rec_dir = os.path.join(os.path.dirname(__file__), 'recordings')
+    os.makedirs(rec_dir, exist_ok=True)
+    files = sorted(glob.glob(os.path.join(rec_dir, '*.ogg')), reverse=True)
+    total = sum(os.path.getsize(f) for f in files)
+    def fmt_size(b):
+        return f'{b/1024/1024:.1f} MB' if b > 1024*1024 else f'{b/1024:.0f} KB'
+    recs = [{'name': os.path.basename(f),
+             'size': fmt_size(os.path.getsize(f)),
+             'time': os.path.getmtime(f)} for f in files[:20]]
+    return jsonify({'recordings': recs, 'total_size': fmt_size(total)})
+
+@app.route('/recordings/<path:filename>')
+def serve_recording(filename):
+    import os
+    from flask import send_from_directory
+    rec_dir = os.path.join(os.path.dirname(__file__), 'recordings')
+    return send_from_directory(rec_dir, filename)
+
+# ── Favicon ───────────────────────────────────────────────
+@app.route('/favicon.ico')
+def favicon():
+    return '', 204
 
 if __name__ == '__main__':
     socketio.run(app, host='0.0.0.0', port=5000, debug=False, allow_unsafe_werkzeug=True)
