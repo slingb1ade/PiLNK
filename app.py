@@ -545,7 +545,12 @@ def flights_search():
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
-# ── Flight Art page ───────────────────────────────────────
+# ── Receiver location API ─────────────────────────────────
+@app.route('/api/location')
+def receiver_location():
+    return jsonify({'lat': RX_LAT, 'lon': RX_LON})
+
+
 @app.route('/flightart')
 def flightart():
     import os
