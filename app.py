@@ -21,8 +21,8 @@ socketio = SocketIO(app, cors_allowed_origins="*")
 import re
 
 def read_receiver_location():
-    try:
-        with open('/etc/default/dump1090-fa', 'r') as f:
+    if data:
+      with open(STATS_RECORDS_FILE, 'w') as f:
             content = f.read()
         lat = re.search(r'RECEIVER_LAT=([^\n]+)', content)
         lon = re.search(r'RECEIVER_LON=([^\n]+)', content)
