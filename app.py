@@ -2,7 +2,7 @@ from flask import Flask, render_template, Response, jsonify, request, make_respo
 from flask_cors import CORS
 from flask_socketio import SocketIO
 from radio import RadioStream
-from whisper_atc import ATCWhisper
+# from whisper_atc import ATCWhisper  # disabled until v2.0
 import subprocess
 import queue
 import threading
@@ -296,10 +296,10 @@ bias_thread.start()
 bias_thread.join(timeout=3)  # wait up to 3s
 
 radio   = RadioStream()
-whisper = ATCWhisper(socketio)
-radio.subscribe(whisper.feed)
+# whisper = ATCWhisper(socketio)  # disabled until v2.0
+# radio.subscribe(whisper.feed)  # disabled until v2.0
 radio.start()
-whisper.start()
+# whisper.start()  # disabled until v2.0
 
 @app.route('/')
 def index():
