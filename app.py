@@ -77,7 +77,7 @@ trail_thread.start()
 
 # ── PiLNK.io server ping — sends aircraft data + stats every 30s
 # Set this to your node's verify code from your profile page
-NODE_VERIFY_CODE = '1FF3B870'
+NODE_VERIFY_CODE = '8Y6D-KXX4'
 
 # Stats tracker (computed server-side for profile display)
 node_stats = {
@@ -242,7 +242,9 @@ def ping_server():
                 'verify_code': NODE_VERIFY_CODE,
                 'aircraft_count': len(aircraft),
                 'aircraft': aircraft,
-                'node_stats': get_stats_payload()
+                'node_stats': get_stats_payload(),
+                'lat': RX_LAT,
+                'lon': RX_LON
             }).encode()
             req = urllib.request.Request(
                 'https://pilnk.io/api/node.php',
