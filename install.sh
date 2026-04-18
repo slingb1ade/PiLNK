@@ -1,6 +1,6 @@
 #!/bin/bash
 # ╔═══════════════════════════════════════════════════════╗
-# ║         PiLNK Installer  v2.3                        ║
+# ║         PiLNK Installer  v2.4                        ║
 # ║         pilnk.io  |  Built in Auckland NZ            ║
 # ╚═══════════════════════════════════════════════════════╝
 
@@ -36,7 +36,7 @@ cat << 'EOF'
 EOF
 printf "${RESET}"
 echo ""
-printf "  ${CYAN}Aviation Intelligence Network — v2.3${RESET}\n"
+printf "  ${CYAN}Aviation Intelligence Network — v2.4${RESET}\n"
 printf "  ${CYAN}pilnk.io${RESET}\n"
 echo ""
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
@@ -134,13 +134,24 @@ if ! echo "$LON" | grep -qE '^-?[0-9]+\.?[0-9]*$'; then
   exit 1
 fi
 
-# Verify code
-printf "${CYAN}  Verify Code${RESET} (from your pilnk.io profile, e.g. ABCD-EFGH): " > /dev/tty
+# Verify code — must be the NODE verify code (not user verify code)
+printf "${CYAN}  Verify Code${RESET} (from pilnk.io → Profile → My Node section): " > /dev/tty
 read -r CODE < /dev/tty
 CODE=$(echo "$CODE" | tr '[:lower:]' '[:upper:]' | tr -d ' ')
-if ! echo "$CODE" | grep -qE '^[A-Z0-9]{4}-[A-Z0-9]{4}$'; then
-  err "Invalid verify code format. Expected: XXXX-XXXX"
-  err "Find your code at pilnk.io → Profile → My Node"
+# Accept both formats: XXXX-XXXX (user code) or 8 hex chars (node code)
+if echo "$CODE" | grep -qE '^[A-Z0-9]{8}$'; then
+  ok "Verify code accepted (node format)"
+elif echo "$CODE" | grep -qE '^[A-Z0-9]{4}-[A-Z0-9]{4}$'; then
+  warn "That looks like a USER verify code (has a dash)."
+  warn "Your NODE verify code is different — check Profile → My Node."
+  warn "It's 8 characters with no dash, e.g. 4E4F196F"
+  printf "  Continue with $CODE anyway? [y/N] " > /dev/tty
+  read -r yn < /dev/tty
+  [[ ! "$yn" =~ ^[Yy]$ ]] && exit 1
+else
+  err "Invalid verify code format."
+  err "Node verify code is 8 characters, e.g. 4E4F196F"
+  err "Find it at pilnk.io → Profile → My Node section"
   exit 1
 fi
 
@@ -190,13 +201,21 @@ ok "System packages installed"
 
 # Install dump1090-fa if not present
 if ! command -v dump1090-fa &>/dev/null; then
-  info "Installing dump1090-fa from FlightAware..."
-  wget -qO /tmp/piaware.deb "https://flightaware.com/adsb/piaware/files/packages/pool/piaware/p/piaware/dump1090-fa_9.0_$(dpkg --print-architecture).deb" 2>/dev/null || true
-  [ -f /tmp/piaware.deb ] && sudo dpkg -i /tmp/piaware.deb 2>/dev/null || true
-  if command -v dump1090-fa &>/dev/null; then
-    ok "dump1090-fa installed"
+  info "Installing dump1090-fa..."
+  # Try apt first (works if FlightAware repo is configured)
+  if sudo apt-get install -y dump1090-fa 2>/dev/null; then
+    ok "dump1090-fa installed via apt"
   else
-    warn "dump1090-fa could not be installed — ADS-B may not work"
+    # Try direct download
+    ARCH=$(dpkg --print-architecture)
+    wget -qO /tmp/dump1090-fa.deb "https://flightaware.com/adsb/piaware/files/packages/pool/piaware/p/piaware-support/dump1090-fa_9.0_${ARCH}.deb" 2>/dev/null || true
+    if [ -f /tmp/dump1090-fa.deb ] && sudo dpkg -i /tmp/dump1090-fa.deb 2>/dev/null; then
+      ok "dump1090-fa installed"
+    else
+      warn "dump1090-fa could not be auto-installed"
+      warn "Install manually: sudo apt-get install dump1090-fa"
+      warn "Or visit: https://flightaware.com/adsb/piaware/install"
+    fi
   fi
 else
   ok "dump1090-fa already present"
@@ -290,18 +309,30 @@ if [ -f "$APP_PY" ]; then
     ok "Verify code added to app.py"
   fi
 else
-  cat > "$APP_PY" << PYEOF
-NODE_VERIFY_CODE = '$CODE'
-NODE_LAT = $LAT
-NODE_LON = $LON
-PYEOF
-  ok "Created app.py with configuration"
+  warn "app.py not found — it should come from the GitHub clone above"
+  warn "Check that https://github.com/slingb1ade/PiLNK is accessible"
+  exit 1
 fi
 
-# Write location to app.py too
-if grep -q "^NODE_LAT" "$APP_PY" 2>/dev/null; then
-  sed -i "s/^NODE_LAT = .*/NODE_LAT = $LAT/" "$APP_PY"
-  sed -i "s/^NODE_LON = .*/NODE_LON = $LON/" "$APP_PY"
+# ── Apply ping fixes ───────────────────────────────────────
+step "PING FIXES"
+
+# Fix 1: Add lat/lon to ping payload
+if grep -q "'node_stats': get_stats_payload()" "$APP_PY" && ! grep -q "'lat': RX_LAT" "$APP_PY"; then
+  sed -i "s/'node_stats': get_stats_payload()/'node_stats': get_stats_payload(),\n                'lat': RX_LAT,\n                'lon': RX_LON/" "$APP_PY"
+  ok "Ping now sends receiver lat/lon"
+fi
+
+# Fix 2: Handle ground altitude (dump1090 sends alt_baro: "ground")
+if grep -q "alt = int(ac.get('alt_baro', 0) or ac.get('alt', 0) or 0)" "$APP_PY"; then
+  sed -i "s/alt = int(ac.get('alt_baro', 0) or ac.get('alt', 0) or 0)/alt_raw = ac.get('alt_baro', 0) or ac.get('alt', 0) or 0; alt = 0 if alt_raw == 'ground' else int(alt_raw)/" "$APP_PY"
+  ok "Fixed ground altitude handling"
+fi
+
+# Fix 3: Add User-Agent header (Cloudflare blocks default Python-urllib)
+if grep -q "headers={'Content-Type': 'application/json'}" "$APP_PY" && ! grep -q "User-Agent" "$APP_PY"; then
+  sed -i "s/headers={'Content-Type': 'application\/json'}/headers={'Content-Type': 'application\/json', 'User-Agent': 'PiLNK\/1.0'}/" "$APP_PY"
+  ok "Added User-Agent header for Cloudflare"
 fi
 
 # ── Syntax check app.py ────────────────────────────────────
@@ -326,7 +357,7 @@ step "SERVICE SETUP"
 SERVICE_FILE="/etc/systemd/system/pilnk.service"
 sudo tee "$SERVICE_FILE" > /dev/null << SVCEOF
 [Unit]
-Description=PiLNK Aviation Dashboard
+Description=PiLNK — The Open Source ATC Network
 After=network.target
 
 [Service]
