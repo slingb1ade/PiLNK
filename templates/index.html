@@ -1267,6 +1267,14 @@
 var OPENAIP_KEY = '7670c503a1c0929ee8e87ad581d9119e';
 var RX_LAT = -36.90490;
 var RX_LON = 174.76788;
+
+// Fetch actual receiver location from dump1090-fa config
+fetch("/api/location").then(function(r){return r.json();}).then(function(d){
+  if(d.lat && d.lon){
+    RX_LAT = d.lat; RX_LON = d.lon;
+    if(typeof map !== "undefined") map.setView([RX_LAT, RX_LON], 9);
+  }
+}).catch(function(){});
 var NZAA_LAT = -37.0082;
 var NZAA_LON = 174.7917;
 
