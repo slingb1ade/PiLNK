@@ -1269,14 +1269,106 @@ var RX_LAT = -36.90490;
 var RX_LON = 174.76788;
 
 // Fetch actual receiver location from dump1090-fa config
-fetch("/api/location").then(function(r){return r.json();}).then(function(d){
+fetch('/api/location').then(function(r){return r.json();}).then(function(d){
   if(d.lat && d.lon){
     RX_LAT = d.lat; RX_LON = d.lon;
-    if(typeof map !== "undefined") map.setView([RX_LAT, RX_LON], 9);
+    if(typeof map !== 'undefined') map.setView([RX_LAT, RX_LON], 9);
+    // Update nearest airport for METAR, aviation data, etc.
+    if(typeof updateNearestAirport === 'function') updateNearestAirport(RX_LAT, RX_LON);
   }
 }).catch(function(){});
+
 var NZAA_LAT = -37.0082;
 var NZAA_LON = 174.7917;
+
+// ── GLOBAL AIRPORT DATABASE — for METAR, aviation overlay, simulator ──
+var GLOBAL_AIRPORTS = [
+  // New Zealand
+  {icao:'NZAA', lat:-37.008, lon:174.791, hdg:71, name:'Auckland'},
+  {icao:'NZCH', lat:-43.489, lon:172.532, hdg:205, name:'Christchurch'},
+  {icao:'NZWN', lat:-41.327, lon:174.805, hdg:16, name:'Wellington'},
+  {icao:'NZQN', lat:-45.021, lon:168.739, hdg:320, name:'Queenstown'},
+  {icao:'NZDN', lat:-45.928, lon:170.197, hdg:35, name:'Dunedin'},
+  {icao:'NZPM', lat:-40.320, lon:175.617, hdg:28, name:'Palmerston North'},
+  {icao:'NZHN', lat:-37.867, lon:175.332, hdg:0, name:'Hamilton'},
+  {icao:'NZNP', lat:-39.008, lon:174.179, hdg:23, name:'New Plymouth'},
+  // Australia
+  {icao:'YSSY', lat:-33.946, lon:151.177, hdg:340, name:'Sydney'},
+  {icao:'YMML', lat:-37.673, lon:144.843, hdg:270, name:'Melbourne'},
+  {icao:'YBBN', lat:-27.384, lon:153.117, hdg:19, name:'Brisbane'},
+  {icao:'YPAD', lat:-34.945, lon:138.530, hdg:230, name:'Adelaide'},
+  {icao:'YPPH', lat:-31.940, lon:115.967, hdg:210, name:'Perth'},
+  {icao:'YBCS', lat:-16.886, lon:145.755, hdg:150, name:'Cairns'},
+  {icao:'YBCG', lat:-28.164, lon:153.505, hdg:140, name:'Gold Coast'},
+  {icao:'YMAV', lat:-38.039, lon:144.469, hdg:180, name:'Avalon'},
+  // USA — West
+  {icao:'KSAN', lat:32.733, lon:-117.190, hdg:275, name:'San Diego'},
+  {icao:'KLAX', lat:33.942, lon:-118.408, hdg:250, name:'Los Angeles'},
+  {icao:'KSFO', lat:37.618, lon:-122.375, hdg:280, name:'San Francisco'},
+  {icao:'KSEA', lat:47.449, lon:-122.309, hdg:340, name:'Seattle'},
+  {icao:'KPDX', lat:45.588, lon:-122.597, hdg:280, name:'Portland'},
+  {icao:'KLAS', lat:36.080, lon:-115.152, hdg:250, name:'Las Vegas'},
+  {icao:'KPHX', lat:33.437, lon:-112.008, hdg:260, name:'Phoenix'},
+  {icao:'KDEN', lat:39.861, lon:-104.672, hdg:350, name:'Denver'},
+  // USA — East/Central
+  {icao:'KJFK', lat:40.639, lon:-73.778, hdg:310, name:'New York JFK'},
+  {icao:'KATL', lat:33.636, lon:-84.427, hdg:270, name:'Atlanta'},
+  {icao:'KORD', lat:41.978, lon:-87.904, hdg:320, name:'Chicago'},
+  {icao:'KDFW', lat:32.896, lon:-97.038, hdg:180, name:'Dallas'},
+  {icao:'KMIA', lat:25.795, lon:-80.290, hdg:90, name:'Miami'},
+  {icao:'KBOS', lat:42.364, lon:-71.005, hdg:40, name:'Boston'},
+  {icao:'KMSP', lat:44.881, lon:-93.221, hdg:300, name:'Minneapolis'},
+  // UK / Europe
+  {icao:'EGLL', lat:51.470, lon:-0.461, hdg:270, name:'London Heathrow'},
+  {icao:'EGCC', lat:53.353, lon:-2.274, hdg:230, name:'Manchester'},
+  {icao:'EGBB', lat:52.454, lon:-1.748, hdg:330, name:'Birmingham'},
+  {icao:'EIDW', lat:53.421, lon:-6.270, hdg:280, name:'Dublin'},
+  {icao:'EHAM', lat:52.308, lon:4.763, hdg:60, name:'Amsterdam'},
+  {icao:'EDDF', lat:50.033, lon:8.570, hdg:250, name:'Frankfurt'},
+  {icao:'LFPG', lat:49.009, lon:2.547, hdg:270, name:'Paris CDG'},
+  // Asia
+  {icao:'WSSS', lat:1.350, lon:103.994, hdg:20, name:'Singapore'},
+  {icao:'VHHH', lat:22.308, lon:113.918, hdg:250, name:'Hong Kong'},
+  {icao:'RJTT', lat:35.552, lon:139.779, hdg:340, name:'Tokyo Haneda'},
+  // Middle East / Africa
+  {icao:'OMDB', lat:25.252, lon:55.364, hdg:300, name:'Dubai'},
+  {icao:'FAOR', lat:-26.132, lon:28.242, hdg:210, name:'Johannesburg'},
+  // South America
+  {icao:'SBGR', lat:-23.435, lon:-46.473, hdg:270, name:'Sao Paulo'},
+  // Canada
+  {icao:'CYYZ', lat:43.677, lon:-79.630, hdg:240, name:'Toronto'},
+  {icao:'CYVR', lat:49.193, lon:-123.184, hdg:260, name:'Vancouver'},
+  // Kenya
+  {icao:'HKJK', lat:-1.319, lon:36.927, hdg:60, name:'Nairobi'},
+];
+
+var nearestAirport = GLOBAL_AIRPORTS[0]; // default Auckland, updated by location fetch
+
+function findNearestAirport(lat, lon) {
+  var best = GLOBAL_AIRPORTS[0], minDist = 99999;
+  GLOBAL_AIRPORTS.forEach(function(a) {
+    var d = Math.sqrt(Math.pow(a.lat - lat, 2) + Math.pow(a.lon - lon, 2));
+    if (d < minDist) { minDist = d; best = a; }
+  });
+  return best;
+}
+
+function updateNearestAirport(lat, lon) {
+  nearestAirport = findNearestAirport(lat, lon);
+  avIcao = nearestAirport.icao;
+  avLat = nearestAirport.lat;
+  avLon = nearestAirport.lon;
+  NZAA_LAT = nearestAirport.lat;
+  NZAA_LON = nearestAirport.lon;
+  // Update METAR stations
+  if (typeof METAR_STATION !== 'undefined') METAR_STATION = nearestAirport.icao;
+  // Update weather panel if loaded
+  if (typeof wxPanel !== 'undefined' && wxPanel.setStation) wxPanel.setStation(nearestAirport.icao);
+  // Update IFR waypoints based on region
+  if (typeof IFR_WAYPOINTS_NZ !== 'undefined') {
+    IFR_WAYPOINTS = isInNZ() ? IFR_WAYPOINTS_NZ : [];
+  }
+}
 
 // ── TABS ──────────────────────────────────────────────────
 function showTab(name, e) {
@@ -2646,7 +2738,7 @@ function playSquawkTone(sq) {
 
 // ── METAR ──────────────────────────────────────────────────
 var metarData = null;
-var METAR_STATION = 'NZAA'; // Auckland — matches RX_LAT/RX_LON
+var METAR_STATION = nearestAirport ? nearestAirport.icao : 'NZAA';
 
 function loadMETAR() {
   fetch('/api/metar/' + METAR_STATION)
@@ -3394,7 +3486,7 @@ toggleTheme = function() {
 drawRings();
 updateFlights();
 setInterval(updateFlights,5000);
-loadAvData('NZAA',NZAA_LAT,NZAA_LON);
+loadAvData(avIcao, avLat, avLon);
 // Restore label preference
 var savedLabels = localStorage.getItem('pilnk-labels') === 'true';
 document.getElementById('labelToggle').checked = savedLabels;
@@ -3438,7 +3530,7 @@ var approach3D = (function() {
   // Current aircraft state
   var simAlt = 3000, simSpd = 160, simVs = -700, simHdg = 71;
   var simLat = null, simLon = null;
-  var simIcao = 'NZAA', simCs = 'AIRCRAFT';
+  var simIcao = nearestAirport ? nearestAirport.icao : 'NZAA', simCs = 'AIRCRAFT';
   var lastSeenTime = 0;
   var lastUpdate = 0;
 
@@ -3448,14 +3540,21 @@ var approach3D = (function() {
   var interpStart = 0, interpDuration = 1500; // ms between ADS-B updates
   var currentLat = null, currentLon = null, currentAlt = null, currentHdg = null;
 
-  // NZ Airport coords
-  var AIRPORTS = {
-    'NZAA': { lat: -37.0082, lon: 174.7917, hdg: 71,  towerLat: -37.0075, towerLon: 174.7870, towerAlt: 40 },
-    'NZCH': { lat: -43.4894, lon: 172.5322, hdg: 205, towerLat: -43.4870, towerLon: 172.5340, towerAlt: 35 },
-    'NZWN': { lat: -41.3272, lon: 174.8050, hdg: 16,  towerLat: -41.3260, towerLon: 174.8060, towerAlt: 45 },
-    'NZQN': { lat: -45.0211, lon: 168.7392, hdg: 320, towerLat: -45.0200, towerLon: 168.7400, towerAlt: 30 },
-    'default': { lat: -37.0082, lon: 174.7917, hdg: 23, towerLat: -37.0075, towerLon: 174.7870, towerAlt: 40 }
-  };
+  // Build airport lookup from global database (add tower offsets)
+  var AIRPORTS = {};
+  GLOBAL_AIRPORTS.forEach(function(a) {
+    AIRPORTS[a.icao] = {
+      lat: a.lat, lon: a.lon, hdg: a.hdg || 0,
+      towerLat: a.lat + 0.001, towerLon: a.lon - 0.003, towerAlt: 40
+    };
+  });
+  if (!AIRPORTS['default']) {
+    var defApt = nearestAirport || GLOBAL_AIRPORTS[0];
+    AIRPORTS['default'] = {
+      lat: defApt.lat, lon: defApt.lon, hdg: defApt.hdg || 0,
+      towerLat: defApt.lat + 0.001, towerLon: defApt.lon - 0.003, towerAlt: 40
+    };
+  }
 
   function getAirport(icao) { return AIRPORTS[icao] || AIRPORTS['default']; }
   function degToRad(d) { return d * Math.PI / 180; }
@@ -3684,7 +3783,7 @@ var approach3D = (function() {
       hdg = simHdg;
     } else {
       // Fallback — calculate from glideslope
-      var apt = getAirport(simIcao || 'NZAA');
+      var apt = getAirport(simIcao || (nearestAirport ? nearestAirport.icao : 'NZAA'));
       var altM = ftToM(simAlt);
       var distM = altM / Math.tan(degToRad(3));
       var hdgRad = degToRad(apt.hdg + 180);
@@ -3719,7 +3818,7 @@ var approach3D = (function() {
       return;
     }
 
-    simIcao = icao || 'NZAA';
+    simIcao = icao || (nearestAirport ? nearestAirport.icao : 'NZAA');
     simCs   = cs   || 'AIRCRAFT';
     simAlt  = parseFloat(alt) || 3000;
     simSpd  = parseFloat(spd) || 160;
@@ -3789,14 +3888,13 @@ var approach3D = (function() {
       var cs2 = ccCurrentCS;
       var a = cs2 ? lastAircraft[cs2] : null;
       var cached = cs2 ? (routeCache[cs2] || {}) : {};
-      var destIcao = 'NZAA';
+      var destIcao = nearestAirport ? nearestAirport.icao : 'NZAA';
       if (cached.route) {
         var parts = cached.route.split('-');
         var dest = parts[parts.length-1].trim().toUpperCase();
-        if (dest === 'AKL') destIcao = 'NZAA';
-        else if (dest === 'CHC') destIcao = 'NZCH';
-        else if (dest === 'WLG') destIcao = 'NZWN';
-        else if (dest === 'ZQN') destIcao = 'NZQN';
+        // Try to match ICAO directly from route
+        var matched = GLOBAL_AIRPORTS.filter(function(a){ return a.icao === dest || a.icao === 'K'+dest || a.icao === dest.replace(/^K/,''); });
+        if (matched.length > 0) destIcao = matched[0].icao;
       }
       start(
         a ? a.t : 'B738',
@@ -3948,7 +4046,7 @@ var nodeReg = (function() {
 
     if (!callsign) { setStatus('regStatus','error','Please enter a callsign'); return; }
     if (!email || !email.includes('@')) { setStatus('regStatus','error','Please enter a valid email'); return; }
-    if (!password || password.length < 6) { setStatus('regStatus','error','Password must be at least 6 characters'); return; }
+    if (!password || password.length < 8) { setStatus('regStatus','error','Password must be at least 8 characters'); return; }
 
     savedEmail    = email;
     savedPassword = password;
@@ -4101,8 +4199,8 @@ var nodeReg = (function() {
 nodeReg.init();
 
 
-// IFR WAYPOINTS - Auckland FIR fixes within 400km
-var IFR_WAYPOINTS = [
+// IFR WAYPOINTS - Auckland FIR fixes within 400km (only shown for NZ receivers)
+var IFR_WAYPOINTS_NZ = [
   {name:'AA VOR',  lat:-37.0047, lon:174.8136, type:'VOR'},
   {name:'AKLOM',   lat:-35.3578, lon:178.3942, type:'Enroute'},
   {name:'ARADI',   lat:-36.9342, lon:173.1906, type:'Enroute'},
@@ -4128,6 +4226,10 @@ var IFR_WAYPOINTS = [
   {name:'TG VOR',  lat:-37.6719, lon:176.1961, type:'VOR'},
   {name:'WP NDB',  lat:-36.7864, lon:174.6367, type:'NDB'},
 ];
+
+// Only show waypoints if receiver is in New Zealand
+function isInNZ() { return RX_LAT < -34 && RX_LAT > -48 && RX_LON > 165 && RX_LON < 179; }
+var IFR_WAYPOINTS = isInNZ() ? IFR_WAYPOINTS_NZ : [];
 
 var waypointMarkers = [];
 var waypointsVisible = false;
@@ -4187,34 +4289,19 @@ var wxPanel = (function() {
 
   var visible = false;
   var loaded = false;
-  var station = 'NZAA'; // default — will update from config
+  var station = nearestAirport ? nearestAirport.icao : 'NZAA';
 
-  // Try to get nearest airport from receiver location
+  // Use global findNearestAirport instead of local NZ-only list
   function getNearestStation() {
     try {
-      var cfg = JSON.parse(localStorage.getItem('pilnk-config') || '{}');
-      // Simple lookup based on lat/lon
-      var lat = cfg.rx_lat || -37.008;
-      var lon = cfg.rx_lon || 174.791;
-      // NZ airports
-      var airports = [
-        {icao:'NZAA', lat:-37.008, lon:174.791},
-        {icao:'NZCH', lat:-43.489, lon:172.532},
-        {icao:'NZWN', lat:-41.327, lon:174.805},
-        {icao:'NZQN', lat:-45.021, lon:168.739},
-        {icao:'NZDN', lat:-45.928, lon:170.197},
-        {icao:'NZPM', lat:-40.320, lon:175.617},
-        {icao:'NZNP', lat:-39.008, lon:174.179},
-        {icao:'NZHN', lat:-37.867, lon:175.332},
-      ];
-      var nearest = airports[0];
-      var minDist = 9999;
-      airports.forEach(function(a) {
-        var d = Math.sqrt(Math.pow(a.lat-lat,2) + Math.pow(a.lon-lon,2));
-        if (d < minDist) { minDist = d; nearest = a; }
-      });
-      return nearest.icao;
-    } catch(e) { return 'NZAA'; }
+      var apt = findNearestAirport(RX_LAT, RX_LON);
+      return apt.icao;
+    } catch(e) { return nearestAirport ? nearestAirport.icao : 'NZAA'; }
+  }
+
+  function setStation(icao) {
+    station = icao;
+    if (loaded) load(); // reload weather with new station
   }
 
   function toggle() {
@@ -4333,7 +4420,7 @@ var wxPanel = (function() {
     content.innerHTML += html;
   }
 
-  return { toggle: toggle, close: close, load: load };
+  return { toggle: toggle, close: close, load: load, setStation: setStation };
 })();
 
 </script>
