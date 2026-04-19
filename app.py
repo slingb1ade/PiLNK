@@ -309,10 +309,10 @@ bias_thread.start()
 bias_thread.join(timeout=3)  # wait up to 3s
 
 radio   = RadioStream()
-whisper = ATCWhisper(socketio)
-radio.subscribe(whisper.feed)
+# whisper = ATCWhisper(socketio)
+# radio.subscribe(whisper.feed)
 radio.start()
-whisper.start()
+# whisper.start()
 
 @app.route('/')
 def index():
