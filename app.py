@@ -76,8 +76,21 @@ trail_thread = threading.Thread(target=record_trails, daemon=True)
 trail_thread.start()
 
 # ── PiLNK.io server ping — sends aircraft data + stats every 30s
+# PiLNK Code is read from config.json (created by installer, gitignored)
+def _load_pilnk_code():
+    config_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'config.json')
+    try:
+        with open(config_path, 'r') as f:
+            cfg = json.load(f)
+            code = cfg.get('pilnk_code', '').strip()
+            if code:
+                return code
+    except Exception:
+        pass
+    return 'YOUR_VERIFY_CODE_HERE'
+
+NODE_VERIFY_CODE = _load_pilnk_code()
 # Set this to your node's verify code from your profile page
-NODE_VERIFY_CODE = '1FF3B870'
 
 # Stats tracker (computed server-side for profile display)
 node_stats = {
@@ -261,7 +274,7 @@ if NODE_VERIFY_CODE != 'YOUR_VERIFY_CODE_HERE':
     ping_thread.start()
     print('[PILNK] Server ping active — reporting to pilnk.io')
 else:
-    print('[PILNK] Set NODE_VERIFY_CODE in app.py to enable server ping')
+        print('[PILNK] Set your PiLNK Code in config.json or re-run the installer')
 
 current_frequency = 118.7e6
 current_gain      = 35
