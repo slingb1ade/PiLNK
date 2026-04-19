@@ -1275,6 +1275,8 @@ fetch('/api/location').then(function(r){return r.json();}).then(function(d){
     if(typeof map !== 'undefined') map.setView([RX_LAT, RX_LON], 9);
     // Update nearest airport for METAR, aviation data, etc.
     if(typeof updateNearestAirport === 'function') updateNearestAirport(RX_LAT, RX_LON);
+    // Redraw distance rings at new location
+    if(typeof drawRings === 'function' && typeof ringsOn !== 'undefined' && ringsOn) drawRings();
   }
 }).catch(function(){});
 
