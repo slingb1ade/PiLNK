@@ -77,7 +77,7 @@ trail_thread.start()
 
 # ── PiLNK.io server ping — sends aircraft data + stats every 30s
 # Set this to your node's verify code from your profile page
-NODE_VERIFY_CODE = 'YOUR_VERIFY_CODE_HERE'
+NODE_VERIFY_CODE = '1FF3B870'
 
 # Stats tracker (computed server-side for profile display)
 node_stats = {
