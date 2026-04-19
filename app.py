@@ -2,7 +2,7 @@ from flask import Flask, render_template, Response, jsonify, request, make_respo
 from flask_cors import CORS
 from flask_socketio import SocketIO
 from radio import RadioStream
-from whisper_atc import ATCWhisper
+# from whisper_atc  # disabled until v2.0 import ATCWhisper
 import subprocess
 import queue
 import threading
