@@ -255,7 +255,8 @@ def ping_server():
                 'verify_code': NODE_VERIFY_CODE,
                 'aircraft_count': len(aircraft),
                 'aircraft': aircraft,
-                'node_stats': get_stats_payload()
+                'node_stats': get_stats_payload(),
+                'version': _get_local_version()
             }).encode()
             req = urllib.request.Request(
                 'https://pilnk.io/api/node.php',
@@ -275,6 +276,103 @@ if NODE_VERIFY_CODE != 'YOUR_VERIFY_CODE_HERE':
     print('[PILNK] Server ping active — reporting to pilnk.io')
 else:
         print('[PILNK] Set your PiLNK Code in config.json or re-run the installer')
+
+# ── OTA Update System ─────────────────────────────────────
+PILNK_DIR = os.path.dirname(os.path.abspath(__file__))
+VERSION_FILE = os.path.join(PILNK_DIR, 'VERSION')
+UPDATE_SCRIPT = os.path.join(PILNK_DIR, 'update.sh')
+OTA_CHECK_INTERVAL = 300  # 5 minutes
+OTA_COOLDOWN = 3600       # 1 hour after update before re-checking
+ota_last_update = 0
+ota_status = {'available': False, 'current': '', 'latest': '', 'last_check': 0, 'updating': False}
+
+def _get_local_version():
+    try:
+        with open(VERSION_FILE, 'r') as f:
+            return f.read().strip()
+    except:
+        return '0.0.0'
+
+def _is_auto_update_enabled():
+    config_path = os.path.join(PILNK_DIR, 'config.json')
+    try:
+        with open(config_path, 'r') as f:
+            cfg = json.load(f)
+            return cfg.get('auto_update', True)  # default on for beta
+    except:
+        return True
+
+def _run_update():
+    global ota_last_update
+    ota_status['updating'] = True
+    print('[PILNK-OTA] Starting update...')
+    try:
+        result = subprocess.run(
+            ['bash', UPDATE_SCRIPT],
+            capture_output=True, text=True, timeout=120,
+            cwd=PILNK_DIR
+        )
+        print(f'[PILNK-OTA] Update script output: {result.stdout}')
+        if result.stderr:
+            print(f'[PILNK-OTA] Update stderr: {result.stderr}')
+        ota_last_update = time.time()
+        ota_status['updating'] = False
+        # Note: if update.sh restarts the service, this code won't reach here
+        # That's fine — the new instance will start fresh
+        return result.returncode == 0
+    except Exception as e:
+        print(f'[PILNK-OTA] Update failed: {e}')
+        ota_status['updating'] = False
+        return False
+
+def ota_checker():
+    global ota_last_update
+    time.sleep(60)  # wait 60s after startup before first check
+    while True:
+        try:
+            # Cooldown check
+            if time.time() - ota_last_update < OTA_COOLDOWN:
+                time.sleep(OTA_CHECK_INTERVAL)
+                continue
+
+            # Fetch latest version from pilnk.io
+            import urllib.request
+            req = urllib.request.Request(
+                'https://pilnk.io/api/version.php',
+                headers={'User-Agent': 'PiLNK-OTA/1.0'}
+            )
+            with urllib.request.urlopen(req, timeout=10) as r:
+                data = json.loads(r.read())
+
+            local_ver = _get_local_version()
+            remote_ver = data.get('version', '')
+            required = data.get('required', False)
+
+            ota_status['current'] = local_ver
+            ota_status['latest'] = remote_ver
+            ota_status['last_check'] = time.time()
+
+            if remote_ver and remote_ver != local_ver:
+                ota_status['available'] = True
+                print(f'[PILNK-OTA] Update available: {local_ver} → {remote_ver}')
+
+                if _is_auto_update_enabled() or required:
+                    print(f'[PILNK-OTA] Auto-update enabled — applying update')
+                    _run_update()
+                else:
+                    print(f'[PILNK-OTA] Auto-update disabled — skipping')
+            else:
+                ota_status['available'] = False
+
+        except Exception as e:
+            print(f'[PILNK-OTA] Check failed: {e}')
+
+        time.sleep(OTA_CHECK_INTERVAL)
+
+# Start OTA checker thread
+ota_thread = threading.Thread(target=ota_checker, daemon=True)
+ota_thread.start()
+print('[PILNK-OTA] Update checker active — checking every 5 minutes')
 
 current_frequency = 118.7e6
 current_gain      = 35
@@ -638,6 +736,27 @@ def save_stats_records():
     except Exception:
         pass
     return jsonify({'success': False}), 400
+
+# ── OTA Update API ─────────────────────────────────────────
+@app.route('/api/ota/status')
+def ota_get_status():
+    return jsonify({
+        'current_version': _get_local_version(),
+        'latest_version': ota_status.get('latest', ''),
+        'update_available': ota_status.get('available', False),
+        'auto_update': _is_auto_update_enabled(),
+        'updating': ota_status.get('updating', False),
+        'last_check': ota_status.get('last_check', 0)
+    })
+
+@app.route('/api/ota/update', methods=['POST'])
+def ota_trigger_update():
+    if ota_status.get('updating', False):
+        return jsonify({'success': False, 'error': 'Update already in progress'})
+    # Run update in background thread
+    t = threading.Thread(target=_run_update, daemon=True)
+    t.start()
+    return jsonify({'success': True, 'message': 'Update started — node will restart shortly'})
 
 # -- Favicon --────
 @app.route('/favicon.ico')
