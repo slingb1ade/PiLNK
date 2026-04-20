@@ -1255,7 +1255,10 @@
       </div>
       <div class="cc-bottom">
         <div class="cc-phase" id="ccPhase"></div>
-        <div class="cc-planespotters">📷 Planespotters.net</div>
+        <div style="display:flex;align-items:center;gap:10px;">
+          <div class="cc-planespotters" id="ccPhotoSource">📷 Planespotters.net</div>
+          <button id="ccAddPhotoBtn" onclick="ccAddPhoto()" style="display:none;background:none;border:1px solid rgba(167,139,250,0.3);border-radius:4px;color:#a78bfa;font-family:'Share Tech Mono',monospace;font-size:0.48rem;padding:2px 8px;cursor:pointer;letter-spacing:0.05em;">📸 Add Photo</button>
+        </div>
       </div>
     </div>
   </div>
@@ -2390,6 +2393,33 @@ function isNotable(a) {
   return false;
 }
 
+var ccCurrentHex = '';
+var pilnkPhotoCache = {};
+
+function fetchPiLNKPhoto(hex, callback) {
+  if (pilnkPhotoCache[hex] !== undefined) { callback(pilnkPhotoCache[hex]); return; }
+  fetch('https://pilnk.io/api/photos.php?action=get&hex=' + hex)
+    .then(function(r) { return r.json(); })
+    .then(function(d) {
+      var photo = null;
+      if (d && d.photos && d.photos.length > 0) {
+        var p = d.photos[0]; // highest voted
+        photo = {
+          url: 'https://pilnk.io' + p.url,
+          thumb: 'https://pilnk.io' + p.thumb_url,
+          photographer: p.callsign || 'PiLNK User',
+          photoId: p.id
+        };
+      }
+      pilnkPhotoCache[hex] = photo;
+      callback(photo);
+    })
+    .catch(function() {
+      pilnkPhotoCache[hex] = null;
+      callback(null);
+    });
+}
+
 function fetchPlanePhoto(hex, callback) {
   if (photoCache[hex] !== undefined) { callback(photoCache[hex]); return; }
   fetch('/api/planespotters/' + hex)
@@ -2527,21 +2557,38 @@ function openCinematicCard(cs, auto) {
   document.getElementById('ccImg').style.display = 'none';
   document.getElementById('ccNoImg').style.display = 'flex';
   document.getElementById('ccPhotoCredit').textContent = '';
+  document.getElementById('ccPhotoSource').textContent = '📷 Loading...';
 
   if (a.hex) {
-    fetchPlanePhoto(a.hex, function(photo) {
-      if (photo && photo.url) {
+    // Step 1: Check PiLNK community photos first
+    fetchPiLNKPhoto(a.hex, function(pilnkPhoto) {
+      if (pilnkPhoto) {
         var img = document.getElementById('ccImg');
-        img.src = photo.url;
-        if (photo.photographer) {
-          document.getElementById('ccPhotoCredit').textContent = '📷 ' + photo.photographer;
-        }
-        // Show model if airline field is still empty
-        if (photo.model && !document.getElementById('ccModel').textContent) {
-          document.getElementById('ccModel').textContent = photo.model;
-        }
+        img.src = pilnkPhoto.url;
+        document.getElementById('ccPhotoCredit').textContent = '📸 ' + pilnkPhoto.photographer + ' via PiLNK';
+        document.getElementById('ccPhotoSource').textContent = '📸 PiLNK Community Photo';
+        document.getElementById('ccAddPhotoBtn').style.display = 'inline-block';
+      } else {
+        // Step 2: Fall back to Planespotters
+        fetchPlanePhoto(a.hex, function(photo) {
+          if (photo && photo.url) {
+            var img = document.getElementById('ccImg');
+            img.src = photo.url;
+            if (photo.photographer) {
+              document.getElementById('ccPhotoCredit').textContent = '📷 ' + photo.photographer;
+            }
+            document.getElementById('ccPhotoSource').textContent = '📷 Planespotters.net';
+            if (photo.model && !document.getElementById('ccModel').textContent) {
+              document.getElementById('ccModel').textContent = photo.model;
+            }
+          } else {
+            document.getElementById('ccPhotoSource').textContent = '';
+          }
+          document.getElementById('ccAddPhotoBtn').style.display = 'inline-block';
+        });
       }
     });
+    ccCurrentHex = a.hex;
   }
 
   // Show overlay
@@ -2573,14 +2620,22 @@ function closeCinematicCard() {
   approach3D.stop();
   ccVisible = false;
   ccCurrentCS = null;
+  ccCurrentHex = '';
   if (ccDismissTimer) { clearTimeout(ccDismissTimer); ccDismissTimer = null; }
   stopCCWaveform();
   document.getElementById('cinematicOverlay').classList.remove('active');
+  document.getElementById('ccAddPhotoBtn').style.display = 'none';
   showAllLabels(); // restore labels after card closes
 }
 
 function handleCCOverlayClick(e) {
   if (e.target === document.getElementById('cinematicOverlay')) closeCinematicCard();
+}
+
+function ccAddPhoto() {
+  if (ccCurrentHex) {
+    window.open('https://pilnk.io/#profile?photo=' + ccCurrentHex, '_blank');
+  }
 }
 
 // Waveform animation
