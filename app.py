@@ -1,7 +1,7 @@
 from flask import Flask, render_template, Response, jsonify, request, make_response
 from flask_cors import CORS
 from flask_socketio import SocketIO
-from radio import RadioStream
+from sdr_controller import SDRController
 # from whisper_atc  # disabled until v2.0 import ATCWhisper
 import subprocess
 import queue
@@ -376,110 +376,58 @@ print('[PILNK-OTA] Update checker active — checking every 5 minutes')
 
 current_frequency = 118.7e6
 current_gain      = 35
-current_squelch   = 0
+current_squelch   = 50
 
-FREQUENCIES = {
-    'ground':   {'name': 'AKL Ground',   'freq': 121.100},
-    'tower':    {'name': 'AKL Tower',    'freq': 118.700},
-    'approach': {'name': 'AKL Approach', 'freq': 124.300},
-}
-
-# ── Enable bias tee on RTL-SDR V4 to power LNA ───────────
-def enable_bias_tee():
-    try:
-        result = subprocess.run(
-            ['rtl_biast', '-d', '00000002', '-b', '1'],
-            capture_output=True, text=True, timeout=5
-        )
-        if result.returncode == 0:
-            print('[PILNK] Bias tee enabled — LNA powered')
-        else:
-            print('[PILNK] Bias tee note:', result.stderr.strip())
-    except FileNotFoundError:
-        print('[PILNK] rtl_biast not found — skipping bias tee')
-    except Exception as e:
-        print('[PILNK] Bias tee error:', e)
-
-# Small delay then enable bias tee in background
-# (must run before rtl_fm starts using the device)
-bias_thread = threading.Thread(target=enable_bias_tee, daemon=True)
-bias_thread.start()
-bias_thread.join(timeout=3)  # wait up to 3s
-
-radio   = RadioStream()
-# whisper = ATCWhisper(socketio)
-# radio.subscribe(whisper.feed)
-radio.start()
-# whisper.start()
+# ── SDR Controller — manages VHF audio via rtl_fm ─────────
+sdr = SDRController(device_index=1)
 
 @app.route('/')
 def index():
-    return render_template('index.html', frequencies=FREQUENCIES)
+    return render_template('index.html')
 
-@app.route('/audio_feed')
-def audio_feed():
-    def generate():
-        q = queue.Queue(maxsize=100)
-        def on_chunk(chunk):
-            try:
-                q.put_nowait(chunk)
-            except queue.Full:
-                pass
-        radio.subscribe(on_chunk)
-        sox_cmd = [
-            'sox',
-            '-t', 'raw', '-r', '12k', '-e', 'signed', '-b', '16', '-c', '1', '-',
-            '-t', 'ogg', '-C', '1', '-',
-            'gain', str(current_gain),
-            'lowpass', '3000',
-            'highpass', '200'
-        ]
-        sox = subprocess.Popen(sox_cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
-        def feed_sox():
-            while True:
-                try:
-                    chunk = q.get(timeout=2)
-                    sox.stdin.write(chunk)
-                    sox.stdin.flush()
-                except queue.Empty:
-                    continue
-                except:
-                    break
-        feeder = threading.Thread(target=feed_sox, daemon=True)
-        feeder.start()
-        try:
-            while True:
-                chunk = sox.stdout.read(4096)
-                if not chunk:
-                    break
-                yield chunk
-        except GeneratorExit:
-            sox.terminate()
-            sox.wait()
-            radio.unsubscribe(on_chunk)
-    return Response(generate(), mimetype='audio/ogg', headers={'Cache-Control': 'no-cache', 'X-Accel-Buffering': 'no'})
+# ── Audio API — controls VHF radio via SDR controller ─────
+@app.route('/audio/start', methods=['POST'])
+def audio_start():
+    data = request.get_json() or {}
+    freq = data.get('freq', sdr.frequency)
+    squelch = data.get('squelch', sdr.squelch)
+    gain = data.get('gain', sdr.gain)
+    sdr.squelch = int(squelch)
+    sdr.gain = int(gain)
+    ok = sdr.start(freq_hz=int(freq))
+    return jsonify({'success': ok, 'status': sdr.get_status()})
 
-@app.route('/set_frequency', methods=['POST'])
-def set_frequency():
-    global current_frequency
-    data = request.json
-    current_frequency = float(data.get('frequency', 118.7)) * 1e6
-    radio.set_frequency(current_frequency)
-    return jsonify({'status': 'ok', 'frequency': current_frequency})
+@app.route('/audio/stop', methods=['POST'])
+def audio_stop():
+    sdr.stop()
+    return jsonify({'success': True, 'status': sdr.get_status()})
 
-@app.route('/set_gain', methods=['POST'])
-def set_gain():
-    global current_gain
-    data = request.json
-    current_gain = int(data.get('gain', 35))
-    return jsonify({'status': 'ok', 'gain': current_gain})
+@app.route('/audio/freq', methods=['POST'])
+def audio_freq():
+    data = request.get_json() or {}
+    freq = data.get('freq')
+    if not freq:
+        return jsonify({'error': 'freq required'}), 400
+    sdr.set_frequency(int(freq))
+    return jsonify({'success': True, 'status': sdr.get_status()})
 
-@app.route('/set_squelch', methods=['POST'])
-def set_squelch():
-    global current_squelch
-    data = request.json
-    current_squelch = int(data.get('squelch', 0))
-    return jsonify({'status': 'ok', 'squelch': current_squelch})
+@app.route('/audio/squelch', methods=['POST'])
+def audio_squelch():
+    data = request.get_json() or {}
+    level = data.get('level', 50)
+    sdr.set_squelch(int(level))
+    return jsonify({'success': True, 'status': sdr.get_status()})
+
+@app.route('/audio/gain', methods=['POST'])
+def audio_gain():
+    data = request.get_json() or {}
+    gain = data.get('gain', 35)
+    sdr.set_gain(int(gain))
+    return jsonify({'success': True, 'status': sdr.get_status()})
+
+@app.route('/audio/status')
+def audio_status():
+    return jsonify(sdr.get_status())
 
 @app.route('/flights')
 def flights():
