@@ -685,6 +685,70 @@ def trails():
                 result[hex] = filtered
     return jsonify(result)
 
+@app.route('/api/history')
+def history_summary():
+    """Summary of all aircraft tracked in the last N hours."""
+    hours = float(request.args.get('hours', 24))
+    cutoff = time.time() - (hours * 3600)
+    now = time.time()
+
+    aircraft = []
+    hour_counts = {}
+
+    with TRAIL_LOCK:
+        for hex_code, pts in TRAIL_HISTORY.items():
+            filtered = [p for p in pts if p['t'] >= cutoff]
+            if not filtered:
+                continue
+
+            first_seen = min(p['t'] for p in filtered)
+            last_seen = max(p['t'] for p in filtered)
+            max_alt = max((p.get('alt_baro', 0) or 0) for p in filtered)
+            callsign = ''
+            for p in reversed(filtered):
+                if p.get('flight', '').strip():
+                    callsign = p['flight'].strip()
+                    break
+
+            # Count by hour
+            for p in filtered:
+                import datetime
+                h = datetime.datetime.fromtimestamp(p['t']).strftime('%H')
+                hour_counts[h] = hour_counts.get(h, set())
+                hour_counts[h].add(hex_code)
+
+            aircraft.append({
+                'hex': hex_code,
+                'callsign': callsign,
+                'first_seen': first_seen,
+                'last_seen': last_seen,
+                'duration': round(last_seen - first_seen),
+                'max_alt': max_alt,
+                'positions': len(filtered),
+                'last_lat': filtered[-1].get('lat', 0),
+                'last_lon': filtered[-1].get('lon', 0),
+            })
+
+    # Sort by most recently seen
+    aircraft.sort(key=lambda a: a['last_seen'], reverse=True)
+
+    # Hourly activity
+    hourly = []
+    for h in range(24):
+        hstr = f'{h:02d}'
+        hourly.append({'hour': hstr, 'count': len(hour_counts.get(hstr, set()))})
+
+    # Busiest hour
+    busiest = max(hourly, key=lambda x: x['count']) if hourly else None
+
+    return jsonify({
+        'total_unique': len(aircraft),
+        'period_hours': hours,
+        'aircraft': aircraft[:200],
+        'hourly': hourly,
+        'busiest_hour': busiest,
+    })
+
 # ── FIDS stub — flight information display ────────────────
 @app.route('/api/fids')
 def fids():

@@ -900,6 +900,7 @@
       <div class="tab-bar">
         <button class="tab-btn active" onclick="showTab('traffic',event)">Traffic</button>
         <button class="tab-btn" onclick="showTab('radio',event)">Radio</button>
+        <button class="tab-btn" onclick="showTab('history',event)">History</button>
         <button class="tab-btn" onclick="showTab('options',event)">Options</button>
         <button class="tab-btn" onclick="showTab('stats',event)">Stats</button>
       </div>
@@ -1008,6 +1009,45 @@
               <div id="recordingsList"><div style="font-size:0.62rem;color:var(--text-dim);">No recordings yet</div></div>
             </div>
 
+          </div>
+        </div>
+      </div>
+
+      <!-- HISTORY TAB -->
+      <div class="tab-content" id="tab-history">
+        <div class="scroll-area">
+          <div class="panel">
+            <div class="panel-title" style="display:flex;justify-content:space-between;align-items:center;">
+              Flight History
+              <select id="historyHours" onchange="loadHistory()" style="background:var(--bg-deep);border:1px solid var(--border);border-radius:4px;color:var(--text-dim);font-family:'Share Tech Mono',monospace;font-size:0.6rem;padding:3px 6px;">
+                <option value="1">Last 1 hour</option>
+                <option value="6">Last 6 hours</option>
+                <option value="12">Last 12 hours</option>
+                <option value="24" selected>Last 24 hours</option>
+              </select>
+            </div>
+            <div id="historyStats" style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:12px;">
+              <div style="background:var(--bg-deep);border-radius:6px;padding:8px;text-align:center;">
+                <div style="font-family:'Orbitron',sans-serif;font-size:1rem;font-weight:700;color:var(--green);" id="histTotalCount">—</div>
+                <div style="font-size:0.5rem;letter-spacing:0.15em;color:var(--text-dim);margin-top:2px;">AIRCRAFT TRACKED</div>
+              </div>
+              <div style="background:var(--bg-deep);border-radius:6px;padding:8px;text-align:center;">
+                <div style="font-family:'Orbitron',sans-serif;font-size:1rem;font-weight:700;color:var(--blue-mid);" id="histBusiestHour">—</div>
+                <div style="font-size:0.5rem;letter-spacing:0.15em;color:var(--text-dim);margin-top:2px;">BUSIEST HOUR</div>
+              </div>
+            </div>
+            <!-- Hourly chart -->
+            <div style="margin-bottom:12px;">
+              <div style="font-size:0.5rem;letter-spacing:0.15em;color:var(--text-dim);margin-bottom:6px;">HOURLY ACTIVITY</div>
+              <div id="histChart" style="display:flex;align-items:flex-end;gap:2px;height:60px;"></div>
+            </div>
+          </div>
+          <!-- Aircraft list -->
+          <div class="panel">
+            <div class="panel-title">Aircraft Seen</div>
+            <div id="historyList" style="max-height:400px;overflow-y:auto;">
+              <div style="color:var(--text-dim);font-size:0.7rem;padding:10px;text-align:center;">Click History tab to load...</div>
+            </div>
           </div>
         </div>
       </div>
@@ -1381,6 +1421,66 @@ function showTab(name, e) {
   document.querySelectorAll('.tab-btn').forEach(function(b){b.classList.remove('active');});
   document.getElementById('tab-'+name).classList.add('active');
   if (e && e.target) e.target.classList.add('active');
+  if (name === 'history') loadHistory();
+}
+
+// ── FLIGHT HISTORY ────────────────────────────────────────
+var historyLoaded = false;
+
+function loadHistory() {
+  var hours = document.getElementById('historyHours').value || 24;
+  var list = document.getElementById('historyList');
+  list.innerHTML = '<div style="color:var(--text-dim);font-size:0.7rem;padding:10px;text-align:center;">Loading...</div>';
+
+  fetch('/api/history?hours=' + hours)
+    .then(function(r) { return r.json(); })
+    .then(function(d) {
+      historyLoaded = true;
+
+      // Stats
+      document.getElementById('histTotalCount').textContent = d.total_unique || 0;
+      if (d.busiest_hour) {
+        document.getElementById('histBusiestHour').textContent = d.busiest_hour.hour + ':00 (' + d.busiest_hour.count + ')';
+      }
+
+      // Chart
+      var chart = document.getElementById('histChart');
+      var maxCount = Math.max(1, Math.max.apply(null, d.hourly.map(function(h) { return h.count; })));
+      var nowHour = new Date().getHours();
+      chart.innerHTML = d.hourly.map(function(h) {
+        var pct = Math.round((h.count / maxCount) * 100);
+        var isNow = parseInt(h.hour) === nowHour;
+        return '<div style="flex:1;display:flex;flex-direction:column;align-items:center;gap:2px;">' +
+          '<div style="font-size:0.4rem;color:var(--text-dim);">' + (h.count || '') + '</div>' +
+          '<div style="width:100%;height:' + Math.max(2, pct) + '%;background:' + (isNow ? 'var(--green)' : 'var(--blue-mid)') + ';border-radius:2px;min-height:2px;opacity:' + (h.count ? '1' : '0.2') + ';"></div>' +
+          '<div style="font-size:0.38rem;color:var(--text-dim);">' + (parseInt(h.hour) % 3 === 0 ? h.hour : '') + '</div>' +
+        '</div>';
+      }).join('');
+
+      // Aircraft list
+      var aircraft = d.aircraft || [];
+      if (!aircraft.length) {
+        list.innerHTML = '<div style="color:var(--text-dim);font-size:0.7rem;padding:20px;text-align:center;">No aircraft tracked in this period yet</div>';
+        return;
+      }
+
+      list.innerHTML = aircraft.map(function(a) {
+        var dur = a.duration;
+        var durStr = dur >= 3600 ? Math.floor(dur/3600) + 'h ' + Math.round((dur%3600)/60) + 'm' : Math.round(dur/60) + 'm';
+        var altStr = a.max_alt > 0 ? ('FL' + Math.round(a.max_alt/100)) : '—';
+        var timeStr = new Date(a.first_seen * 1000).toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'});
+        return '<div style="display:flex;align-items:center;gap:8px;padding:6px 0;border-bottom:1px solid var(--border);font-size:0.65rem;">' +
+          '<div style="width:50px;color:var(--blue-mid);font-weight:700;flex-shrink:0;">' + (a.callsign || a.hex) + '</div>' +
+          '<div style="flex:1;color:var(--text-dim);font-size:0.55rem;">' + a.hex + '</div>' +
+          '<div style="width:40px;text-align:right;color:var(--text-dim);font-size:0.55rem;">' + altStr + '</div>' +
+          '<div style="width:35px;text-align:right;color:var(--text-dim);font-size:0.55rem;">' + durStr + '</div>' +
+          '<div style="width:40px;text-align:right;color:var(--text-dim);font-size:0.55rem;">' + timeStr + '</div>' +
+        '</div>';
+      }).join('');
+    })
+    .catch(function() {
+      list.innerHTML = '<div style="color:var(--red);font-size:0.7rem;padding:10px;text-align:center;">Failed to load history</div>';
+    });
 }
 
 // ── MAP ────────────────────────────────────────────────────
