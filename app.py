@@ -17,22 +17,48 @@ CORS(app)
 app.config['SECRET_KEY'] = 'pilnk_secret'
 socketio = SocketIO(app, cors_allowed_origins="*")
 
-# Read location from dump1090-fa config
+# Read location — config.json is authoritative (installer writes it).
+# /etc/default/dump1090-fa is a legacy fallback for pre-0.1.7 installs.
+# If neither is set we return None — caller guards, and node pings without
+# coordinates rather than silently falsifying location (GLOBAL BY DEFAULT).
 import re
 
+CONFIG_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'config.json')
+
+def _load_config():
+    try:
+        with open(CONFIG_PATH, 'r') as f:
+            return json.load(f)
+    except Exception:
+        return {}
+
+_config = _load_config()
+
 def read_receiver_location():
+    # 1. config.json (authoritative, written by installer)
+    try:
+        lat = _config.get('lat')
+        lon = _config.get('lon')
+        if lat is not None and lon is not None:
+            return float(lat), float(lon)
+    except (TypeError, ValueError):
+        pass
+    # 2. Legacy: /etc/default/dump1090-fa (pre-0.1.7 installs)
     try:
         with open('/etc/default/dump1090-fa', 'r') as f:
             content = f.read()
-        lat = re.search(r'RECEIVER_LAT=([^\n]+)', content)
-        lon = re.search(r'RECEIVER_LON=([^\n]+)', content)
-        if lat and lon:
-            return float(lat.group(1)), float(lon.group(1))
-    except:
+        lat_m = re.search(r'RECEIVER_LAT=([^\n]+)', content)
+        lon_m = re.search(r'RECEIVER_LON=([^\n]+)', content)
+        if lat_m and lon_m:
+            return float(lat_m.group(1)), float(lon_m.group(1))
+    except Exception:
         pass
-    return -36.8485, 174.7633  # Auckland fallback
+    # 3. Unknown — caller must handle None
+    return None, None
 
 RX_LAT, RX_LON = read_receiver_location()
+if RX_LAT is None or RX_LON is None:
+    print('[PILNK] WARNING: Receiver location not set. Add lat/lon to config.json or re-run the installer.')
 
 # ── Flight trail history — stores last 24h of positions ───
 # { hex: deque([ {lat, lon, alt_baro, baro_rate, flight, t} ]) }
@@ -163,8 +189,8 @@ def compute_node_stats(aircraft):
             if alt > 0 and (not node_stats['highest'] or alt > node_stats['highest']['val']):
                 node_stats['highest'] = {'cs': cs, 'val': alt}
 
-            # Furthest (haversine in nm)
-            if lat and lon:
+            # Furthest (haversine in nm) — requires receiver location
+            if lat and lon and RX_LAT is not None and RX_LON is not None:
                 dLat = math.radians(lat - RX_LAT)
                 dLon = math.radians(lon - RX_LON)
                 a = math.sin(dLat/2)**2 + math.cos(math.radians(RX_LAT)) * math.cos(math.radians(lat)) * math.sin(dLon/2)**2
@@ -256,12 +282,14 @@ def ping_server():
                 'aircraft_count': len(aircraft),
                 'aircraft': aircraft,
                 'node_stats': get_stats_payload(),
-                'version': _get_local_version()
+                'version': _get_local_version(),
+                'lat': RX_LAT,
+                'lon': RX_LON
             }).encode()
             req = urllib.request.Request(
                 'https://pilnk.io/api/node.php',
                 data=payload,
-                headers={'Content-Type': 'application/json'}
+                headers={'Content-Type': 'application/json', 'User-Agent': 'PiLNK/1.0'}
             )
             urllib.request.urlopen(req, timeout=10)
             print(f'[PILNK] Ping sent — {len(aircraft)} aircraft')
@@ -379,7 +407,7 @@ current_gain      = 35
 current_squelch   = 50
 
 # ── SDR Controller — manages VHF audio via rtl_fm ─────────
-sdr = SDRController(device_index=1)
+sdr = SDRController(device_index=0)
 
 @app.route('/')
 def index():

@@ -1,6 +1,6 @@
 #!/bin/bash
 # ╔═══════════════════════════════════════════════════════╗
-# ║         PiLNK Installer  v2.9                        ║
+# ║         PiLNK Installer  v2.10                       ║
 # ║         pilnk.io  |  Built in Auckland NZ            ║
 # ╚═══════════════════════════════════════════════════════╝
 
@@ -36,7 +36,7 @@ cat << 'EOF'
 EOF
 printf "${RESET}"
 echo ""
-printf "  ${CYAN}Aviation Intelligence Network — v2.9${RESET}\n"
+printf "  ${CYAN}Aviation Intelligence Network — v2.10${RESET}\n"
 printf "  ${CYAN}pilnk.io${RESET}\n"
 echo ""
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
@@ -325,8 +325,9 @@ APP_PY="$PILNK_DIR/app.py"
 CONFIG_JSON="$PILNK_DIR/config.json"
 
 # Write config.json (gitignored — survives git pull)
-printf '{\n  "pilnk_code": "%s"\n}\n' "$CODE" > "$CONFIG_JSON"
-ok "PiLNK Code saved to config.json"
+# Source of truth for node identity: code, location, OTA preference.
+printf '{\n  "pilnk_code": "%s",\n  "lat": %s,\n  "lon": %s,\n  "auto_update": true\n}\n' "$CODE" "$LAT" "$LON" > "$CONFIG_JSON"
+ok "PiLNK Code + location saved to config.json"
 
 # Ensure config.json is gitignored (survives git pull)
 GITIGNORE="$PILNK_DIR/.gitignore"
@@ -345,27 +346,6 @@ fi
 if grep -q "^from whisper_atc" "$APP_PY"; then
   sed -i 's/^from whisper_atc/# from whisper_atc  # disabled until v2.0/' "$APP_PY"
   ok "Whisper import disabled (not installed)"
-fi
-
-# ── Apply ping fixes ───────────────────────────────────────
-step "PING FIXES"
-
-# Fix 1: Add lat/lon to ping payload
-if grep -q "'node_stats': get_stats_payload()" "$APP_PY" && ! grep -q "'lat': RX_LAT" "$APP_PY"; then
-  sed -i "s/'node_stats': get_stats_payload()/'node_stats': get_stats_payload(),\n                'lat': RX_LAT,\n                'lon': RX_LON/" "$APP_PY"
-  ok "Ping now sends receiver lat/lon"
-fi
-
-# Fix 2: Handle ground altitude (dump1090 sends alt_baro: "ground")
-if grep -q "alt = int(ac.get('alt_baro', 0) or ac.get('alt', 0) or 0)" "$APP_PY"; then
-  sed -i "s/alt = int(ac.get('alt_baro', 0) or ac.get('alt', 0) or 0)/alt_raw = ac.get('alt_baro', 0) or ac.get('alt', 0) or 0; alt = 0 if alt_raw == 'ground' else int(alt_raw)/" "$APP_PY"
-  ok "Fixed ground altitude handling"
-fi
-
-# Fix 3: Add User-Agent header (Cloudflare blocks default Python-urllib)
-if grep -q "headers={'Content-Type': 'application/json'}" "$APP_PY" && ! grep -q "User-Agent" "$APP_PY"; then
-  sed -i "s/headers={'Content-Type': 'application\/json'}/headers={'Content-Type': 'application\/json', 'User-Agent': 'PiLNK\/1.0'}/" "$APP_PY"
-  ok "Added User-Agent header for Cloudflare"
 fi
 
 # ── Syntax check app.py ────────────────────────────────────
@@ -395,6 +375,7 @@ After=network.target
 Type=simple
 User=$USER
 WorkingDirectory=$PILNK_DIR
+Environment=PYTHONUNBUFFERED=1
 ExecStart=/usr/bin/python3 $PILNK_DIR/app.py
 Restart=always
 RestartSec=10
