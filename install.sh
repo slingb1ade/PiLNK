@@ -1,6 +1,6 @@
 #!/bin/bash
 # ╔═══════════════════════════════════════════════════════╗
-# ║         PiLNK Installer  v2.7                        ║
+# ║         PiLNK Installer  v2.8                        ║
 # ║         pilnk.io  |  Built in Auckland NZ            ║
 # ╚═══════════════════════════════════════════════════════╝
 
@@ -36,7 +36,7 @@ cat << 'EOF'
 EOF
 printf "${RESET}"
 echo ""
-printf "  ${CYAN}Aviation Intelligence Network — v2.7${RESET}\n"
+printf "  ${CYAN}Aviation Intelligence Network — v2.8${RESET}\n"
 printf "  ${CYAN}pilnk.io${RESET}\n"
 echo ""
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
@@ -203,15 +203,6 @@ sudo apt-get install -y \
   wget \
   rtl-sdr \
   librtlsdr-dev \
-  libopenblas-dev \
-  ffmpeg \
-  libavformat-dev \
-  libavcodec-dev \
-  libavdevice-dev \
-  libavutil-dev \
-  libavfilter-dev \
-  libswscale-dev \
-  libswresample-dev \
   sox \
   2>/dev/null || true
 ok "System packages installed"
@@ -223,19 +214,34 @@ elif [ "$PIAWARE_IMAGE" = true ]; then
   ok "PiAware image — dump1090-fa managed by PiAware"
 else
   info "Installing dump1090-fa..."
-  # Try apt first (works if FlightAware repo is configured)
+
+  # Add FlightAware repository if not present
+  if ! ls /etc/apt/sources.list.d/*flightaware* &>/dev/null 2>&1; then
+    info "Adding FlightAware repository..."
+    wget -qO- https://flightaware.com/adsb/piaware/files/packages/pool/piaware/p/piaware-support/piaware-repository_10.1_all.deb > /tmp/piaware-repo.deb 2>/dev/null || true
+    if [ -f /tmp/piaware-repo.deb ] && [ -s /tmp/piaware-repo.deb ]; then
+      sudo dpkg -i /tmp/piaware-repo.deb 2>/dev/null || true
+      sudo apt-get update -qq 2>/dev/null || true
+      ok "FlightAware repository added"
+    fi
+  fi
+
+  # Try apt install
   if sudo apt-get install -y dump1090-fa 2>/dev/null; then
     ok "dump1090-fa installed via apt"
   else
-    # Try direct download
+    # Try direct download as fallback
     ARCH=$(dpkg --print-architecture)
-    wget -qO /tmp/dump1090-fa.deb "https://flightaware.com/adsb/piaware/files/packages/pool/piaware/p/piaware-support/dump1090-fa_9.0_${ARCH}.deb" 2>/dev/null || true
-    if [ -f /tmp/dump1090-fa.deb ] && sudo dpkg -i /tmp/dump1090-fa.deb 2>/dev/null; then
+    wget -qO /tmp/dump1090-fa.deb "https://flightaware.com/adsb/piaware/files/packages/pool/piaware/p/piaware-support/dump1090-fa_10.1_${ARCH}.deb" 2>/dev/null || true
+    if [ -f /tmp/dump1090-fa.deb ] && [ -s /tmp/dump1090-fa.deb ] && sudo dpkg -i /tmp/dump1090-fa.deb 2>/dev/null; then
+      sudo apt-get install -f -y 2>/dev/null || true
       ok "dump1090-fa installed"
     else
       warn "dump1090-fa could not be auto-installed"
-      warn "Install manually: sudo apt-get install dump1090-fa"
-      warn "Or visit: https://flightaware.com/adsb/piaware/install"
+      warn "Install manually:"
+      warn "  wget https://flightaware.com/adsb/piaware/files/packages/pool/piaware/p/piaware-support/piaware-repository_10.1_all.deb"
+      warn "  sudo dpkg -i piaware-repository_10.1_all.deb"
+      warn "  sudo apt update && sudo apt install dump1090-fa"
     fi
   fi
 fi
@@ -282,17 +288,7 @@ sudo pip install \
   --break-system-packages -q 2>/dev/null || true
 ok "Base Python packages installed"
 
-# Install faster-whisper separately with fallback
-# Requires ffmpeg/libav libs to already be installed (done above)
-info "Installing faster-whisper (ATC transcription)..."
-if sudo pip3 install faster-whisper --break-system-packages -q 2>/dev/null; then
-  ok "faster-whisper installed"
-elif sudo pip3 install faster-whisper==0.9.0 --break-system-packages -q 2>/dev/null; then
-  ok "faster-whisper 0.9.0 installed (compatibility version)"
-else
-  warn "faster-whisper could not be installed — ATC transcription disabled"
-  warn "Run manually later: sudo apt-get install -y ffmpeg libavformat-dev libavcodec-dev libavdevice-dev libavutil-dev libavfilter-dev libswscale-dev libswresample-dev && sudo pip3 install faster-whisper --break-system-packages"
-fi
+# faster-whisper removed — ATC transcription disabled until v2.0
 
 # ── Write location to dump1090-fa config ─────────────────
 step "LOCATION CONFIGURATION"
