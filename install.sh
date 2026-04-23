@@ -1,6 +1,6 @@
 #!/bin/bash
 # ╔═══════════════════════════════════════════════════════╗
-# ║         PiLNK Installer  v2.8                        ║
+# ║         PiLNK Installer  v2.9                        ║
 # ║         pilnk.io  |  Built in Auckland NZ            ║
 # ╚═══════════════════════════════════════════════════════╝
 
@@ -36,7 +36,7 @@ cat << 'EOF'
 EOF
 printf "${RESET}"
 echo ""
-printf "  ${CYAN}Aviation Intelligence Network — v2.8${RESET}\n"
+printf "  ${CYAN}Aviation Intelligence Network — v2.9${RESET}\n"
 printf "  ${CYAN}pilnk.io${RESET}\n"
 echo ""
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
@@ -207,6 +207,13 @@ sudo apt-get install -y \
   2>/dev/null || true
 ok "System packages installed"
 
+# Blacklist DVB driver so it doesn't grab RTL-SDR dongles
+if [ ! -f /etc/modprobe.d/blacklist-rtlsdr.conf ]; then
+  echo "blacklist dvb_usb_rtl28xxu" | sudo tee /etc/modprobe.d/blacklist-rtlsdr.conf > /dev/null
+  sudo rmmod dvb_usb_rtl28xxu 2>/dev/null || true
+  ok "DVB driver blacklisted (prevents dongle conflicts)"
+fi
+
 # Install dump1090-fa if not present (skip on PiAware — already installed)
 if command -v dump1090-fa &>/dev/null; then
   ok "dump1090-fa already present"
@@ -218,9 +225,9 @@ else
   # Add FlightAware repository if not present
   if ! ls /etc/apt/sources.list.d/*flightaware* &>/dev/null 2>&1; then
     info "Adding FlightAware repository..."
-    wget -qO- https://flightaware.com/adsb/piaware/files/packages/pool/piaware/p/piaware-support/piaware-repository_10.1_all.deb > /tmp/piaware-repo.deb 2>/dev/null || true
-    if [ -f /tmp/piaware-repo.deb ] && [ -s /tmp/piaware-repo.deb ]; then
-      sudo dpkg -i /tmp/piaware-repo.deb 2>/dev/null || true
+    wget -qO /tmp/flightaware-repo.deb "https://www.flightaware.com/adsb/piaware/files/packages/pool/piaware/f/flightaware-apt-repository/flightaware-apt-repository_1.2_all.deb" 2>/dev/null || true
+    if [ -f /tmp/flightaware-repo.deb ] && [ -s /tmp/flightaware-repo.deb ]; then
+      sudo dpkg -i /tmp/flightaware-repo.deb 2>/dev/null || true
       sudo apt-get update -qq 2>/dev/null || true
       ok "FlightAware repository added"
     fi
@@ -239,8 +246,8 @@ else
     else
       warn "dump1090-fa could not be auto-installed"
       warn "Install manually:"
-      warn "  wget https://flightaware.com/adsb/piaware/files/packages/pool/piaware/p/piaware-support/piaware-repository_10.1_all.deb"
-      warn "  sudo dpkg -i piaware-repository_10.1_all.deb"
+      warn "  wget https://www.flightaware.com/adsb/piaware/files/packages/pool/piaware/f/flightaware-apt-repository/flightaware-apt-repository_1.2_all.deb"
+      warn "  sudo dpkg -i flightaware-apt-repository_1.2_all.deb"
       warn "  sudo apt update && sudo apt install dump1090-fa"
     fi
   fi
