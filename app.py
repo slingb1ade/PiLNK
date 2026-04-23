@@ -309,7 +309,7 @@ else:
 PILNK_DIR = os.path.dirname(os.path.abspath(__file__))
 VERSION_FILE = os.path.join(PILNK_DIR, 'VERSION')
 UPDATE_SCRIPT = os.path.join(PILNK_DIR, 'update.sh')
-OTA_CHECK_INTERVAL = 300  # 5 minutes
+OTA_CHECK_INTERVAL = 3600  # 1 hour
 OTA_COOLDOWN = 3600       # 1 hour after update before re-checking
 ota_last_update = 0
 ota_status = {'available': False, 'current': '', 'latest': '', 'last_check': 0, 'updating': False}
