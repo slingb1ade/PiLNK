@@ -1,4 +1,23 @@
-.secret_key
-.secret_key
+# PiLNK — files git should never track
+
+# Sensitive / per-node config
 .secret_key
 config.json
+
+# Runtime / generated files
+update.log
+stats_records.json
+__pycache__/
+*.pyc
+*.pyo
+
+# Editor / OS noise
+.vscode/
+.idea/
+.DS_Store
+*.swp
+
+# Backup files (we should never commit these — they should never exist
+# in the repo, but ignoring them prevents future accidents)
+*.bak
+*.bak.*
