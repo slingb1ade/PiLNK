@@ -639,15 +639,6 @@ def receiver_location():
     return jsonify({'lat': RX_LAT, 'lon': RX_LON})
 
 
-@app.route('/flightart')
-def flightart():
-    import os
-    art_path = os.path.join(os.path.dirname(__file__), 'templates', 'flightart.html')
-    if os.path.exists(art_path):
-        with open(art_path, 'r') as f:
-            return f.read()
-    return 'Flight Art page not found', 404
-
 # ── Flight trail history API ──────────────────────────────
 @app.route('/api/trails')
 def trails():
@@ -679,7 +670,12 @@ def history_summary():
 
             first_seen = min(p['t'] for p in filtered)
             last_seen = max(p['t'] for p in filtered)
-            max_alt = max((p.get('alt_baro', 0) or 0) for p in filtered)
+            # alt_baro can be the string 'ground' from dump1090 when an aircraft
+            # is on the runway — coerce non-numeric values to 0 so max() works
+            def _alt_int(p):
+                a = p.get('alt_baro', 0)
+                return a if isinstance(a, (int, float)) else 0
+            max_alt = max(_alt_int(p) for p in filtered)
             callsign = ''
             for p in reversed(filtered):
                 if p.get('flight', '').strip():
