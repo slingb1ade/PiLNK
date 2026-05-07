@@ -66,6 +66,23 @@ RX_LAT, RX_LON = read_receiver_location()
 if RX_LAT is None or RX_LON is None:
     print('[PILNK] WARNING: Receiver location not set. Add lat/lon to config.json or re-run the installer.')
 
+# ── dump1090-fa aircraft data ──────────────────────────────
+# Read aircraft.json directly from disk. dump1090-fa writes this
+# every second via --write-json /run/dump1090-fa. Reading from disk
+# instead of HTTP avoids a dependency on lighttpd (formerly served on
+# port 8080) and saves a network round-trip on every poll. Works on
+# any install that runs dump1090-fa, including amd64 boxes that don't
+# bundle the SkyAware web UI.
+DUMP1090_AIRCRAFT_JSON = '/run/dump1090-fa/aircraft.json'
+
+def read_aircraft_json():
+    """Return raw bytes from dump1090-fa's aircraft.json, or None on error."""
+    try:
+        with open(DUMP1090_AIRCRAFT_JSON, 'rb') as f:
+            return f.read()
+    except (IOError, OSError):
+        return None
+
 # ── Flight trail history — stores last 24h of positions ───
 # { hex: deque([ {lat, lon, alt_baro, baro_rate, flight, t} ]) }
 TRAIL_HISTORY = collections.defaultdict(lambda: collections.deque(maxlen=500))
@@ -75,11 +92,9 @@ MAX_TRAIL_AGE = 24 * 3600  # 24 hours in seconds
 def record_trails():
     while True:
         try:
-            import urllib.request
-            url = 'http://localhost:8080/data/aircraft.json'
-            with urllib.request.urlopen(url, timeout=2) as r:
-                import json
-                data = json.loads(r.read())
+            raw = read_aircraft_json()
+            if raw is not None:
+                data = json.loads(raw)
                 now = time.time()
                 with TRAIL_LOCK:
                     for a in data.get('aircraft', []):
@@ -254,12 +269,12 @@ def get_stats_payload():
 def ping_server():
     while True:
         try:
-            import urllib.request
             # Grab current aircraft from dump1090
             aircraft = []
-            try:
-                with urllib.request.urlopen('http://localhost:8080/data/aircraft.json', timeout=3) as r:
-                    data = json.loads(r.read())
+            raw = read_aircraft_json()
+            if raw is not None:
+                try:
+                    data = json.loads(raw)
                     for a in data.get('aircraft', []):
                         if a.get('lat'):
                             aircraft.append({
@@ -275,8 +290,8 @@ def ping_server():
                                 't': a.get('t', ''),
                                 'track': a.get('track', 0)
                             })
-            except:
-                pass
+                except (ValueError, KeyError):
+                    pass
 
             # Compute stats
             compute_node_stats(aircraft)
@@ -561,13 +576,10 @@ def audio_status():
 
 @app.route('/flights')
 def flights():
-    import urllib.request
-    try:
-        url = 'http://localhost:8080/data/aircraft.json'
-        with urllib.request.urlopen(url, timeout=2) as r:
-            return Response(r.read(), mimetype='application/json')
-    except:
-        return jsonify({'aircraft': []})
+    raw = read_aircraft_json()
+    if raw is not None:
+        return Response(raw, mimetype='application/json')
+    return jsonify({'aircraft': []})
 
 # ── OpenAIP proxy — avoids CORS issues in browser ─────────
 @app.route('/api/openaip/<path:endpoint>')
