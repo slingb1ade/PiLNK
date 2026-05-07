@@ -952,6 +952,23 @@
               <button id="radioListenBtn" onclick="radioToggle()" style="width:100%;padding:12px;border:1px solid var(--green);background:transparent;border-radius:8px;color:var(--green);font-family:'Orbitron',sans-serif;font-size:0.7rem;font-weight:700;letter-spacing:0.15em;cursor:pointer;transition:all 0.2s;">▶ LISTEN</button>
             </div>
 
+            <!-- Signal Meter -->
+            <div style="padding:0 12px 8px;">
+              <div style="display:flex;align-items:center;gap:8px;">
+                <span style="font-size:0.6rem;color:var(--text-dim);letter-spacing:0.1em;width:32px;">SIG</span>
+                <div style="flex:1;height:6px;background:var(--bg-card);border:1px solid var(--border);border-radius:3px;overflow:hidden;">
+                  <div id="radioSignalBar" style="height:100%;width:0%;background:linear-gradient(90deg,#3b82f6 0%,#10b981 50%,#f59e0b 80%,#ef4444 100%);transition:width 80ms linear;"></div>
+                </div>
+                <span id="radioSignalVal" style="font-size:0.6rem;color:var(--text-dim);width:24px;text-align:right;font-family:'Share Tech Mono',monospace;">0</span>
+              </div>
+            </div>
+
+            <!-- Record Button -->
+            <div style="padding:0 12px 8px;">
+              <button id="radioRecordBtn" onclick="radioRecordToggle()" disabled style="width:100%;padding:8px;border:1px solid var(--border);background:transparent;border-radius:8px;color:var(--text-dim);font-family:'Orbitron',sans-serif;font-size:0.62rem;font-weight:700;letter-spacing:0.15em;cursor:pointer;transition:all 0.2s;opacity:0.5;">● RECORD</button>
+              <div id="radioRecordStatus" style="display:none;font-size:0.6rem;color:#ef4444;text-align:center;margin-top:4px;letter-spacing:0.08em;font-family:'Share Tech Mono',monospace;">REC <span id="radioRecordTime">0:00</span></div>
+            </div>
+
             <!-- Airport Search -->
             <div class="panel">
               <div class="panel-title">Airport Frequencies</div>
@@ -2166,6 +2183,8 @@ function radioStart(freqHz) {
       radioCurrentFreq = freq;
       radioUpdateUI();
       radioAddRecent(freq);
+      radioStartSignalPolling();
+      radioRecordUpdateUI();
       // Open the streaming connection — browser plays Ogg/Opus directly
       radioAudioEl.src = '/audio/stream?_=' + Date.now();
       radioAudioEl.play().catch(function(e){ console.warn('Audio play blocked:', e); });
@@ -2176,9 +2195,13 @@ function radioStart(freqHz) {
 function radioStop() {
   // Set flag first so the 'ended' handler doesn't try to reconnect
   radioPlaying = false;
+  radioRecording = false; // backend stops recording when audio stops
   radioAudioEl.pause();
   radioAudioEl.removeAttribute('src');
   radioAudioEl.load();
+  radioStopSignalPolling();
+  if (radioRecordTimer) { clearInterval(radioRecordTimer); radioRecordTimer = null; }
+  radioRecordUpdateUI();
   fetch('/audio/stop', {method: 'POST'})
     .then(function(r) { return r.json(); })
     .then(function(d) {
@@ -2280,6 +2303,87 @@ function radioUpdateUI() {
       tFreq.style.color = '';
     }
   }
+}
+
+// ── Signal-level meter polling ────────────────────────────
+var radioSignalTimer = null;
+function radioStartSignalPolling() {
+  if (radioSignalTimer) return;
+  radioSignalTimer = setInterval(function(){
+    fetch('/audio/level').then(function(r){return r.json();}).then(function(d){
+      var lvl = d.level || 0;
+      var bar = document.getElementById('radioSignalBar');
+      var val = document.getElementById('radioSignalVal');
+      if (bar) bar.style.width = lvl + '%';
+      if (val) val.textContent = lvl;
+    }).catch(function(){});
+  }, 200);
+}
+function radioStopSignalPolling() {
+  if (radioSignalTimer) { clearInterval(radioSignalTimer); radioSignalTimer = null; }
+  var bar = document.getElementById('radioSignalBar');
+  var val = document.getElementById('radioSignalVal');
+  if (bar) bar.style.width = '0%';
+  if (val) val.textContent = '0';
+}
+
+// ── Recording ─────────────────────────────────────────────
+var radioRecording = false;
+var radioRecordTimer = null;
+var radioRecordStartedAt = 0;
+function radioRecordToggle() {
+  if (radioRecording) radioRecordStop();
+  else radioRecordStart();
+}
+function radioRecordStart() {
+  if (!radioPlaying) return;
+  fetch('/audio/record/start', {method:'POST'})
+    .then(function(r){return r.json();})
+    .then(function(d){
+      if (d.success) {
+        radioRecording = true;
+        radioRecordStartedAt = Date.now();
+        radioRecordUpdateUI();
+        if (radioRecordTimer) clearInterval(radioRecordTimer);
+        radioRecordTimer = setInterval(radioRecordUpdateTime, 500);
+      }
+    }).catch(function(){});
+}
+function radioRecordStop() {
+  fetch('/audio/record/stop', {method:'POST'})
+    .then(function(r){return r.json();})
+    .catch(function(){})
+    .then(function(){
+      radioRecording = false;
+      if (radioRecordTimer) { clearInterval(radioRecordTimer); radioRecordTimer = null; }
+      radioRecordUpdateUI();
+    });
+}
+function radioRecordUpdateUI() {
+  var btn = document.getElementById('radioRecordBtn');
+  var status = document.getElementById('radioRecordStatus');
+  if (!btn || !status) return;
+  btn.disabled = !radioPlaying;
+  btn.style.opacity = radioPlaying ? '1' : '0.5';
+  if (radioRecording) {
+    btn.style.borderColor = '#ef4444';
+    btn.style.color = '#ef4444';
+    btn.textContent = '■ STOP REC';
+    status.style.display = 'block';
+  } else {
+    btn.style.borderColor = radioPlaying ? '#ef4444' : 'var(--border)';
+    btn.style.color = radioPlaying ? '#ef4444' : 'var(--text-dim)';
+    btn.textContent = '● RECORD';
+    status.style.display = 'none';
+  }
+}
+function radioRecordUpdateTime() {
+  var elapsed = Math.floor((Date.now() - radioRecordStartedAt) / 1000);
+  var m = Math.floor(elapsed / 60);
+  var s = elapsed % 60;
+  var t = m + ':' + (s < 10 ? '0' + s : s);
+  var el = document.getElementById('radioRecordTime');
+  if (el) el.textContent = t;
 }
 
 function radioAddRecent(freqHz) {

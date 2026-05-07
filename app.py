@@ -499,6 +499,62 @@ def audio_stream():
         }
     )
 
+@app.route('/audio/level')
+def audio_level():
+    """Lightweight signal-level poll (UI meter). Cheap enough to
+    poll at 5–10 Hz from the browser."""
+    return jsonify({
+        'level': sdr.get_signal_level(),
+        'playing': sdr.is_playing
+    })
+
+@app.route('/audio/record/start', methods=['POST'])
+def audio_record_start():
+    ok, info = sdr.start_recording()
+    return jsonify({'success': ok, **info})
+
+@app.route('/audio/record/stop', methods=['POST'])
+def audio_record_stop():
+    info = sdr.stop_recording()
+    if info is None:
+        return jsonify({'success': False, 'error': 'no recording active'}), 400
+    return jsonify({'success': True, **info})
+
+@app.route('/audio/recordings')
+def audio_recordings_list():
+    """List recording files in the recordings/ directory, newest first."""
+    rec_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'recordings')
+    if not os.path.isdir(rec_dir):
+        return jsonify({'recordings': []})
+    items = []
+    for name in os.listdir(rec_dir):
+        if not name.endswith('.ogg'):
+            continue
+        path = os.path.join(rec_dir, name)
+        try:
+            st = os.stat(path)
+            items.append({
+                'filename': name,
+                'size_bytes': st.st_size,
+                'mtime': st.st_mtime
+            })
+        except OSError:
+            continue
+    items.sort(key=lambda x: x['mtime'], reverse=True)
+    return jsonify({'recordings': items})
+
+@app.route('/audio/recordings/<path:filename>')
+def audio_recording_serve(filename):
+    """Serve a recording file. Streams via send_from_directory; safe
+    against path traversal because send_from_directory rejects '..'.
+    """
+    # Defense in depth: only allow .ogg with a recording-shaped name
+    if not filename.endswith('.ogg') or '/' in filename or '\\' in filename:
+        return jsonify({'error': 'invalid filename'}), 400
+    rec_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'recordings')
+    from flask import send_from_directory
+    return send_from_directory(rec_dir, filename, mimetype='audio/ogg')
+
 @app.route('/audio/status')
 def audio_status():
     return jsonify(sdr.get_status())
