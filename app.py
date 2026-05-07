@@ -407,7 +407,9 @@ current_gain      = 35
 current_squelch   = 50
 
 # ── SDR Controller — manages VHF audio via rtl_fm ─────────
-sdr = SDRController(device_index=0)
+# Identifies VHF dongle by USB serial (default '00000002') so the
+# audio path can never accidentally clobber the ADS-B dongle.
+sdr = SDRController()
 
 @app.route('/')
 def index():
