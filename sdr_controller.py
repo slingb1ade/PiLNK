@@ -13,11 +13,15 @@ Default serials (override via SDRController(device_serial=...)):
 import subprocess
 import threading
 import time
+import logging
+
+logger = logging.getLogger(__name__)
 
 VHF_DEFAULT_SERIAL = '00000002'
 
+
 class SDRController:
-    def __init__(self, device_serial=VHF_DEFAULT_SERIAL):
+    def __init__(self, device_serial=VHF_DEFAULT_SERIAL, audio_output='default'):
         self.device_serial = str(device_serial)
         # rtl-sdr's `-d` flag accepts a serial directly. It first tries to
         # parse as integer → device index. If the string isn't a valid index,
@@ -25,8 +29,17 @@ class SDRController:
         # We pass the bare serial; for AJ's 2-dongle setup it correctly
         # falls through to serial match (no device 2 exists).
         self._device_arg = self.device_serial
+        # ALSA output device for `aplay -D`. Configurable per-node via
+        # config.json's "audio_output" field. Default 'default' lets
+        # ALSA pick the system sink (HDMI / 3.5mm jack / USB audio).
+        # Common alternatives:
+        #   'plughw:0,0'              — first audio device
+        #   'plughw:Headphones,0'     — RPi 3.5mm jack on recent OS images
+        #   'hw:CARD=USB,DEV=0'       — specific USB audio dongle by name
+        # Run `aplay -L` on the host to list available outputs.
+        self.audio_output = str(audio_output)
         self.frequency = 118700000   # Hz
-        self.squelch = 50            # 0-100
+        self.squelch = 50            # 0-100 (UI scale)
         self.gain = 35               # 0-50
         self.sample_rate = 24000     # 24kHz for better quality
         self.process = None          # rtl_fm subprocess
@@ -36,21 +49,32 @@ class SDRController:
         self.lock = threading.Lock()
         self.biast_enabled = False
 
+    # ── helpers ────────────────────────────────────────────────
+    @staticmethod
+    def _ui_to_rtl_squelch(ui_val):
+        """Map UI squelch 0-100 → rtl_fm `-l` units (0-150).
+        rtl_fm's `-l` is an RMS-based threshold, not a normalised %.
+        Values above ~150 typically suppress all but the strongest
+        signals. UI 0 = no squelch (open), UI 100 = strict cutoff.
+        Linear mapping keeps slider behaviour predictable.
+        """
+        return int(max(0, min(100, ui_val)) * 1.5)
+
     def enable_biast(self):
         """Enable bias-T on VHF dongle to power LNA."""
         try:
-            result = subprocess.run(
+            subprocess.run(
                 ['rtl_biast', '-d', self._device_arg, '-b', '1'],
                 capture_output=True, text=True, timeout=5
             )
             self.biast_enabled = True
-            print(f'[SDR] Bias-T enabled on dongle serial={self.device_serial}')
+            logger.info('Bias-T enabled on dongle serial=%s', self.device_serial)
             return True
         except FileNotFoundError:
-            print('[SDR] rtl_biast not found — skipping')
+            logger.warning('rtl_biast not found — skipping')
             return False
         except Exception as e:
-            print(f'[SDR] Bias-T error: {e}')
+            logger.error('Bias-T error: %s', e)
             return False
 
     def disable_biast(self):
@@ -61,7 +85,7 @@ class SDRController:
                 capture_output=True, text=True, timeout=5
             )
             self.biast_enabled = False
-            print(f'[SDR] Bias-T disabled on dongle serial={self.device_serial}')
+            logger.info('Bias-T disabled on dongle serial=%s', self.device_serial)
         except Exception:
             pass
 
@@ -87,7 +111,7 @@ class SDRController:
                     '-f', str(self.frequency),
                     '-M', 'am',
                     '-s', str(self.sample_rate),
-                    '-l', str(self.squelch),
+                    '-l', str(self._ui_to_rtl_squelch(self.squelch)),
                     '-g', str(self.gain),
                     '-'
                 ]
@@ -104,14 +128,14 @@ class SDRController:
                     'highpass', '200'
                 ]
 
-                # aplay: output to ALSA (HDMI or 3.5mm jack)
+                # aplay: output to ALSA. Device configurable per-node.
                 aplay_cmd = [
                     'aplay',
                     '-r', str(self.sample_rate),
                     '-f', 'S16_LE',
                     '-c', '1',
                     '-t', 'raw',
-                    '-D', 'default'
+                    '-D', self.audio_output
                 ]
 
                 # Chain: rtl_fm | sox | aplay
@@ -140,15 +164,20 @@ class SDRController:
 
                 self.is_playing = True
                 freq_mhz = self.frequency / 1e6
-                print(f'[SDR] Playing {freq_mhz:.3f} MHz | Squelch: {self.squelch} | Gain: {self.gain}')
+                logger.info(
+                    'Playing %.3f MHz | Squelch UI=%d (rtl=%d) | Gain=%d | Out=%s',
+                    freq_mhz, self.squelch,
+                    self._ui_to_rtl_squelch(self.squelch),
+                    self.gain, self.audio_output
+                )
                 return True
 
             except FileNotFoundError as e:
-                print(f'[SDR] Required tool not found: {e}')
+                logger.error('Required tool not found: %s', e)
                 self.is_playing = False
                 return False
             except Exception as e:
-                print(f'[SDR] Start failed: {e}')
+                logger.error('Start failed: %s', e)
                 self._kill_pipeline()
                 return False
 
@@ -157,26 +186,45 @@ class SDRController:
         with self.lock:
             self._kill_pipeline()
             self.is_playing = False
-            print('[SDR] Stopped')
+            logger.info('Stopped')
 
     def _kill_pipeline(self):
-        """Kill all processes in the pipeline."""
-        for proc in [self.process, self.sox_process, self.aplay_process]:
-            if proc and proc.poll() is None:
-                try:
-                    proc.terminate()
-                except:
-                    pass
+        """Kill all processes in the pipeline.
 
-        # Give processes 0.3s to die gracefully
-        time.sleep(0.3)
+        Polls each process up to 300ms for graceful exit, then SIGKILLs
+        anything still alive. Returns immediately if no processes are
+        alive — no unconditional 300ms sleep penalty when there's
+        nothing to clean up.
+        """
+        procs = [self.process, self.sox_process, self.aplay_process]
+        alive = [p for p in procs if p and p.poll() is None]
 
-        # Force kill anything still alive
-        for proc in [self.process, self.sox_process, self.aplay_process]:
-            if proc and proc.poll() is None:
+        if not alive:
+            self.process = None
+            self.sox_process = None
+            self.aplay_process = None
+            return
+
+        # Send SIGTERM to all alive processes
+        for p in alive:
+            try:
+                p.terminate()
+            except Exception:
+                pass
+
+        # Poll up to 300ms in 30ms increments — exit early once all dead
+        deadline = time.monotonic() + 0.3
+        while time.monotonic() < deadline:
+            if all(p.poll() is not None for p in alive):
+                break
+            time.sleep(0.03)
+
+        # SIGKILL anything still hanging on
+        for p in alive:
+            if p.poll() is None:
                 try:
-                    proc.kill()
-                except:
+                    p.kill()
+                except Exception:
                     pass
 
         self.process = None
@@ -195,10 +243,10 @@ class SDRController:
         if was_playing:
             self.start()
         freq_mhz = self.frequency / 1e6
-        print(f'[SDR] Frequency → {freq_mhz:.3f} MHz')
+        logger.info('Frequency → %.3f MHz', freq_mhz)
 
     def set_squelch(self, level):
-        """Set squelch level (0-100) — requires restart."""
+        """Set squelch level (UI 0-100)."""
         with self.lock:
             self.squelch = max(0, min(100, int(level)))
             was_playing = self.is_playing
@@ -208,7 +256,10 @@ class SDRController:
                 self.is_playing = False
         if was_playing:
             self.start()
-        print(f'[SDR] Squelch → {self.squelch}')
+        logger.info(
+            'Squelch → UI=%d (rtl=%d)',
+            self.squelch, self._ui_to_rtl_squelch(self.squelch)
+        )
 
     def set_gain(self, gain):
         """Set RF gain (0-50) — requires restart."""
@@ -221,7 +272,7 @@ class SDRController:
                 self.is_playing = False
         if was_playing:
             self.start()
-        print(f'[SDR] Gain → {self.gain}')
+        logger.info('Gain → %d', self.gain)
 
     def get_status(self):
         """Return current state."""
@@ -236,7 +287,8 @@ class SDRController:
             'squelch': self.squelch,
             'gain': self.gain,
             'biast': self.biast_enabled,
-            'device_serial': self.device_serial
+            'device_serial': self.device_serial,
+            'audio_output': self.audio_output
         }
 
     def cleanup(self):

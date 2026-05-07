@@ -11,6 +11,12 @@ import time
 import collections
 import json
 import os
+import logging
+
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s [%(name)s] %(levelname)s: %(message)s'
+)
 
 app = Flask(__name__)
 CORS(app)
@@ -409,7 +415,7 @@ current_squelch   = 50
 # ── SDR Controller — manages VHF audio via rtl_fm ─────────
 # Identifies VHF dongle by USB serial (default '00000002') so the
 # audio path can never accidentally clobber the ADS-B dongle.
-sdr = SDRController()
+sdr = SDRController(audio_output=_config.get('audio_output', 'default'))
 
 @app.route('/')
 def index():
