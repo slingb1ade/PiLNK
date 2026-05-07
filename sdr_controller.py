@@ -563,6 +563,42 @@ class SDRController:
             }
 
     # ── status ────────────────────────────────────────────────
+    def _check_vhf_device(self):
+        """Return True if at least 2 RTL-SDR dongles are attached. One is
+        already used for ADS-B (dump1090-fa); the second is what we'd grab
+        for VHF audio. Reads sysfs directly — no subprocess, no dongle
+        handles touched, safe to call while the ADS-B dongle is locked.
+
+        Result is cached for 5 seconds so the UI can poll without IO churn.
+        """
+        if self.is_playing:
+            return True  # we're already using one, so it must be there
+        now = time.monotonic()
+        cached_at = getattr(self, '_vhf_check_at', 0)
+        if (now - cached_at) < 5:
+            return getattr(self, '_vhf_available', False)
+        self._vhf_check_at = now
+
+        rtl_count = 0
+        usb_root = '/sys/bus/usb/devices'
+        try:
+            for entry in os.listdir(usb_root):
+                try:
+                    with open(os.path.join(usb_root, entry, 'idVendor')) as f:
+                        vendor = f.read().strip()
+                    with open(os.path.join(usb_root, entry, 'idProduct')) as f:
+                        product = f.read().strip()
+                    # Realtek RTL2832U USB IDs used by the RTL-SDR Blog dongles:
+                    # 0bda:2838 (V3/V4 most common), 0bda:2832 (older units)
+                    if vendor == '0bda' and product in ('2838', '2832'):
+                        rtl_count += 1
+                except (FileNotFoundError, OSError):
+                    continue
+            self._vhf_available = rtl_count >= 2
+        except Exception:
+            self._vhf_available = False
+        return self._vhf_available
+
     def get_status(self):
         if self.is_playing and self.process and self.process.poll() is not None:
             self.is_playing = False
@@ -579,7 +615,8 @@ class SDRController:
             'codec': 'opus',
             'bitrate': OPUS_BITRATE,
             'signal_level': self.get_signal_level(),
-            'recording': self.recording_info()
+            'recording': self.recording_info(),
+            'vhf_available': self._check_vhf_device()
         }
 
     def cleanup(self):
