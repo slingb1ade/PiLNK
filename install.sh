@@ -204,6 +204,7 @@ sudo apt-get install -y \
   rtl-sdr \
   librtlsdr-dev \
   sox \
+  ffmpeg \
   2>/dev/null || true
 ok "System packages installed"
 

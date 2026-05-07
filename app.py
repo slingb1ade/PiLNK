@@ -415,7 +415,7 @@ current_squelch   = 50
 # ── SDR Controller — manages VHF audio via rtl_fm ─────────
 # Identifies VHF dongle by USB serial (default '00000002') so the
 # audio path can never accidentally clobber the ADS-B dongle.
-sdr = SDRController(audio_output=_config.get('audio_output', 'default'))
+sdr = SDRController()
 
 @app.route('/')
 def index():
@@ -460,6 +460,44 @@ def audio_gain():
     gain = data.get('gain', 35)
     sdr.set_gain(int(gain))
     return jsonify({'success': True, 'status': sdr.get_status()})
+
+@app.route('/audio/stream')
+def audio_stream():
+    """Stream live VHF audio as Ogg/Opus to a browser <audio> element.
+    Multiple clients can connect concurrently; each gets its own
+    bounded queue. The ffmpeg pipeline is shared, so additional
+    listeners cost only the queue + HTTP overhead.
+    """
+    if not sdr.is_playing:
+        return jsonify({'error': 'audio pipeline not started — POST /audio/start first'}), 503
+
+    import queue as _q  # local import to avoid polluting module globals
+    sub = sdr.subscribe()
+
+    def generate():
+        try:
+            while True:
+                try:
+                    chunk = sub.get(timeout=2.0)
+                except _q.Empty:
+                    if not sdr.is_playing:
+                        break
+                    continue
+                if not chunk:
+                    continue
+                yield chunk
+        finally:
+            sdr.unsubscribe(sub)
+
+    return Response(
+        generate(),
+        mimetype='audio/ogg',
+        headers={
+            'Cache-Control': 'no-cache, no-store, must-revalidate',
+            'Pragma': 'no-cache',
+            'X-Accel-Buffering': 'no'
+        }
+    )
 
 @app.route('/audio/status')
 def audio_status():

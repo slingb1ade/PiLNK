@@ -2123,6 +2123,27 @@ var radioPlaying = false;
 var radioCurrentFreq = 118700000; // Hz
 var radioRecentFreqs = JSON.parse(localStorage.getItem('pilnk-recent-freqs') || '[]');
 
+// Persistent <audio> element for Ogg/Opus streaming from the Pi.
+// Auto-reconnects on stream end (happens when the pipeline restarts
+// on freq/squelch/gain changes — Ogg stream ends, browser sees
+// 'ended', we reopen /audio/stream).
+var radioAudioEl = (function(){
+  var el = document.createElement('audio');
+  el.id = 'radioAudioStream';
+  el.preload = 'none';
+  el.style.display = 'none';
+  document.body.appendChild(el);
+  function reconnect(){
+    el.src = '/audio/stream?_=' + Date.now();
+    el.play().catch(function(){});
+  }
+  el.addEventListener('ended', function(){ if (radioPlaying) reconnect(); });
+  el.addEventListener('error', function(){
+    if (radioPlaying) setTimeout(reconnect, 200);
+  });
+  return el;
+})();
+
 function radioToggle() {
   if (radioPlaying) radioStop();
   else radioStart();
@@ -2145,15 +2166,22 @@ function radioStart(freqHz) {
       radioCurrentFreq = freq;
       radioUpdateUI();
       radioAddRecent(freq);
+      // Open the streaming connection — browser plays Ogg/Opus directly
+      radioAudioEl.src = '/audio/stream?_=' + Date.now();
+      radioAudioEl.play().catch(function(e){ console.warn('Audio play blocked:', e); });
     }
   });
 }
 
 function radioStop() {
+  // Set flag first so the 'ended' handler doesn't try to reconnect
+  radioPlaying = false;
+  radioAudioEl.pause();
+  radioAudioEl.removeAttribute('src');
+  radioAudioEl.load();
   fetch('/audio/stop', {method: 'POST'})
     .then(function(r) { return r.json(); })
     .then(function(d) {
-      radioPlaying = false;
       radioUpdateUI();
     });
 }
