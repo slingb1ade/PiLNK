@@ -75,8 +75,9 @@ step "OS CHECK"
 OS_ID=$(grep ^ID= /etc/os-release 2>/dev/null | cut -d= -f2 | tr -d '"')
 OS_VER=$(grep ^VERSION_CODENAME= /etc/os-release 2>/dev/null | cut -d= -f2 | tr -d '"')
 OS_PRETTY=$(grep ^PRETTY_NAME= /etc/os-release 2>/dev/null | cut -d= -f2 | tr -d '"')
+ARCH=$(dpkg --print-architecture 2>/dev/null || uname -m)
 
-# Block Trixie
+# Block Trixie (Debian 13) — not currently supported on any architecture
 if echo "$OS_VER" | grep -qi "trixie"; then
   echo ""
   err "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
@@ -86,30 +87,48 @@ if echo "$OS_VER" | grep -qi "trixie"; then
   warn "Detected: $OS_PRETTY"
   echo ""
   printf "  PiLNK does not currently support Debian Trixie (13).\n"
-  printf "  Please use ${GREEN}Raspberry Pi OS Bookworm${RESET} (recommended).\n"
-  echo ""
-  printf "  Flash a fresh SD card from: ${CYAN}https://www.raspberrypi.com/software/${RESET}\n"
+  printf "  Please use ${GREEN}Bookworm${RESET}:\n"
+  printf "    Pi:      Raspberry Pi OS Bookworm — https://www.raspberrypi.com/software/\n"
+  printf "    Server:  Debian 12 Bookworm        — https://www.debian.org/distrib/\n"
   echo ""
   err "Installation aborted."
   exit 1
 fi
 
-# Block Ubuntu
+# Warn (don't block) on Ubuntu — most things work, but it's not the
+# primary tested target. amd64 users on Ubuntu can opt in at their
+# own risk.
 if echo "$OS_ID" | grep -qi "ubuntu"; then
-  err "Ubuntu is not supported. Please use Raspberry Pi OS Bookworm."
-  exit 1
+  warn "Ubuntu detected — PiLNK is primarily tested on Debian/Raspberry Pi OS."
+  warn "Most things should work but you may hit edge cases."
+  printf "  Continue anyway? [y/N] " > /dev/tty
+  read -r yn < /dev/tty
+  [[ ! "$yn" =~ ^[Yy]$ ]] && exit 1
 fi
 
-# Warn on unknown OS
+# Warn on unknown OS codenames (still allow continue)
 if ! echo "$OS_VER" | grep -qi "bookworm\|bullseye"; then
   warn "Detected: ${OS_PRETTY:-Unknown OS}"
-  warn "PiLNK is tested on Raspberry Pi OS Bookworm and Bullseye."
+  warn "PiLNK is tested on Bookworm and Bullseye."
   printf "  Continue anyway? [y/N] " > /dev/tty
   read -r yn < /dev/tty
   [[ ! "$yn" =~ ^[Yy]$ ]] && exit 1
 else
   ok "OS: $OS_PRETTY"
 fi
+
+# Architecture banner — drives dump1090-fa repo selection later
+case "$ARCH" in
+  arm64|armhf|armel)
+    ok "Architecture: $ARCH (ARM — Raspberry Pi or compatible)"
+    ;;
+  amd64)
+    ok "Architecture: $ARCH (x86_64 server)"
+    ;;
+  *)
+    warn "Architecture: $ARCH (untested — proceeding with best-effort fallback)"
+    ;;
+esac
 
 # ── PiAware Detection ─────────────────────────────────────
 PIAWARE_IMAGE=false
@@ -223,34 +242,78 @@ elif [ "$PIAWARE_IMAGE" = true ]; then
 else
   info "Installing dump1090-fa..."
 
-  # Add FlightAware repository if not present
-  if ! ls /etc/apt/sources.list.d/*flightaware* &>/dev/null 2>&1; then
-    info "Adding FlightAware repository..."
-    wget -qO /tmp/flightaware-repo.deb "https://www.flightaware.com/adsb/piaware/files/packages/pool/piaware/f/flightaware-apt-repository/flightaware-apt-repository_1.2_all.deb" 2>/dev/null || true
-    if [ -f /tmp/flightaware-repo.deb ] && [ -s /tmp/flightaware-repo.deb ]; then
-      sudo dpkg -i /tmp/flightaware-repo.deb 2>/dev/null || true
-      sudo apt-get update -qq 2>/dev/null || true
-      ok "FlightAware repository added"
-    fi
-  fi
+  # Architecture-aware repo selection. FlightAware's official apt repo
+  # only ships ARM packages. amd64 users are served by the well-known
+  # abcd567a community repo (long-time FA contributor, recommended in
+  # FA's own forum threads for x86_64 installs).
+  case "$ARCH" in
+    arm64|armhf|armel)
+      if ! ls /etc/apt/sources.list.d/*flightaware* &>/dev/null 2>&1; then
+        info "Adding FlightAware repository (ARM)..."
+        wget -qO /tmp/flightaware-repo.deb "https://www.flightaware.com/adsb/piaware/files/packages/pool/piaware/f/flightaware-apt-repository/flightaware-apt-repository_1.2_all.deb" 2>/dev/null || true
+        if [ -f /tmp/flightaware-repo.deb ] && [ -s /tmp/flightaware-repo.deb ]; then
+          sudo dpkg -i /tmp/flightaware-repo.deb 2>/dev/null || true
+          sudo apt-get update -qq 2>/dev/null || true
+          ok "FlightAware repository added"
+        fi
+      fi
+      ;;
+    amd64)
+      # abcd567a community repo for amd64. Path is per-Debian-version:
+      #   Bookworm (Debian 12) → /debian12/
+      # Modern keyring location (/etc/apt/keyrings/) per Debian convention.
+      # Errors are deliberately not suppressed so download failures
+      # (404, network, etc.) surface immediately instead of silently
+      # leaving 0-byte files that apt then can't use.
+      if [ ! -s /etc/apt/sources.list.d/abcd567a.list ]; then
+        info "Adding abcd567a community repository (amd64 / Bookworm)..."
+        sudo mkdir -p /etc/apt/keyrings
+        if ! sudo wget -O /etc/apt/sources.list.d/abcd567a.list https://abcd567a.github.io/debian12/abcd567a.list; then
+          err "Failed to download abcd567a.list"
+          sudo rm -f /etc/apt/sources.list.d/abcd567a.list
+          exit 1
+        fi
+        if ! sudo wget -O /etc/apt/keyrings/abcd567a-key.gpg https://abcd567a.github.io/debian12/KEY2.gpg; then
+          err "Failed to download abcd567a GPG key"
+          sudo rm -f /etc/apt/keyrings/abcd567a-key.gpg
+          exit 1
+        fi
+        sudo apt-get update
+        ok "abcd567a repository added"
+      fi
+      ;;
+    *)
+      warn "Architecture $ARCH has no known dump1090-fa repo path"
+      warn "Will attempt apt install but expect failure"
+      ;;
+  esac
 
-  # Try apt install
+  # Try apt install — works for both arm and amd64 repo paths above
   if sudo apt-get install -y dump1090-fa 2>/dev/null; then
     ok "dump1090-fa installed via apt"
   else
-    # Try direct download as fallback
-    ARCH=$(dpkg --print-architecture)
-    wget -qO /tmp/dump1090-fa.deb "https://flightaware.com/adsb/piaware/files/packages/pool/piaware/p/piaware-support/dump1090-fa_10.1_${ARCH}.deb" 2>/dev/null || true
-    if [ -f /tmp/dump1090-fa.deb ] && [ -s /tmp/dump1090-fa.deb ] && sudo dpkg -i /tmp/dump1090-fa.deb 2>/dev/null; then
-      sudo apt-get install -f -y 2>/dev/null || true
-      ok "dump1090-fa installed"
-    else
-      warn "dump1090-fa could not be auto-installed"
-      warn "Install manually:"
-      warn "  wget https://www.flightaware.com/adsb/piaware/files/packages/pool/piaware/f/flightaware-apt-repository/flightaware-apt-repository_1.2_all.deb"
-      warn "  sudo dpkg -i flightaware-apt-repository_1.2_all.deb"
-      warn "  sudo apt update && sudo apt install dump1090-fa"
-    fi
+    # ARM-only fallback: direct .deb download from FlightAware
+    case "$ARCH" in
+      arm64|armhf|armel)
+        info "apt failed — trying direct download from FlightAware..."
+        wget -qO /tmp/dump1090-fa.deb "https://flightaware.com/adsb/piaware/files/packages/pool/piaware/p/piaware-support/dump1090-fa_10.1_${ARCH}.deb" 2>/dev/null || true
+        if [ -f /tmp/dump1090-fa.deb ] && [ -s /tmp/dump1090-fa.deb ] && sudo dpkg -i /tmp/dump1090-fa.deb 2>/dev/null; then
+          sudo apt-get install -f -y 2>/dev/null || true
+          ok "dump1090-fa installed (direct download)"
+        else
+          warn "dump1090-fa could not be auto-installed"
+          warn "Install manually — see https://discussions.flightaware.com/c/adsb"
+        fi
+        ;;
+      amd64)
+        warn "dump1090-fa could not be auto-installed for amd64"
+        warn "Manual install:"
+        warn "  https://github.com/abcd567a/piaware-ubuntu-debian-amd64"
+        ;;
+      *)
+        warn "dump1090-fa could not be auto-installed for $ARCH"
+        ;;
+    esac
   fi
 fi
 
