@@ -12,6 +12,7 @@ import collections
 import json
 import os
 import logging
+import urllib.request
 
 logging.basicConfig(
     level=logging.INFO,
