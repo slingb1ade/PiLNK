@@ -223,6 +223,27 @@ class SDRController:
                 self.process.stdout.close()
                 # NOTE: do NOT close sox.stdout — Python copier reads it
 
+                # Health check: if rtl_fm dies in the first ~150ms, the SDR
+                # isn't accessible (no VHF dongle, wrong serial, USB error,
+                # already in use). Bail out cleanly here — otherwise sox
+                # gets EOF and dies, but ffmpeg keeps idling on its
+                # Python-managed stdin and accumulates as an orphan on
+                # every retry. See: Jim's node, May 6 2026 — 5 ffmpeg
+                # zombies after repeated Listen clicks with no VHF dongle.
+                time.sleep(0.15)
+                if self.process.poll() is not None:
+                    rc = self.process.returncode
+                    logger.error(
+                        'rtl_fm exited immediately (rc=%s) — VHF dongle '
+                        '(serial=%s) not available. Check that a second '
+                        'RTL-SDR is plugged in and matches the configured '
+                        'VHF serial.',
+                        rc, self.device_serial
+                    )
+                    self._kill_pipeline()
+                    self.is_playing = False
+                    return False
+
                 self._ensure_copier_thread()
                 self._ensure_reader_thread()
 
