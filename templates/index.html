@@ -1649,7 +1649,22 @@ map.on('zoom', function(){ if(typeof positionTooltipOnMarker==='function') posit
 
 function applyTileFilter() {
   var dark = document.documentElement.getAttribute('data-theme') === 'dark';
-  map.getPanes().tilePane.style.filter = (currentTileLayerName==='osm'&&dark) ? 'invert(1) hue-rotate(180deg) brightness(0.65) saturate(1.4)' : '';
+  var pane = map.getPanes().tilePane;
+  if (!dark) { pane.style.filter = ''; return; }
+  // Per-layer dark-mode treatment. OSM uses an invert+hue-rotate
+  // recipe (street maps look dramatic and clean inverted). Topo
+  // earth-tones look unnatural inverted, so we darken instead —
+  // preserves contour lines, hill shading and terrain colours
+  // while making the map readable in low-light cockpit/night use.
+  if (currentTileLayerName === 'osm') {
+    pane.style.filter = 'invert(1) hue-rotate(180deg) brightness(0.65) saturate(1.4)';
+  } else if (currentTileLayerName === 'topo') {
+    pane.style.filter = 'brightness(0.45) contrast(1.15) saturate(0.85)';
+  } else {
+    // sat (Esri imagery) and aero (OpenAIP overlay) look fine
+    // as-is in dark mode — no filter needed.
+    pane.style.filter = '';
+  }
 }
 
 function setTileLayer(name) {
