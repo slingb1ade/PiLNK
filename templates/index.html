@@ -82,7 +82,33 @@
   @media (max-width:768px){
     .traffic-quick-nav{display:flex;}
     .header-clock{display:none;}
+    /* ── Mobile sidebar: hidden by default, overlay when toggled open ── */
+    .sidebar-toggle{display:inline-flex;}
+    #sidebar{
+      position:fixed; top:0; bottom:0; left:0;
+      width:82vw; max-width:300px;
+      z-index:9000;
+      transform:translateX(-100%);
+      transition:transform 0.25s ease;
+      box-shadow:2px 0 24px rgba(0,0,0,0.5);
+    }
+    body.sidebar-open #sidebar{ transform:translateX(0); }
+    #sidebar-backdrop{
+      display:none; position:fixed; inset:0; z-index:8999;
+      background:rgba(0,0,0,0.55);
+      backdrop-filter:blur(2px); -webkit-backdrop-filter:blur(2px);
+    }
+    body.sidebar-open #sidebar-backdrop{ display:block; }
   }
+  /* Hamburger button: hidden on desktop, only shown via the @media rule above */
+  .sidebar-toggle{
+    display:none; align-items:center; justify-content:center;
+    background:none; border:1px solid var(--border); border-radius:6px;
+    color:var(--text); font-size:1.1rem; cursor:pointer;
+    padding:4px 10px; margin-right:10px; line-height:1;
+    transition:background 0.15s;
+  }
+  .sidebar-toggle:hover, .sidebar-toggle:active{ background:var(--bg-card); }
   .av-toggles{display:flex;flex-direction:column;gap:6px;margin-top:8px;padding:8px;background:var(--bg-card);border-radius:6px;border:1px solid var(--border);}
   .av-toggle-row{display:flex;align-items:center;justify-content:space-between;font-size:0.62rem;color:var(--text-dim);}
   .av-dot{width:8px;height:8px;border-radius:50%;flex-shrink:0;margin-right:4px;}
@@ -951,6 +977,7 @@
 </script>
 <div id="app">
   <div id="header">
+    <button class="sidebar-toggle" onclick="toggleSidebar()" aria-label="Toggle sidebar" aria-expanded="false" id="sidebarToggleBtn">☰</button>
     <div class="logo">
       <svg viewBox="0 0 128 128" xmlns="http://www.w3.org/2000/svg">
         <defs><radialGradient id="hsg" cx="30%" cy="30%" r="70%"><stop offset="0%" stop-color="#3b82f6" stop-opacity="0.45"/><stop offset="100%" stop-color="#3b82f6" stop-opacity="0"/></radialGradient><clipPath id="hc"><circle cx="64" cy="64" r="52"/></clipPath></defs>
@@ -977,6 +1004,7 @@
     </div>
   </div>
   <div id="body">
+    <div id="sidebar-backdrop" onclick="toggleSidebar()"></div>
     <div id="sidebar">
 
       <!-- FLIGHT STATUS STRIP REMOVED — delayed shown on map tags -->
@@ -2344,6 +2372,25 @@ function sidebarSelect(cs){
     });
   }
   updateFlights();
+  // On mobile, auto-close the sidebar after picking a flight so the
+  // user can actually see the map. No-op on desktop (class never set).
+  if (document.body.classList.contains('sidebar-open')) {
+    document.body.classList.remove('sidebar-open');
+    var btn = document.getElementById('sidebarToggleBtn');
+    if (btn) btn.setAttribute('aria-expanded', 'false');
+  }
+}
+
+// ── Mobile sidebar toggle ─────────────────────────────────
+// On mobile (<=768px) the sidebar is overlay-style: hidden off-screen
+// by default, slides in when the user taps the ☰ button in the header.
+// Backdrop click and flight-select both auto-close. No-op on desktop
+// (the .sidebar-toggle button is display:none and the @media rule
+// doesn't apply, so toggling the class has no visual effect).
+function toggleSidebar() {
+  var open = document.body.classList.toggle('sidebar-open');
+  var btn = document.getElementById('sidebarToggleBtn');
+  if (btn) btn.setAttribute('aria-expanded', open ? 'true' : 'false');
 }
 function positionTooltipOnMarker(){
   if(!selectedFlight || !markers[selectedFlight]) return;
