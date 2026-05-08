@@ -2922,9 +2922,74 @@ function handleCCOverlayClick(e) {
 }
 
 function ccAddPhoto() {
-  if (ccCurrentHex) {
-    window.open('https://pilnk.io/#profile?photo=' + ccCurrentHex, '_blank');
+  if (!ccCurrentHex) return;
+
+  // Remove any prior modal
+  var prior = document.getElementById('ccPhotoUploadModal');
+  if (prior) prior.remove();
+
+  var modal = document.createElement('div');
+  modal.id = 'ccPhotoUploadModal';
+  modal.style.cssText =
+    'position:fixed;inset:0;background:rgba(0,0,0,0.85);z-index:99999;'
+    + 'display:flex;align-items:center;justify-content:center;'
+    + 'backdrop-filter:blur(8px);-webkit-backdrop-filter:blur(8px);';
+
+  var box = document.createElement('div');
+  box.style.cssText =
+    'background:var(--bg-deep,#0a0e1a);border:1px solid var(--border,#2a3556);'
+    + 'border-radius:12px;width:92%;max-width:560px;max-height:88vh;'
+    + 'display:flex;flex-direction:column;overflow:hidden;'
+    + 'box-shadow:0 20px 60px rgba(0,0,0,0.6);';
+
+  var header = document.createElement('div');
+  header.style.cssText =
+    'display:flex;justify-content:space-between;align-items:center;'
+    + 'padding:12px 16px;border-bottom:1px solid var(--border,#2a3556);'
+    + 'background:var(--bg2,#131a2e);flex-shrink:0;';
+  header.innerHTML =
+    '<div style="font-family:Orbitron,sans-serif;font-size:0.78rem;'
+    + 'letter-spacing:0.12em;color:var(--text,#e2e8f0);font-weight:700;">'
+    + '📸 ADD PHOTO · ' + ccCurrentHex + '</div>'
+    + '<button id="ccPhotoUploadClose" '
+    + 'style="background:none;border:none;color:var(--text-dim,#64748b);'
+    + 'font-size:1.6rem;cursor:pointer;line-height:1;padding:0 4px;">×</button>';
+
+  var iframe = document.createElement('iframe');
+  iframe.src = 'https://pilnk.io/upload-photo.html?hex=' + encodeURIComponent(ccCurrentHex);
+  iframe.style.cssText =
+    'width:100%;flex:1;min-height:560px;border:none;'
+    + 'background:var(--bg-deep,#0a0e1a);';
+  iframe.allow = 'clipboard-write';
+  iframe.title = 'Upload PiLNK photo';
+
+  box.appendChild(header);
+  box.appendChild(iframe);
+  modal.appendChild(box);
+
+  // Close on backdrop click or × button
+  modal.addEventListener('click', function (e) {
+    if (e.target === modal) modal.remove();
+  });
+  header.querySelector('#ccPhotoUploadClose').addEventListener('click', function () {
+    modal.remove();
+  });
+
+  // Listen for postMessage from the iframe (success → auto-close, refresh photo)
+  function onMsg(e) {
+    if (!e.data || typeof e.data !== 'object') return;
+    if (e.data.type === 'pilnk-photo-close') {
+      window.removeEventListener('message', onMsg);
+      modal.remove();
+    } else if (e.data.type === 'pilnk-photo-uploaded') {
+      // Hint: clear the cached photo for this hex so next slide-out
+      // open re-fetches and may find the new photo (after admin approves).
+      try { delete pilnkPhotoCache[e.data.hex]; } catch (err) {}
+    }
   }
+  window.addEventListener('message', onMsg);
+
+  document.body.appendChild(modal);
 }
 
 // Waveform animation
