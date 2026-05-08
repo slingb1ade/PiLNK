@@ -223,21 +223,34 @@ class SDRController:
                 self.process.stdout.close()
                 # NOTE: do NOT close sox.stdout — Python copier reads it
 
-                # Health check: if rtl_fm dies in the first ~150ms, the SDR
-                # isn't accessible (no VHF dongle, wrong serial, USB error,
-                # already in use). Bail out cleanly here — otherwise sox
-                # gets EOF and dies, but ffmpeg keeps idling on its
-                # Python-managed stdin and accumulates as an orphan on
-                # every retry. See: Jim's node, May 6 2026 — 5 ffmpeg
-                # zombies after repeated Listen clicks with no VHF dongle.
-                time.sleep(0.15)
-                if self.process.poll() is not None:
+                # Health check: poll for up to 500ms in 100ms steps. If
+                # rtl_fm exits at ANY point during this window, the SDR
+                # isn't accessible (no VHF dongle, wrong serial, USB
+                # error, already in use). Bail out before returning —
+                # otherwise sox gets EOF and dies, but ffmpeg keeps
+                # idling on its Python-managed stdin and accumulates as
+                # an orphan on every retry. The watchdog spawned below
+                # catches the rarer case where rtl_fm survives this
+                # window then dies later (e.g. dongle yanked mid-stream
+                # or USB hub power glitch).
+                # See: Jim's node, May 6/7 2026 — 5 then 1 ffmpeg orphans
+                # after repeated Listen clicks with no VHF dongle. The
+                # 150ms window we shipped first was too tight on a Pi
+                # with slow USB enumeration; 500ms is solid.
+                deadline = time.monotonic() + 0.5
+                rtl_dead = False
+                while time.monotonic() < deadline:
+                    time.sleep(0.1)
+                    if self.process.poll() is not None:
+                        rtl_dead = True
+                        break
+                if rtl_dead:
                     rc = self.process.returncode
                     logger.error(
-                        'rtl_fm exited immediately (rc=%s) — VHF dongle '
-                        '(serial=%s) not available. Check that a second '
-                        'RTL-SDR is plugged in and matches the configured '
-                        'VHF serial.',
+                        'rtl_fm exited within startup window (rc=%s) — '
+                        'VHF dongle (serial=%s) not available. Check that '
+                        'a second RTL-SDR is plugged in and matches the '
+                        'configured VHF serial.',
                         rc, self.device_serial
                     )
                     self._kill_pipeline()
@@ -246,6 +259,7 @@ class SDRController:
 
                 self._ensure_copier_thread()
                 self._ensure_reader_thread()
+                self._spawn_rtl_watchdog(self.process)
 
                 self.is_playing = True
                 freq_mhz = self.frequency / 1e6
@@ -330,6 +344,38 @@ class SDRController:
             target=self._reader_loop, daemon=True, name='sdr-reader'
         )
         self._reader_thread.start()
+
+    def _spawn_rtl_watchdog(self, rtl_proc):
+        """Background watcher: blocks on rtl_fm.wait(), then tears down
+        sox/ffmpeg if rtl_fm dies while we still believe we're playing.
+        Catches the case where rtl_fm survives the synchronous startup
+        health check but exits later (slow USB error, dongle yanked
+        mid-stream, hub power glitch). Without this, ffmpeg's Python-
+        managed stdin pipe keeps it idle-running forever, leaking one
+        orphan per failed pipeline.
+
+        Identity guard: only acts if `self.process is rtl_proc`. If a
+        later start() / set_frequency() replaced the pipeline, this
+        watchdog is stale and should leave the new pipeline alone.
+        """
+        def _watch():
+            try:
+                rc = rtl_proc.wait()
+            except Exception:
+                return
+            with self.lock:
+                if self.is_playing and self.process is rtl_proc:
+                    logger.warning(
+                        'rtl_fm exited unexpectedly (rc=%s) — tearing '
+                        'down sox/ffmpeg to prevent orphan processes',
+                        rc
+                    )
+                    self._kill_pipeline()
+                    self.is_playing = False
+        t = threading.Thread(
+            target=_watch, daemon=True, name='sdr-rtl-watchdog'
+        )
+        t.start()
 
     def _pcm_copier_loop(self):
         """Read raw int16 PCM from sox.stdout, compute signal level,
