@@ -344,13 +344,22 @@ def _get_local_version():
         return '0.0.0'
 
 def _is_auto_update_enabled():
+    """Whether to silently auto-install non-required updates.
+
+    Default is FALSE as of v0.1.11 — the new UX shows a banner on
+    the dashboard and waits for the user to click "Install now".
+    Users who prefer the old silent-update behaviour can opt in by
+    setting `"auto_update": true` in their ~/pilnk/config.json.
+    Required updates (security/breaking) ignore this flag and
+    install immediately regardless.
+    """
     config_path = os.path.join(PILNK_DIR, 'config.json')
     try:
         with open(config_path, 'r') as f:
             cfg = json.load(f)
-            return cfg.get('auto_update', True)  # default on for beta
+            return cfg.get('auto_update', False)
     except:
-        return True
+        return False
 
 def _run_update():
     global ota_last_update
@@ -406,11 +415,18 @@ def ota_checker():
                 ota_status['available'] = True
                 print(f'[PILNK-OTA] Update available: {local_ver} → {remote_ver}')
 
-                if _is_auto_update_enabled() or required:
-                    print(f'[PILNK-OTA] Auto-update enabled — applying update')
+                if required:
+                    print(f'[PILNK-OTA] Required update — installing immediately (overrides user preference)')
+                    _run_update()
+                elif _is_auto_update_enabled():
+                    # User opted into silent updates via config.json
+                    print(f'[PILNK-OTA] auto_update=true in config — installing silently')
                     _run_update()
                 else:
-                    print(f'[PILNK-OTA] Auto-update disabled — skipping')
+                    # Default UX: leave ota_status['available']=True so
+                    # the dashboard banner shows. User clicks Install
+                    # which hits /api/ota/install and triggers _run_update.
+                    print(f'[PILNK-OTA] Update available — waiting for user to click Install on dashboard')
             else:
                 ota_status['available'] = False
 
@@ -423,6 +439,33 @@ def ota_checker():
 ota_thread = threading.Thread(target=ota_checker, daemon=True)
 ota_thread.start()
 print('[PILNK-OTA] Update checker active — checking every 5 minutes')
+
+# ── OTA Dashboard API ─────────────────────────────────────
+# Polled by the dashboard banner. Returns current/latest version
+# and a flag the dashboard uses to render the "Install now" CTA.
+@app.route('/api/ota/status', methods=['GET'])
+def api_ota_status():
+    return jsonify({
+        'current':     _get_local_version(),
+        'latest':      ota_status.get('latest', ''),
+        'available':   bool(ota_status.get('available', False)),
+        'updating':    bool(ota_status.get('updating', False)),
+        'last_check':  ota_status.get('last_check', 0),
+        'auto_update': _is_auto_update_enabled()
+    })
+
+# Manual install trigger — called when the user clicks "Install now"
+# on the dashboard banner. Runs update.sh in a background thread so
+# the HTTP response returns immediately; the dashboard polls
+# /api/ota/status to track progress and detect post-restart recovery.
+@app.route('/api/ota/install', methods=['POST'])
+def api_ota_install():
+    if ota_status.get('updating'):
+        return jsonify({'success': False, 'error': 'Update already in progress'}), 409
+    if not ota_status.get('available'):
+        return jsonify({'success': False, 'error': 'No update currently available'}), 400
+    threading.Thread(target=_run_update, daemon=True, name='ota-install-manual').start()
+    return jsonify({'success': True, 'message': 'Update started — service will restart in ~30s'})
 
 current_frequency = 118.7e6
 current_gain      = 35

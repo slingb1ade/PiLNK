@@ -846,6 +846,46 @@
 </style>
 </head>
 <body>
+
+<!-- ── OTA Update Banner ──────────────────────────────────
+     Polls /api/ota/status every 60s. Shows when an update is
+     available. User clicks Install now → POST /api/ota/install
+     → service restarts → banner auto-clears after reconnect.
+     Hidden by default; JS at bottom of page reveals it. -->
+<div id="otaBanner" role="status" aria-live="polite" style="
+  display:none;position:fixed;top:0;left:0;right:0;z-index:9999;
+  background:linear-gradient(90deg,#1e293b,#0f172a);
+  border-bottom:1px solid rgba(96,165,250,0.4);
+  box-shadow:0 4px 20px rgba(0,0,0,0.4);
+  font-family:'Share Tech Mono',monospace;
+  color:#e2e8f0;padding:10px 16px;
+  display:none;align-items:center;gap:14px;
+  animation:otaSlideIn 0.35s ease-out;">
+  <div style="font-size:1.1rem;flex-shrink:0;">📦</div>
+  <div style="flex:1;min-width:0;font-size:0.78rem;line-height:1.4;">
+    <span id="otaBannerText">New PiLNK version available</span>
+    <span id="otaBannerVersion" style="color:#60a5fa;font-weight:700;margin-left:6px;"></span>
+  </div>
+  <button id="otaInstallBtn" onclick="otaInstall()" style="
+    background:#3b82f6;border:none;border-radius:6px;color:white;
+    font-family:inherit;font-size:0.7rem;letter-spacing:0.08em;
+    padding:8px 14px;cursor:pointer;font-weight:600;flex-shrink:0;">
+    INSTALL NOW
+  </button>
+  <button id="otaLaterBtn" onclick="otaDismiss()" style="
+    background:transparent;border:1px solid rgba(148,163,184,0.4);
+    border-radius:6px;color:#94a3b8;font-family:inherit;
+    font-size:0.7rem;letter-spacing:0.08em;padding:8px 12px;
+    cursor:pointer;flex-shrink:0;">
+    LATER
+  </button>
+</div>
+<style>
+  @keyframes otaSlideIn { from { transform:translateY(-100%); } to { transform:translateY(0); } }
+  #otaBanner.installing #otaInstallBtn,
+  #otaBanner.installing #otaLaterBtn { display:none; }
+  #otaBanner.installing #otaBannerText { color:#fbbf24; }
+</style>
 <div id="pilnk-splash" role="status" aria-label="PiLNK loading">
   <div class="ps-grid"></div>
   <div class="ps-scan"></div>
@@ -4371,6 +4411,128 @@ var wxPanel = (function() {
 
   return { toggle: toggle, close: close, load: load, setStation: setStation };
 })();
+
+// ── OTA Update Banner ─────────────────────────────────────
+// Polls /api/ota/status every 60s. Shows banner when an update
+// is available (and user hasn't dismissed it for this session).
+// Click handlers: Install now → POST /api/ota/install, banner
+// switches to "Installing..." state; Later → dismiss for session.
+// After service restarts following an install, the next poll
+// finds current === latest and clears the banner naturally.
+var ota = (function () {
+  var BANNER_ID = 'otaBanner';
+  var dismissedThisSession = false;  // Reset every page load
+  var installing = false;
+  var lastKnownLatest = null;        // Used to detect post-restart success
+
+  function el(id) { return document.getElementById(id); }
+
+  function show(latest) {
+    var banner = el(BANNER_ID);
+    if (!banner) return;
+    el('otaBannerVersion').textContent = 'v' + latest;
+    el('otaBannerText').textContent = 'New PiLNK version available';
+    banner.classList.remove('installing');
+    banner.style.display = 'flex';
+  }
+  function hide() {
+    var banner = el(BANNER_ID);
+    if (banner) banner.style.display = 'none';
+  }
+  function setInstallingState() {
+    installing = true;
+    var banner = el(BANNER_ID);
+    if (!banner) return;
+    banner.classList.add('installing');
+    el('otaBannerText').textContent =
+      '⚙ Installing… service will restart. This page will reconnect automatically.';
+  }
+  function setSuccessToast(newVer) {
+    // Brief green toast confirming the new version after reconnect
+    var t = document.createElement('div');
+    t.style.cssText =
+      'position:fixed;top:14px;left:50%;transform:translateX(-50%);'
+      + 'z-index:99999;background:#10b981;color:white;'
+      + 'font-family:"Share Tech Mono",monospace;font-size:0.75rem;'
+      + 'letter-spacing:0.06em;padding:10px 18px;border-radius:8px;'
+      + 'box-shadow:0 6px 20px rgba(0,0,0,0.3);font-weight:600;';
+    t.textContent = '✓ Updated to v' + newVer;
+    document.body.appendChild(t);
+    setTimeout(function () { t.style.transition = 'opacity 0.4s'; t.style.opacity = '0'; }, 4000);
+    setTimeout(function () { t.remove(); }, 4500);
+  }
+
+  function poll() {
+    fetch('/api/ota/status', {cache: 'no-store'})
+      .then(function (r) { return r.json(); })
+      .then(function (s) {
+        // Detect successful install: we previously saw an update
+        // available, now current matches latest → service restarted
+        // with the new version.
+        if (lastKnownLatest && s.current === lastKnownLatest && installing) {
+          installing = false;
+          hide();
+          setSuccessToast(s.current);
+          lastKnownLatest = null;
+          return;
+        }
+
+        if (s.updating) {
+          // Another instance triggered the update (or our own click)
+          if (!installing) setInstallingState();
+          installing = true;
+          el(BANNER_ID).style.display = 'flex';
+          return;
+        }
+
+        if (s.available && !dismissedThisSession) {
+          lastKnownLatest = s.latest;
+          show(s.latest);
+        } else if (!s.available) {
+          // Update no longer flagged — clear UI state
+          hide();
+          installing = false;
+          lastKnownLatest = null;
+        }
+      })
+      .catch(function () { /* network blip — try again next tick */ });
+  }
+
+  function install() {
+    if (installing) return;
+    setInstallingState();
+    fetch('/api/ota/install', {method: 'POST', cache: 'no-store'})
+      .then(function (r) { return r.json(); })
+      .then(function (d) {
+        if (!d.success) {
+          installing = false;
+          el('otaBannerText').textContent = '✗ ' + (d.error || 'Install failed');
+          el(BANNER_ID).classList.remove('installing');
+        }
+        // On success: nothing to do here. Service will restart,
+        // page will reconnect, polling will detect new version.
+      })
+      .catch(function () {
+        // Network drops while service restarts — expected. Keep
+        // the "Installing…" UI; next successful poll will resolve.
+      });
+  }
+
+  function dismiss() {
+    dismissedThisSession = true;
+    hide();
+  }
+
+  // Initial poll after a beat, then every 60s
+  setTimeout(poll, 4000);
+  setInterval(poll, 60000);
+
+  return { install: install, dismiss: dismiss, poll: poll };
+})();
+
+// Expose for onclick handlers in the banner markup
+function otaInstall() { ota.install(); }
+function otaDismiss() { ota.dismiss(); }
 
 </script>
 
