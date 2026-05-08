@@ -2030,13 +2030,31 @@ var PHASE={
   final:  {color:'#ff2244',label:'Final Approach'},
   tx:     {color:'#ffffff',label:'Transmitting'}
 };
+var heliPhase={};  // sticky phase cache for helicopters: cs → {phase, anchorAlt}
 function getPhase(a,cs){
   if(cs&&transmitting[cs])return PHASE.tx;
   var vr=a.baro_rate||a.geom_rate||0, alt=a.alt_baro||a.alt_geom||0;
-  if(alt<2000&&vr<-200)return PHASE.final;
-  if(vr>200)return PHASE.climb;
-  if(vr<-200)return PHASE.descent;
-  return PHASE.cruise;
+  // Helis hover-bob constantly during ops (police, EMS, surveillance) —
+  // VR crosses ±200 fpm thresholds every few seconds and the icon/sidebar/
+  // trail colour would flicker wildly. Hold the cached phase until
+  // altitude has moved more than 750 ft from the anchor alt (the alt at
+  // which the current phase was last committed). Non-helis evaluate
+  // every tick as before. Transmitting state always overrides above.
+  if(a.category==='A7' && cs){
+    var cached=heliPhase[cs];
+    if(cached && Math.abs(alt - cached.anchorAlt) < 750){
+      return cached.phase;
+    }
+  }
+  var phase;
+  if(alt<2000&&vr<-200) phase=PHASE.final;
+  else if(vr>200) phase=PHASE.climb;
+  else if(vr<-200) phase=PHASE.descent;
+  else phase=PHASE.cruise;
+  if(a.category==='A7' && cs){
+    heliPhase[cs]={phase:phase, anchorAlt:alt};
+  }
+  return phase;
 }
 
 // ── TRAILS ────────────────────────────────────────────────
@@ -2076,6 +2094,7 @@ function removeTrail(cs,fade){
   if(trailPoly[cs]){map.removeLayer(trailPoly[cs]);delete trailPoly[cs];}
   delete trails[cs];
   delete phaseAlt[cs];
+  delete heliPhase[cs];
 }
 function toggleTrails(on){trailsOn=on;if(on)Object.keys(trails).forEach(function(cs){redrawTrail(cs);});else Object.keys(trailPoly).forEach(function(cs){map.removeLayer(trailPoly[cs]);delete trailPoly[cs];});}
 
@@ -2142,7 +2161,7 @@ function mkIcon(svg,size,tx){
 }
 function heavyIcon(cs,h,col,tx){return mkIcon('<svg width="48" height="48" viewBox="0 0 48 48" style="transform:rotate('+h+'deg);display:block;"><g transform="translate(24,24)"><ellipse cx="0" cy="0" rx="4" ry="17" fill="'+col+'"/><path d="M-2,-2 L-20,10 L-17,12 L-2,5 Z" fill="'+col+'"/><path d="M2,-2 L20,10 L17,12 L2,5 Z" fill="'+col+'"/><path d="M-2,10 L-8,17 L-6,17 L-2,11 Z" fill="'+col+'"/><path d="M2,10 L8,17 L6,17 L2,11 Z" fill="'+col+'"/><ellipse cx="-12" cy="7" rx="2.5" ry="4" fill="'+col+'"/><ellipse cx="12" cy="7" rx="2.5" ry="4" fill="'+col+'"/><ellipse cx="-17" cy="9" rx="1.5" ry="3" fill="'+col+'"/><ellipse cx="17" cy="9" rx="1.5" ry="3" fill="'+col+'"/><ellipse cx="0" cy="-14" rx="2" ry="3" fill="white" opacity="0.6"/></g></svg>',48,tx);}
 function mediumIcon(cs,h,col,tx){return mkIcon('<svg width="38" height="38" viewBox="0 0 40 40" style="transform:rotate('+h+'deg);display:block;"><g transform="translate(20,20)"><ellipse cx="0" cy="0" rx="3" ry="14" fill="'+col+'"/><path d="M-1.5,-1 L-16,8 L-13,9 L-1.5,4 Z" fill="'+col+'"/><path d="M1.5,-1 L16,8 L13,9 L1.5,4 Z" fill="'+col+'"/><path d="M-1.5,8 L-6,13 L-5,14 L-1.5,9 Z" fill="'+col+'"/><path d="M1.5,8 L6,13 L5,14 L1.5,9 Z" fill="'+col+'"/><ellipse cx="-9" cy="5" rx="2" ry="3.5" fill="'+col+'"/><ellipse cx="9" cy="5" rx="2" ry="3.5" fill="'+col+'"/><ellipse cx="0" cy="-11" rx="1.5" ry="2.5" fill="white" opacity="0.6"/></g></svg>',38,tx);}
-function heliIcon(cs,h,col,tx){return mkIcon('<svg width="36" height="36" viewBox="0 0 40 40" style="transform:rotate('+h+'deg);display:block;"><g transform="translate(20,20)"><line x1="-7" y1="-1" x2="7" y2="-1" stroke="'+col+'" stroke-width="0.8"/><line x1="-7" y1="2" x2="7" y2="2" stroke="'+col+'" stroke-width="0.8"/><line x1="-7" y1="-2" x2="-7" y2="3" stroke="'+col+'" stroke-width="0.8" stroke-linecap="round"/><line x1="7" y1="-2" x2="7" y2="3" stroke="'+col+'" stroke-width="0.8" stroke-linecap="round"/><rect x="-1" y="0" width="2" height="11" fill="'+col+'"/><path d="M -1.5 10 L 1.5 10 L 0.8 14 L -0.8 14 Z" fill="'+col+'"/><line x1="-3.5" y1="13" x2="3.5" y2="13" stroke="'+col+'" stroke-width="1.2" stroke-linecap="round"/><ellipse cx="0" cy="-2" rx="4.5" ry="6.5" fill="'+col+'"/><ellipse cx="0" cy="-5" rx="2.8" ry="2.2" fill="white" opacity="0.35"/><g opacity="0.7" transform="translate(0,-2)"><rect x="-14" y="-0.6" width="28" height="1.2" rx="0.6" fill="'+col+'" transform="rotate(40)"/><rect x="-14" y="-0.6" width="28" height="1.2" rx="0.6" fill="'+col+'" transform="rotate(-40)"/></g><circle cx="0" cy="-2" r="1.4" fill="'+col+'"/></g></svg>',36,tx);}
+function heliIcon(cs,h,col,tx){return mkIcon('<svg width="41" height="41" viewBox="0 0 40 40" style="transform:rotate('+h+'deg);display:block;"><g transform="translate(20,20)"><line x1="-7" y1="-1" x2="7" y2="-1" stroke="'+col+'" stroke-width="0.8"/><line x1="-7" y1="2" x2="7" y2="2" stroke="'+col+'" stroke-width="0.8"/><line x1="-7" y1="-2" x2="-7" y2="3" stroke="'+col+'" stroke-width="0.8" stroke-linecap="round"/><line x1="7" y1="-2" x2="7" y2="3" stroke="'+col+'" stroke-width="0.8" stroke-linecap="round"/><rect x="-1" y="0" width="2" height="11" fill="'+col+'"/><path d="M -1.5 10 L 1.5 10 L 0.8 14 L -0.8 14 Z" fill="'+col+'"/><line x1="-3.5" y1="13" x2="3.5" y2="13" stroke="'+col+'" stroke-width="1.2" stroke-linecap="round"/><ellipse cx="0" cy="-2" rx="4.5" ry="6.5" fill="'+col+'"/><ellipse cx="0" cy="-5" rx="2.8" ry="2.2" fill="white" opacity="0.35"/><g opacity="0.7" transform="translate(0,-2)"><rect x="-14" y="-0.6" width="28" height="1.2" rx="0.6" fill="'+col+'" transform="rotate(40)"/><rect x="-14" y="-0.6" width="28" height="1.2" rx="0.6" fill="'+col+'" transform="rotate(-40)"/></g><circle cx="0" cy="-2" r="1.4" fill="'+col+'"/></g></svg>',41,tx);}
 function lightIcon(cs,h,col,tx){return mkIcon('<svg width="30" height="30" viewBox="0 0 36 36" style="transform:rotate('+h+'deg);display:block;"><g transform="translate(18,18)"><ellipse cx="0" cy="0" rx="3.5" ry="12" fill="'+col+'"/><path d="M-2,0 L-16,2 L-16,4 L-2,3 Z" fill="'+col+'"/><path d="M2,0 L16,2 L16,4 L2,3 Z" fill="'+col+'"/><path d="M-1.5,8 L-7,10 L-7,11 L-1.5,9 Z" fill="'+col+'"/><path d="M1.5,8 L7,10 L7,11 L1.5,9 Z" fill="'+col+'"/><circle cx="0" cy="-11" r="2" fill="'+col+'"/><ellipse cx="0" cy="-4" rx="2.5" ry="3" fill="white" opacity="0.4"/></g></svg>',30,tx);}
 function makeIcon(cs,cat,h,col,tx){switch(cat){case'heavy':return heavyIcon(cs,h||0,col,tx);case'heli':return heliIcon(cs,h||0,col,tx);case'light':return lightIcon(cs,h||0,col,tx);default:return mediumIcon(cs,h||0,col,tx);}}
 
