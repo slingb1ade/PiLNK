@@ -331,7 +331,7 @@ else:
 PILNK_DIR = os.path.dirname(os.path.abspath(__file__))
 VERSION_FILE = os.path.join(PILNK_DIR, 'VERSION')
 UPDATE_SCRIPT = os.path.join(PILNK_DIR, 'update.sh')
-OTA_CHECK_INTERVAL = 3600  # 1 hour
+OTA_CHECK_INTERVAL = 300   # 5 minutes (was 1 hour — too slow for active dev iteration)
 OTA_COOLDOWN = 3600       # 1 hour after update before re-checking
 ota_last_update = 0
 ota_status = {'available': False, 'current': '', 'latest': '', 'last_check': 0, 'updating': False}
@@ -384,61 +384,80 @@ def _run_update():
         ota_status['updating'] = False
         return False
 
+def _perform_ota_check():
+    """Single canonical OTA check. Hits pilnk.io/api/version.php, compares
+    against local VERSION, updates ota_status, and returns a result dict
+    so callers (timer thread or manual /api/ota/check) can act on it.
+    Auto-installs if remote sets required:true OR local config has
+    auto_update:true. Otherwise just sets ota_status['available']=True
+    so the dashboard banner shows.
+    """
+    try:
+        import urllib.request
+        req = urllib.request.Request(
+            'https://pilnk.io/api/version.php',
+            headers={'User-Agent': 'PiLNK-OTA/1.0'}
+        )
+        with urllib.request.urlopen(req, timeout=10) as r:
+            data = json.loads(r.read())
+
+        local_ver = _get_local_version()
+        remote_ver = data.get('version', '')
+        required = data.get('required', False)
+
+        ota_status['current'] = local_ver
+        ota_status['latest'] = remote_ver
+        ota_status['last_check'] = time.time()
+
+        if remote_ver and remote_ver != local_ver:
+            ota_status['available'] = True
+            print(f'[PILNK-OTA] Update available: {local_ver} → {remote_ver}')
+            if required:
+                print(f'[PILNK-OTA] Required update — installing immediately (overrides user preference)')
+                _run_update()
+            elif _is_auto_update_enabled():
+                print(f'[PILNK-OTA] auto_update=true in config — installing silently')
+                _run_update()
+            else:
+                print(f'[PILNK-OTA] Update available — waiting for user to click Install on dashboard')
+            return {'ok': True, 'available': True, 'current': local_ver, 'latest': remote_ver}
+        else:
+            ota_status['available'] = False
+            return {'ok': True, 'available': False, 'current': local_ver, 'latest': remote_ver}
+    except Exception as e:
+        print(f'[PILNK-OTA] Check failed: {e}')
+        return {'ok': False, 'error': str(e)}
+
 def ota_checker():
+    """Background timer thread that calls _perform_ota_check() on a loop.
+    Manual triggers from /api/ota/check share the same code path so
+    behaviour is identical regardless of who initiates the check.
+    """
     global ota_last_update
     time.sleep(60)  # wait 60s after startup before first check
     while True:
-        try:
-            # Cooldown check
-            if time.time() - ota_last_update < OTA_COOLDOWN:
-                time.sleep(OTA_CHECK_INTERVAL)
-                continue
-
-            # Fetch latest version from pilnk.io
-            import urllib.request
-            req = urllib.request.Request(
-                'https://pilnk.io/api/version.php',
-                headers={'User-Agent': 'PiLNK-OTA/1.0'}
-            )
-            with urllib.request.urlopen(req, timeout=10) as r:
-                data = json.loads(r.read())
-
-            local_ver = _get_local_version()
-            remote_ver = data.get('version', '')
-            required = data.get('required', False)
-
-            ota_status['current'] = local_ver
-            ota_status['latest'] = remote_ver
-            ota_status['last_check'] = time.time()
-
-            if remote_ver and remote_ver != local_ver:
-                ota_status['available'] = True
-                print(f'[PILNK-OTA] Update available: {local_ver} → {remote_ver}')
-
-                if required:
-                    print(f'[PILNK-OTA] Required update — installing immediately (overrides user preference)')
-                    _run_update()
-                elif _is_auto_update_enabled():
-                    # User opted into silent updates via config.json
-                    print(f'[PILNK-OTA] auto_update=true in config — installing silently')
-                    _run_update()
-                else:
-                    # Default UX: leave ota_status['available']=True so
-                    # the dashboard banner shows. User clicks Install
-                    # which hits /api/ota/install and triggers _run_update.
-                    print(f'[PILNK-OTA] Update available — waiting for user to click Install on dashboard')
-            else:
-                ota_status['available'] = False
-
-        except Exception as e:
-            print(f'[PILNK-OTA] Check failed: {e}')
-
+        # Cooldown check — skip the next check if we just ran an update
+        if time.time() - ota_last_update < OTA_COOLDOWN:
+            time.sleep(OTA_CHECK_INTERVAL)
+            continue
+        _perform_ota_check()
         time.sleep(OTA_CHECK_INTERVAL)
 
 # Start OTA checker thread
 ota_thread = threading.Thread(target=ota_checker, daemon=True)
 ota_thread.start()
-print('[PILNK-OTA] Update checker active — checking every 5 minutes')
+print(f'[PILNK-OTA] Update checker active — checking every {OTA_CHECK_INTERVAL // 60} minutes')
+
+# Manual on-demand check — bypasses the timer entirely. Use this when
+# you've just pushed a release and don't want to wait for the next
+# scheduled poll. Safe to call repeatedly. Returns the same shape as
+# /api/ota/status would after a successful check.
+@app.route('/api/ota/check', methods=['POST'])
+def api_ota_check():
+    if ota_status.get('updating'):
+        return jsonify({'ok': False, 'error': 'Update already in progress'}), 409
+    result = _perform_ota_check()
+    return jsonify(result), (200 if result.get('ok') else 502)
 
 # ── OTA Dashboard API ─────────────────────────────────────
 # Polled by the dashboard banner. Returns current/latest version
