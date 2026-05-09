@@ -1068,9 +1068,9 @@
               </div>
             </div>
             <!-- Hourly chart -->
-            <div style="margin-bottom:12px;">
-              <div style="font-size:0.5rem;letter-spacing:0.15em;color:var(--text-dim);margin-bottom:6px;">HOURLY ACTIVITY</div>
-              <div id="histChart" style="display:flex;align-items:flex-end;gap:2px;height:60px;"></div>
+            <div class="panel-title" style="margin-top:12px;">Hourly Activity</div>
+            <div style="background:var(--bg-deep);border-radius:6px;padding:10px 8px 8px;">
+              <div id="histChart" style="display:flex;align-items:flex-end;gap:3px;height:100px;"></div>
             </div>
           </div>
           <!-- Aircraft list -->
@@ -1452,11 +1452,29 @@ function loadHistory() {
       var nowHour = new Date().getHours();
       chart.innerHTML = d.hourly.map(function(h) {
         var pct = Math.round((h.count / maxCount) * 100);
-        var isNow = parseInt(h.hour) === nowHour;
-        return '<div style="flex:1;display:flex;flex-direction:column;align-items:center;gap:2px;">' +
-          '<div style="font-size:0.4rem;color:var(--text-dim);">' + (h.count || '') + '</div>' +
-          '<div style="width:100%;height:' + Math.max(2, pct) + '%;background:' + (isNow ? 'var(--green)' : 'var(--blue-mid)') + ';border-radius:2px;min-height:2px;opacity:' + (h.count ? '1' : '0.2') + ';"></div>' +
-          '<div style="font-size:0.38rem;color:var(--text-dim);">' + (parseInt(h.hour) % 3 === 0 ? h.hour : '') + '</div>' +
+        var hourNum = parseInt(h.hour);
+        var isNow = hourNum === nowHour;
+        // Hour label shown every 4 hours (00, 04, 08, 12, 16, 20) — clean and readable
+        var showLabel = hourNum % 4 === 0;
+        return '<div title="' + h.hour + ':00 — ' + (h.count || 0) + ' aircraft" ' +
+          'style="flex:1;display:flex;flex-direction:column;align-items:center;gap:4px;cursor:default;height:100%;">' +
+          // Count above the bar (blank when 0 to keep the strip clean)
+          '<div style="font-size:0.55rem;color:var(--text-dim);font-family:\'Share Tech Mono\',monospace;height:12px;line-height:12px;">' +
+            (h.count > 0 ? h.count : '') +
+          '</div>' +
+          // The bar — flex:1 wrapper so % heights resolve against available space
+          '<div style="flex:1;width:100%;display:flex;align-items:flex-end;">' +
+            '<div style="width:100%;height:' + Math.max(2, pct) + '%;background:' +
+            (isNow ? 'var(--green)' : 'var(--blue-mid)') +
+            ';border-radius:2px 2px 0 0;min-height:2px;opacity:' + (h.count ? '1' : '0.18') +
+            ';transition:opacity 0.2s;"></div>' +
+          '</div>' +
+          // Hour label below — every 4 hours, monospace for alignment
+          '<div style="font-size:0.55rem;color:' + (isNow ? 'var(--green)' : 'var(--text-dim)') +
+          ';font-family:\'Share Tech Mono\',monospace;height:12px;line-height:12px;font-weight:' +
+          (isNow ? '700' : '400') + ';">' +
+            (showLabel || isNow ? h.hour : '') +
+          '</div>' +
         '</div>';
       }).join('');
 
