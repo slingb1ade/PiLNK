@@ -36,6 +36,9 @@
   .panel{border-bottom:1px solid var(--border);padding:14px;flex-shrink:0;}
   .panel-title{font-family:'Orbitron',sans-serif;font-size:0.55rem;letter-spacing:0.3em;color:var(--blue-mid);text-transform:uppercase;margin-bottom:10px;}
 
+  /* Leaflet scale legend — 10px buffer from map left+bottom (and from LH navbar/sidebar by extension, since map starts at sidebar's right edge) */
+  .leaflet-bottom.leaflet-left .leaflet-control-scale{ margin:0 0 10px 10px !important; }
+
   /* ── Dashboard toast (used by OTA "Check for Updates" + future notifs) ── */
   .dash-toast{
     position:fixed; top:60px; left:50%;
@@ -1535,7 +1538,7 @@ map.createPane('wxPane');   map.getPane('wxPane').style.zIndex   = 410;
 var osmLayer = L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',{attribution:'© OpenStreetMap'}).addTo(map);
 var currentTileLayerName = 'osm', extraLayer = null;
 L.control.zoom({position:'bottomright'}).addTo(map);
-L.control.scale({position:'bottomright', metric:true, imperial:false, maxWidth:150}).addTo(map);
+L.control.scale({position:'bottomleft', metric:true, imperial:false, maxWidth:150}).addTo(map);
 
 // ── Recenter on Node button (top-right) ────────────────────
 // Returns the map to the node's home location at the default zoom.
