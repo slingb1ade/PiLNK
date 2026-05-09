@@ -1212,8 +1212,8 @@
               <label class="toggle-switch"><input type="checkbox" id="avToggle" onchange="toggleAvOverlay(this.checked)"/><span class="toggle-slider"></span></label>
             </div>
             <div class="av-toggles" id="avSubToggles" style="opacity:0.4;pointer-events:none;">
-              <div class="av-toggle-row"><span style="display:flex;align-items:center;"><span class="av-dot" style="background:#f59e0b;"></span>NAVAIDs</span><label class="toggle-switch" style="transform:scale(0.85);"><input type="checkbox" id="avNavaids" checked onchange="redrawAvOverlay()"/><span class="toggle-slider"></span></label></div>
-              <div class="av-toggle-row"><span style="display:flex;align-items:center;"><span class="av-dot" style="background:#06b6d4;"></span>Airspace</span><label class="toggle-switch" style="transform:scale(0.85);"><input type="checkbox" id="avAirways" checked onchange="redrawAvOverlay()"/><span class="toggle-slider"></span></label></div>
+              <div class="av-toggle-row"><span style="display:flex;align-items:center;"><span class="av-dot" style="background:#f59e0b;"></span>NAVAIDs</span><label class="toggle-switch" style="transform:scale(0.85);"><input type="checkbox" id="avNavaids" onchange="redrawAvOverlay()"/><span class="toggle-slider"></span></label></div>
+              <div class="av-toggle-row"><span style="display:flex;align-items:center;"><span class="av-dot" style="background:#06b6d4;"></span>Airspace</span><label class="toggle-switch" style="transform:scale(0.85);"><input type="checkbox" id="avAirways" onchange="redrawAvOverlay()"/><span class="toggle-slider"></span></label></div>
               <div class="av-toggle-row"><span style="display:flex;align-items:center;"><span class="av-dot" style="background:#94a3b8;"></span>IFR Fixes</span><label class="toggle-switch" style="transform:scale(0.85);"><input type="checkbox" id="avWaypoints" onchange="toggleWaypoints(this.checked)"/><span class="toggle-slider"></span></label></div>
             </div>
             <div class="av-status" id="avStatus">Enable overlay then select an airport</div>
@@ -1226,10 +1226,6 @@
               <button onclick="nodeReg.open()" style="background:var(--blue-dim);border:none;border-radius:5px;color:white;font-family:'Share Tech Mono',monospace;font-size:0.62rem;letter-spacing:0.1em;padding:5px 10px;cursor:pointer;">Open</button>
             </div>
             <div class="panel-title" style="margin-top:8px;">Extras</div>
-            <div class="toggle-row" style="margin-bottom:8px;">
-              <span>🔴 Delayed Labels</span>
-              <label class="toggle-switch" style="transform:scale(0.85);"><input type="checkbox" id="toggleDelayed" onchange="setDelayedLabels(this.checked)"/><span class="toggle-slider"></span></label>
-            </div>
             <div class="toggle-row"><span>Flight Trails</span><label class="toggle-switch"><input type="checkbox" id="trailToggle" checked onchange="toggleTrails(this.checked)"/><span class="toggle-slider"></span></label></div>
             <div class="toggle-row"><span>Distance Rings</span><label class="toggle-switch"><input type="checkbox" id="ringToggle" checked onchange="toggleRings(this.checked)"/><span class="toggle-slider"></span></label></div>
             <div class="toggle-row"><span>Aircraft Labels</span><label class="toggle-switch"><input type="checkbox" id="labelToggle" onchange="toggleLabels(this.checked)"/><span class="toggle-slider"></span></label></div>
@@ -1591,6 +1587,27 @@ var osmLayer = L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',
 var currentTileLayerName = 'osm', extraLayer = null;
 L.control.zoom({position:'bottomright'}).addTo(map);
 L.control.scale({position:'bottomright', metric:true, imperial:false, maxWidth:150}).addTo(map);
+
+// ── Recenter on Node button (top-right) ────────────────────
+// Returns the map to the node's home location at the default zoom.
+// Useful after panning around — quick reset to "my airspace".
+var RecenterControl = L.Control.extend({
+  options: {position:'topright'},
+  onAdd: function() {
+    var div = L.DomUtil.create('div','leaflet-bar pilnk-recenter');
+    div.innerHTML =
+      '<a href="#" role="button" aria-label="Recenter on node" title="Recenter on node"' +
+      ' style="display:flex;align-items:center;justify-content:center;width:34px;height:34px;' +
+      'font-size:1rem;line-height:1;text-decoration:none;color:var(--text);">📍</a>';
+    L.DomEvent.disableClickPropagation(div);
+    L.DomEvent.on(div, 'click', function(e) {
+      L.DomEvent.preventDefault(e);
+      map.flyTo([RX_LAT, RX_LON], 9, {duration: 0.6});
+    });
+    return div;
+  }
+});
+new RecenterControl().addTo(map);
 
 // Wind compass at top-left of map. Always visible. Click → toggle Wx panel.
 var WindCompassControl = L.Control.extend({
@@ -3709,33 +3726,11 @@ function renderFIDS() {
 loadFIDS();
 setInterval(loadFIDS, 3 * 60 * 1000);
 
-// ── DELAYED LABELS ON MAP TAGS ─────────────────────────
-var showDelayedLabels = false;
-
-function setDelayedLabels(enabled) {
-  showDelayedLabels = enabled;
-  // Force redraw of all plane icons
-  if (window.planeMarkers) {
-    Object.values(window.planeMarkers).forEach(function(m) {
-      if (m && m._pilnk_hex) {
-        var ac = window.planeData && window.planeData[m._pilnk_hex];
-        if (ac) updatePlaneIcon(m._pilnk_hex, ac);
-      }
-    });
-  }
-  // Redraw via main render loop
-  if (window.renderPlanes) renderPlanes();
-}
-
-function isDelayed(ac) {
-  if (!showDelayedLabels) return false;
-  // Check FIDS data for this callsign
-  var cs = (ac.flight || '').trim();
-  if (!cs) return false;
-  return fidsData.some(function(f) {
-    return f.number === cs && f.delayMins >= 5;
-  });
-}
+// ── DELAYED LABELS — REMOVED 2026-05-09 ────────────────────
+// The feature was a dead toggle: backend /api/fids returns []
+// (empty), and the isDelayed() helper was never called from
+// anywhere in the icon-rendering code anyway. Toggle and helpers
+// removed. Re-introduce only when a real FIDS data source is wired.
 
 // ── AUTO DAY/NIGHT & TERMINATOR ────────────────────────────
 var autoThemeOn = localStorage.getItem('pilnk-auto-theme') === 'true';
