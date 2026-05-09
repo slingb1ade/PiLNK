@@ -64,7 +64,7 @@ class SDRController:
         self.frequency = 118700000   # Hz
         self.squelch = 50            # 0-100 (UI scale)
         self.gain = 35               # 0-50
-        self.sample_rate = 24000     # 24 kHz — Opus-native
+        self.sample_rate = 12000     # 12 kHz — Opus-native, halves pipe data vs 24 kHz to prevent Pi4-class CPU backpressure killing rtl_fm. ATC voice is narrow-band telephony, audibly indistinguishable.
         self.process = None          # rtl_fm subprocess
         self.sox_process = None      # sox subprocess
         self.ffmpeg_process = None   # ffmpeg subprocess (Opus encoder)
