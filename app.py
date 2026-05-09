@@ -880,9 +880,9 @@ def history_summary():
     })
 
 # ── FIDS stub — flight information display ────────────────
-@app.route('/api/fids')
-def fids():
-    return jsonify([])
+# /api/fids endpoint removed 2026-05-09 — frontend FIDS strip + Delayed
+# Labels removed in v0.1.17, this endpoint had no remaining callers and
+# only ever returned []. Re-introduce when a real FIDS data source is wired.
 
 # ── Recordings ────────────────────────────────────────────
 @app.route('/recordings')
