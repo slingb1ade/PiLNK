@@ -1883,7 +1883,16 @@ function fetchAV(type, pos, dist) {
     .then(function(d){ return d.items||[]; });
 }
 
-function clearAvOverlay() { if (avLayerGroup) { map.removeLayer(avLayerGroup); avLayerGroup=null; } }
+function clearAvOverlay() {
+  if (avLayerGroup) { map.removeLayer(avLayerGroup); avLayerGroup=null; }
+  // Also clear the local IFR_WAYPOINTS markers — they're rendered by
+  // drawWaypoints() but conceptually belong to the same overlay layer
+  // (controlled by avNavaids/avWaypoints sub-toggles).
+  if (typeof waypointMarkers !== 'undefined' && waypointMarkers.length) {
+    waypointMarkers.forEach(function(m) { try { map.removeLayer(m); } catch(e) {} });
+    waypointMarkers = [];
+  }
+}
 
 function redrawAvOverlay() {
   clearAvOverlay();
@@ -1926,6 +1935,12 @@ function redrawAvOverlay() {
       }).bindTooltip('<b>'+name+'</b>',{sticky:true}).addTo(avLayerGroup);
     });
   }
+
+  // Local IFR_WAYPOINTS array contains both NAVAIDs (VOR/NDB) and true
+  // fixes (Terminal/Enroute). drawWaypoints() reads both checkboxes
+  // and renders only the appropriate types — call it here so toggling
+  // NAVAIDs or Airspace also refreshes locally-defined VOR/NDB markers.
+  if (typeof drawWaypoints === 'function') drawWaypoints();
 }
 
 // ── AIRPORT SEARCH ────────────────────────────────────────
@@ -4116,21 +4131,36 @@ var IFR_WAYPOINTS = isInNZ() ? IFR_WAYPOINTS_NZ : [];
 var waypointMarkers = [];
 var waypointsVisible = false;
 
+// IFR Fixes toggle just drives a redraw — actual filtering is per-type
+// inside drawWaypoints(). VOR/NDB entries respect the NAVAIDs toggle,
+// Terminal/Enroute entries respect the IFR Fixes toggle. This keeps
+// the three Aviation Overlay sub-toggles cleanly independent.
 function toggleWaypoints(show) {
   waypointsVisible = show;
-  if (show) {
-    drawWaypoints();
-  } else {
-    waypointMarkers.forEach(function(m) { map.removeLayer(m); });
-    waypointMarkers = [];
-  }
+  drawWaypoints();
 }
 
 function drawWaypoints() {
+  // Tear down whatever's currently rendered from this layer
   waypointMarkers.forEach(function(m) { map.removeLayer(m); });
   waypointMarkers = [];
 
+  // Read the two toggles that drive this layer's contents
+  var navEl = document.getElementById('avNavaids');
+  var fixEl = document.getElementById('avWaypoints');
+  var showLocalNavaids = !!(navEl && navEl.checked);
+  var showLocalFixes   = !!(fixEl && fixEl.checked);
+
+  if (!showLocalNavaids && !showLocalFixes) return;
+  // Aviation Overlay master must also be on for any of this to render
+  if (typeof avOverlayOn !== 'undefined' && !avOverlayOn) return;
+
   IFR_WAYPOINTS.forEach(function(wp) {
+    var isNavaid = (wp.type === 'VOR' || wp.type === 'NDB');
+    // Type-aware filter: navaids gated by NAVAIDs toggle, true fixes by IFR Fixes toggle
+    if (isNavaid && !showLocalNavaids) return;
+    if (!isNavaid && !showLocalFixes)  return;
+
     var color, symbol, bg;
     if (wp.type === 'VOR') {
       color = '#f59e0b'; symbol = '✦'; bg = 'rgba(245,158,11,0.15)';
