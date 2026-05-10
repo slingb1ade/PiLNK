@@ -3012,72 +3012,40 @@ function handleCCOverlayClick(e) {
 function ccAddPhoto() {
   if (!ccCurrentHex) return;
 
-  // Remove any prior modal
-  var prior = document.getElementById('ccPhotoUploadModal');
-  if (prior) prior.remove();
+  var hex = ccCurrentHex;
+  var url = 'https://pilnk.io/upload-photo.html?hex=' + encodeURIComponent(hex);
 
-  var modal = document.createElement('div');
-  modal.id = 'ccPhotoUploadModal';
-  modal.style.cssText =
-    'position:fixed;inset:0;background:rgba(0,0,0,0.85);z-index:99999;'
-    + 'display:flex;align-items:center;justify-content:center;'
-    + 'backdrop-filter:blur(8px);-webkit-backdrop-filter:blur(8px);';
+  // Open in a new tab/window — NOT an iframe. Iframing pilnk.io from a
+  // 192.168.x.x origin makes the iframe a third-party context, and modern
+  // browsers block third-party cookies (SameSite=Lax default). The pilnk.io
+  // session cookie isn't sent, profile.php returns "not authenticated", and
+  // the user gets stuck in a "you need to be logged in" loop even when
+  // they ARE logged in. New tab = first-party context = cookies work.
+  // Diagnosed 2026-05-10 (post-v1.0.0 launch).
+  var popup = window.open(url, 'pilnkPhotoUpload',
+    'width=600,height=760,resizable=yes,scrollbars=yes');
 
-  var box = document.createElement('div');
-  box.style.cssText =
-    'background:var(--bg-deep,#0a0e1a);border:1px solid var(--border,#2a3556);'
-    + 'border-radius:12px;width:92%;max-width:560px;max-height:88vh;'
-    + 'display:flex;flex-direction:column;overflow:hidden;'
-    + 'box-shadow:0 20px 60px rgba(0,0,0,0.6);';
+  if (!popup || popup.closed) {
+    alert('Popup blocked — please allow popups for this site, then click Add Photo again.');
+    return;
+  }
+  try { popup.focus(); } catch (e) {}
 
-  var header = document.createElement('div');
-  header.style.cssText =
-    'display:flex;justify-content:space-between;align-items:center;'
-    + 'padding:12px 16px;border-bottom:1px solid var(--border,#2a3556);'
-    + 'background:var(--bg2,#131a2e);flex-shrink:0;';
-  header.innerHTML =
-    '<div style="font-family:Orbitron,sans-serif;font-size:0.78rem;'
-    + 'letter-spacing:0.12em;color:var(--text,#e2e8f0);font-weight:700;">'
-    + '📸 ADD PHOTO · ' + ccCurrentHex + '</div>'
-    + '<button id="ccPhotoUploadClose" '
-    + 'style="background:none;border:none;color:var(--text-dim,#64748b);'
-    + 'font-size:1.6rem;cursor:pointer;line-height:1;padding:0 4px;">×</button>';
-
-  var iframe = document.createElement('iframe');
-  iframe.src = 'https://pilnk.io/upload-photo.html?hex=' + encodeURIComponent(ccCurrentHex);
-  iframe.style.cssText =
-    'width:100%;flex:1;min-height:560px;border:none;'
-    + 'background:var(--bg-deep,#0a0e1a);';
-  iframe.allow = 'clipboard-write';
-  iframe.title = 'Upload PiLNK photo';
-
-  box.appendChild(header);
-  box.appendChild(iframe);
-  modal.appendChild(box);
-
-  // Close on backdrop click or × button
-  modal.addEventListener('click', function (e) {
-    if (e.target === modal) modal.remove();
-  });
-  header.querySelector('#ccPhotoUploadClose').addEventListener('click', function () {
-    modal.remove();
-  });
-
-  // Listen for postMessage from the iframe (success → auto-close, refresh photo)
+  // Listen for postMessage from the popup. Origin-checked so we only
+  // honour messages from pilnk.io itself.
   function onMsg(e) {
+    if (e.origin !== 'https://pilnk.io') return;
     if (!e.data || typeof e.data !== 'object') return;
-    if (e.data.type === 'pilnk-photo-close') {
-      window.removeEventListener('message', onMsg);
-      modal.remove();
-    } else if (e.data.type === 'pilnk-photo-uploaded') {
-      // Hint: clear the cached photo for this hex so next slide-out
-      // open re-fetches and may find the new photo (after admin approves).
+    if (e.data.type === 'pilnk-photo-uploaded') {
+      // Clear the cached photo for this hex so next slide-out
+      // open re-fetches and may find the new photo (after admin approval).
       try { delete pilnkPhotoCache[e.data.hex]; } catch (err) {}
+    } else if (e.data.type === 'pilnk-photo-close') {
+      window.removeEventListener('message', onMsg);
+      try { popup.close(); } catch (err) {}
     }
   }
   window.addEventListener('message', onMsg);
-
-  document.body.appendChild(modal);
 }
 
 // Waveform animation
