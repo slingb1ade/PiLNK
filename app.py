@@ -384,13 +384,26 @@ def _run_update():
         ota_status['updating'] = False
         return False
 
-def _perform_ota_check():
+def _perform_ota_check(auto_install_on_available=True):
     """Single canonical OTA check. Hits pilnk.io/api/version.php, compares
     against local VERSION, updates ota_status, and returns a result dict
     so callers (timer thread or manual /api/ota/check) can act on it.
-    Auto-installs if remote sets required:true OR local config has
-    auto_update:true. Otherwise just sets ota_status['available']=True
-    so the dashboard banner shows.
+
+    auto_install_on_available controls whether a detected update may be
+    installed inline:
+      - True  (default, used by the background timer): if remote sets
+              required:true OR local config has auto_update:true, the
+              update installs synchronously before returning. This is
+              fine for the timer — nobody is waiting for an HTTP
+              response.
+      - False (used by the manual /api/ota/check endpoint): NEVER auto-
+              installs, even if required or auto_update is set. Just
+              flags ota_status['available']=True so the dashboard banner
+              appears. The user clicks Install Now to trigger the
+              actual install via /api/ota/install. This avoids killing
+              the HTTP response mid-flight when update.sh restarts the
+              service — which previously surfaced as a misleading
+              "connection error" toast on the Check button.
     """
     try:
         import urllib.request
@@ -412,14 +425,17 @@ def _perform_ota_check():
         if remote_ver and remote_ver != local_ver:
             ota_status['available'] = True
             print(f'[PILNK-OTA] Update available: {local_ver} → {remote_ver}')
-            if required:
-                print(f'[PILNK-OTA] Required update — installing immediately (overrides user preference)')
-                _run_update()
-            elif _is_auto_update_enabled():
-                print(f'[PILNK-OTA] auto_update=true in config — installing silently')
-                _run_update()
+            if auto_install_on_available:
+                if required:
+                    print(f'[PILNK-OTA] Required update — installing immediately (overrides user preference)')
+                    _run_update()
+                elif _is_auto_update_enabled():
+                    print(f'[PILNK-OTA] auto_update=true in config — installing silently')
+                    _run_update()
+                else:
+                    print(f'[PILNK-OTA] Update available — waiting for user to click Install on dashboard')
             else:
-                print(f'[PILNK-OTA] Update available — waiting for user to click Install on dashboard')
+                print(f'[PILNK-OTA] Manual check — banner will prompt user; not auto-installing on this path')
             return {'ok': True, 'available': True, 'current': local_ver, 'latest': remote_ver}
         else:
             ota_status['available'] = False
@@ -430,8 +446,9 @@ def _perform_ota_check():
 
 def ota_checker():
     """Background timer thread that calls _perform_ota_check() on a loop.
-    Manual triggers from /api/ota/check share the same code path so
-    behaviour is identical regardless of who initiates the check.
+    Passes auto_install_on_available=True so the timer preserves the
+    silent-update behavior for users who have auto_update enabled or
+    when the release is marked required.
     """
     global ota_last_update
     time.sleep(60)  # wait 60s after startup before first check
@@ -440,7 +457,7 @@ def ota_checker():
         if time.time() - ota_last_update < OTA_COOLDOWN:
             time.sleep(OTA_CHECK_INTERVAL)
             continue
-        _perform_ota_check()
+        _perform_ota_check(auto_install_on_available=True)
         time.sleep(OTA_CHECK_INTERVAL)
 
 # Start OTA checker thread
@@ -452,11 +469,19 @@ print(f'[PILNK-OTA] Update checker active — checking every {OTA_CHECK_INTERVAL
 # you've just pushed a release and don't want to wait for the next
 # scheduled poll. Safe to call repeatedly. Returns the same shape as
 # /api/ota/status would after a successful check.
+#
+# IMPORTANT: passes auto_install_on_available=False so this endpoint
+# NEVER installs inline, even when auto_update is enabled. Reason: if
+# we install synchronously here, update.sh restarts the service and
+# kills the HTTP response mid-flight — the browser sees this as a
+# misleading "connection error" toast even though the update worked.
+# Banner-based Install Now flow is the explicit user path; background
+# timer handles silent auto-update for users who want it.
 @app.route('/api/ota/check', methods=['POST'])
 def api_ota_check():
     if ota_status.get('updating'):
         return jsonify({'ok': False, 'error': 'Update already in progress'}), 409
-    result = _perform_ota_check()
+    result = _perform_ota_check(auto_install_on_available=False)
     return jsonify(result), (200 if result.get('ok') else 502)
 
 # ── OTA Dashboard API ─────────────────────────────────────
