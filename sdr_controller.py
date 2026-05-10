@@ -1,7 +1,7 @@
 """
 PiLNK SDR Controller — sdr_controller.py
-Manages rtl_fm → sox → (PCM copier) → ffmpeg pipeline for VHF
-airband audio, streamed to browser <audio> elements as Ogg/Opus.
+Manages rtl_fm → ffmpeg pipeline for VHF airband audio (v0.1.23+),
+streamed to browser <audio> elements as Ogg/Opus.
 
 Dongles are identified by USB SERIAL (not index) so the audio path
 NEVER accidentally clobbers the ADS-B dongle if USB enumeration
@@ -12,15 +12,19 @@ Default serials (override via SDRController(device_serial=...)):
   ADS-B dongle (FlightAware Pro Stick):    '00001000' — NEVER touched
 
 Architecture:
-  rtl_fm → sox → [Python copier thread] → ffmpeg → [Python reader] → subscribers
-                          ↓                              ↓
-                  signal-level meter             recording file (.ogg)
+  rtl_fm → [Python copier thread] → ffmpeg → [Python reader] → subscribers
+                  │                              │
+                  ▼                              ▼
+            signal-level meter             recording file (.ogg)
 
-  - PCM copier thread reads raw int16 samples from sox.stdout, computes
-    a smoothed peak signal level, then writes the chunk to ffmpeg.stdin.
+  - PCM copier thread reads raw int16 samples from rtl_fm.stdout, computes
+    a smoothed peak signal level (compensated for the +12 dB gain applied
+    later by ffmpeg), then writes the chunk to ffmpeg.stdin.
   - Reader thread reads Ogg/Opus from ffmpeg.stdout, broadcasts to all
     subscriber queues, and tees to the recording file when active.
-  - On freq/squelch/gain changes, rtl_fm + sox + ffmpeg are restarted.
+  - ffmpeg applies +12 dB gain + 200-3400 Hz telephone bandpass via -af,
+    replacing the sox filter stage that lived here through v0.1.22.
+  - On freq/squelch/gain changes, rtl_fm + ffmpeg are restarted.
     Each browser's <audio> element will see the Ogg stream end and
     reconnect (handled client-side via the 'ended' event).
   - Recordings span pipeline restarts: the file becomes a chained Ogg/
@@ -66,8 +70,7 @@ class SDRController:
         self.gain = 35               # 0-50
         self.sample_rate = 12000     # 12 kHz — Opus-native, halves pipe data vs 24 kHz to prevent Pi4-class CPU backpressure killing rtl_fm. ATC voice is narrow-band telephony, audibly indistinguishable.
         self.process = None          # rtl_fm subprocess
-        self.sox_process = None      # sox subprocess
-        self.ffmpeg_process = None   # ffmpeg subprocess (Opus encoder)
+        self.ffmpeg_process = None   # ffmpeg subprocess (Opus encoder + audio filters)
         self.is_playing = False
         self.lock = threading.Lock()
         self.biast_enabled = False
@@ -149,7 +152,7 @@ class SDRController:
 
     # ── pipeline lifecycle ────────────────────────────────────
     def start(self, freq_hz=None):
-        """Start the rtl_fm → sox → ffmpeg pipeline."""
+        """Start the rtl_fm → ffmpeg pipeline."""
         with self.lock:
             if self.is_playing:
                 self._kill_pipeline()
@@ -172,16 +175,13 @@ class SDRController:
                     '-g', str(self.gain),
                     '-'
                 ]
-                sox_cmd = [
-                    'sox',
-                    '-t', 'raw', '-r', str(self.sample_rate),
-                    '-e', 'signed', '-b', '16', '-c', '1', '-',
-                    '-t', 'raw', '-r', str(self.sample_rate),
-                    '-e', 'signed', '-b', '16', '-c', '1', '-',
-                    'gain', '12',
-                    'lowpass', '3400',
-                    'highpass', '200'
-                ]
+                # v0.1.23 — sox dropped from the pipeline. ffmpeg now
+                # handles gain/lowpass/highpass natively via -af. This
+                # removes one process, one OS pipe, one decimation
+                # stage worth of CPU, and one deadlock point. Per Jim's
+                # observation 2026-05-10: shorter pipeline = fewer
+                # failure modes.
+                # Filters: +12 dB gain, 200-3400 Hz telephone bandpass.
                 ffmpeg_cmd = [
                     'ffmpeg',
                     '-hide_banner', '-loglevel', 'error',
@@ -189,6 +189,7 @@ class SDRController:
                     '-ar', str(self.sample_rate),
                     '-ac', '1',
                     '-i', '-',
+                    '-af', 'volume=12dB,highpass=f=200,lowpass=f=3400',
                     '-c:a', 'libopus',
                     '-b:a', OPUS_BITRATE,
                     '-application', 'voip',
@@ -204,12 +205,6 @@ class SDRController:
                     stdout=subprocess.PIPE,
                     stderr=subprocess.DEVNULL
                 )
-                self.sox_process = subprocess.Popen(
-                    sox_cmd,
-                    stdin=self.process.stdout,
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.DEVNULL
-                )
                 # ffmpeg's stdin is a Python-managed pipe (the copier
                 # thread writes to it after sampling for signal level).
                 self.ffmpeg_process = subprocess.Popen(
@@ -218,21 +213,18 @@ class SDRController:
                     stdout=subprocess.PIPE,
                     stderr=subprocess.DEVNULL
                 )
-
-                # rtl_fm.stdout is owned by sox now
-                self.process.stdout.close()
-                # NOTE: do NOT close sox.stdout — Python copier reads it
+                # NOTE: do NOT close rtl_fm.stdout — Python copier reads it
 
                 # Health check: poll for up to 500ms in 100ms steps. If
                 # rtl_fm exits at ANY point during this window, the SDR
                 # isn't accessible (no VHF dongle, wrong serial, USB
                 # error, already in use). Bail out before returning —
-                # otherwise sox gets EOF and dies, but ffmpeg keeps
-                # idling on its Python-managed stdin and accumulates as
-                # an orphan on every retry. The watchdog spawned below
-                # catches the rarer case where rtl_fm survives this
-                # window then dies later (e.g. dongle yanked mid-stream
-                # or USB hub power glitch).
+                # otherwise the copier thread sees EOF on rtl_fm.stdout
+                # and ffmpeg keeps idling on its Python-managed stdin,
+                # accumulating as an orphan on every retry. The watchdog
+                # spawned below catches the rarer case where rtl_fm
+                # survives this window then dies later (e.g. dongle
+                # yanked mid-stream or USB hub power glitch).
                 # See: Jim's node, May 6/7 2026 — 5 then 1 ffmpeg orphans
                 # after repeated Listen clicks with no VHF dongle. The
                 # 150ms window we shipped first was too tight on a Pi
@@ -294,12 +286,11 @@ class SDRController:
 
     def _kill_pipeline(self):
         """Kill all processes in the pipeline."""
-        procs = [self.process, self.sox_process, self.ffmpeg_process]
+        procs = [self.process, self.ffmpeg_process]
         alive = [p for p in procs if p and p.poll() is None]
 
         if not alive:
             self.process = None
-            self.sox_process = None
             self.ffmpeg_process = None
             return
 
@@ -323,7 +314,6 @@ class SDRController:
                     pass
 
         self.process = None
-        self.sox_process = None
         self.ffmpeg_process = None
 
     # ── threads ───────────────────────────────────────────────
@@ -347,7 +337,7 @@ class SDRController:
 
     def _spawn_rtl_watchdog(self, rtl_proc):
         """Background watcher: blocks on rtl_fm.wait(), then tears down
-        sox/ffmpeg if rtl_fm dies while we still believe we're playing.
+        ffmpeg if rtl_fm dies while we still believe we're playing.
         Catches the case where rtl_fm survives the synchronous startup
         health check but exits later (slow USB error, dongle yanked
         mid-stream, hub power glitch). Without this, ffmpeg's Python-
@@ -367,7 +357,7 @@ class SDRController:
                 if self.is_playing and self.process is rtl_proc:
                     logger.warning(
                         'rtl_fm exited unexpectedly (rc=%s) — tearing '
-                        'down sox/ffmpeg to prevent orphan processes',
+                        'down ffmpeg to prevent orphan processes',
                         rc
                     )
                     self._kill_pipeline()
@@ -378,37 +368,48 @@ class SDRController:
         t.start()
 
     def _pcm_copier_loop(self):
-        """Read raw int16 PCM from sox.stdout, compute signal level,
-        forward to ffmpeg.stdin. Survives pipeline restarts: when sox
-        or ffmpeg are nulled, idle until the next start().
+        """Read raw int16 PCM from rtl_fm.stdout, compute signal level,
+        forward to ffmpeg.stdin. Survives pipeline restarts: when
+        rtl_fm or ffmpeg are nulled, idle until the next start().
+
+        v0.1.23: sox removed from pipeline; we now read raw rtl_fm
+        output (pre-gain) instead of post-sox audio. Signal level is
+        compensated by ~4x (≈ +12 dB linear, matches the gain that sox
+        used to apply) so the SIG meter reads consistently with prior
+        versions.
         """
+        # +12 dB in linear amplitude is 10**(12/20) ≈ 3.981. Matches
+        # the gain that sox `gain 12` used to apply before ffmpeg.
+        SIGNAL_GAIN_COMPENSATION = 3.981
+
         while not self._reader_stop.is_set():
-            sox = self.sox_process
+            rtl = self.process
             ff = self.ffmpeg_process
-            if (sox is None or sox.stdout is None
+            if (rtl is None or rtl.stdout is None
                     or ff is None or ff.stdin is None):
                 self._signal_level *= 0.5  # decay during gap
                 time.sleep(0.05)
                 continue
 
             try:
-                chunk = sox.stdout.read(CHUNK_SIZE)
+                chunk = rtl.stdout.read(CHUNK_SIZE)
             except (ValueError, OSError):
                 time.sleep(0.05)
                 continue
 
             if not chunk:
-                # sox closed its stdout — wait for restart
+                # rtl_fm closed its stdout — wait for restart
                 time.sleep(0.05)
                 continue
 
-            # Signal level: peak |sample| → 0-100, exponentially smoothed
+            # Signal level: peak |sample| × gain compensation → 0-100,
+            # exponentially smoothed
             try:
                 n_samples = len(chunk) // 2
                 if n_samples:
                     samples = struct.unpack('<%dh' % n_samples, chunk[:n_samples * 2])
                     peak = max(abs(s) for s in samples)
-                    raw = min(peak / 327.67, 100.0)  # 32767/100 = 327.67
+                    raw = min((peak * SIGNAL_GAIN_COMPENSATION) / 327.67, 100.0)
                     self._signal_level = (
                         SIGNAL_SMOOTHING_ALPHA * raw
                         + (1.0 - SIGNAL_SMOOTHING_ALPHA) * self._signal_level
