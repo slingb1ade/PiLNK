@@ -383,15 +383,72 @@ else
   ok "Created $DUMP_CONF with location"
 fi
 
+# ── Detect VHF dongle serial number ──────────────────────
+# PiLNK historically defaulted to SN '00000002' for the VHF audio dongle
+# (AJ's setup). Modern installs auto-detect whatever serial the user's
+# dongles ship with so no rtl_eeprom dance is required. Falls back to
+# '00000002' if detection is inconclusive.
+step "SDR DONGLE DETECTION"
+
+VHF_SERIAL="00000002"
+
+if ! command -v rtl_test &>/dev/null; then
+  info "rtl_test not available — using default VHF serial $VHF_SERIAL"
+else
+  RTL_OUT=$(timeout 3 rtl_test 2>&1 || true)
+  DONGLE_SNS=$(echo "$RTL_OUT" | grep -oE 'SN: [0-9A-Fa-f]+' | awk '{print $2}')
+  DONGLE_COUNT=$(echo "$DONGLE_SNS" | grep -c . || true)
+
+  if [ "$DONGLE_COUNT" -eq 0 ]; then
+    warn "No RTL-SDR dongles detected — using default VHF serial $VHF_SERIAL"
+    warn "Plug dongles in and re-run the installer if you want VHF audio"
+  elif echo "$DONGLE_SNS" | grep -q '^00000002$'; then
+    VHF_SERIAL="00000002"
+    ok "Found VHF dongle on SN 00000002 (PiLNK legacy default)"
+  else
+    # No legacy default present. Identify VHF by elimination.
+    ADSB_SN=""
+    if [ -f /etc/default/dump1090-fa ]; then
+      ADSB_SN=$(grep -oE '^RECEIVER_SERIAL=.*' /etc/default/dump1090-fa | cut -d= -f2 | tr -d '"' | xargs || true)
+    fi
+
+    if [ -n "$ADSB_SN" ] && [ "$DONGLE_COUNT" -gt 1 ]; then
+      VHF_SERIAL=$(echo "$DONGLE_SNS" | grep -v "^${ADSB_SN}$" | head -n1)
+      ok "Detected VHF dongle on SN $VHF_SERIAL (ADS-B is on $ADSB_SN)"
+    elif [ "$DONGLE_COUNT" -eq 1 ]; then
+      VHF_SERIAL=$(echo "$DONGLE_SNS" | head -n1)
+      ok "Single dongle detected on SN $VHF_SERIAL — using as VHF audio"
+      info "Plug ADS-B dongle in later and restart dump1090-fa"
+    else
+      if [ -t 0 ]; then
+        echo ""
+        warn "Found $DONGLE_COUNT dongles, can't auto-detect which is VHF:"
+        echo "$DONGLE_SNS" | nl -s '. SN: '
+        echo ""
+        read -p "Enter the line number of your VHF audio dongle [1]: " VHF_PICK
+        VHF_PICK=${VHF_PICK:-1}
+        VHF_SERIAL=$(echo "$DONGLE_SNS" | sed -n "${VHF_PICK}p")
+        ok "Using VHF dongle SN $VHF_SERIAL"
+      else
+        warn "Multiple dongles, non-interactive install — using default $VHF_SERIAL"
+        warn "Edit ~/pilnk/config.json after install to set 'vhf_serial' if audio fails"
+      fi
+    fi
+  fi
+fi
+
+ok "VHF dongle serial: $VHF_SERIAL"
+
+
 # ── Write PiLNK Code to config.json ───────────────────────
 step "PiLNK CODE"
 APP_PY="$PILNK_DIR/app.py"
 CONFIG_JSON="$PILNK_DIR/config.json"
 
 # Write config.json (gitignored — survives git pull)
-# Source of truth for node identity: code, location, OTA preference.
-printf '{\n  "pilnk_code": "%s",\n  "lat": %s,\n  "lon": %s,\n  "auto_update": true\n}\n' "$CODE" "$LAT" "$LON" > "$CONFIG_JSON"
-ok "PiLNK Code + location saved to config.json"
+# Source of truth for node identity: code, location, OTA preference, VHF dongle serial.
+printf '{\n  "pilnk_code": "%s",\n  "lat": %s,\n  "lon": %s,\n  "auto_update": true,\n  "vhf_serial": "%s"\n}\n' "$CODE" "$LAT" "$LON" "$VHF_SERIAL" > "$CONFIG_JSON"
+ok "PiLNK Code + location + VHF serial saved to config.json"
 
 # Ensure config.json is gitignored (survives git pull)
 GITIGNORE="$PILNK_DIR/.gitignore"

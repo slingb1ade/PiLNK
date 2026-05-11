@@ -516,9 +516,10 @@ current_gain      = 35
 current_squelch   = 50
 
 # ── SDR Controller — manages VHF audio via rtl_fm ─────────
-# Identifies VHF dongle by USB serial (default '00000002') so the
-# audio path can never accidentally clobber the ADS-B dongle.
-sdr = SDRController()
+# Identifies VHF dongle by USB serial. Installer (v2.11+) auto-detects
+# the serial and writes it to config.json's "vhf_serial" field. Falls
+# back to '00000002' (PiLNK legacy default) so older configs still work.
+sdr = SDRController(device_serial=_config.get('vhf_serial', '00000002'))
 
 @app.route('/')
 def index():
