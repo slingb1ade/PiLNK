@@ -2226,11 +2226,22 @@ var TYPE_ICONS={
 };
 var LIGHT={C150:1,C152:1,C162:1,C172:1,C177:1,C180:1,C182:1,C185:1,C206:1,C207:1,C208:1,C210:1,P28A:1,P28B:1,P28R:1,P28T:1,PA18:1,PA24:1,PA31:1,PA32:1,PA34:1,PA44:1,PA46:1,DA20:1,DA40:1,DA42:1,DA50:1,DA62:1,SR20:1,SR22:1,SR2T:1,BE33:1,BE35:1,BE36:1,TBM7:1,TBM8:1,TBM9:1,PC6T:1,PC12:1,PC24:1};
 function getCat(t,cat){
+  // Helicopter — direct ADS-B category match
   if(cat==='A7')return'heli';
-  if(!t)return'medium';var u=t.toUpperCase().trim();
-  if(HELI[u]||u.startsWith('EC')||/^R[24]/.test(u))return'heli';
-  if(TYPE_ICONS[u])return TYPE_ICONS[u];
-  if(HEAVY[u])return'heavy';if(LIGHT[u])return'light';return'medium';
+  // Type-code lookup (only when dump1090 provides t — requires aircraft-db enrichment)
+  if(t){
+    var u=t.toUpperCase().trim();
+    if(HELI[u]||u.startsWith('EC')||/^R[24]/.test(u))return'heli';
+    if(TYPE_ICONS[u])return TYPE_ICONS[u];
+    if(HEAVY[u])return'heavy';
+    if(LIGHT[u])return'light';
+    return'medium';
+  }
+  // Fallback: ADS-B emitter category when t is absent
+  // A1=light single-engine, A4=large jet, A5=heavy >300t, A6=high-performance
+  if(cat==='A1')return'light';
+  if(cat==='A4'||cat==='A5'||cat==='A6')return'heavy';
+  return'medium';
 }
 
 // ── ICONS ─────────────────────────────────────────────────
