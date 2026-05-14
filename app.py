@@ -11,6 +11,8 @@ import time
 import collections
 import json
 import os
+import gzip
+import csv
 import logging
 import urllib.request
 
@@ -83,6 +85,78 @@ def read_aircraft_json():
             return f.read()
     except (IOError, OSError):
         return None
+
+# ── Aircraft type/registration database (enrichment) ──────
+# dump1090-fa does NOT populate the `t` (type) or `r` (registration)
+# fields by default — those come from an external database. We load
+# the Mictronics/wiedehopf-maintained aircraft database at startup
+# and merge into the /flights response. This is what powers the
+# type-specific icons (B737/A320/B777/B787/A350/A380) and makes the
+# size/category fallback meaningful for non-helicopter aircraft.
+#
+# Database source: https://github.com/wiedehopf/tar1090-db (csv branch)
+# Format: gzipped CSV with header line `icao24,r,t,...` (Mictronics format)
+# Refresh: see scripts/refresh-aircraft-db.sh (weekly systemd timer)
+#
+# Memory footprint: ~30-50 MB for the full database (~500K aircraft).
+# If the file is missing, enrichment silently skips — aircraft just
+# render with the category-fallback icons from v1.0.6.
+# ─────────────────────────────────────────────────────────
+AIRCRAFT_DB_PATH = '/usr/local/share/pilnk-aircraft-db/aircraft.csv.gz'
+AIRCRAFT_DB = {}  # hex (uppercase) -> {'t': type, 'r': registration}
+
+def load_aircraft_db():
+    """Load the aircraft enrichment database into memory.
+
+    Idempotent: safe to call multiple times. Clears the dict before
+    reload so deletions in the source file propagate.
+
+    The Mictronics CSV format has these columns:
+        icao24, r, t, dbflags, desc, wtc
+    We only consume icao24, r, and t for now.
+    """
+    global AIRCRAFT_DB
+    if not os.path.exists(AIRCRAFT_DB_PATH):
+        logging.info(f'Aircraft DB not present at {AIRCRAFT_DB_PATH} — '
+                     f'enrichment disabled. Install via '
+                     f'scripts/refresh-aircraft-db.sh')
+        return 0
+    try:
+        new_db = {}
+        with gzip.open(AIRCRAFT_DB_PATH, 'rt', encoding='utf-8') as f:
+            reader = csv.reader(f)
+            header = next(reader, None)
+            if not header:
+                logging.warning('Aircraft DB CSV is empty')
+                return 0
+            # Find column indexes by name (handles future format changes)
+            try:
+                idx_hex = header.index('icao24')
+                idx_reg = header.index('r')
+                idx_typ = header.index('t')
+            except ValueError as e:
+                logging.error(f'Aircraft DB header missing expected column: {e}')
+                return 0
+            for row in reader:
+                if len(row) <= max(idx_hex, idx_reg, idx_typ):
+                    continue
+                hex_code = (row[idx_hex] or '').strip().upper()
+                if not hex_code:
+                    continue
+                # Only store if we have at least a type or a registration
+                t = (row[idx_typ] or '').strip()
+                r = (row[idx_reg] or '').strip()
+                if t or r:
+                    new_db[hex_code] = {'t': t, 'r': r}
+        AIRCRAFT_DB = new_db
+        logging.info(f'Aircraft DB loaded: {len(AIRCRAFT_DB)} entries from {AIRCRAFT_DB_PATH}')
+        return len(AIRCRAFT_DB)
+    except Exception as e:
+        logging.error(f'Failed to load aircraft DB: {e}')
+        return 0
+
+# Load on startup. Non-fatal if missing.
+load_aircraft_db()
 
 # ── Flight trail history — stores last 24h of positions ───
 # { hex: deque([ {lat, lon, alt_baro, baro_rate, flight, t} ]) }
@@ -665,10 +739,41 @@ def audio_status():
 
 @app.route('/flights')
 def flights():
+    """Return aircraft data with type/registration enrichment from AIRCRAFT_DB.
+
+    If AIRCRAFT_DB is empty (file missing on disk), we pass through
+    aircraft.json untouched — same behaviour as pre-v1.0.7.
+    """
     raw = read_aircraft_json()
-    if raw is not None:
+    if raw is None:
+        return jsonify({'aircraft': []})
+
+    # Fast path: no enrichment data, just pass through (matches pre-v1.0.7)
+    if not AIRCRAFT_DB:
         return Response(raw, mimetype='application/json')
-    return jsonify({'aircraft': []})
+
+    # Slow path: parse, enrich, re-serialize. Adds ~5ms for typical
+    # 50-aircraft payload. dump1090's hex field is lowercase; AIRCRAFT_DB
+    # is keyed uppercase.
+    try:
+        data = json.loads(raw)
+        for ac in data.get('aircraft', []):
+            hex_code = (ac.get('hex') or '').upper()
+            if not hex_code:
+                continue
+            entry = AIRCRAFT_DB.get(hex_code)
+            if not entry:
+                continue
+            # Only fill if dump1090 didn't already provide it (rare, but possible)
+            if not ac.get('t') and entry['t']:
+                ac['t'] = entry['t']
+            if not ac.get('r') and entry['r']:
+                ac['r'] = entry['r']
+        return jsonify(data)
+    except (ValueError, TypeError) as e:
+        # Parse failure: fall back to raw passthrough so we never 500
+        logging.warning(f'Enrichment failed, falling back to raw: {e}')
+        return Response(raw, mimetype='application/json')
 
 # ── OpenAIP proxy — avoids CORS issues in browser ─────────
 @app.route('/api/openaip/<path:endpoint>')
