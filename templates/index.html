@@ -382,19 +382,6 @@
     display:flex;align-items:center;justify-content:center;
     font-size:4rem;opacity:0.15;
   }
-  /* Reg watermark behind photo */
-  .cc-reg-watermark{
-    position:absolute;bottom:-10px;left:-4px;
-    font-family:'Orbitron',sans-serif;
-    font-size:clamp(3rem,8vw,5.5rem);
-    font-weight:900;
-    color:rgba(255,255,255,0.07);
-    letter-spacing:0.08em;
-    line-height:1;
-    pointer-events:none;
-    white-space:nowrap;
-    text-shadow:none;
-  }
   /* Progress bar at top of photo */
   .cc-timer-bar{
     position:absolute;top:0;left:0;height:3px;
@@ -412,17 +399,6 @@
     justify-content:space-between;
     position:relative;
     overflow:hidden;
-  }
-  /* Subtle registration watermark in data panel */
-  .cc-data::before{
-    content:attr(data-reg);
-    position:absolute;bottom:-12px;right:-8px;
-    font-family:'Orbitron',sans-serif;
-    font-size:4.5rem;font-weight:900;
-    color:var(--border);
-    letter-spacing:0.05em;
-    line-height:1;
-    pointer-events:none;
   }
   .cc-top{}
   .cc-badge{
@@ -1299,7 +1275,6 @@
       <!-- Photo layer -->
       <div class="cc-photo-no-img" id="ccNoImg">✈</div>
       <img id="ccImg" src="" alt="" style="display:none;position:absolute;inset:0;width:100%;height:100%;object-fit:contain;" onload="ccImgLoaded()"/>
-      <div class="cc-reg-watermark" id="ccRegWatermark"></div>
       <div class="cc-photo-credit" id="ccPhotoCredit"></div>
     </div>
     <div class="cc-data" id="ccData">
@@ -2920,13 +2895,9 @@ function openCinematicCard(cs, auto) {
   document.getElementById('ccRoute').textContent = '';
   document.getElementById('ccModel').textContent = '';
   document.getElementById('ccAirline').textContent = '';
-  document.getElementById('ccData').setAttribute('data-reg', a.r || '');
-  document.getElementById('ccRegWatermark').textContent = a.r || '';
 
   lookupRoute(cs, function(info) {
     if (info.route)   document.getElementById('ccRoute').textContent = '✈ ' + info.route;
-    if (info.reg)     document.getElementById('ccData').setAttribute('data-reg', info.reg);
-    if (info.reg)     document.getElementById('ccRegWatermark').textContent = info.reg;
     if (info.airline) document.getElementById('ccAirline').textContent = info.airline;
   });
 
