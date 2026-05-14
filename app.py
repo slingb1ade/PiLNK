@@ -111,9 +111,10 @@ def load_aircraft_db():
     Idempotent: safe to call multiple times. Clears the dict before
     reload so deletions in the source file propagate.
 
-    The Mictronics CSV format has these columns:
-        icao24, r, t, dbflags, desc, wtc
-    We only consume icao24, r, and t for now.
+    Format (Mictronics, semicolon-delimited, NO header):
+        icao24;r;t;flags;desc;...
+    Example row:
+        004002;Z-WPA;B732;00;BOEING 737-200;;;
     """
     global AIRCRAFT_DB
     if not os.path.exists(AIRCRAFT_DB_PATH):
@@ -123,31 +124,19 @@ def load_aircraft_db():
         return 0
     try:
         new_db = {}
-        with gzip.open(AIRCRAFT_DB_PATH, 'rt', encoding='utf-8') as f:
-            reader = csv.reader(f)
-            header = next(reader, None)
-            if not header:
-                logging.warning('Aircraft DB CSV is empty')
-                return 0
-            # Find column indexes by name (handles future format changes)
-            try:
-                idx_hex = header.index('icao24')
-                idx_reg = header.index('r')
-                idx_typ = header.index('t')
-            except ValueError as e:
-                logging.error(f'Aircraft DB header missing expected column: {e}')
-                return 0
+        with gzip.open(AIRCRAFT_DB_PATH, 'rt', encoding='utf-8', errors='replace') as f:
+            reader = csv.reader(f, delimiter=';')
             for row in reader:
-                if len(row) <= max(idx_hex, idx_reg, idx_typ):
+                if len(row) < 3:
                     continue
-                hex_code = (row[idx_hex] or '').strip().upper()
-                if not hex_code:
+                hex_code = (row[0] or '').strip().upper()
+                if not hex_code or len(hex_code) != 6:
                     continue
+                reg = (row[1] or '').strip()
+                typ = (row[2] or '').strip()
                 # Only store if we have at least a type or a registration
-                t = (row[idx_typ] or '').strip()
-                r = (row[idx_reg] or '').strip()
-                if t or r:
-                    new_db[hex_code] = {'t': t, 'r': r}
+                if typ or reg:
+                    new_db[hex_code] = {'t': typ, 'r': reg}
         AIRCRAFT_DB = new_db
         logging.info(f'Aircraft DB loaded: {len(AIRCRAFT_DB)} entries from {AIRCRAFT_DB_PATH}')
         return len(AIRCRAFT_DB)
