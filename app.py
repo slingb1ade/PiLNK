@@ -802,32 +802,35 @@ def rainviewer_proxy():
 def planespotters_proxy(hex):
     """Proxy to planespotters.net public photo API.
 
-    Planespotters' hex endpoint (/pub/photos/hex/<hex>) became flaky/empty
-    for many aircraft in 2026 — returns 0 photos for aircraft that
-    definitely have photos. Their reg endpoint (/pub/photos/reg/<reg>)
-    still works reliably.
-
     Strategy:
-      1. If client provides ?reg=X, call /pub/photos/reg/<reg> (preferred)
+      1. If client provides ?reg=X, call /pub/photos/reg/<reg>
       2. Otherwise fall back to /pub/photos/hex/<hex>
 
-    The reg comes from AIRCRAFT_DB enrichment (v1.0.7+), so most aircraft
-    have one. Hex fallback covers the rare cases where the DB has no entry.
+    User-Agent: planespotters/Cloudflare appears to discriminate based
+    on UA. curl with a browser-style UA gets photos; python-requests
+    default UA returns empty. We send a browser-style UA explicitly.
     """
     try:
         reg = request.args.get('reg', '').strip()
         if reg:
-            # Reg endpoint — preferred. Returns photos reliably.
             url = 'https://api.planespotters.net/pub/photos/reg/' + reg
         else:
-            # Hex endpoint — fallback when reg unknown.
             url = 'https://api.planespotters.net/pub/photos/hex/' + hex
-        r = requests.get(url, timeout=8)
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (PiLNK community ADS-B tracker; https://pilnk.io)',
+            'Accept': 'application/json',
+        }
+        r = requests.get(url, headers=headers, timeout=8)
+        # Diagnostic: log everything about the response so we can debug
+        body_preview = r.content[:200] if r.content else b'(empty)'
+        logging.info(f'[planespotters] {url} → status={r.status_code} '
+                     f'len={len(r.content)} body_preview={body_preview!r}')
         resp = make_response(r.content)
         resp.headers['Content-Type'] = 'application/json'
         resp.headers['Access-Control-Allow-Origin'] = '*'
         return resp
     except Exception as e:
+        logging.error(f'[planespotters] exception: {e}')
         return jsonify({'photos': []}), 500
 
 # ── METAR proxy ────────────────────────────────────────────
