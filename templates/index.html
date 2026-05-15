@@ -2068,6 +2068,7 @@ function drawRings(){
 
 // ── PHASE ─────────────────────────────────────────────────
 var PHASE={
+  ground: {color:'#6b7280',label:'On Ground'},
   climb:  {color:'#00ff88',label:'Climbing'},
   cruise: {color:'#00aaff',label:'Cruising'},
   descent:{color:'#ff8800',label:'Descending'},
@@ -2077,6 +2078,11 @@ var PHASE={
 var heliPhase={};  // sticky phase cache for helicopters: cs → {phase, anchorAlt}
 function getPhase(a,cs){
   if(cs&&transmitting[cs])return PHASE.tx;
+  // Aircraft on the ground — dump1090 reports alt_baro:'ground' (string)
+  // instead of a numeric altitude. Without this check, ground aircraft
+  // fall through to the cruise default and render with the cruising-blue
+  // colour. Caught by Caroline on 2026-05-15.
+  if(a.alt_baro==='ground') return PHASE.ground;
   var vr=a.baro_rate||a.geom_rate||0, alt=a.alt_baro||a.alt_geom||0;
   // Helis hover-bob constantly during ops (police, EMS, surveillance) —
   // VR crosses ±200 fpm thresholds every few seconds and the icon/sidebar/
@@ -2113,7 +2119,7 @@ function updateTrail(a){
   var currentAlt = a.alt_baro||a.alt_geom||0;
   var lastPt = trails[cs][trails[cs].length-1];
   var useColor = ph.color;
-  if(lastPt && ph.color!==PHASE.tx.color && ph.color!==PHASE.final.color){
+  if(lastPt && ph.color!==PHASE.tx.color && ph.color!==PHASE.final.color && ph.color!==PHASE.ground.color){
     var altDelta = Math.abs(currentAlt - phaseAlt[cs]);
     if(altDelta < PHASE_ALT_THRESHOLD){
       useColor = lastPt.color; // keep previous colour until threshold is met
