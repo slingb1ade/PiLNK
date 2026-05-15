@@ -1273,7 +1273,7 @@
     <div class="cc-photo" id="ccPhoto">
       <div class="cc-timer-bar" id="ccTimerBar"></div>
       <!-- Photo layer -->
-      <div class="cc-photo-no-img" id="ccNoImg">✈</div>
+      <div class="cc-photo-no-img" id="ccNoImg"></div>
       <img id="ccImg" src="" alt="" style="display:none;position:absolute;inset:0;width:100%;height:100%;object-fit:contain;" onload="ccImgLoaded()"/>
       <div class="cc-photo-credit" id="ccPhotoCredit"></div>
     </div>
@@ -2237,6 +2237,66 @@ function a350Icon(cs,h,col,tx){return mkIcon('<svg width="44" height="44" viewBo
 function a380Icon(cs,h,col,tx){return mkIcon('<svg width="52" height="52" viewBox="0 0 52 52" style="transform:rotate('+h+'deg);display:block;"><g transform="translate(26,26)"><ellipse cx="0" cy="0" rx="5" ry="19" fill="'+col+'"/><path d="M-2.5,-1 L-22,12 L-19,14 L-2.5,5 Z" fill="'+col+'"/><path d="M2.5,-1 L22,12 L19,14 L2.5,5 Z" fill="'+col+'"/><path d="M-2,13 L-8,20 L-6.5,21 L-2,14 Z" fill="'+col+'"/><path d="M2,13 L8,20 L6.5,21 L2,14 Z" fill="'+col+'"/><ellipse cx="-9" cy="6" rx="2.5" ry="4" fill="'+col+'"/><ellipse cx="-15" cy="9" rx="2.2" ry="3.5" fill="'+col+'"/><ellipse cx="9" cy="6" rx="2.5" ry="4" fill="'+col+'"/><ellipse cx="15" cy="9" rx="2.2" ry="3.5" fill="'+col+'"/><ellipse cx="0" cy="-13" rx="2.5" ry="4" fill="'+col+'"/><ellipse cx="0" cy="-16" rx="1.8" ry="2.5" fill="white" opacity="0.6"/></g></svg>',52,tx);}
 function makeIcon(cs,cat,h,col,tx){switch(cat){case'heavy':return heavyIcon(cs,h||0,col,tx);case'heli':return heliIcon(cs,h||0,col,tx);case'light':return lightIcon(cs,h||0,col,tx);case'b737':return b737Icon(cs,h||0,col,tx);case'a320':return a320Icon(cs,h||0,col,tx);case'b777':return b777Icon(cs,h||0,col,tx);case'b787':return b787Icon(cs,h||0,col,tx);case'a350':return a350Icon(cs,h||0,col,tx);case'a380':return a380Icon(cs,h||0,col,tx);default:return mediumIcon(cs,h||0,col,tx);}}
 
+// ── INLINE ICONS ─────────────────────────────────────────
+// SVG aircraft icons for use in non-map contexts: sidebar entries,
+// cinematic-card photo placeholder, anywhere we want a consistent
+// aircraft glyph that doesn't depend on the browser's emoji font.
+//
+// Renders without rotation (heading-independent). Color and size
+// are parameterised. Defaults to currentColor + 24px.
+//
+// Type-specific categories (b737/a320/b777/b787/a350/a380) collapse
+// to their family generic (medium or heavy) until F-Icon-Redesign
+// produces visually distinct per-type silhouettes. This avoids
+// rendering near-identical inline icons at small sizes.
+function inlineIcon(cat, size, color) {
+  size = size || 24;
+  color = color || 'currentColor';
+  var fam;
+  if (cat === 'heli') fam = 'heli';
+  else if (cat === 'light') fam = 'light';
+  else if (cat === 'heavy' || cat === 'b777' || cat === 'b787' || cat === 'a350' || cat === 'a380') fam = 'heavy';
+  else fam = 'medium';  // medium, b737, a320, anything else
+  var attrs = 'width="' + size + '" height="' + size + '" viewBox="0 0 40 40" style="display:inline-block;vertical-align:middle;"';
+  switch (fam) {
+    case 'heli':
+      return '<svg ' + attrs + '><g transform="translate(20,20)">' +
+        '<line x1="-12" y1="-3" x2="12" y2="-3" stroke="' + color + '" stroke-width="1.5" stroke-linecap="round"/>' +
+        '<ellipse cx="0" cy="2" rx="4.5" ry="7" fill="' + color + '"/>' +
+        '<line x1="0" y1="9" x2="0" y2="14" stroke="' + color + '" stroke-width="1.5"/>' +
+        '<line x1="-3" y1="14" x2="3" y2="14" stroke="' + color + '" stroke-width="1.5" stroke-linecap="round"/>' +
+        '</g></svg>';
+    case 'light':
+      return '<svg ' + attrs + '><g transform="translate(20,20)">' +
+        '<ellipse cx="0" cy="0" rx="2" ry="10" fill="' + color + '"/>' +
+        '<path d="M-2,-1 L-16,3 L-16,4 L-2,2 Z" fill="' + color + '"/>' +
+        '<path d="M2,-1 L16,3 L16,4 L2,2 Z" fill="' + color + '"/>' +
+        '<path d="M-1.5,8 L-6,10 L-6,11 L-1.5,9 Z" fill="' + color + '"/>' +
+        '<path d="M1.5,8 L6,10 L6,11 L1.5,9 Z" fill="' + color + '"/>' +
+        '<circle cx="0" cy="-10" r="1.5" fill="' + color + '"/>' +
+        '</g></svg>';
+    case 'heavy':
+      return '<svg ' + attrs + '><g transform="translate(20,20)">' +
+        '<ellipse cx="0" cy="0" rx="3.5" ry="15" fill="' + color + '"/>' +
+        '<path d="M-2,-2 L-18,8 L-15,10 L-2,4 Z" fill="' + color + '"/>' +
+        '<path d="M2,-2 L18,8 L15,10 L2,4 Z" fill="' + color + '"/>' +
+        '<path d="M-2,9 L-7,14 L-5,15 L-2,10 Z" fill="' + color + '"/>' +
+        '<path d="M2,9 L7,14 L5,15 L2,10 Z" fill="' + color + '"/>' +
+        '<ellipse cx="-11" cy="6" rx="2.2" ry="3.5" fill="' + color + '"/>' +
+        '<ellipse cx="11" cy="6" rx="2.2" ry="3.5" fill="' + color + '"/>' +
+        '</g></svg>';
+    case 'medium':
+    default:
+      return '<svg ' + attrs + '><g transform="translate(20,20)">' +
+        '<ellipse cx="0" cy="0" rx="2.5" ry="12" fill="' + color + '"/>' +
+        '<path d="M-1.5,-1 L-14,7 L-12,8 L-1.5,3 Z" fill="' + color + '"/>' +
+        '<path d="M1.5,-1 L14,7 L12,8 L1.5,3 Z" fill="' + color + '"/>' +
+        '<path d="M-1.5,7 L-5,11 L-4,12 L-1.5,8 Z" fill="' + color + '"/>' +
+        '<path d="M1.5,7 L5,11 L4,12 L1.5,8 Z" fill="' + color + '"/>' +
+        '</g></svg>';
+  }
+}
+
 // ── TOOLTIP ───────────────────────────────────────────────
 function hideTooltip(){
   var tt=document.getElementById('pilnkTooltip');
@@ -2337,11 +2397,11 @@ function updateFlights(){
     list.innerHTML=ac.map(function(a){
       var cs=a.flight.trim(), cat=getCat(a.t,a.category), tx=!!transmitting[cs], sel=selectedFlight===cs;
       var ph=getPhase(a,cs), col=ph.color==='#ffffff'?'#dc2626':ph.color;
-      var em=cat==='heli'?'🚁':cat==='heavy'?'✈':cat==='light'?'🛩':'✈';
+      var em=inlineIcon(cat, 14, col);
       var cached=routeCache[cs];
       var routeHtml=cached&&cached.route?'<div class="flight-route">'+cached.route+'</div>':'';
       return '<div class="flight-item '+(sel?'selected ':'')+(tx?'transmitting':'')+'" style="border-left:3px solid '+col+';" onclick="sidebarSelect(\''+cs+'\')">' +
-        '<div class="flight-cs" style="color:'+col+';">'+function(){var f=getFlag(cs);return f==='✈'?f+' '+cs:f+' '+em+' '+cs;}()+'</div>' +
+        '<div class="flight-cs" style="color:'+col+';">'+function(){var f=getFlag(cs);return f==='✈'?em+' '+cs:f+' '+em+' '+cs;}()+'</div>' +
         '<div class="flight-details">'+(a.alt_baro?Math.round(a.alt_baro)+'ft':'--')+' · '+(a.gs?Math.round(a.gs)+'kt':'--')+' · '+(a.track?Math.round(a.track)+'°':'--')+'</div>' +
         routeHtml+
         '<div style="font-size:0.6rem;color:var(--text-dim);">'+(a.t?a.t+' · ':'')+ph.label+'</div>' +
@@ -2939,6 +2999,9 @@ function openCinematicCard(cs, auto) {
   // Photo — reset first
   document.getElementById('ccImg').style.display = 'none';
   document.getElementById('ccNoImg').style.display = 'flex';
+  // Set placeholder icon to match this aircraft's category (heavy/medium/light/heli).
+  // CSS gives it 15% opacity — subtle, but visually correct for the actual aircraft.
+  document.getElementById('ccNoImg').innerHTML = inlineIcon(cat, 96, 'currentColor');
   document.getElementById('ccPhotoCredit').textContent = '';
   document.getElementById('ccPhotoSource').textContent = '📷 Loading...';
 
