@@ -2807,9 +2807,15 @@ function fetchPiLNKPhoto(hex, callback) {
     });
 }
 
-function fetchPlanePhoto(hex, callback) {
+function fetchPlanePhoto(hex, reg, type, callback) {
   if (photoCache[hex] !== undefined) { callback(photoCache[hex]); return; }
-  fetch('/api/planespotters/' + hex)
+  // Planespotters now requires reg + icaoType query params in addition
+  // to the hex. These come from the AIRCRAFT_DB enrichment (v1.0.7+).
+  var params = [];
+  if (reg)  params.push('reg=' + encodeURIComponent(reg));
+  if (type) params.push('icaoType=' + encodeURIComponent(type));
+  var url = '/api/planespotters/' + hex + (params.length ? '?' + params.join('&') : '');
+  fetch(url)
     .then(function(r){ return r.json(); })
     .then(function(data) {
       var photo = null;
@@ -2947,7 +2953,7 @@ function openCinematicCard(cs, auto) {
         document.getElementById('ccAddPhotoBtn').style.display = 'inline-block';
       } else {
         // Step 2: Fall back to Planespotters
-        fetchPlanePhoto(a.hex, function(photo) {
+        fetchPlanePhoto(a.hex, a.r, a.t, function(photo) {
           if (photo && photo.url) {
             var img = document.getElementById('ccImg');
             img.src = photo.url;

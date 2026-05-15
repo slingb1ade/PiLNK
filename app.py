@@ -800,8 +800,26 @@ def rainviewer_proxy():
 # ── Planespotters.net proxy — aircraft photos ──────────────
 @app.route('/api/planespotters/<path:hex>')
 def planespotters_proxy(hex):
+    """Proxy to planespotters.net public photo API.
+
+    Planespotters now requires `reg` and `icaoType` query parameters
+    in addition to the hex code — bare hex queries return empty
+    results since some API change in 2024-2025. The client passes
+    these from the AIRCRAFT_DB enrichment (registration + ICAO type).
+    """
     try:
-        r = requests.get('https://api.planespotters.net/pub/photos/hex/' + hex, timeout=8)
+        params = {}
+        reg = request.args.get('reg', '').strip()
+        icao_type = request.args.get('icaoType', '').strip()
+        if reg:
+            params['reg'] = reg
+        if icao_type:
+            params['icaoType'] = icao_type
+        r = requests.get(
+            'https://api.planespotters.net/pub/photos/hex/' + hex,
+            params=params,
+            timeout=8,
+        )
         resp = make_response(r.content)
         resp.headers['Content-Type'] = 'application/json'
         resp.headers['Access-Control-Allow-Origin'] = '*'
