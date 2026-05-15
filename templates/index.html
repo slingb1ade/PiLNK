@@ -2194,35 +2194,83 @@ var markers={}, lastAircraft={}, lastSeen={}, transmitting={}, selectedFlight=nu
 var labelMarkers={}, labelsOn=false;
 
 // ── AIRCRAFT CATEGORIES ───────────────────────────────────
+// Historical heavy/widebody type list — used as a fallback when
+// a heavy aircraft type isn't in TYPE_ICONS explicitly.
 var HEAVY={B741:1,B742:1,B743:1,B744:1,B748:1,B74D:1,A380:1,A388:1,A389:1,A332:1,A333:1,A338:1,A339:1,A342:1,A343:1,A345:1,A346:1,B772:1,B773:1,B778:1,B779:1,B77L:1,B77W:1,B77X:1,B762:1,B763:1,B764:1,B752:1,B753:1};
 var HELI={B06:1,B06T:1,B105:1,B212:1,B222:1,B407:1,B412:1,EC20:1,EC25:1,EC30:1,EC35:1,EC45:1,EC55:1,EC65:1,EC75:1,EC92:1,R22:1,R44:1,R66:1,S76:1,S92:1,AW09:1,AW119:1,AW139:1,AW169:1,H135:1,H145:1,H160:1,H175:1};
-// Type-specific icons (variants grouped to canonical type)
+// Heavy twin turboprops — regional airliners, King-Air-class business turboprops.
+// Distinguished from light twins by size + propeller-on-wing visual vs jets.
+var HEAVY_TWIN={BE20:1,BE30:1,BE10:1,BE9L:1,BE99:1,B190:1,B350:1,
+                AT42:1,AT43:1,AT44:1,AT45:1,AT46:1,AT72:1,AT73:1,AT75:1,AT76:1,
+                DH8A:1,DH8B:1,DH8C:1,DH8D:1,DH8X:1,
+                SF34:1,SF50:1,SH36:1,SH33:1,J31:1,J32:1,J41:1,
+                E110:1,E120:1,F50:1,F60:1,F27:1,F28:1,FK50:1};
+// Light twins — piston/small turbine twin-engine GA aircraft
+var LIGHT_TWIN={DA42:1,DA62:1,PA34:1,PA44:1,P28T:1,BE58:1,BE76:1,BE60:1,BE95:1,
+                C310:1,C320:1,C337:1,C340:1,C402:1,C404:1,C411:1,C414:1,C421:1};
+// Light singles — single piston/turbine GA aircraft
+var LIGHT={C150:1,C152:1,C162:1,C172:1,C175:1,C177:1,C180:1,C182:1,C185:1,C188:1,C206:1,C207:1,C208:1,C210:1,
+           P28A:1,P28B:1,P28R:1,PA18:1,PA24:1,PA28:1,PA31:1,PA32:1,PA38:1,PA46:1,
+           DA20:1,DA40:1,DA50:1,SR20:1,SR22:1,SR2T:1,
+           BE19:1,BE23:1,BE24:1,BE33:1,BE35:1,BE36:1,
+           M20J:1,M20P:1,M20T:1,M20R:1,
+           TBM7:1,TBM8:1,TBM9:1,PC6:1,PC6T:1,PC12:1,PC24:1};
+// Type → icon-category map. The high-confidence lookup.
+// Categories: narrowbody, widebody, superheavy, heavytwin, lighttwin, lightsingle, heli.
+// Aircraft NOT in this dict resolve via the HEAVY_TWIN/LIGHT_TWIN/LIGHT/HEAVY/HELI
+// dicts plus ADS-B emitter-category fallback in getCat().
 var TYPE_ICONS={
-  B737:'b737',B738:'b737',B739:'b737',B73G:'b737',B73H:'b737',B73J:'b737',B731:'b737',B732:'b737',B733:'b737',B734:'b737',B735:'b737',B736:'b737',B37M:'b737',B38M:'b737',B39M:'b737',
-  B772:'b777',B773:'b777',B77L:'b777',B77W:'b777',B77F:'b777',B778:'b777',B779:'b777',B77X:'b777',
-  B788:'b787',B789:'b787',B78X:'b787',
-  A318:'a320',A319:'a320',A320:'a320',A321:'a320',A19N:'a320',A20N:'a320',A21N:'a320',
-  A359:'a350',A35K:'a350',
-  A380:'a380',A388:'a380',A389:'a380'
+  B737:'narrowbody',B738:'narrowbody',B739:'narrowbody',B73G:'narrowbody',B73H:'narrowbody',B73J:'narrowbody',
+  B731:'narrowbody',B732:'narrowbody',B733:'narrowbody',B734:'narrowbody',B735:'narrowbody',B736:'narrowbody',
+  B37M:'narrowbody',B38M:'narrowbody',B39M:'narrowbody',B3XM:'narrowbody',
+  A318:'narrowbody',A319:'narrowbody',A320:'narrowbody',A321:'narrowbody',
+  A19N:'narrowbody',A20N:'narrowbody',A21N:'narrowbody',
+  B752:'narrowbody',B753:'narrowbody',
+  A220:'narrowbody',BCS1:'narrowbody',BCS3:'narrowbody',
+  B762:'widebody',B763:'widebody',B764:'widebody',
+  B772:'widebody',B773:'widebody',B77L:'widebody',B77W:'widebody',B77F:'widebody',B778:'widebody',B779:'widebody',B77X:'widebody',
+  B788:'widebody',B789:'widebody',B78X:'widebody',
+  A330:'widebody',A332:'widebody',A333:'widebody',A338:'widebody',A339:'widebody',
+  A340:'widebody',A342:'widebody',A343:'widebody',A345:'widebody',A346:'widebody',
+  A359:'widebody',A35K:'widebody',
+  A380:'superheavy',A388:'superheavy',A389:'superheavy',
+  B741:'superheavy',B742:'superheavy',B743:'superheavy',B744:'superheavy',B748:'superheavy',B74D:'superheavy',B74F:'superheavy',B74S:'superheavy',B74R:'superheavy'
 };
-var LIGHT={C150:1,C152:1,C162:1,C172:1,C177:1,C180:1,C182:1,C185:1,C206:1,C207:1,C208:1,C210:1,P28A:1,P28B:1,P28R:1,P28T:1,PA18:1,PA24:1,PA31:1,PA32:1,PA34:1,PA44:1,PA46:1,DA20:1,DA40:1,DA42:1,DA50:1,DA62:1,SR20:1,SR22:1,SR2T:1,BE33:1,BE35:1,BE36:1,TBM7:1,TBM8:1,TBM9:1,PC6T:1,PC12:1,PC24:1};
 function getCat(t,cat){
-  // Helicopter — direct ADS-B category match
+  // Helicopter — direct ADS-B emitter-category match
   if(cat==='A7')return'heli';
-  // Type-code lookup (only when dump1090 provides t — requires aircraft-db enrichment)
+  // Type-code lookup (requires AIRCRAFT_DB enrichment from v1.0.7+)
   if(t){
     var u=t.toUpperCase().trim();
     if(HELI[u]||u.startsWith('EC')||/^R[24]/.test(u))return'heli';
     if(TYPE_ICONS[u])return TYPE_ICONS[u];
-    if(HEAVY[u])return'heavy';
-    if(LIGHT[u])return'light';
-    return'medium';
+    if(HEAVY_TWIN[u])return'heavytwin';
+    if(LIGHT_TWIN[u])return'lighttwin';
+    if(LIGHT[u])return'lightsingle';
+    if(HEAVY[u])return'widebody';
+    return'narrowbody';
   }
-  // Fallback: ADS-B emitter category when t is absent
-  // A1=light single-engine, A4=large jet, A5=heavy >300t, A6=high-performance
-  if(cat==='A1')return'light';
-  if(cat==='A4'||cat==='A5'||cat==='A6')return'heavy';
-  return'medium';
+  // Fallback by ADS-B emitter category when type unknown.
+  // A1=light single, A2=small (regional turboprop class), A3=large
+  // narrow-body class, A4/A5=heavy, A6=high-performance, A7=heli.
+  if(cat==='A1')return'lightsingle';
+  if(cat==='A2')return'heavytwin';
+  if(cat==='A4'||cat==='A5'||cat==='A6')return'widebody';
+  return'narrowbody';
+}
+
+// Pretty-print a category for UI display (used in the click-card meta tag)
+function getCatDisplay(c){
+  switch(c){
+    case'heli':return'Helicopter';
+    case'lightsingle':return'Light single';
+    case'lighttwin':return'Light twin';
+    case'heavytwin':return'Heavy twin';
+    case'narrowbody':return'Narrow-body';
+    case'widebody':return'Widebody';
+    case'superheavy':return'Super-heavy';
+    default:return c.charAt(0).toUpperCase()+c.slice(1);
+  }
 }
 
 // ── ICONS ─────────────────────────────────────────────────
@@ -2230,18 +2278,32 @@ function mkIcon(svg,size,tx){
   var p=tx?'animation:tx-pulse 1s ease-in-out infinite;display:inline-block;':'';
   return L.divIcon({className:'',html:'<div style="cursor:pointer;"><div style="'+p+'">'+svg+'</div></div>',iconSize:[size,size],iconAnchor:[size/2,size/2]});
 }
-function heavyIcon(cs,h,col,tx){return mkIcon('<svg width="48" height="48" viewBox="0 0 48 48" style="transform:rotate('+h+'deg);display:block;"><g transform="translate(24,24)"><ellipse cx="0" cy="0" rx="4" ry="17" fill="'+col+'"/><path d="M-2,-2 L-20,10 L-17,12 L-2,5 Z" fill="'+col+'"/><path d="M2,-2 L20,10 L17,12 L2,5 Z" fill="'+col+'"/><path d="M-2,10 L-8,17 L-6,17 L-2,11 Z" fill="'+col+'"/><path d="M2,10 L8,17 L6,17 L2,11 Z" fill="'+col+'"/><ellipse cx="-12" cy="7" rx="2.5" ry="4" fill="'+col+'"/><ellipse cx="12" cy="7" rx="2.5" ry="4" fill="'+col+'"/><ellipse cx="-17" cy="9" rx="1.5" ry="3" fill="'+col+'"/><ellipse cx="17" cy="9" rx="1.5" ry="3" fill="'+col+'"/><ellipse cx="0" cy="-14" rx="2" ry="3" fill="white" opacity="0.6"/></g></svg>',48,tx);}
-function mediumIcon(cs,h,col,tx){return mkIcon('<svg width="38" height="38" viewBox="0 0 40 40" style="transform:rotate('+h+'deg);display:block;"><g transform="translate(20,20)"><ellipse cx="0" cy="0" rx="3" ry="14" fill="'+col+'"/><path d="M-1.5,-1 L-16,8 L-13,9 L-1.5,4 Z" fill="'+col+'"/><path d="M1.5,-1 L16,8 L13,9 L1.5,4 Z" fill="'+col+'"/><path d="M-1.5,8 L-6,13 L-5,14 L-1.5,9 Z" fill="'+col+'"/><path d="M1.5,8 L6,13 L5,14 L1.5,9 Z" fill="'+col+'"/><ellipse cx="-9" cy="5" rx="2" ry="3.5" fill="'+col+'"/><ellipse cx="9" cy="5" rx="2" ry="3.5" fill="'+col+'"/><ellipse cx="0" cy="-11" rx="1.5" ry="2.5" fill="white" opacity="0.6"/></g></svg>',38,tx);}
-function heliIcon(cs,h,col,tx){return mkIcon('<svg width="41" height="41" viewBox="0 0 40 40" style="transform:rotate('+h+'deg);display:block;"><g transform="translate(20,20)"><line x1="-7" y1="-1" x2="7" y2="-1" stroke="'+col+'" stroke-width="0.8"/><line x1="-7" y1="2" x2="7" y2="2" stroke="'+col+'" stroke-width="0.8"/><line x1="-7" y1="-2" x2="-7" y2="3" stroke="'+col+'" stroke-width="0.8" stroke-linecap="round"/><line x1="7" y1="-2" x2="7" y2="3" stroke="'+col+'" stroke-width="0.8" stroke-linecap="round"/><rect x="-1" y="0" width="2" height="11" fill="'+col+'"/><path d="M -1.5 10 L 1.5 10 L 0.8 14 L -0.8 14 Z" fill="'+col+'"/><line x1="-3.5" y1="13" x2="3.5" y2="13" stroke="'+col+'" stroke-width="1.2" stroke-linecap="round"/><ellipse cx="0" cy="-2" rx="4.5" ry="6.5" fill="'+col+'"/><ellipse cx="0" cy="-5" rx="2.8" ry="2.2" fill="white" opacity="0.35"/><g opacity="0.7" transform="translate(0,-2)"><rect x="-14" y="-0.6" width="28" height="1.2" rx="0.6" fill="'+col+'" transform="rotate(40)"/><rect x="-14" y="-0.6" width="28" height="1.2" rx="0.6" fill="'+col+'" transform="rotate(-40)"/></g><circle cx="0" cy="-2" r="1.4" fill="'+col+'"/></g></svg>',41,tx);}
-function lightIcon(cs,h,col,tx){return mkIcon('<svg width="30" height="30" viewBox="0 0 36 36" style="transform:rotate('+h+'deg);display:block;"><g transform="translate(18,18)"><ellipse cx="0" cy="0" rx="3.5" ry="12" fill="'+col+'"/><path d="M-2,0 L-16,2 L-16,4 L-2,3 Z" fill="'+col+'"/><path d="M2,0 L16,2 L16,4 L2,3 Z" fill="'+col+'"/><path d="M-1.5,8 L-7,10 L-7,11 L-1.5,9 Z" fill="'+col+'"/><path d="M1.5,8 L7,10 L7,11 L1.5,9 Z" fill="'+col+'"/><circle cx="0" cy="-11" r="2" fill="'+col+'"/><ellipse cx="0" cy="-4" rx="2.5" ry="3" fill="white" opacity="0.4"/></g></svg>',30,tx);}
-// ── TYPE-SPECIFIC ICONS ───────────────────────────────────
-function b737Icon(cs,h,col,tx){return mkIcon('<svg width="38" height="38" viewBox="0 0 40 40" style="transform:rotate('+h+'deg);display:block;"><g transform="translate(20,20)"><ellipse cx="0" cy="0" rx="2.8" ry="13" fill="'+col+'"/><path d="M-1.5,0 L-15,7 L-13,8.5 L-1.5,3 Z" fill="'+col+'"/><path d="M1.5,0 L15,7 L13,8.5 L1.5,3 Z" fill="'+col+'"/><path d="M-1.5,9 L-5.5,12.5 L-4.5,13.5 L-1.5,10 Z" fill="'+col+'"/><path d="M1.5,9 L5.5,12.5 L4.5,13.5 L1.5,10 Z" fill="'+col+'"/><ellipse cx="-8" cy="4" rx="1.8" ry="3" fill="'+col+'"/><ellipse cx="8" cy="4" rx="1.8" ry="3" fill="'+col+'"/><ellipse cx="0" cy="-10" rx="1.4" ry="2.3" fill="white" opacity="0.5"/></g></svg>',38,tx);}
-function a320Icon(cs,h,col,tx){return mkIcon('<svg width="38" height="38" viewBox="0 0 40 40" style="transform:rotate('+h+'deg);display:block;"><g transform="translate(20,20)"><ellipse cx="0" cy="0" rx="2.8" ry="13" fill="'+col+'"/><path d="M-1.5,0 L-14,7 L-12,8.5 L-1.5,3 Z" fill="'+col+'"/><path d="M1.5,0 L14,7 L12,8.5 L1.5,3 Z" fill="'+col+'"/><path d="M-14,7 L-15.5,4.5 L-13.5,5.5 Z" fill="'+col+'"/><path d="M14,7 L15.5,4.5 L13.5,5.5 Z" fill="'+col+'"/><path d="M-1.5,9 L-5.5,12.5 L-4.5,13.5 L-1.5,10 Z" fill="'+col+'"/><path d="M1.5,9 L5.5,12.5 L4.5,13.5 L1.5,10 Z" fill="'+col+'"/><ellipse cx="-7.5" cy="4" rx="1.8" ry="3" fill="'+col+'"/><ellipse cx="7.5" cy="4" rx="1.8" ry="3" fill="'+col+'"/><ellipse cx="0" cy="-10" rx="1.4" ry="2.3" fill="white" opacity="0.5"/></g></svg>',38,tx);}
-function b777Icon(cs,h,col,tx){return mkIcon('<svg width="46" height="46" viewBox="0 0 48 48" style="transform:rotate('+h+'deg);display:block;"><g transform="translate(24,24)"><ellipse cx="0" cy="0" rx="4" ry="18" fill="'+col+'"/><path d="M-2,-1 L-20,11 L-17,13 L-2,4 Z" fill="'+col+'"/><path d="M2,-1 L20,11 L17,13 L2,4 Z" fill="'+col+'"/><path d="M-1.5,12 L-7,18 L-6,19 L-1.5,13 Z" fill="'+col+'"/><path d="M1.5,12 L7,18 L6,19 L1.5,13 Z" fill="'+col+'"/><ellipse cx="-11" cy="8" rx="3" ry="5" fill="'+col+'"/><ellipse cx="11" cy="8" rx="3" ry="5" fill="'+col+'"/><ellipse cx="0" cy="-15" rx="2" ry="3" fill="white" opacity="0.55"/></g></svg>',46,tx);}
-function b787Icon(cs,h,col,tx){return mkIcon('<svg width="44" height="44" viewBox="0 0 48 48" style="transform:rotate('+h+'deg);display:block;"><g transform="translate(24,24)"><ellipse cx="0" cy="0" rx="3.5" ry="16" fill="'+col+'"/><path d="M-2,-1 Q-12,4 -19,9 Q-18,7 -17,12 Q-10,9 -2,4 Z" fill="'+col+'"/><path d="M2,-1 Q12,4 19,9 Q18,7 17,12 Q10,9 2,4 Z" fill="'+col+'"/><path d="M-1.5,10 L-6,15 L-5,16 L-1.5,11 Z" fill="'+col+'"/><path d="M1.5,10 L6,15 L5,16 L1.5,11 Z" fill="'+col+'"/><ellipse cx="-10" cy="6" rx="2.4" ry="4" fill="'+col+'"/><ellipse cx="10" cy="6" rx="2.4" ry="4" fill="'+col+'"/><ellipse cx="0" cy="-13" rx="1.8" ry="2.8" fill="white" opacity="0.55"/></g></svg>',44,tx);}
-function a350Icon(cs,h,col,tx){return mkIcon('<svg width="44" height="44" viewBox="0 0 48 48" style="transform:rotate('+h+'deg);display:block;"><g transform="translate(24,24)"><ellipse cx="0" cy="0" rx="3.5" ry="16" fill="'+col+'"/><path d="M-2,-1 L-18,9 Q-19,8 -17,12 L-2,4 Z" fill="'+col+'"/><path d="M2,-1 L18,9 Q19,8 17,12 L2,4 Z" fill="'+col+'"/><path d="M-1.5,10 L-6,15 L-5,16 L-1.5,11 Z" fill="'+col+'"/><path d="M1.5,10 L6,15 L5,16 L1.5,11 Z" fill="'+col+'"/><ellipse cx="-10" cy="6" rx="2.4" ry="4" fill="'+col+'"/><ellipse cx="10" cy="6" rx="2.4" ry="4" fill="'+col+'"/><ellipse cx="0" cy="-13" rx="1.8" ry="2.8" fill="white" opacity="0.55"/></g></svg>',44,tx);}
-function a380Icon(cs,h,col,tx){return mkIcon('<svg width="52" height="52" viewBox="0 0 52 52" style="transform:rotate('+h+'deg);display:block;"><g transform="translate(26,26)"><ellipse cx="0" cy="0" rx="5" ry="19" fill="'+col+'"/><path d="M-2.5,-1 L-22,12 L-19,14 L-2.5,5 Z" fill="'+col+'"/><path d="M2.5,-1 L22,12 L19,14 L2.5,5 Z" fill="'+col+'"/><path d="M-2,13 L-8,20 L-6.5,21 L-2,14 Z" fill="'+col+'"/><path d="M2,13 L8,20 L6.5,21 L2,14 Z" fill="'+col+'"/><ellipse cx="-9" cy="6" rx="2.5" ry="4" fill="'+col+'"/><ellipse cx="-15" cy="9" rx="2.2" ry="3.5" fill="'+col+'"/><ellipse cx="9" cy="6" rx="2.5" ry="4" fill="'+col+'"/><ellipse cx="15" cy="9" rx="2.2" ry="3.5" fill="'+col+'"/><ellipse cx="0" cy="-13" rx="2.5" ry="4" fill="'+col+'"/><ellipse cx="0" cy="-16" rx="1.8" ry="2.5" fill="white" opacity="0.6"/></g></svg>',52,tx);}
-function makeIcon(cs,cat,h,col,tx){switch(cat){case'heavy':return heavyIcon(cs,h||0,col,tx);case'heli':return heliIcon(cs,h||0,col,tx);case'light':return lightIcon(cs,h||0,col,tx);case'b737':return b737Icon(cs,h||0,col,tx);case'a320':return a320Icon(cs,h||0,col,tx);case'b777':return b777Icon(cs,h||0,col,tx);case'b787':return b787Icon(cs,h||0,col,tx);case'a350':return a350Icon(cs,h||0,col,tx);case'a380':return a380Icon(cs,h||0,col,tx);default:return mediumIcon(cs,h||0,col,tx);}}
+// Helicopter — X-rotor over body, tail boom, small tail rotor
+function heliIcon(cs,h,col,tx){return mkIcon('<svg width="41" height="41" viewBox="0 0 44 44" style="transform:rotate('+h+'deg);display:block;"><g transform="translate(22,22)"><ellipse cx="0" cy="0" rx="4.5" ry="8" fill="'+col+'"/><rect x="-1.5" y="7" width="3" height="12" fill="'+col+'"/><line x1="-3.5" y1="17" x2="3.5" y2="17" stroke="'+col+'" stroke-width="1.2" stroke-linecap="round"/><path d="M-1.5,19 L-3,22 L3,22 L1.5,19 Z" fill="'+col+'"/><line x1="-10" y1="-10" x2="10" y2="10" stroke="'+col+'" stroke-width="1.5" stroke-linecap="round"/><line x1="-10" y1="10" x2="10" y2="-10" stroke="'+col+'" stroke-width="1.5" stroke-linecap="round"/><circle cx="0" cy="0" r="1.5" fill="'+col+'"/></g></svg>',41,tx);}
+// Light single — Cessna-class single-engine prop. Smallest icon, prop disc at nose.
+function lightsingleIcon(cs,h,col,tx){return mkIcon('<svg width="30" height="30" viewBox="0 0 32 32" style="transform:rotate('+h+'deg);display:block;"><g transform="translate(16,16)"><ellipse cx="0" cy="0" rx="1.8" ry="11" fill="'+col+'"/><path d="M-2,-1 L-14,2 L-14,3.5 L-2,2 Z" fill="'+col+'"/><path d="M2,-1 L14,2 L14,3.5 L2,2 Z" fill="'+col+'"/><path d="M-1.5,8 L-5,10 L-5,11 L-1.5,9 Z" fill="'+col+'"/><path d="M1.5,8 L5,10 L5,11 L1.5,9 Z" fill="'+col+'"/><path d="M-0.5,9 L-1,12 L1,12 L0.5,9 Z" fill="'+col+'"/><ellipse cx="0" cy="-10" rx="3" ry="0.7" fill="'+col+'" opacity="0.4"/><circle cx="0" cy="-10" r="1.2" fill="'+col+'"/></g></svg>',30,tx);}
+// Light twin — DA42-class piston twin. Pointy nose, small wing-mounted props.
+function lighttwinIcon(cs,h,col,tx){return mkIcon('<svg width="34" height="34" viewBox="0 0 36 36" style="transform:rotate('+h+'deg);display:block;"><g transform="translate(18,18)"><ellipse cx="0" cy="0" rx="2" ry="11" fill="'+col+'"/><path d="M-2,-1 L-15,2 L-15,3.5 L-2,2 Z" fill="'+col+'"/><path d="M2,-1 L15,2 L15,3.5 L2,2 Z" fill="'+col+'"/><ellipse cx="-7" cy="2" rx="1.8" ry="3" fill="'+col+'"/><ellipse cx="7" cy="2" rx="1.8" ry="3" fill="'+col+'"/><ellipse cx="-7" cy="-2" rx="2.5" ry="0.5" fill="'+col+'" opacity="0.4"/><ellipse cx="7" cy="-2" rx="2.5" ry="0.5" fill="'+col+'" opacity="0.4"/><path d="M-1.5,8 L-5,10 L-5,11 L-1.5,9 Z" fill="'+col+'"/><path d="M1.5,8 L5,10 L5,11 L1.5,9 Z" fill="'+col+'"/><path d="M-0.5,9 L-1,12 L1,12 L0.5,9 Z" fill="'+col+'"/><path d="M-1.5,-11 L0,-13 L1.5,-11 Z" fill="'+col+'"/></g></svg>',34,tx);}
+// Heavy twin — regional turboprop (King Air, ATR, Q400). Large prop discs.
+function heavytwinIcon(cs,h,col,tx){return mkIcon('<svg width="36" height="36" viewBox="0 0 40 40" style="transform:rotate('+h+'deg);display:block;"><g transform="translate(20,20)"><ellipse cx="0" cy="0" rx="2.3" ry="13" fill="'+col+'"/><path d="M-2,0 L-16,3 L-16,4.5 L-2,2 Z" fill="'+col+'"/><path d="M2,0 L16,3 L16,4.5 L2,2 Z" fill="'+col+'"/><ellipse cx="-8" cy="2.5" rx="2.2" ry="3.5" fill="'+col+'"/><ellipse cx="8" cy="2.5" rx="2.2" ry="3.5" fill="'+col+'"/><ellipse cx="-8" cy="-2" rx="3.5" ry="0.7" fill="'+col+'" opacity="0.45"/><ellipse cx="8" cy="-2" rx="3.5" ry="0.7" fill="'+col+'" opacity="0.45"/><path d="M-1.5,9 L-5,12 L-4,13 L-1.5,10 Z" fill="'+col+'"/><path d="M1.5,9 L5,12 L4,13 L1.5,10 Z" fill="'+col+'"/><path d="M-0.5,9 L-0.8,13 L0.8,13 L0.5,9 Z" fill="'+col+'"/></g></svg>',36,tx);}
+// Narrow-body twin — B737/A320 family. Clean swept wings, 2 jets.
+function narrowbodyIcon(cs,h,col,tx){return mkIcon('<svg width="38" height="38" viewBox="0 0 40 40" style="transform:rotate('+h+'deg);display:block;"><g transform="translate(20,20)"><ellipse cx="0" cy="0" rx="2.5" ry="13" fill="'+col+'"/><path d="M-1.5,-1 L-15,7 L-13,8.5 L-1.5,3.5 Z" fill="'+col+'"/><path d="M1.5,-1 L15,7 L13,8.5 L1.5,3.5 Z" fill="'+col+'"/><ellipse cx="-8" cy="5" rx="2" ry="3" fill="'+col+'"/><ellipse cx="8" cy="5" rx="2" ry="3" fill="'+col+'"/><path d="M-1.5,8 L-5,12 L-4,13 L-1.5,9 Z" fill="'+col+'"/><path d="M1.5,8 L5,12 L4,13 L1.5,9 Z" fill="'+col+'"/></g></svg>',38,tx);}
+// Modern widebody — 777/787/A350/A330. Twin jets, raked wingtip hint, cockpit dot.
+function widebodyIcon(cs,h,col,tx){return mkIcon('<svg width="46" height="46" viewBox="0 0 48 48" style="transform:rotate('+h+'deg);display:block;"><g transform="translate(24,24)"><ellipse cx="0" cy="0" rx="3.5" ry="17" fill="'+col+'"/><path d="M-2,-2 L-20,10 Q-21,9 -18,13 L-2,5 Z" fill="'+col+'"/><path d="M2,-2 L20,10 Q21,9 18,13 L2,5 Z" fill="'+col+'"/><ellipse cx="-11" cy="6" rx="2.5" ry="4" fill="'+col+'"/><ellipse cx="11" cy="6" rx="2.5" ry="4" fill="'+col+'"/><path d="M-2,11 L-7,17 L-5,18 L-2,12 Z" fill="'+col+'"/><path d="M2,11 L7,17 L5,18 L2,12 Z" fill="'+col+'"/><ellipse cx="0" cy="-14" rx="1.8" ry="2.5" fill="white" opacity="0.55"/></g></svg>',46,tx);}
+// Super-heavy 4-engine — A380/747. Biggest icon, 4 engines, upper-deck hint.
+function superheavyIcon(cs,h,col,tx){return mkIcon('<svg width="54" height="54" viewBox="0 0 56 56" style="transform:rotate('+h+'deg);display:block;"><g transform="translate(28,28)"><ellipse cx="0" cy="0" rx="4.5" ry="20" fill="'+col+'"/><path d="M-2.5,-1 L-22,12 L-19,14 L-2.5,5 Z" fill="'+col+'"/><path d="M2.5,-1 L22,12 L19,14 L2.5,5 Z" fill="'+col+'"/><ellipse cx="-9" cy="6" rx="2.5" ry="4" fill="'+col+'"/><ellipse cx="-15" cy="9" rx="2.2" ry="3.5" fill="'+col+'"/><ellipse cx="9" cy="6" rx="2.5" ry="4" fill="'+col+'"/><ellipse cx="15" cy="9" rx="2.2" ry="3.5" fill="'+col+'"/><path d="M-2,13 L-8,21 L-6.5,22 L-2,14 Z" fill="'+col+'"/><path d="M2,13 L8,21 L6.5,22 L2,14 Z" fill="'+col+'"/><ellipse cx="0" cy="-14" rx="2.5" ry="3.5" fill="'+col+'"/><ellipse cx="0" cy="-17" rx="1.8" ry="2.3" fill="white" opacity="0.65"/></g></svg>',54,tx);}
+function makeIcon(cs,cat,h,col,tx){
+  switch(cat){
+    case'heli':return heliIcon(cs,h||0,col,tx);
+    case'lightsingle':return lightsingleIcon(cs,h||0,col,tx);
+    case'lighttwin':return lighttwinIcon(cs,h||0,col,tx);
+    case'heavytwin':return heavytwinIcon(cs,h||0,col,tx);
+    case'widebody':return widebodyIcon(cs,h||0,col,tx);
+    case'superheavy':return superheavyIcon(cs,h||0,col,tx);
+    case'narrowbody':
+    default:return narrowbodyIcon(cs,h||0,col,tx);
+  }
+}
 
 // ── INLINE ICONS ─────────────────────────────────────────
 // SVG aircraft icons for use in non-map contexts: sidebar entries,
@@ -2251,54 +2313,76 @@ function makeIcon(cs,cat,h,col,tx){switch(cat){case'heavy':return heavyIcon(cs,h
 // Renders without rotation (heading-independent). Color and size
 // are parameterised. Defaults to currentColor + 24px.
 //
-// Type-specific categories (b737/a320/b777/b787/a350/a380) collapse
-// to their family generic (medium or heavy) until F-Icon-Redesign
-// produces visually distinct per-type silhouettes. This avoids
-// rendering near-identical inline icons at small sizes.
+// Mirrors the seven map icon families. Updated for F-Icon-Redesign v1.0.15.
 function inlineIcon(cat, size, color) {
   size = size || 24;
   color = color || 'currentColor';
-  var fam;
-  if (cat === 'heli') fam = 'heli';
-  else if (cat === 'light') fam = 'light';
-  else if (cat === 'heavy' || cat === 'b777' || cat === 'b787' || cat === 'a350' || cat === 'a380') fam = 'heavy';
-  else fam = 'medium';  // medium, b737, a320, anything else
-  var attrs = 'width="' + size + '" height="' + size + '" viewBox="0 0 40 40" style="display:inline-block;vertical-align:middle;"';
-  switch (fam) {
+  var attrs = 'width="'+size+'" height="'+size+'" viewBox="0 0 40 40" style="display:inline-block;vertical-align:middle;"';
+  switch(cat){
     case 'heli':
-      return '<svg ' + attrs + '><g transform="translate(20,20)">' +
-        '<line x1="-12" y1="-3" x2="12" y2="-3" stroke="' + color + '" stroke-width="1.5" stroke-linecap="round"/>' +
-        '<ellipse cx="0" cy="2" rx="4.5" ry="7" fill="' + color + '"/>' +
-        '<line x1="0" y1="9" x2="0" y2="14" stroke="' + color + '" stroke-width="1.5"/>' +
-        '<line x1="-3" y1="14" x2="3" y2="14" stroke="' + color + '" stroke-width="1.5" stroke-linecap="round"/>' +
+      return '<svg '+attrs+'><g transform="translate(20,20)">' +
+        '<ellipse cx="0" cy="0" rx="3.5" ry="6.5" fill="'+color+'"/>' +
+        '<rect x="-1.2" y="5.5" width="2.4" height="10" fill="'+color+'"/>' +
+        '<line x1="-2.5" y1="14" x2="2.5" y2="14" stroke="'+color+'" stroke-width="1" stroke-linecap="round"/>' +
+        '<line x1="-9" y1="-9" x2="9" y2="9" stroke="'+color+'" stroke-width="1.3" stroke-linecap="round"/>' +
+        '<line x1="-9" y1="9" x2="9" y2="-9" stroke="'+color+'" stroke-width="1.3" stroke-linecap="round"/>' +
+        '<circle cx="0" cy="0" r="1.3" fill="'+color+'"/>' +
         '</g></svg>';
-    case 'light':
-      return '<svg ' + attrs + '><g transform="translate(20,20)">' +
-        '<ellipse cx="0" cy="0" rx="2" ry="10" fill="' + color + '"/>' +
-        '<path d="M-2,-1 L-16,3 L-16,4 L-2,2 Z" fill="' + color + '"/>' +
-        '<path d="M2,-1 L16,3 L16,4 L2,2 Z" fill="' + color + '"/>' +
-        '<path d="M-1.5,8 L-6,10 L-6,11 L-1.5,9 Z" fill="' + color + '"/>' +
-        '<path d="M1.5,8 L6,10 L6,11 L1.5,9 Z" fill="' + color + '"/>' +
-        '<circle cx="0" cy="-10" r="1.5" fill="' + color + '"/>' +
+    case 'lightsingle':
+      return '<svg '+attrs+'><g transform="translate(20,20)">' +
+        '<ellipse cx="0" cy="0" rx="1.8" ry="10" fill="'+color+'"/>' +
+        '<path d="M-2,-1 L-14,2 L-14,3.5 L-2,2 Z" fill="'+color+'"/>' +
+        '<path d="M2,-1 L14,2 L14,3.5 L2,2 Z" fill="'+color+'"/>' +
+        '<path d="M-1.5,7 L-5,9 L-5,10 L-1.5,8 Z" fill="'+color+'"/>' +
+        '<path d="M1.5,7 L5,9 L5,10 L1.5,8 Z" fill="'+color+'"/>' +
+        '<ellipse cx="0" cy="-9" rx="3" ry="0.7" fill="'+color+'" opacity="0.4"/>' +
+        '<circle cx="0" cy="-9" r="1.2" fill="'+color+'"/>' +
         '</g></svg>';
-    case 'heavy':
-      return '<svg ' + attrs + '><g transform="translate(20,20)">' +
-        '<ellipse cx="0" cy="0" rx="3.5" ry="15" fill="' + color + '"/>' +
-        '<path d="M-2,-2 L-18,8 L-15,10 L-2,4 Z" fill="' + color + '"/>' +
-        '<path d="M2,-2 L18,8 L15,10 L2,4 Z" fill="' + color + '"/>' +
-        '<path d="M-2,9 L-7,14 L-5,15 L-2,10 Z" fill="' + color + '"/>' +
-        '<path d="M2,9 L7,14 L5,15 L2,10 Z" fill="' + color + '"/>' +
-        '<ellipse cx="-11" cy="6" rx="2.2" ry="3.5" fill="' + color + '"/>' +
-        '<ellipse cx="11" cy="6" rx="2.2" ry="3.5" fill="' + color + '"/>' +
+    case 'lighttwin':
+      return '<svg '+attrs+'><g transform="translate(20,20)">' +
+        '<ellipse cx="0" cy="0" rx="2" ry="10" fill="'+color+'"/>' +
+        '<path d="M-2,-1 L-14,2 L-14,3.5 L-2,2 Z" fill="'+color+'"/>' +
+        '<path d="M2,-1 L14,2 L14,3.5 L2,2 Z" fill="'+color+'"/>' +
+        '<ellipse cx="-7" cy="2" rx="1.8" ry="3" fill="'+color+'"/>' +
+        '<ellipse cx="7" cy="2" rx="1.8" ry="3" fill="'+color+'"/>' +
+        '<ellipse cx="-7" cy="-2" rx="2.5" ry="0.5" fill="'+color+'" opacity="0.4"/>' +
+        '<ellipse cx="7" cy="-2" rx="2.5" ry="0.5" fill="'+color+'" opacity="0.4"/>' +
+        '<path d="M-1.5,7 L-5,9 L-5,10 L-1.5,8 Z" fill="'+color+'"/>' +
+        '<path d="M1.5,7 L5,9 L5,10 L1.5,8 Z" fill="'+color+'"/>' +
         '</g></svg>';
-    case 'medium':
+    case 'heavytwin':
+      return '<svg '+attrs+'><g transform="translate(20,20)">' +
+        '<ellipse cx="0" cy="0" rx="2.3" ry="12" fill="'+color+'"/>' +
+        '<path d="M-2,0 L-15,3 L-15,4 L-2,2 Z" fill="'+color+'"/>' +
+        '<path d="M2,0 L15,3 L15,4 L2,2 Z" fill="'+color+'"/>' +
+        '<ellipse cx="-8" cy="2.5" rx="2" ry="3" fill="'+color+'"/>' +
+        '<ellipse cx="8" cy="2.5" rx="2" ry="3" fill="'+color+'"/>' +
+        '<ellipse cx="-8" cy="-2" rx="3" ry="0.7" fill="'+color+'" opacity="0.45"/>' +
+        '<ellipse cx="8" cy="-2" rx="3" ry="0.7" fill="'+color+'" opacity="0.45"/>' +
+        '<path d="M-1.5,8 L-5,11 L-4,12 L-1.5,9 Z" fill="'+color+'"/>' +
+        '<path d="M1.5,8 L5,11 L4,12 L1.5,9 Z" fill="'+color+'"/>' +
+        '</g></svg>';
+    case 'widebody':
+    case 'superheavy':
+      // At inline scale super-heavy collapses to widebody — visually
+      // indistinguishable that small. Map keeps them distinct.
+      return '<svg '+attrs+'><g transform="translate(20,20)">' +
+        '<ellipse cx="0" cy="0" rx="3.5" ry="15" fill="'+color+'"/>' +
+        '<path d="M-2,-2 L-18,8 Q-19,7 -16,11 L-2,4 Z" fill="'+color+'"/>' +
+        '<path d="M2,-2 L18,8 Q19,7 16,11 L2,4 Z" fill="'+color+'"/>' +
+        '<ellipse cx="-10" cy="5" rx="2.2" ry="3.5" fill="'+color+'"/>' +
+        '<ellipse cx="10" cy="5" rx="2.2" ry="3.5" fill="'+color+'"/>' +
+        '<path d="M-1.5,9 L-6,14 L-4,15 L-1.5,10 Z" fill="'+color+'"/>' +
+        '<path d="M1.5,9 L6,14 L4,15 L1.5,10 Z" fill="'+color+'"/>' +
+        '</g></svg>';
+    case 'narrowbody':
     default:
-      return '<svg ' + attrs + '><g transform="translate(20,20)">' +
-        '<ellipse cx="0" cy="0" rx="2.5" ry="12" fill="' + color + '"/>' +
-        '<path d="M-1.5,-1 L-14,7 L-12,8 L-1.5,3 Z" fill="' + color + '"/>' +
-        '<path d="M1.5,-1 L14,7 L12,8 L1.5,3 Z" fill="' + color + '"/>' +
-        '<path d="M-1.5,7 L-5,11 L-4,12 L-1.5,8 Z" fill="' + color + '"/>' +
-        '<path d="M1.5,7 L5,11 L4,12 L1.5,8 Z" fill="' + color + '"/>' +
+      return '<svg '+attrs+'><g transform="translate(20,20)">' +
+        '<ellipse cx="0" cy="0" rx="2.5" ry="12" fill="'+color+'"/>' +
+        '<path d="M-1.5,-1 L-14,7 L-12,8 L-1.5,3 Z" fill="'+color+'"/>' +
+        '<path d="M1.5,-1 L14,7 L12,8 L1.5,3 Z" fill="'+color+'"/>' +
+        '<path d="M-1.5,7 L-5,11 L-4,12 L-1.5,8 Z" fill="'+color+'"/>' +
+        '<path d="M1.5,7 L5,11 L4,12 L1.5,8 Z" fill="'+color+'"/>' +
         '</g></svg>';
   }
 }
@@ -2978,7 +3062,7 @@ function openCinematicCard(cs, auto) {
   if (a.t) meta.push(a.t);
   if (a.r) meta.push(a.r);
   var cat = getCat(a.t, a.category);
-  meta.push(cat.charAt(0).toUpperCase() + cat.slice(1));
+  meta.push(getCatDisplay(cat));
   if (a.squawk) meta.push('SQK ' + a.squawk);
   document.getElementById('ccMeta').innerHTML = meta.map(function(m){
     return '<span class="cc-tag">'+m+'</span>';
