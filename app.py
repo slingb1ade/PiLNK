@@ -802,24 +802,27 @@ def rainviewer_proxy():
 def planespotters_proxy(hex):
     """Proxy to planespotters.net public photo API.
 
-    Planespotters now requires `reg` and `icaoType` query parameters
-    in addition to the hex code — bare hex queries return empty
-    results since some API change in 2024-2025. The client passes
-    these from the AIRCRAFT_DB enrichment (registration + ICAO type).
+    Planespotters' hex endpoint (/pub/photos/hex/<hex>) became flaky/empty
+    for many aircraft in 2026 — returns 0 photos for aircraft that
+    definitely have photos. Their reg endpoint (/pub/photos/reg/<reg>)
+    still works reliably.
+
+    Strategy:
+      1. If client provides ?reg=X, call /pub/photos/reg/<reg> (preferred)
+      2. Otherwise fall back to /pub/photos/hex/<hex>
+
+    The reg comes from AIRCRAFT_DB enrichment (v1.0.7+), so most aircraft
+    have one. Hex fallback covers the rare cases where the DB has no entry.
     """
     try:
-        params = {}
         reg = request.args.get('reg', '').strip()
-        icao_type = request.args.get('icaoType', '').strip()
         if reg:
-            params['reg'] = reg
-        if icao_type:
-            params['icaoType'] = icao_type
-        r = requests.get(
-            'https://api.planespotters.net/pub/photos/hex/' + hex,
-            params=params,
-            timeout=8,
-        )
+            # Reg endpoint — preferred. Returns photos reliably.
+            url = 'https://api.planespotters.net/pub/photos/reg/' + reg
+        else:
+            # Hex endpoint — fallback when reg unknown.
+            url = 'https://api.planespotters.net/pub/photos/hex/' + hex
+        r = requests.get(url, timeout=8)
         resp = make_response(r.content)
         resp.headers['Content-Type'] = 'application/json'
         resp.headers['Access-Control-Allow-Origin'] = '*'
