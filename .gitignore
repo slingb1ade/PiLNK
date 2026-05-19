@@ -7,6 +7,7 @@ config.json
 # Runtime / generated files
 update.log
 stats_records.json
+ota_state.json
 __pycache__/
 *.pyc
 *.pyo

@@ -430,6 +430,28 @@ def _get_local_version():
     except:
         return '0.0.0'
 
+def _semver_gt(a, b):
+    """Return True if version string `a` is semantically greater than `b`.
+
+    Used by the OTA check so the 'update available' banner only fires
+    when remote is genuinely NEWER than local. Previous logic just used
+    string inequality (a != b), which fired the banner whenever the
+    api/version.php cache returned a stale OLDER value than what the
+    Pi already had locally — surfacing a phantom 'update available'
+    that Guardrail #1 then aborted. With this helper, that false
+    positive is suppressed at the source.
+
+    Parses '1.0.22' style strings into integer tuples. Returns False
+    on any parse error (safer than crashing the OTA loop). Tuples
+    compare element-by-element: (1,0,22) > (1,0,21) is True;
+    (1,0,21) > (1,0,22) is False; (1,0,22) > (1,0,22) is False.
+    """
+    try:
+        parse = lambda s: tuple(int(p) for p in s.split('.')[:3])
+        return parse(a) > parse(b)
+    except (ValueError, AttributeError, TypeError):
+        return False
+
 def _is_auto_update_enabled():
     """Whether to silently auto-install non-required updates.
 
@@ -511,7 +533,7 @@ def _perform_ota_check(auto_install_on_available=True):
         ota_status['latest'] = remote_ver
         ota_status['last_check'] = time.time()
 
-        if remote_ver and remote_ver != local_ver:
+        if remote_ver and _semver_gt(remote_ver, local_ver):
             ota_status['available'] = True
             print(f'[PILNK-OTA] Update available: {local_ver} → {remote_ver}')
             if auto_install_on_available:
