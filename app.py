@@ -396,7 +396,31 @@ VERSION_FILE = os.path.join(PILNK_DIR, 'VERSION')
 UPDATE_SCRIPT = os.path.join(PILNK_DIR, 'update.sh')
 OTA_CHECK_INTERVAL = 300   # 5 minutes (was 1 hour — too slow for active dev iteration)
 OTA_COOLDOWN = 3600       # 1 hour after update before re-checking
-ota_last_update = 0
+OTA_STATE_FILE = os.path.join(PILNK_DIR, 'ota_state.json')
+
+# ── GUARDRAIL #2 (May 2026): Persistent OTA cooldown ──
+# ota_last_update used to be a plain module variable that reset to 0
+# on every process restart. update.sh restarts the service as its
+# final step, so the new process always started with no cooldown —
+# meaning if an update genuinely failed but was re-attempted after a
+# restart, there'd be no rate limit. Persisting to disk means the
+# cooldown survives restarts, capping retry attempts at 1 per hour
+# even in worst-case loop scenarios.
+def _load_ota_last_update():
+    try:
+        with open(OTA_STATE_FILE, 'r') as f:
+            return float(json.load(f).get('last_update', 0))
+    except Exception:
+        return 0.0
+
+def _save_ota_last_update(ts):
+    try:
+        with open(OTA_STATE_FILE, 'w') as f:
+            json.dump({'last_update': ts}, f)
+    except Exception as e:
+        print(f'[PILNK-OTA] Warning: could not persist cooldown state: {e}')
+
+ota_last_update = _load_ota_last_update()
 ota_status = {'available': False, 'current': '', 'latest': '', 'last_check': 0, 'updating': False}
 
 def _get_local_version():
@@ -438,9 +462,11 @@ def _run_update():
         if result.stderr:
             print(f'[PILNK-OTA] Update stderr: {result.stderr}')
         ota_last_update = time.time()
+        _save_ota_last_update(ota_last_update)   # GUARDRAIL #2: persist
         ota_status['updating'] = False
         # Note: if update.sh restarts the service, this code won't reach here
-        # That's fine — the new instance will start fresh
+        # That's fine — the new instance will start fresh, but it loads
+        # ota_last_update from disk so the cooldown still applies.
         return result.returncode == 0
     except Exception as e:
         print(f'[PILNK-OTA] Update failed: {e}')

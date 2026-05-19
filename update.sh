@@ -15,7 +15,8 @@ log() {
 cd "$PILNK_DIR" || { log "ERROR: Cannot cd to $PILNK_DIR"; exit 1; }
 
 log "=== OTA UPDATE STARTED ==="
-log "Current version: $(cat VERSION 2>/dev/null || echo 'unknown')"
+OLD_VERSION=$(cat VERSION 2>/dev/null || echo 'unknown')
+log "Current version: $OLD_VERSION"
 
 # Step 1: Stash any local changes (config.json is gitignored so it's safe)
 log "Stashing local changes..."
@@ -36,6 +37,24 @@ fi
 
 NEW_VERSION=$(cat VERSION 2>/dev/null || echo 'unknown')
 log "Updated to version: $NEW_VERSION"
+
+# ── GUARDRAIL #1 (May 2026): Rule #28 sync-mismatch detector ──
+# If git pull succeeded but VERSION didn't change, the remote
+# api/version.php reports a newer version than what's actually
+# in the GitHub repo. Restarting now would just loop forever —
+# every restart re-detects the same "available update" and
+# tries again. Abort BEFORE the restart and let app.py's 1-hour
+# cooldown kick in. The loop dies on first iteration.
+if [ "$OLD_VERSION" = "$NEW_VERSION" ]; then
+    log "ABORT: git pull succeeded but VERSION unchanged (still $OLD_VERSION)."
+    log "This usually means api/version.php reports a newer version than"
+    log "what's actually been pushed to GitHub (Rule #28 violation)."
+    log "Skipping service restart to prevent infinite OTA loop."
+    log "Will retry after 1-hour cooldown — by which time the version"
+    log "anchor and the git repo should be back in sync."
+    log "=== OTA UPDATE ABORTED — Rule #28 sync mismatch ==="
+    exit 3
+fi
 
 # Step 3: Comment out whisper import (safety — in case it got uncommented)
 if grep -q "^from whisper_atc" app.py 2>/dev/null; then
