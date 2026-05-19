@@ -493,8 +493,22 @@ def _perform_ota_check(auto_install_on_available=True):
                     print(f'[PILNK-OTA] Required update — installing immediately (overrides user preference)')
                     _run_update()
                 elif _is_auto_update_enabled():
-                    print(f'[PILNK-OTA] auto_update=true in config — installing silently')
-                    _run_update()
+                    # Defer the silent auto-install while VHF audio is active.
+                    # Restarting the pilnk service would kill rtl_fm (a child
+                    # process) mid-stream and audio doesn't auto-resume — so a
+                    # user listening to ATC would suddenly lose audio with no
+                    # warning. The OTA checker runs every 5 min, so as soon as
+                    # the user stops audio the update installs on the next cycle.
+                    # The dashboard banner still shows (ota_status['available']
+                    # was set above) and the user can click Install Now to
+                    # override the defer if they want.
+                    # Required updates (handled above) still install immediately
+                    # because they may be security-critical.
+                    if getattr(sdr, 'is_playing', False):
+                        print(f'[PILNK-OTA] auto_update=true but VHF audio is active — deferring until audio stops')
+                    else:
+                        print(f'[PILNK-OTA] auto_update=true in config — installing silently')
+                        _run_update()
                 else:
                     print(f'[PILNK-OTA] Update available — waiting for user to click Install on dashboard')
             else:
@@ -1020,6 +1034,10 @@ def history_summary():
                 'positions': len(filtered),
                 'last_lat': filtered[-1].get('lat', 0),
                 'last_lon': filtered[-1].get('lon', 0),
+                # Enrich with type/registration so the dashboard history search
+                # can filter by aircraft type (e.g. "AN-124", "A380") — added v1.0.18
+                't': AIRCRAFT_DB.get(hex_code.upper(), {}).get('t', ''),
+                'r': AIRCRAFT_DB.get(hex_code.upper(), {}).get('r', ''),
             })
 
     # Sort by most recently seen
