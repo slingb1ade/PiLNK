@@ -1566,6 +1566,12 @@ function updateNearestAirport(lat, lon) {
   NZAA_LON = nearestAirport.lon;
   // Update METAR stations
   if (typeof METAR_STATION !== 'undefined') METAR_STATION = nearestAirport.icao;
+  // Immediately refetch METAR for the new station — without this, the
+  // wind/weather widget stays locked to whatever station loadMETAR
+  // happened to grab at page load (default NZAA) until the next
+  // 30-minute interval fires. Users on non-NZ receivers were seeing
+  // Auckland winds for up to half an hour after every page load.
+  if (typeof loadMETAR === 'function') loadMETAR();
   // Update weather panel if loaded
   if (typeof wxPanel !== 'undefined' && wxPanel.setStation) wxPanel.setStation(nearestAirport.icao);
   // Update IFR waypoints based on region
@@ -4093,11 +4099,23 @@ function updateAdvHourChart() {
 }
 
 // Records
+// Race-protected: updateFlights() fires immediately on page load and
+// can call checkAdvRecords() before loadAdvRecords() has had a chance
+// to fetch the existing records from disk. Without protection, that
+// race would init advRecords to {}, populate it with today's data,
+// and SAVE the wiped state — silently erasing the user's all-time
+// records on every page reload. The advRecordsLoaded flag gates all
+// mutating logic on the load completing first.
+var advRecordsLoaded = false;
 function loadAdvRecords() {
   fetch('/api/stats/records').then(function(r) { return r.json(); }).then(function(data) {
     advRecords = data || {};
+    advRecordsLoaded = true;
     renderAdvRecords();
-  }).catch(function() { advRecords = {}; });
+  }).catch(function() {
+    advRecords = {};
+    advRecordsLoaded = true;  // still mark loaded so checkAdvRecords can populate fresh
+  });
 }
 
 function renderAdvRecords() {
@@ -4110,6 +4128,9 @@ function renderAdvRecords() {
 }
 
 function checkAdvRecords(aircraft) {
+  // Don't touch records until they've been loaded from disk.
+  // Otherwise an early updateFlights() call would wipe the saved file.
+  if (!advRecordsLoaded) return;
   if (!advRecords) advRecords = {};
   var changed = false;
   var today = new Date().toISOString().split('T')[0];
