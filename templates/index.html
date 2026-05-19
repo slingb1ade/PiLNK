@@ -1261,6 +1261,7 @@
               <div class="av-toggle-row"><span style="display:flex;align-items:center;"><span class="av-dot" style="background:#f59e0b;"></span>NAVAIDs</span><label class="toggle-switch" style="transform:scale(0.85);"><input type="checkbox" id="avNavaids" onchange="redrawAvOverlay()"/><span class="toggle-slider"></span></label></div>
               <div class="av-toggle-row"><span style="display:flex;align-items:center;"><span class="av-dot" style="background:#06b6d4;"></span>Airspace</span><label class="toggle-switch" style="transform:scale(0.85);"><input type="checkbox" id="avAirways" onchange="redrawAvOverlay()"/><span class="toggle-slider"></span></label></div>
               <div class="av-toggle-row"><span style="display:flex;align-items:center;"><span class="av-dot" style="background:#94a3b8;"></span>IFR Fixes</span><label class="toggle-switch" style="transform:scale(0.85);"><input type="checkbox" id="avWaypoints" onchange="toggleWaypoints(this.checked)"/><span class="toggle-slider"></span></label></div>
+              <div class="av-toggle-row"><span style="display:flex;align-items:center;"><span class="av-dot" style="background:#7dd3fc;"></span>Airfields</span><label class="toggle-switch" style="transform:scale(0.85);"><input type="checkbox" id="avAirfields" onchange="toggleAirfields(this.checked)"/><span class="toggle-slider"></span></label></div>
             </div>
             <div class="av-status" id="avStatus">Enable overlay then select an airport</div>
           </div>
@@ -2150,6 +2151,8 @@ function clearAvOverlay() {
     waypointMarkers.forEach(function(m) { try { map.removeLayer(m); } catch(e) {} });
     waypointMarkers = [];
   }
+  // Same for airfields — same overlay, same lifecycle.
+  if (typeof clearAirfields === 'function') clearAirfields();
 }
 
 function redrawAvOverlay() {
@@ -2199,6 +2202,14 @@ function redrawAvOverlay() {
   // and renders only the appropriate types — call it here so toggling
   // NAVAIDs or Airspace also refreshes locally-defined VOR/NDB markers.
   if (typeof drawWaypoints === 'function') drawWaypoints();
+
+  // Airfields layer — independent sub-toggle but tied to master
+  // overlay state. Re-render here so toggling NAVAIDs or Airspace
+  // also keeps airfields fresh.
+  if (typeof airfieldsVisible !== 'undefined' && airfieldsVisible
+      && typeof drawAirfields === 'function') {
+    drawAirfields();
+  }
 }
 
 // ── AIRPORT SEARCH ────────────────────────────────────────
@@ -4673,8 +4684,13 @@ nodeReg.init();
 
 
 // IFR WAYPOINTS - Auckland FIR fixes within 400km (only shown for NZ receivers)
+// NAVAIDs and IFR fixes for NZ airspace.
+// Optional `airfield` field on VOR/NDB entries names the aerodrome the
+// beacon serves (NAVAIDs are almost always co-located with an airport),
+// surfaced in the marker tooltip so users hovering on a purple/orange
+// dot get useful context.
 var IFR_WAYPOINTS_NZ = [
-  {name:'AA VOR',  lat:-37.0047, lon:174.8136, type:'VOR'},
+  {name:'AA VOR',  lat:-37.0047, lon:174.8136, type:'VOR', airfield:'Auckland (NZAA)'},
   {name:'AKLOM',   lat:-35.3578, lon:178.3942, type:'Enroute'},
   {name:'ARADI',   lat:-36.9342, lon:173.1906, type:'Enroute'},
   {name:'BASIV',   lat:-36.4039, lon:173.8364, type:'Enroute'},
@@ -4695,9 +4711,9 @@ var IFR_WAYPOINTS_NZ = [
   {name:'AA009',   lat:-37.0533, lon:174.6361, type:'Terminal'},
   {name:'AA014',   lat:-37.2108, lon:174.8975, type:'Terminal'},
   {name:'AA024',   lat:-37.0383, lon:174.5464, type:'Terminal'},
-  {name:'HN VOR',  lat:-37.8661, lon:175.3325, type:'VOR'},
-  {name:'TG VOR',  lat:-37.6719, lon:176.1961, type:'VOR'},
-  {name:'WP NDB',  lat:-36.7864, lon:174.6367, type:'NDB'},
+  {name:'HN VOR',  lat:-37.8661, lon:175.3325, type:'VOR', airfield:'Hamilton (NZHN)'},
+  {name:'TG VOR',  lat:-37.6719, lon:176.1961, type:'VOR', airfield:'Tauranga (NZTG)'},
+  {name:'WP NDB',  lat:-36.7864, lon:174.6367, type:'NDB', airfield:'Whenuapai (NZWP)'},
 ];
 
 // Only show waypoints if receiver is in New Zealand
@@ -4750,7 +4766,7 @@ function drawWaypoints() {
 
     var icon = L.divIcon({
       className: '',
-      html: '<div style="display:flex;flex-direction:column;align-items:center;pointer-events:none;">' +
+      html: '<div style="display:flex;flex-direction:column;align-items:center;">' +
             '<div style="background:' + bg + ';border:1px solid ' + color + ';border-radius:50%;width:16px;height:16px;display:flex;align-items:center;justify-content:center;">' +
             '<span style="font-size:9px;color:' + color + ';line-height:1;">' + symbol + '</span>' +
             '</div>' +
@@ -4760,14 +4776,144 @@ function drawWaypoints() {
       iconAnchor: [30, 16]
     });
 
+    // Tooltip content — name + type, plus the co-located airfield when
+    // known (NAVAIDs are almost always at an aerodrome). Coordinates
+    // are useful but secondary; show last in monospace.
+    var typeLabel = wp.type === 'VOR'  ? 'VOR (VHF Omnidirectional Range)'
+                  : wp.type === 'NDB'  ? 'NDB (Non-Directional Beacon)'
+                  : wp.type === 'Terminal' ? 'Terminal fix'
+                  : 'IFR waypoint';
+    var tipHtml = '<b>' + wp.name + '</b><br>' + typeLabel;
+    if (wp.airfield) {
+      tipHtml += '<br><span style="color:#7dd3fc;">📍 ' + wp.airfield + '</span>';
+    }
+    tipHtml += '<br><span style="font-family:monospace;font-size:10px;opacity:0.7;">' +
+               wp.lat.toFixed(4) + ', ' + wp.lon.toFixed(4) + '</span>';
+
     var marker = L.marker([wp.lat, wp.lon], {icon: icon, interactive: true})
-      .bindTooltip('<b>' + wp.name + '</b><br>' + wp.type + '<br>' + wp.lat.toFixed(4) + ', ' + wp.lon.toFixed(4), {
+      .bindTooltip(tipHtml, {
         className: 'pilnk-tooltip',
         direction: 'top'
       });
 
     marker.addTo(map);
     waypointMarkers.push(marker);
+  });
+}
+
+// ── AIRFIELDS LAYER (May 2026) ─────────────────────────────
+// Renders public airports/airfields/heliports from the OurAirports
+// dataset (already loaded by the audio panel for search). Filtered
+// to within ±5 degrees of the receiver for performance — covers
+// ~550 km radius which is plenty for ATC awareness. Markers are
+// sized by class so large international hubs stand out from small
+// gravel strips. Heliports get the rotor icon. Closed airports are
+// skipped — no point cluttering the map with disused fields.
+var airfieldMarkers = [];
+var airfieldsVisible = false;
+
+function toggleAirfields(show) {
+  airfieldsVisible = show;
+  // Master Aviation Overlay must be on for this sub-layer to render
+  if (show && (typeof avOverlayOn !== 'undefined' && !avOverlayOn)) {
+    // Auto-enable the master so the user sees something — matches the
+    // behaviour of the other sub-toggles which require the master on.
+    var master = document.getElementById('avToggle');
+    if (master && !master.checked) {
+      master.checked = true;
+      if (typeof toggleAvOverlay === 'function') toggleAvOverlay(true);
+    }
+  }
+  if (show) {
+    // OurAirports CSV may not be loaded yet — the audio panel only
+    // loads it on demand. Trigger a load now if needed; drawAirfields
+    // is called once the load resolves.
+    if (!airportDB && typeof loadAirportDB === 'function') {
+      loadAirportDB().then(function() { if (airfieldsVisible) drawAirfields(); });
+    } else {
+      drawAirfields();
+    }
+  } else {
+    clearAirfields();
+  }
+}
+
+function clearAirfields() {
+  // Defensive — airfieldMarkers should always be an array, but guard
+  // against any pathological state to avoid a TypeError on .forEach
+  // that would break the whole Aviation Overlay chain.
+  if (Array.isArray(airfieldMarkers) && airfieldMarkers.length) {
+    airfieldMarkers.forEach(function(m) { try { map.removeLayer(m); } catch(e) {} });
+  }
+  airfieldMarkers = [];
+}
+
+function drawAirfields() {
+  clearAirfields();
+  if (!airfieldsVisible) return;
+  if (typeof avOverlayOn !== 'undefined' && !avOverlayOn) return;
+  if (!Array.isArray(airportDB) || !airportDB.length) return;
+
+  // Bounding-box filter: ±5° from receiver. Cheap O(n) scan over
+  // the parsed CSV, no need for a spatial index at this scale.
+  var rxLat = (typeof RX_LAT === 'number') ? RX_LAT : 0;
+  var rxLon = (typeof RX_LON === 'number') ? RX_LON : 0;
+  var BOX = 5;
+
+  airportDB.forEach(function(ap) {
+    if (!ap.type || ap.type === 'closed') return;
+    var lat = parseFloat(ap.latitude_deg);
+    var lon = parseFloat(ap.longitude_deg);
+    if (isNaN(lat) || isNaN(lon)) return;
+    if (Math.abs(lat - rxLat) > BOX) return;
+    if (Math.abs(lon - rxLon) > BOX) return;
+
+    // Class-aware styling
+    var size, emoji, ringColor, labelText, labelBg, fontSize;
+    if (ap.type === 'large_airport') {
+      size = 22; emoji = '🛬'; ringColor = '#7dd3fc';
+      labelText = ap.ident; labelBg = 'rgba(7,10,15,0.9)'; fontSize = '9px';
+    } else if (ap.type === 'medium_airport') {
+      size = 16; emoji = '✈'; ringColor = '#7dd3fc';
+      labelText = ap.ident; labelBg = 'rgba(7,10,15,0.85)'; fontSize = '8px';
+    } else if (ap.type === 'small_airport') {
+      size = 10; emoji = ''; ringColor = '#7dd3fc';
+      labelText = ap.ident; labelBg = 'rgba(7,10,15,0.7)'; fontSize = '7px';
+    } else if (ap.type === 'heliport') {
+      size = 12; emoji = '🚁'; ringColor = '#94a3b8';
+      labelText = ap.ident; labelBg = 'rgba(7,10,15,0.7)'; fontSize = '7px';
+    } else if (ap.type === 'seaplane_base') {
+      size = 12; emoji = '⚓'; ringColor = '#60a5fa';
+      labelText = ap.ident; labelBg = 'rgba(7,10,15,0.7)'; fontSize = '7px';
+    } else {
+      return;
+    }
+
+    var inner = emoji
+      ? '<div style="background:rgba(125,211,252,0.12);border:1px solid ' + ringColor + ';border-radius:50%;width:' + size + 'px;height:' + size + 'px;display:flex;align-items:center;justify-content:center;line-height:1;"><span style="font-size:' + (size - 4) + 'px;">' + emoji + '</span></div>'
+      : '<div style="background:rgba(125,211,252,0.25);border:1px solid ' + ringColor + ';border-radius:50%;width:' + size + 'px;height:' + size + 'px;"></div>';
+
+    var icon = L.divIcon({
+      className: '',
+      html: '<div style="display:flex;flex-direction:column;align-items:center;">' + inner +
+            '<span style="font-size:' + fontSize + ';color:' + ringColor + ';font-family:monospace;white-space:nowrap;background:' + labelBg + ';padding:0px 3px;border-radius:2px;margin-top:1px;border:1px solid ' + ringColor + ';letter-spacing:0.05em;">' + labelText + '</span></div>',
+      iconSize: [60, size + 14],
+      iconAnchor: [30, size / 2]
+    });
+
+    // Tooltip — ICAO + name + class + IATA if present + municipality
+    var classLabel = ap.type.replace('_', ' ').replace(/\b\w/g, function(c) { return c.toUpperCase(); });
+    var tipHtml = '<b>' + (ap.ident || '???') + '</b>';
+    if (ap.iata_code) tipHtml += ' <span style="color:#7dd3fc;">(' + ap.iata_code + ')</span>';
+    tipHtml += '<br>' + (ap.name || 'Unnamed');
+    tipHtml += '<br><span style="color:#94a3b8;">' + classLabel + '</span>';
+    if (ap.municipality) tipHtml += '<br><span style="color:#7dd3fc;">📍 ' + ap.municipality + '</span>';
+    if (ap.elevation_ft) tipHtml += '<br><span style="font-family:monospace;font-size:10px;opacity:0.8;">elev ' + ap.elevation_ft + ' ft</span>';
+
+    var marker = L.marker([lat, lon], { icon: icon, interactive: true })
+      .bindTooltip(tipHtml, { className: 'pilnk-tooltip', direction: 'top' });
+    marker.addTo(map);
+    airfieldMarkers.push(marker);
   });
 }
 
