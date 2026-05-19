@@ -102,8 +102,25 @@ def read_aircraft_json():
 # If the file is missing, enrichment silently skips — aircraft just
 # render with the category-fallback icons from v1.0.6.
 # ─────────────────────────────────────────────────────────
-AIRCRAFT_DB_PATH = '/usr/local/share/pilnk-aircraft-db/aircraft.csv.gz'
+AIRCRAFT_DB_LOCAL  = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'aircraft.csv.gz')
+AIRCRAFT_DB_LEGACY = '/usr/local/share/pilnk-aircraft-db/aircraft.csv.gz'
+AIRCRAFT_DB_URL    = 'https://github.com/wiedehopf/tar1090-db/raw/csv/aircraft.csv.gz'
+AIRCRAFT_DB_MAX_AGE = 7 * 24 * 3600   # 7 days — refresh weekly
 AIRCRAFT_DB = {}  # hex (uppercase) -> {'t': type, 'r': registration}
+
+def _aircraft_db_path():
+    """Return the first available aircraft DB path, or None.
+
+    Prefers the user-writable ~/pilnk/ path (auto-downloadable) over
+    the legacy system-wide /usr/local/share/ path that older nodes
+    have from manual install. Either works — the user-local path
+    just doesn't require sudo to refresh.
+    """
+    if os.path.exists(AIRCRAFT_DB_LOCAL):
+        return AIRCRAFT_DB_LOCAL
+    if os.path.exists(AIRCRAFT_DB_LEGACY):
+        return AIRCRAFT_DB_LEGACY
+    return None
 
 def load_aircraft_db():
     """Load the aircraft enrichment database into memory.
@@ -117,14 +134,15 @@ def load_aircraft_db():
         004002;Z-WPA;B732;00;BOEING 737-200;;;
     """
     global AIRCRAFT_DB
-    if not os.path.exists(AIRCRAFT_DB_PATH):
-        logging.info(f'Aircraft DB not present at {AIRCRAFT_DB_PATH} — '
-                     f'enrichment disabled. Install via '
-                     f'scripts/refresh-aircraft-db.sh')
+    path = _aircraft_db_path()
+    if not path:
+        logging.info('Aircraft DB not present at either local or legacy path — '
+                     'enrichment disabled. Will auto-download in background.')
+        AIRCRAFT_DB = {}
         return 0
     try:
         new_db = {}
-        with gzip.open(AIRCRAFT_DB_PATH, 'rt', encoding='utf-8', errors='replace') as f:
+        with gzip.open(path, 'rt', encoding='utf-8', errors='replace') as f:
             reader = csv.reader(f, delimiter=';')
             for row in reader:
                 if len(row) < 3:
@@ -138,14 +156,74 @@ def load_aircraft_db():
                 if typ or reg:
                     new_db[hex_code] = {'t': typ, 'r': reg}
         AIRCRAFT_DB = new_db
-        logging.info(f'Aircraft DB loaded: {len(AIRCRAFT_DB)} entries from {AIRCRAFT_DB_PATH}')
+        logging.info(f'Aircraft DB loaded: {len(AIRCRAFT_DB)} entries from {path}')
         return len(AIRCRAFT_DB)
     except Exception as e:
         logging.error(f'Failed to load aircraft DB: {e}')
         return 0
 
+def _download_aircraft_db():
+    """Fetch Mictronics aircraft DB and save to AIRCRAFT_DB_LOCAL.
+
+    Atomic via temp-file + rename so a partial download never corrupts
+    an existing DB. Validates the gzip magic bytes before promoting.
+    Returns True on success.
+    """
+    try:
+        logging.info(f'[aircraft-db] Downloading from {AIRCRAFT_DB_URL}')
+        r = requests.get(AIRCRAFT_DB_URL, timeout=300, stream=True)
+        r.raise_for_status()
+        tmp = AIRCRAFT_DB_LOCAL + '.tmp'
+        with open(tmp, 'wb') as f:
+            for chunk in r.iter_content(chunk_size=65536):
+                if chunk:
+                    f.write(chunk)
+        # Sanity: must be gzip (magic bytes 1F 8B)
+        with open(tmp, 'rb') as f:
+            magic = f.read(2)
+        if magic != b'\x1f\x8b':
+            os.remove(tmp)
+            logging.error('[aircraft-db] Downloaded file is not gzip — aborting')
+            return False
+        os.replace(tmp, AIRCRAFT_DB_LOCAL)
+        size = os.path.getsize(AIRCRAFT_DB_LOCAL)
+        logging.info(f'[aircraft-db] Downloaded {size:,} bytes to {AIRCRAFT_DB_LOCAL}')
+        return True
+    except Exception as e:
+        logging.error(f'[aircraft-db] Download failed: {e}')
+        return False
+
+def _ensure_aircraft_db_async():
+    """Background task: download the DB if missing or stale, then reload.
+
+    Runs in a daemon thread on startup so it never blocks Flask. Logs
+    progress to the service log so admins can see what happened.
+    """
+    def task():
+        path = _aircraft_db_path()
+        if path is None:
+            logging.info('[aircraft-db] Missing — downloading on startup')
+            if _download_aircraft_db():
+                load_aircraft_db()
+            return
+        try:
+            age = time.time() - os.path.getmtime(path)
+        except Exception:
+            age = AIRCRAFT_DB_MAX_AGE + 1
+        if age > AIRCRAFT_DB_MAX_AGE:
+            days = age / 86400
+            logging.info(f'[aircraft-db] DB at {path} is {days:.1f} days old — refreshing')
+            if _download_aircraft_db():
+                load_aircraft_db()
+        else:
+            hours = age / 3600
+            logging.info(f'[aircraft-db] DB at {path} is {hours:.1f} hours old — fresh enough')
+    threading.Thread(target=task, daemon=True).start()
+
 # Load on startup. Non-fatal if missing.
 load_aircraft_db()
+# Kick off a background refresh — won't block startup, downloads if needed
+_ensure_aircraft_db_async()
 
 # ── Flight trail history — stores last 24h of positions ───
 # { hex: deque([ {lat, lon, alt_baro, baro_rate, flight, t} ]) }
