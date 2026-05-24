@@ -105,10 +105,27 @@
   .traffic-quick-nav{display:none;gap:6px;margin-bottom:8px;}
   .traffic-quick-nav .qn-btn{flex:1;background:var(--bg-card);border:1px solid var(--border);border-radius:6px;color:var(--text-dim);font-family:'Share Tech Mono',monospace;font-size:0.62rem;letter-spacing:0.5px;padding:6px 10px;cursor:pointer;text-align:center;transition:all 0.15s;}
   .traffic-quick-nav .qn-btn:hover{border-color:var(--blue-mid);color:var(--text);}
+  /* Hamburger button — hidden on desktop by default; the @media block
+     below overrides this to display:inline-flex on mobile (≤768px).
+     Order matters: this default rule MUST come BEFORE the @media rule
+     so the cascade resolves correctly on mobile (equal-specificity
+     rules are won by source order). */
+  .sidebar-toggle{
+    display:none; align-items:center; justify-content:center;
+    background:none; border:1px solid var(--border); border-radius:6px;
+    color:var(--text); font-size:1.1rem; cursor:pointer;
+    padding:4px 10px; margin-right:10px; line-height:1;
+    transition:background 0.15s;
+  }
+  .sidebar-toggle:hover, .sidebar-toggle:active{ background:var(--bg-card); }
   @media (max-width:768px){
     .traffic-quick-nav{display:flex;}
     .header-clock{display:none;}
     .wind-compass{display:none !important;}
+    /* Hide the redundant header status bar on phones — frees room for
+       the theme-toggle button which otherwise overflows past the right
+       edge of the viewport. Same data is on the main map view. */
+    .status-bar{display:none;}
     /* ── Mobile sidebar: hidden by default, overlay when toggled open ── */
     .sidebar-toggle{display:inline-flex;}
     #sidebar{
@@ -127,15 +144,6 @@
     }
     body.sidebar-open #sidebar-backdrop{ display:block; }
   }
-  /* Hamburger button: hidden on desktop, only shown via the @media rule above */
-  .sidebar-toggle{
-    display:none; align-items:center; justify-content:center;
-    background:none; border:1px solid var(--border); border-radius:6px;
-    color:var(--text); font-size:1.1rem; cursor:pointer;
-    padding:4px 10px; margin-right:10px; line-height:1;
-    transition:background 0.15s;
-  }
-  .sidebar-toggle:hover, .sidebar-toggle:active{ background:var(--bg-card); }
   .av-toggles{display:flex;flex-direction:column;gap:6px;margin-top:8px;padding:8px;background:var(--bg-card);border-radius:6px;border:1px solid var(--border);}
   .av-toggle-row{display:flex;align-items:center;justify-content:space-between;font-size:0.62rem;color:var(--text-dim);}
   .av-dot{width:8px;height:8px;border-radius:50%;flex-shrink:0;margin-right:4px;}
