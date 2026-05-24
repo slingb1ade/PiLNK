@@ -1722,14 +1722,134 @@ function renderHistoryList() {
 }
 
 // ── MAP ────────────────────────────────────────────────────
-var map = L.map('map',{zoomControl:false, scrollWheelZoom:false}).setView([RX_LAT,RX_LON],9);
+var map = L.map('map',{zoomControl:false, scrollWheelZoom:true, wheelPxPerZoomLevel:120}).setView([RX_LAT,RX_LON],9);
 map.createPane('rings');    map.getPane('rings').style.zIndex    = 420;
 map.createPane('trails');   map.getPane('trails').style.zIndex   = 450;
 map.createPane('avOverlay');map.getPane('avOverlay').style.zIndex = 440;
 map.createPane('wxPane');   map.getPane('wxPane').style.zIndex   = 410;
+// Trails render on a single shared CANVAS (not per-segment SVG) — keeps zoom smooth.
+var trailRenderer = L.canvas({ padding: 0.5, pane: 'trails' });
+var TRAIL_MAX = 100;  // cap trail points per aircraft (was unbounded)
 var osmLayer = L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',{attribution:'© OpenStreetMap'}).addTo(map);
 var currentTileLayerName = 'osm', extraLayer = null;
 L.control.zoom({position:'bottomright'}).addTo(map);
+
+// ── AIRCRAFT CANVAS LAYER (2b Stage 1) ────────────────────
+// All aircraft draw onto ONE <canvas> instead of 100+ DOM markers. Each sprite
+// is rasterised once per category|colour (reusing the exact makeIcon art), then
+// blitted + rotated per frame — cheap enough to stay smooth on a Pi's own browser.
+map.createPane('aircraftCanvas');
+map.getPane('aircraftCanvas').style.zIndex = 590;
+
+var planeSpriteCache = {};   // 'cat|col' -> {ready, size, canvas}
+function getPlaneSprite(cat, col){
+  var key = cat + '|' + col;
+  var e = planeSpriteCache[key];
+  if(e) return e;
+  e = { ready:false, size:38, canvas:null };
+  planeSpriteCache[key] = e;
+  try {
+    var ic = makeIcon('', cat, 0, col, false);          // unrotated divIcon
+    e.size = (ic.options.iconSize && ic.options.iconSize[0]) || 38;
+    var html = ic.options.html || '';
+    var m = html.match(/<svg[\s\S]*?<\/svg>/);
+    if(!m) return e;
+    var svg = m[0];
+    if(svg.indexOf('xmlns') === -1) svg = svg.replace('<svg', '<svg xmlns="http://www.w3.org/2000/svg"');
+    var sz = e.size, dpr = window.devicePixelRatio || 1;
+    var img = new Image();
+    img.onload = function(){
+      var c = document.createElement('canvas');
+      c.width = Math.round(sz*dpr); c.height = Math.round(sz*dpr);
+      c.getContext('2d').drawImage(img, 0, 0, sz*dpr, sz*dpr);
+      e.canvas = c; e.ready = true;
+      if(window.aircraftLayer) aircraftLayer.redraw();
+    };
+    img.onerror = function(){ /* leave not-ready; fallback dot is drawn */ };
+    img.src = 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(svg);
+  } catch(err){ /* leave not-ready; fallback dot is drawn */ }
+  return e;
+}
+
+var AircraftCanvasLayer = L.Layer.extend({
+  onAdd: function(map){
+    this._map = map;
+    var canvas = this._canvas = L.DomUtil.create('canvas', 'pilnk-aircraft-canvas leaflet-zoom-animated');
+    canvas.style.position = 'absolute';
+    canvas.style.transformOrigin = '0 0';   // scale around top-left to match _animateZoom math
+    canvas.style.pointerEvents = 'none';   // Stage 2 adds click hit-testing
+    this._ctx = canvas.getContext('2d');
+    this._dpr = window.devicePixelRatio || 1;
+    map.getPane('aircraftCanvas').appendChild(canvas);
+    map.on('moveend zoomend resize', this._reset, this);
+    map.on('movestart zoomstart', this._busyOn, this);
+    if(map.options.zoomAnimation && L.Browser.any3d) map.on('zoomanim', this._animateZoom, this);
+    this._reset();
+  },
+  onRemove: function(map){
+    map.off('moveend zoomend resize', this._reset, this);
+    map.off('movestart zoomstart', this._busyOn, this);
+    map.off('zoomanim', this._animateZoom, this);
+    L.DomUtil.remove(this._canvas);
+  },
+  _animateZoom: function(e){
+    var map = this._map;
+    var scale = map.getZoomScale(e.zoom);
+    var offset = map._latLngToNewLayerPoint(map.containerPointToLatLng([0,0]), e.zoom, e.center);
+    L.DomUtil.setTransform(this._canvas, offset, scale);
+  },
+  _busyOn: function(){ this._busy = true; },   // gesture in progress — pause data redraws
+  _reset: function(){
+    this._busy = false;
+    var map = this._map, size = map.getSize(), dpr = this._dpr;
+    L.DomUtil.setPosition(this._canvas, map.containerPointToLayerPoint([0,0]));
+    if(this._canvas.width !== Math.round(size.x*dpr)){
+      this._canvas.width = Math.round(size.x*dpr); this._canvas.height = Math.round(size.y*dpr);
+      this._canvas.style.width = size.x+'px'; this._canvas.style.height = size.y+'px';
+    }
+    this.redraw();
+  },
+  redraw: function(){
+    var map = this._map; if(!map || !this._ctx || this._busy) return;  // skip mid-gesture; canvas tracks via CSS transform
+    var ctx = this._ctx, dpr = this._dpr, size = map.getSize();
+    ctx.setTransform(dpr,0,0,dpr,0,0);
+    ctx.clearRect(0,0,size.x,size.y);
+    ctx.shadowColor = 'rgba(0,0,0,0.85)'; ctx.shadowBlur = 2;
+    for(var cs in lastAircraft){
+      var a = lastAircraft[cs];
+      if(!a || a.lat==null || a.lon==null) continue;
+      var p = map.latLngToContainerPoint([a.lat, a.lon]);
+      if(p.x < -80 || p.y < -80 || p.x > size.x+80 || p.y > size.y+80) continue;
+      var cat = getCat(a.t, a.category), col = getPhase(a, cs).color;
+      var sp = getPlaneSprite(cat, col);
+      ctx.save();
+      ctx.translate(p.x, p.y);
+      ctx.rotate((a.track||0) * Math.PI/180);
+      if(sp && sp.ready && sp.canvas){
+        ctx.drawImage(sp.canvas, -sp.size/2, -sp.size/2, sp.size, sp.size);
+      } else {
+        ctx.fillStyle = col || '#3b82f6';
+        ctx.beginPath(); ctx.arc(0,0,3,0,Math.PI*2); ctx.fill();
+      }
+      ctx.restore();
+    }
+    ctx.shadowBlur = 0;
+    if(selectedFlight && typeof positionTooltipOnMarker==='function') positionTooltipOnMarker();
+  }
+});
+var aircraftLayer = new AircraftCanvasLayer();
+aircraftLayer.addTo(map);
+window.aircraftLayer = aircraftLayer;
+
+// Canvas is the default renderer. setDomPlanes(true) re-enables the old DOM markers
+// as a fallback (A/B compare / escape hatch); setDomPlanes(false) returns to canvas only.
+window.SHOW_DOM_PLANES = false;
+window.setDomPlanes = function(on){
+  window.SHOW_DOM_PLANES = !!on;
+  if(!on){ Object.keys(markers).forEach(function(cs){ map.removeLayer(markers[cs]); delete markers[cs]; delete markerSig[cs]; }); }
+  if(window.aircraftLayer) aircraftLayer.redraw();
+  return 'DOM planes ' + (on ? 'ON (A/B compare)' : 'OFF (canvas only)');
+};
 L.control.scale({position:'bottomleft', metric:true, imperial:false, maxWidth:150}).addTo(map);
 
 // ── Recenter on Node button (top-right) ────────────────────
@@ -1834,6 +1954,33 @@ function updateWindCompass(){
 
 // Map legend deleted — sidebar legend in Options is canonical (April 30)
 map.on('click', hideTooltip);
+// 2b Stage 2: canvas plane hit-testing — click the nearest plane to open its card.
+map.on('click', function(e){
+  if(window.SHOW_DOM_PLANES !== false) return;   // DOM markers handle their own clicks while shown
+  var pt = e.containerPoint, best = null, bestD = Infinity;
+  for(var cs in lastAircraft){
+    var a = lastAircraft[cs]; if(!a || a.lat==null || a.lon==null) continue;
+    var p = map.latLngToContainerPoint([a.lat, a.lon]);
+    var dx = p.x - pt.x, dy = p.y - pt.y, d = Math.sqrt(dx*dx + dy*dy);
+    var r = ((getPlaneSprite(getCat(a.t,a.category), getPhase(a,cs).color).size) || 38) / 2 + 6;
+    if(d <= r && d < bestD){ bestD = d; best = cs; }
+  }
+  if(best){ selectedFlight = best; hideTooltip(); updateFlights(); openCinematicCard(best, false); }
+});
+// 2b Stage 3: pointer cursor when hovering a plane (canvas has no per-plane cursor like DOM markers did).
+map.on('mousemove', function(e){
+  if(window.SHOW_DOM_PLANES !== false) return;
+  if(e.originalEvent && e.originalEvent.buttons) return;   // don't override the grab cursor while panning
+  var pt = e.containerPoint, hit = false;
+  for(var cs in lastAircraft){
+    var a = lastAircraft[cs]; if(!a || a.lat==null || a.lon==null) continue;
+    var p = map.latLngToContainerPoint([a.lat, a.lon]);
+    var dx = p.x - pt.x, dy = p.y - pt.y;
+    var r = ((getPlaneSprite(getCat(a.t,a.category), getPhase(a,cs).color).size) || 38) / 2 + 6;
+    if(dx*dx + dy*dy <= r*r){ hit = true; break; }
+  }
+  map.getContainer().style.cursor = hit ? 'pointer' : '';
+});
 map.on('move', function(){ if(typeof positionTooltipOnMarker==='function') positionTooltipOnMarker(); });
 map.on('zoom', function(){ if(typeof positionTooltipOnMarker==='function') positionTooltipOnMarker(); });
 
@@ -2437,13 +2584,14 @@ function updateTrail(a){
     phaseAlt[cs] = currentAlt;
   }
   if(!lastPt||lastPt.lat!==a.lat||lastPt.lon!==a.lon) trails[cs].push({lat:a.lat,lon:a.lon,color:useColor});
+  if(trails[cs].length > TRAIL_MAX) trails[cs] = trails[cs].slice(-TRAIL_MAX);
   redrawTrail(cs);
 }
 function redrawTrail(cs){
   if(trailPoly[cs]){map.removeLayer(trailPoly[cs]);delete trailPoly[cs];}
   if(!trailsOn||!trails[cs]||trails[cs].length<2)return;
   var pts=trails[cs], g=L.featureGroup([]).addTo(map);
-  for(var i=1;i<pts.length;i++){var f=i/pts.length;L.polyline([[pts[i-1].lat,pts[i-1].lon],[pts[i].lat,pts[i].lon]],{color:pts[i].color,weight:1.5+f*3,opacity:0.2+f*0.8,lineCap:'round',lineJoin:'round',pane:'trails'}).addTo(g);}
+  for(var i=1;i<pts.length;i++){var f=i/pts.length;L.polyline([[pts[i-1].lat,pts[i-1].lon],[pts[i].lat,pts[i].lon]],{color:pts[i].color,weight:1.5+f*3,opacity:0.2+f*0.8,lineCap:'round',lineJoin:'round',renderer:trailRenderer}).addTo(g);}
   trailPoly[cs]=g;
 }
 function removeTrail(cs,fade){
@@ -2731,14 +2879,22 @@ function showTooltip(cs,ll){
 function hideTooltip(){document.getElementById('pilnkTooltip').style.display='none';}
 
 // ── MARKERS ───────────────────────────────────────────────
+var markerSig={};  // last drawn icon signature per aircraft — skip redundant setIcon
 function updateMarker(a){
   var cs=a.flight.trim(), cat=getCat(a.t,a.category), tx=!!transmitting[cs], ph=getPhase(a,cs), col=ph.color;
   updateTrail(a);
-  if(markers[cs]){markers[cs].setLatLng([a.lat,a.lon]);markers[cs].setIcon(makeIcon(cs,cat,a.track,col,tx));if(selectedFlight===cs && typeof positionTooltipOnMarker==='function') positionTooltipOnMarker();}
-  else{
-    var m=L.marker([a.lat,a.lon],{icon:makeIcon(cs,cat,a.track,col,tx)}).addTo(map);
-    m.on('click',function(e){L.DomEvent.stopPropagation(e);selectedFlight=cs;hideTooltip();updateFlights();openCinematicCard(cs,false);});
-    markers[cs]=m;
+  if(window.SHOW_DOM_PLANES!==false){
+    var sig=cat+'|'+Math.round((a.track||0)/3)+'|'+col+'|'+(tx?1:0);
+    if(markers[cs]){
+      markers[cs].setLatLng([a.lat,a.lon]);
+      if(markerSig[cs]!==sig){markers[cs].setIcon(makeIcon(cs,cat,a.track,col,tx));markerSig[cs]=sig;}
+      if(selectedFlight===cs && typeof positionTooltipOnMarker==='function') positionTooltipOnMarker();
+    }
+    else{
+      var m=L.marker([a.lat,a.lon],{icon:makeIcon(cs,cat,a.track,col,tx)}).addTo(map);
+      m.on('click',function(e){L.DomEvent.stopPropagation(e);selectedFlight=cs;hideTooltip();updateFlights();openCinematicCard(cs,false);});
+      markers[cs]=m;markerSig[cs]=sig;
+    }
   }
   updateLabel(a);
 }
@@ -2768,17 +2924,21 @@ function updateFlights(){
     // Update advanced stats with full aircraft array
     updateAdvStats(ac);
     // Only remove aircraft that haven't been seen for 60 seconds — handles brief ADS-B dropouts
-    Object.keys(markers).forEach(function(cs){
+    // Key off lastAircraft (not markers) so cleanup works in canvas-only mode too.
+    Object.keys(lastAircraft).forEach(function(cs){
       if(!seen[cs]){
         var age = now - (lastSeen[cs]||0);
         if(age > 60000){
-          map.removeLayer(markers[cs]);delete markers[cs];delete lastAircraft[cs];
+          if(markers[cs]){map.removeLayer(markers[cs]);delete markers[cs];}
+          delete lastAircraft[cs];
           delete lastSeen[cs];
+          delete markerSig[cs];
           removeTrail(cs);
           removeLabel(cs);
         }
       }
     });
+    if(window.aircraftLayer) aircraftLayer.redraw();
     var list=document.getElementById('flightList');
     if(!ac.length){list.innerHTML='<div class="no-flights">No aircraft found</div>';return;}
     // Sort sidebar by sort mode (distance default, phase optional)
@@ -2810,12 +2970,13 @@ function updateFlights(){
 
 function sidebarSelect(cs){
   selectedFlight=cs;
-  if(markers[cs]&&lastAircraft[cs]){
-    var ll=markers[cs].getLatLng();
+  var ll = planeLatLng(cs);
+  if(ll){
     var targetZoom=Math.max(map.getZoom(),10);
     map.flyTo(ll, targetZoom, {duration:0.6});
     map.once('moveend', function(){
-      if(markers[cs]) showTooltip(cs, markers[cs].getLatLng());
+      var ll2 = planeLatLng(cs);
+      if(ll2) showTooltip(cs, ll2);
     });
   }
   updateFlights();
@@ -2839,11 +3000,18 @@ function toggleSidebar() {
   var btn = document.getElementById('sidebarToggleBtn');
   if (btn) btn.setAttribute('aria-expanded', open ? 'true' : 'false');
 }
+// Selected plane's current latlng — from the DOM marker if present, else from data (canvas mode).
+function planeLatLng(cs){
+  if(markers[cs]) return markers[cs].getLatLng();
+  var a = lastAircraft[cs];
+  return (a && a.lat!=null) ? L.latLng(a.lat, a.lon) : null;
+}
 function positionTooltipOnMarker(){
-  if(!selectedFlight || !markers[selectedFlight]) return;
+  var ll = selectedFlight ? planeLatLng(selectedFlight) : null;
+  if(!ll) return;
   var tt=document.getElementById('pilnkTooltip');
   if(!tt || tt.style.display==='none') return;
-  var pt=map.latLngToContainerPoint(markers[selectedFlight].getLatLng());
+  var pt=map.latLngToContainerPoint(ll);
   var rect=document.getElementById('map').getBoundingClientRect();
   tt.style.left=(rect.left+pt.x)+'px';
   tt.style.top=(rect.top+pt.y)+'px';
