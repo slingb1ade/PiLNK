@@ -460,13 +460,12 @@ def ping_server():
             print(f'[PILNK] Ping failed: {e}')
         time.sleep(30)
 
-# Start ping thread
-if NODE_VERIFY_CODE != 'YOUR_VERIFY_CODE_HERE':
-    ping_thread = threading.Thread(target=ping_server, daemon=True)
-    ping_thread.start()
-    print('[PILNK] Server ping active — reporting to pilnk.io')
-else:
-        print('[PILNK] Set your PiLNK Code in config.json or re-run the installer')
+# Ping thread is started further down — AFTER _get_local_version() and the
+# rest of the module are defined (see "Start ping thread" beside the OTA
+# thread start). Starting it here raced the daemon against the still-loading
+# module: the first ping fired before _get_local_version() existed, throwing
+# "name '_get_local_version' is not defined" on the first ping after every
+# restart.
 
 # ── OTA Update System ─────────────────────────────────────
 PILNK_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -662,6 +661,17 @@ def ota_checker():
             continue
         _perform_ota_check(auto_install_on_available=True)
         time.sleep(OTA_CHECK_INTERVAL)
+
+# Start ping thread — placed here, after _get_local_version() and the rest of
+# the module are defined, so the daemon can't fire its first ping before its
+# dependencies exist (fixes the startup "name '_get_local_version' is not
+# defined" race).
+if NODE_VERIFY_CODE != 'YOUR_VERIFY_CODE_HERE':
+    ping_thread = threading.Thread(target=ping_server, daemon=True)
+    ping_thread.start()
+    print('[PILNK] Server ping active — reporting to pilnk.io')
+else:
+    print('[PILNK] Set your PiLNK Code in config.json or re-run the installer')
 
 # Start OTA checker thread
 ota_thread = threading.Thread(target=ota_checker, daemon=True)
