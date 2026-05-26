@@ -383,61 +383,151 @@ else
   ok "Created $DUMP_CONF with location"
 fi
 
-# ── Detect VHF dongle serial number ──────────────────────
-# PiLNK historically defaulted to SN '00000002' for the VHF audio dongle
-# (AJ's setup). Modern installs auto-detect whatever serial the user's
-# dongles ship with so no rtl_eeprom dance is required. Falls back to
-# '00000002' if detection is inconclusive.
+# ── SDR dongle detection + claim-safe assignment ─────────
+# HARDWARE RULE: PiLNK only ever touches a dongle that NOTHING else is
+# using. We enumerate every serial already claimed by an ACTIVE decoder
+# (dump1090-fa, dump978-fa, readsb), subtract those from what rtl_test
+# can see, and assign ONLY from the free set:
+#   0 free  → assign nothing; tell the operator (never poach a busy one)
+#   1 free  → ADS-B, the primary job (VHF left unconfigured)
+#   2+ free → ask which is ADS-B (interactive); remaining free → VHF
+# No serial is hardcoded as "the ADS-B one" or "the VHF one". Legacy SN
+# 00000002 is a last-resort VHF fallback ONLY when present AND free.
 step "SDR DONGLE DETECTION"
 
-VHF_SERIAL="00000002"
+VHF_SERIAL=""          # set only from the free set; empty = no VHF dongle
+ADSB_SERIAL=""         # free dongle chosen for ADS-B (or one dump1090-fa already owns)
+LEGACY_SN="00000002"
+
+# Pull a decoder's configured serial out of its /etc/default file.
+# Handles RECEIVER_SERIAL="x" and an inline serial=x / --device x in an
+# options string. Echoes the serial, or nothing.
+_decoder_serial() {
+  local conf="$1" s=""
+  [ -f "$conf" ] || return 0
+  s=$(grep -oE '^[A-Za-z_]*SERIAL=[^[:space:]]+' "$conf" 2>/dev/null | head -n1 | cut -d= -f2- | tr -d '\042\047')
+  if [ -z "$s" ]; then
+    s=$(grep -oE '(serial=|--device[ =])[0-9A-Za-z]+' "$conf" 2>/dev/null | head -n1 | sed -E 's/^(serial=|--device[ =])//')
+  fi
+  printf '%s' "$s" | tr -d '[:space:]'
+}
+
+# Set of serials currently CLAIMED by an active decoder (+ a human report).
+CLAIMED_SNS=""
+CLAIMED_REPORT=""
+CLAIMED_COUNT=0
+for pair in "dump1090-fa:/etc/default/dump1090-fa" \
+            "dump978-fa:/etc/default/dump978-fa" \
+            "readsb:/etc/default/readsb"; do
+  svc="${pair%%:*}"; conf="${pair##*:}"
+  systemctl is-active --quiet "$svc" 2>/dev/null || continue
+  sn=$(_decoder_serial "$conf")
+  if [ -n "$sn" ]; then
+    CLAIMED_SNS="${CLAIMED_SNS}${sn}"$'\n'
+    CLAIMED_REPORT="${CLAIMED_REPORT}    SN ${sn} — in use by ${svc}"$'\n'
+    CLAIMED_COUNT=$((CLAIMED_COUNT + 1))
+    if [ "$svc" = "dump1090-fa" ]; then ADSB_SERIAL="$sn"; fi
+  else
+    CLAIMED_REPORT="${CLAIMED_REPORT}    (serial not configured) — ${svc} active, holding a dongle"$'\n'
+    warn "${svc} is running without a configured serial — can't name the dongle it holds; staying cautious."
+  fi
+done
 
 if ! command -v rtl_test &>/dev/null; then
-  info "rtl_test not available — using default VHF serial $VHF_SERIAL"
+  warn "rtl_test not available — cannot enumerate dongles."
+  warn "VHF audio left unconfigured; add a dongle and set 'vhf_serial' in ~/pilnk/config.json later."
 else
   RTL_OUT=$(timeout 3 rtl_test 2>&1 || true)
-  DONGLE_SNS=$(echo "$RTL_OUT" | grep -oE 'SN: [0-9A-Fa-f]+' | awk '{print $2}')
-  DONGLE_COUNT=$(echo "$DONGLE_SNS" | grep -c . || true)
+  DETECTED_SNS=$(echo "$RTL_OUT" | grep -oE 'SN: [0-9A-Za-z]+' | awk '{print $2}' | grep . | sort -u)
+  DETECTED_COUNT=$(echo "$DETECTED_SNS" | grep -c . || true)
 
-  if [ "$DONGLE_COUNT" -eq 0 ]; then
-    warn "No RTL-SDR dongles detected — using default VHF serial $VHF_SERIAL"
-    warn "Plug dongles in and re-run the installer if you want VHF audio"
-  elif echo "$DONGLE_SNS" | grep -q '^00000002$'; then
-    VHF_SERIAL="00000002"
-    ok "Found VHF dongle on SN 00000002 (PiLNK legacy default)"
+  if [ -n "$CLAIMED_SNS" ]; then
+    FREE_SNS=$(comm -23 <(echo "$DETECTED_SNS") <(echo "$CLAIMED_SNS" | grep . | sort -u))
   else
-    # No legacy default present. Identify VHF by elimination.
-    ADSB_SN=""
-    if [ -f /etc/default/dump1090-fa ]; then
-      ADSB_SN=$(grep -oE '^RECEIVER_SERIAL=.*' /etc/default/dump1090-fa | cut -d= -f2 | tr -d '"' | xargs || true)
-    fi
+    FREE_SNS="$DETECTED_SNS"
+  fi
+  FREE_COUNT=$(echo "$FREE_SNS" | grep -c . || true)
 
-    if [ -n "$ADSB_SN" ] && [ "$DONGLE_COUNT" -gt 1 ]; then
-      VHF_SERIAL=$(echo "$DONGLE_SNS" | grep -v "^${ADSB_SN}$" | head -n1)
-      ok "Detected VHF dongle on SN $VHF_SERIAL (ADS-B is on $ADSB_SN)"
-    elif [ "$DONGLE_COUNT" -eq 1 ]; then
-      VHF_SERIAL=$(echo "$DONGLE_SNS" | head -n1)
-      ok "Single dongle detected on SN $VHF_SERIAL — using as VHF audio"
-      info "Plug ADS-B dongle in later and restart dump1090-fa"
+  info "Dongles — detected: ${DETECTED_COUNT}, claimed by other decoders: ${CLAIMED_COUNT}, free: ${FREE_COUNT}"
+  if [ -n "$CLAIMED_REPORT" ]; then printf '%s' "$CLAIMED_REPORT"; fi
+
+  if [ "$DETECTED_COUNT" -eq 0 ]; then
+    warn "No RTL-SDR dongles detected — nothing to assign."
+    warn "Plug a dongle in and re-run if you want ADS-B and/or VHF audio."
+  elif [ "$FREE_COUNT" -eq 0 ]; then
+    warn "All detected dongles are already in use by other decoders — PiLNK will NOT take one."
+    if [ -n "$ADSB_SERIAL" ]; then
+      ok "ADS-B is already served by dump1090-fa on SN ${ADSB_SERIAL} — leaving it alone."
     else
-      if [ -t 0 ]; then
-        echo ""
-        warn "Found $DONGLE_COUNT dongles, can't auto-detect which is VHF:"
-        echo "$DONGLE_SNS" | nl -s '. SN: '
-        echo ""
-        read -p "Enter the line number of your VHF audio dongle [1]: " VHF_PICK
-        VHF_PICK=${VHF_PICK:-1}
-        VHF_SERIAL=$(echo "$DONGLE_SNS" | sed -n "${VHF_PICK}p")
-        ok "Using VHF dongle SN $VHF_SERIAL"
-      else
-        warn "Multiple dongles, non-interactive install — using default $VHF_SERIAL"
-        warn "Edit ~/pilnk/config.json after install to set 'vhf_serial' if audio fails"
-      fi
+      warn "PiLNK needs its own FREE dongle for ADS-B. Add another RTL-SDR and re-run, or free one up."
+      warn "Continuing install with ADS-B left unconfigured (non-fatal)."
     fi
+  elif [ "$FREE_COUNT" -eq 1 ]; then
+    ONLY_FREE=$(echo "$FREE_SNS" | grep . | head -n1)
+    if [ -n "$ADSB_SERIAL" ]; then
+      VHF_SERIAL="$ONLY_FREE"
+      ok "ADS-B already on SN ${ADSB_SERIAL} (dump1090-fa); lone free SN ${ONLY_FREE} → VHF audio."
+    else
+      ADSB_SERIAL="$ONLY_FREE"
+      ok "Single free dongle SN ${ONLY_FREE} → ADS-B (primary job). VHF left unconfigured."
+      info "Add a second dongle later for VHF audio."
+    fi
+  else
+    if [ -n "$ADSB_SERIAL" ]; then
+      VHF_SERIAL=$(echo "$FREE_SNS" | grep . | head -n1)
+      ok "ADS-B already on SN ${ADSB_SERIAL}; free SN ${VHF_SERIAL} → VHF audio."
+    elif [ -r /dev/tty ]; then
+      echo "" > /dev/tty
+      warn "${FREE_COUNT} free dongles — which is ADS-B (the primary job)?"
+      echo "$FREE_SNS" | grep . | nl -s '. SN: ' > /dev/tty
+      printf "  Enter the line number for ADS-B [1]: " > /dev/tty
+      read -r ADSB_PICK < /dev/tty
+      ADSB_PICK=$(printf '%s' "${ADSB_PICK:-1}" | grep -oE '^[0-9]+' || echo 1)
+      ADSB_SERIAL=$(echo "$FREE_SNS" | grep . | sed -n "${ADSB_PICK}p")
+      if [ -z "$ADSB_SERIAL" ]; then ADSB_SERIAL=$(echo "$FREE_SNS" | grep . | head -n1); fi
+      ok "ADS-B → SN ${ADSB_SERIAL}"
+      VHF_SERIAL=$(echo "$FREE_SNS" | grep . | grep -v "^${ADSB_SERIAL}$" | head -n1)
+      if [ -n "$VHF_SERIAL" ]; then ok "VHF audio → SN ${VHF_SERIAL}"; fi
+    else
+      ADSB_SERIAL=$(echo "$FREE_SNS" | grep . | head -n1)
+      VHF_SERIAL=$(echo "$FREE_SNS" | grep . | grep -v "^${ADSB_SERIAL}$" | head -n1)
+      warn "Non-interactive install: assumed SN ${ADSB_SERIAL} for ADS-B${VHF_SERIAL:+, SN ${VHF_SERIAL} for VHF}."
+      warn "Re-run interactively or edit configs to change."
+    fi
+  fi
+
+  # Last-resort legacy VHF fallback: ONLY if VHF still unset AND the legacy
+  # SN is present, free, and not the ADS-B pick. Never an assumption.
+  if [ -z "$VHF_SERIAL" ] && [ "$ADSB_SERIAL" != "$LEGACY_SN" ] && echo "$FREE_SNS" | grep -q "^${LEGACY_SN}$"; then
+    VHF_SERIAL="$LEGACY_SN"
+    info "VHF audio → legacy SN ${LEGACY_SN} (present and free)."
   fi
 fi
 
-ok "VHF dongle serial: $VHF_SERIAL"
+# Pin dump1090-fa to the chosen ADS-B serial — only when we picked a NEW
+# free dongle (it wasn't already serving it) and it is NOT PiAware-managed.
+# This makes ADS-B deterministic instead of letting dump1090-fa auto-grab
+# device-index 0, which could be a dongle another decoder owns.
+if [ -n "$ADSB_SERIAL" ] && [ "$PIAWARE_IMAGE" != true ] && [ -f /etc/default/dump1090-fa ]; then
+  CURRENT_ADSB=$(_decoder_serial /etc/default/dump1090-fa)
+  if [ "$CURRENT_ADSB" != "$ADSB_SERIAL" ]; then
+    if grep -q '^RECEIVER_SERIAL=' /etc/default/dump1090-fa; then
+      sudo sed -i "s/^RECEIVER_SERIAL=.*/RECEIVER_SERIAL=\"${ADSB_SERIAL}\"/" /etc/default/dump1090-fa
+    else
+      echo "RECEIVER_SERIAL=\"${ADSB_SERIAL}\"" | sudo tee -a /etc/default/dump1090-fa > /dev/null
+    fi
+    ok "Pinned dump1090-fa to ADS-B dongle SN ${ADSB_SERIAL} (takes effect on dump1090-fa restart)."
+  fi
+fi
+
+# ── Assignment summary ───────────────────────────────────
+echo ""
+ok "Dongle assignment summary:"
+ok "  ADS-B : ${ADSB_SERIAL:-<none — add a free dongle and re-run>}"
+ok "  VHF   : ${VHF_SERIAL:-<none assigned>}"
+if [ "$CLAIMED_COUNT" -gt 0 ]; then
+  ok "  Left ${CLAIMED_COUNT} dongle(s) owned by other decoders untouched (listed above)."
+fi
 
 
 # ── Write PiLNK Code to config.json ───────────────────────
