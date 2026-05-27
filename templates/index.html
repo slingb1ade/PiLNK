@@ -1238,7 +1238,6 @@
             <div class="panel-title">Map Layer</div>
             <div class="map-tiles">
               <button class="tile-btn active" id="tileOsm"  onclick="setTileLayer('osm')">Street</button>
-              <button class="tile-btn"        id="tileAero" onclick="setTileLayer('aero')">Aero</button>
               <button class="tile-btn"        id="tileSat"  onclick="setTileLayer('sat')">Satellite</button>
               <button class="tile-btn"        id="tileTopo" onclick="setTileLayer('topo')">Topo</button>
             </div>
@@ -1272,6 +1271,12 @@
               <div class="av-toggle-row"><span style="display:flex;align-items:center;"><span class="av-dot" style="background:#7dd3fc;"></span>Airfields</span><label class="toggle-switch" style="transform:scale(0.85);"><input type="checkbox" id="avAirfields" onchange="toggleAirfields(this.checked)"/><span class="toggle-slider"></span></label></div>
             </div>
             <div class="av-status" id="avStatus">Enable overlay then select an airport</div>
+            <div style="border-top:1px solid rgba(120,140,170,0.18);margin:10px 0 8px;"></div>
+            <div class="toggle-row">
+              <span style="display:flex;align-items:center;"><span class="av-dot" style="background:#ef4444;"></span>NOTAMs</span>
+              <label class="toggle-switch"><input type="checkbox" id="notamToggle" onchange="toggleNotams(this.checked)"/><span class="toggle-slider"></span></label>
+            </div>
+            <div class="av-status" id="notamStatus">Live flight advisories near your node</div>
           </div>
           <div class="panel">
             <div class="panel-title">Map Options</div>
@@ -1472,7 +1477,6 @@
 <script>
 'use strict';
 // ── CONFIG ────────────────────────────────────────────────
-var OPENAIP_KEY = '7670c503a1c0929ee8e87ad581d9119e';
 var RX_LAT = -36.90490;
 var RX_LON = 174.76788;
 
@@ -1727,6 +1731,7 @@ map.createPane('rings');    map.getPane('rings').style.zIndex    = 420;
 map.createPane('trails');   map.getPane('trails').style.zIndex   = 450;
 map.createPane('avOverlay');map.getPane('avOverlay').style.zIndex = 440;
 map.createPane('wxPane');   map.getPane('wxPane').style.zIndex   = 410;
+map.createPane('notamPane');map.getPane('notamPane').style.zIndex = 415;
 // Trails render on a single shared CANVAS (not per-segment SVG) — keeps zoom smooth.
 var trailRenderer = L.canvas({ padding: 0.5, pane: 'trails' });
 var TRAIL_MAX = 100;  // cap trail points per aircraft (was unbounded)
@@ -1998,7 +2003,7 @@ function applyTileFilter() {
   } else if (currentTileLayerName === 'topo') {
     pane.style.filter = 'brightness(0.45) contrast(1.15) saturate(0.85)';
   } else {
-    // sat (Esri imagery) and aero (OpenAIP overlay) look fine
+    // sat (Esri imagery) looks fine
     // as-is in dark mode — no filter needed.
     pane.style.filter = '';
   }
@@ -2018,7 +2023,6 @@ function setTileLayer(name) {
     // Per-layer config: url, attribution, maxZoom. Topo (OpenTopoMap)
     // is volunteer-hosted with maxZoom 17 — going higher returns 404s.
     var configs = {
-      aero: {url: 'https://api.tiles.openaip.net/api/data/openaip/{z}/{x}/{y}.png?apiKey='+OPENAIP_KEY, attribution: '© OpenAIP', maxZoom: 18},
       sat:  {url: 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', attribution: '© Esri', maxZoom: 18},
       topo: {url: 'https://{s}.tile.opentopomap.org/{z}/{x}/{y}.png', attribution: '© OpenTopoMap (CC-BY-SA)', maxZoom: 17}
     };
@@ -2371,6 +2375,98 @@ function redrawAvOverlay() {
       && typeof drawAirfields === 'function') {
     drawAirfields();
   }
+}
+
+// ── NOTAMs (flight advisories) ────────────────────────────
+// Fetched from pilnk.io/api/notams.php via the local Flask proxy
+// (same pattern as openaip/rainviewer). Centred on this node. The
+// endpoint caches server-side and degrades gracefully when the FAA
+// key isn't configured yet, so this stays inert until it's ready.
+var notamsOn = false, notamLayer = null, notamData = null, notamLoaded = false;
+
+function notamEsc(s) {
+  return String(s == null ? '' : s)
+    .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+}
+
+function toggleNotams(on) {
+  notamsOn = on;
+  if (!on) {
+    clearNotams();
+    document.getElementById('notamStatus').textContent = 'Live flight advisories near your node';
+    return;
+  }
+  if (notamLoaded && notamData) { renderNotams(); }
+  else { loadNotams(); }
+}
+
+function clearNotams() {
+  if (notamLayer) { map.removeLayer(notamLayer); notamLayer = null; }
+}
+
+function loadNotams() {
+  document.getElementById('notamStatus').textContent = 'Loading NOTAMs…';
+  var url = '/api/pilnkio/notams.php?lat=' + RX_LAT + '&lon=' + RX_LON + '&radius=100';
+  fetch(url)
+    .then(function(r){ return r.text(); })
+    .then(function(txt){
+      var data;
+      try { data = JSON.parse(txt); }
+      catch (e) { throw new Error('source not available'); }
+      notamData = data; notamLoaded = true;
+      if (notamsOn) renderNotams(); else notamStatusFromData();
+    })
+    .catch(function(){
+      document.getElementById('notamStatus').textContent = 'NOTAMs unavailable right now';
+    });
+}
+
+function notamStatusFromData() {
+  var st = document.getElementById('notamStatus');
+  var meta = (notamData && notamData.meta) || {};
+  if (meta.source === 'unconfigured') { st.textContent = 'NOTAM source not configured yet'; return; }
+  if (meta.source === 'unsupported_region') { st.textContent = 'NOTAMs not available for your region yet (US only for now)'; return; }
+  if (meta.source === 'error')        { st.textContent = 'NOTAMs unavailable right now';    return; }
+  var list = (notamData && notamData.notams) || [];
+  if (!list.length) { st.textContent = 'No active NOTAMs near your node'; return; }
+  var mapped = 0;
+  list.forEach(function(n){ if (n.lat != null && n.lon != null) mapped++; });
+  var areaWide = list.length - mapped;
+  st.textContent = mapped + ' on map' + (areaWide ? (', ' + areaWide + ' area-wide') : '');
+}
+
+function renderNotams() {
+  clearNotams();
+  if (!notamsOn || !notamData) return;
+  notamStatusFromData();
+  var list = notamData.notams || [];
+  if (!list.length) return;
+  notamLayer = L.featureGroup([]).addTo(map);
+
+  list.forEach(function(n) {
+    if (n.lat == null || n.lon == null) return; // area-wide → status only, no pin
+    var win = (n.effective_start || '?') + ' → ' + (n.effective_end || '?');
+    var popup =
+      '<div style="font-family:monospace;font-size:11px;max-width:260px;line-height:1.35;">' +
+        '<b style="color:#ef4444;">NOTAM ' + notamEsc(n.id || '') + '</b> ' +
+        notamEsc(n.location_icao || '') +
+        '<div style="margin:5px 0;white-space:pre-wrap;">' + notamEsc(n.text || '(no text)') + '</div>' +
+        '<div style="color:#9aa7bd;font-size:10px;">' + notamEsc(win) + '</div>' +
+      '</div>';
+
+    if (n.radius_nm && n.radius_nm > 0) {
+      L.circle([n.lat, n.lon], {
+        radius: n.radius_nm * 1852, // NM → metres
+        color:'#ef4444', weight:1.5, opacity:0.85,
+        fillColor:'#ef4444', fillOpacity:0.06, dashArray:'5 4', pane:'notamPane'
+      }).bindPopup(popup).addTo(notamLayer);
+    } else {
+      L.circleMarker([n.lat, n.lon], {
+        radius:6, color:'#ef4444', weight:2, opacity:0.9,
+        fillColor:'#ef4444', fillOpacity:0.25, pane:'notamPane'
+      }).bindPopup(popup).addTo(notamLayer);
+    }
+  });
 }
 
 // ── AIRPORT SEARCH ────────────────────────────────────────
