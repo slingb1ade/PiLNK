@@ -62,19 +62,54 @@ if grep -q "^from whisper_atc" app.py 2>/dev/null; then
     log "Whisper import commented out (safety)"
 fi
 
-# Step 4: Restart the PiLNK service
+# Step 4: Restart the PiLNK service to load the new code.
 log "Restarting PiLNK service..."
-sudo systemctl restart pilnk 2>> "$LOG_FILE"
 
-# Step 5: Wait and verify service is running
+# COMPLETE must be EARNED, not defaulted — that was the whole bug.
+#   PID_BEFORE: a genuine restart yields a NEW MainPID. An unchanged pid means
+#     the restart no-op'd (the silent failure that used to log a false COMPLETE).
+#   sudo -n (non-interactive): fails FAST + visibly if creds aren't there,
+#     instead of hanging on a password prompt that never gets answered.
+#   RC is captured on the VERY NEXT line — nothing between, or we'd read the
+#     wrong command's exit code.
+#   is-active is only a SECONDARY sanity confirm — it cannot tell a fresh
+#     process from an old one that never died, so it never decides success.
+PID_BEFORE=$(systemctl show -p MainPID --value pilnk 2>/dev/null)
+sudo -n systemctl restart pilnk 2>> "$LOG_FILE"
+RC=$?
+
+# A successful restart usually KILLS this script here (it's a child of the
+# pilnk service) and the fresh instance takes over — nothing below runs, which
+# is fine. If we DO reach here, the PID comparison is the source of truth.
 sleep 5
-if systemctl is-active --quiet pilnk; then
-    log "Service restarted successfully"
-    log "=== OTA UPDATE COMPLETE — v$NEW_VERSION ==="
-    exit 0
-else
-    log "WARNING: Service may not have started cleanly"
+PID_AFTER=$(systemctl show -p MainPID --value pilnk 2>/dev/null)
+
+if [ "$RC" -eq 0 ] && [ -n "$PID_AFTER" ] && [ "$PID_AFTER" != "0" ] && [ "$PID_AFTER" != "$PID_BEFORE" ]; then
+    # EARNED: restart returned 0 AND a NEW MainPID is running.
+    if systemctl is-active --quiet pilnk; then
+        log "Service restarted successfully (PID $PID_BEFORE -> $PID_AFTER)"
+        log "=== OTA UPDATE COMPLETE — v$NEW_VERSION ==="
+        exit 0
+    fi
+    log "ERROR: new PID $PID_AFTER but service not active — check the journal."
     log "Check: sudo journalctl -u pilnk -n 20 --no-pager"
-    log "=== OTA UPDATE COMPLETE (with warnings) ==="
+    log "=== OTA UPDATE FAILED — service not active after restart ==="
     exit 2
+elif [ "$RC" -ne 0 ]; then
+    log "ERROR: 'sudo -n systemctl restart pilnk' failed (exit $RC)."
+    log "No passwordless sudo for the restart on this host (Debian Trixie/Bookworm,"
+    log "Ubuntu, amd64). New code is on disk (v$NEW_VERSION) but the SERVICE DID NOT"
+    log "RESTART — still running the OLD code (PID ${PID_BEFORE:-unknown})."
+    log "Fix: run 'sudo systemctl restart pilnk' once, or re-run install.sh to install"
+    log "the NOPASSWD sudoers rule so future OTAs restart unattended."
+    log "=== OTA UPDATE FAILED — restart blocked (no passwordless sudo) ==="
+    exit 4
+else
+    # RC==0 but MainPID did NOT change → the restart was a no-op. This is the
+    # precise silent failure that used to log a false COMPLETE. Refuse it.
+    log "ERROR: restart returned 0 but MainPID is unchanged (${PID_BEFORE:-unknown})"
+    log "— the service did NOT actually restart. Refusing to log COMPLETE."
+    log "Check: sudo journalctl -u pilnk -n 20 --no-pager"
+    log "=== OTA UPDATE FAILED — restart no-op (PID unchanged) ==="
+    exit 5
 fi

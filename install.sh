@@ -77,22 +77,16 @@ OS_VER=$(grep ^VERSION_CODENAME= /etc/os-release 2>/dev/null | cut -d= -f2 | tr 
 OS_PRETTY=$(grep ^PRETTY_NAME= /etc/os-release 2>/dev/null | cut -d= -f2 | tr -d '"')
 ARCH=$(dpkg --print-architecture 2>/dev/null || uname -m)
 
-# Block Trixie (Debian 13) — not currently supported on any architecture
+# Warn (don't block) on Trixie (Debian 13). It was hard-blocked before, but
+# PiLNK runs fine on Trixie in practice (the dev Pi4 has all along). Surface
+# the caveat and let the user opt in — same pattern as the Ubuntu path below.
 if echo "$OS_VER" | grep -qi "trixie"; then
-  echo ""
-  err "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-  err " UNSUPPORTED OPERATING SYSTEM"
-  err "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-  echo ""
-  warn "Detected: $OS_PRETTY"
-  echo ""
-  printf "  PiLNK does not currently support Debian Trixie (13).\n"
-  printf "  Please use ${GREEN}Bookworm${RESET}:\n"
-  printf "    Pi:      Raspberry Pi OS Bookworm — https://www.raspberrypi.com/software/\n"
-  printf "    Server:  Debian 12 Bookworm        — https://www.debian.org/distrib/\n"
-  echo ""
-  err "Installation aborted."
-  exit 1
+  warn "Detected: ${OS_PRETTY:-Debian Trixie (13)}"
+  warn "Trixie isn't the primary tested target (Bookworm is) — most things work,"
+  warn "and PiLNK runs fine on it in practice, but you may hit edge cases."
+  printf "  Continue anyway? [y/N] " > /dev/tty
+  read -r yn < /dev/tty
+  [[ ! "$yn" =~ ^[Yy]$ ]] && exit 1
 fi
 
 # Warn (don't block) on Ubuntu — most things work, but it's not the
@@ -605,6 +599,30 @@ if systemctl is-active --quiet pilnk; then
 else
   warn "Service may still be starting — check with: sudo systemctl status pilnk"
   warn "If it fails, run: sudo journalctl -u pilnk -n 20"
+fi
+
+# ── OTA restart permission (sudoers) ─────────────────────
+# update.sh restarts the pilnk service to load new code. Raspberry Pi OS grants
+# the default user passwordless sudo, so it "just worked" there — but Debian
+# (Bookworm/Trixie), Ubuntu and amd64 prompt for a password a headless OTA
+# can't supply, so the restart silently no-op'd: code updated on disk but the
+# service kept running the OLD code (and the update banner looped). Grant JUST
+# this one command, NOPASSWD, to the service user. Scoped tight + validated.
+step "OTA RESTART PERMISSION"
+SYSTEMCTL_BIN="$(command -v systemctl || echo /usr/bin/systemctl)"
+SUDOERS_OTA="/etc/sudoers.d/pilnk-ota"
+sudo tee "$SUDOERS_OTA" > /dev/null << SUDOEOF
+# PiLNK OTA — let the service user (re)start ONLY its own service without a
+# password, so update.sh can restart unattended. Installed by install.sh.
+$USER ALL=(root) NOPASSWD: $SYSTEMCTL_BIN restart pilnk, $SYSTEMCTL_BIN start pilnk, $SYSTEMCTL_BIN stop pilnk
+SUDOEOF
+sudo chmod 0440 "$SUDOERS_OTA"
+if sudo visudo -cf "$SUDOERS_OTA" >/dev/null 2>&1; then
+  ok "OTA restart permission granted (passwordless 'systemctl restart pilnk')"
+else
+  sudo rm -f "$SUDOERS_OTA"
+  warn "Couldn't validate the sudoers rule — removed it. OTA restarts will need"
+  warn "a manual 'sudo systemctl restart pilnk' until resolved."
 fi
 
 # ── Restart dump1090-fa with new location ────────────────
