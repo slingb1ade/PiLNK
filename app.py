@@ -69,6 +69,44 @@ RX_LAT, RX_LON = read_receiver_location()
 if RX_LAT is None or RX_LON is None:
     print('[PILNK] WARNING: Receiver location not set. Add lat/lon to config.json or re-run the installer.')
 
+def _adopt_server_location(new_lat, new_lon):
+    """Phase 1 (web onboarding): adopt a web-set location pushed DOWN in the
+    node.php ping response. Writes lat/lon into config.json (preserving every
+    other key) and refreshes the in-memory RX_LAT/RX_LON so the dashboard map
+    and haversine distance pick it up with no restart.
+
+    config.json is the authoritative location source (read_receiver_location
+    reads it first), so this is sufficient: the decoder's own RECEIVER_LAT/LON
+    is irrelevant to PiLNK (no MLAT) and is deliberately left untouched — no
+    sudo, no decoder restart. The server is authoritative; the caller only
+    invokes this when the server sends a non-null value that differs from what
+    we currently hold (see the ping loop), so there is no node<->server
+    oscillation.
+    """
+    global RX_LAT, RX_LON, _config
+    try:
+        # Re-read from disk so a concurrent writer (e.g. vhf-serial autodetect)
+        # isn't clobbered by a stale in-memory copy.
+        cfg = {}
+        try:
+            with open(CONFIG_PATH, 'r') as f:
+                cfg = json.load(f)
+        except Exception:
+            cfg = dict(_config) if isinstance(_config, dict) else {}
+        cfg['lat'] = new_lat
+        cfg['lon'] = new_lon
+        tmp = CONFIG_PATH + '.tmp'
+        with open(tmp, 'w') as f:
+            json.dump(cfg, f, indent=2)
+        os.replace(tmp, CONFIG_PATH)   # atomic swap — never a half-written config
+        _config = cfg
+        RX_LAT, RX_LON = new_lat, new_lon
+        print(f'[PILNK] Adopted web-set location {new_lat:.5f},{new_lon:.5f} from pilnk.io')
+        return True
+    except Exception as e:
+        print(f'[PILNK] Location adopt failed: {e}')
+        return False
+
 # ── dump1090-fa aircraft data ──────────────────────────────
 # Read aircraft.json directly from disk. dump1090-fa writes this
 # every second via --write-json /run/dump1090-fa. Reading from disk
@@ -447,22 +485,48 @@ def ping_server():
             compute_node_stats(aircraft)
 
             # Send to pilnk.io
-            payload = json.dumps({
+            ping_data = {
                 'action': 'ping',
                 'verify_code': NODE_VERIFY_CODE,
                 'aircraft_count': len(aircraft),
                 'aircraft': aircraft,
                 'node_stats': get_stats_payload(),
                 'version': _get_local_version(),
-                'lat': RX_LAT,
-                'lon': RX_LON
-            }).encode()
+            }
+            # Only report location UP when we actually have one. Omitting it for
+            # a not-yet-located node avoids seeding a 0,0 "null island" row; the
+            # server seeds from this only when its own value is null (see the
+            # node.php precedence rule).
+            if RX_LAT is not None and RX_LON is not None:
+                ping_data['lat'] = RX_LAT
+                ping_data['lon'] = RX_LON
+            payload = json.dumps(ping_data).encode()
             req = urllib.request.Request(
                 'https://pilnk.io/api/node.php',
                 data=payload,
                 headers={'Content-Type': 'application/json', 'User-Agent': 'PiLNK/1.0'}
             )
-            urllib.request.urlopen(req, timeout=10)
+            resp = urllib.request.urlopen(req, timeout=10)
+
+            # Phase 1: adopt the server-authoritative location pushed DOWN in
+            # the ping response (config flows down, telemetry flows up). The
+            # server always wins; we act only when it returns a non-null lat/lon
+            # that differs from what we hold — which is exactly the case after
+            # the operator pins/repins on pilnk.io. Wrapped so a malformed or
+            # empty response can never break the ping loop.
+            try:
+                body = resp.read()
+                rj = json.loads(body.decode()) if body else {}
+                scfg = rj.get('config') or {}
+                slat, slon = scfg.get('lat'), scfg.get('lon')
+                if slat is not None and slon is not None:
+                    if (RX_LAT is None or RX_LON is None
+                            or abs(float(slat) - float(RX_LAT)) > 1e-6
+                            or abs(float(slon) - float(RX_LON)) > 1e-6):
+                        _adopt_server_location(float(slat), float(slon))
+            except Exception as e:
+                print(f'[PILNK] Config adopt skipped: {e}')
+
             print(f'[PILNK] Ping sent — {len(aircraft)} aircraft')
         except Exception as e:
             print(f'[PILNK] Ping failed: {e}')

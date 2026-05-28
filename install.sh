@@ -142,28 +142,14 @@ if [ -f /etc/piaware.conf ] || dpkg -l piaware &>/dev/null 2>&1; then
   fi
 fi
 
-# ── Three questions ────────────────────────────────────────
+# ── One question ───────────────────────────────────────────
 step "CONFIGURATION"
 echo ""
-printf "  Answer three questions and PiLNK installs itself.\n"
+printf "  One question and PiLNK installs itself.\n"
 printf "  Your PiLNK Code is on your pilnk.io profile page.\n"
+printf "  You'll set your node's location on the website after install —\n"
+printf "  no need to look up your coordinates here.\n"
 echo ""
-
-# Latitude
-printf "${CYAN}  Latitude${RESET}  (e.g. -36.90490 for Auckland): " > /dev/tty
-read -r LAT < /dev/tty
-if ! echo "$LAT" | grep -qE '^-?[0-9]+\.?[0-9]*$'; then
-  err "Invalid latitude. Use decimal format, e.g. -36.90490"
-  exit 1
-fi
-
-# Longitude
-printf "${CYAN}  Longitude${RESET} (e.g. 174.76788 for Auckland): " > /dev/tty
-read -r LON < /dev/tty
-if ! echo "$LON" | grep -qE '^-?[0-9]+\.?[0-9]*$'; then
-  err "Invalid longitude. Use decimal format, e.g. 174.76788"
-  exit 1
-fi
 
 # PiLNK Code (8 hex characters from profile page)
 printf "${CYAN}  PiLNK Code${RESET} (8 characters from pilnk.io → Profile): " > /dev/tty
@@ -186,7 +172,7 @@ else
 fi
 
 echo ""
-printf "  ${BOLD}Lat:${RESET} $LAT  ${BOLD}Lon:${RESET} $LON  ${BOLD}Code:${RESET} $CODE\n"
+printf "  ${BOLD}PiLNK Code:${RESET} $CODE\n"
 echo ""
 printf "  Ready to install? [Y/n] " > /dev/tty
 read -r yn < /dev/tty
@@ -355,27 +341,16 @@ ok "Base Python packages installed"
 
 # faster-whisper removed — ATC transcription disabled until v2.0
 
-# ── Write location to dump1090-fa config ─────────────────
-step "LOCATION CONFIGURATION"
-DUMP_CONF="/etc/default/dump1090-fa"
-if [ -f "$DUMP_CONF" ]; then
-  sudo cp "$DUMP_CONF" "${DUMP_CONF}.bak"
-  if grep -q "^RECEIVER_LAT=" "$DUMP_CONF"; then
-    sudo sed -i "s/^RECEIVER_LAT=.*/RECEIVER_LAT=$LAT/" "$DUMP_CONF"
-  else
-    echo "RECEIVER_LAT=$LAT" | sudo tee -a "$DUMP_CONF" > /dev/null
-  fi
-  if grep -q "^RECEIVER_LON=" "$DUMP_CONF"; then
-    sudo sed -i "s/^RECEIVER_LON=.*/RECEIVER_LON=$LON/" "$DUMP_CONF"
-  else
-    echo "RECEIVER_LON=$LON" | sudo tee -a "$DUMP_CONF" > /dev/null
-  fi
-  ok "Location written to $DUMP_CONF"
-else
-  sudo mkdir -p /etc/default
-  printf "RECEIVER_LAT=$LAT\nRECEIVER_LON=$LON\n" | sudo tee "$DUMP_CONF" > /dev/null
-  ok "Created $DUMP_CONF with location"
-fi
+# ── Location ─────────────────────────────────────────────
+# Location is set on the website now (pilnk.io → Profile → your node),
+# not here. The node learns its coordinates from the pilnk.io ping
+# response and writes them into config.json itself — see
+# _adopt_server_location() in app.py. PiLNK uses the position only for
+# the dashboard map + range maths (no MLAT), so the decoder's own
+# RECEIVER_LAT/LON is deliberately left untouched. If you also run a
+# FlightAware MLAT feeder, set its location separately in piaware.
+step "LOCATION"
+ok "Set your node location on pilnk.io after install (Profile → your node)"
 
 # ── SDR dongle detection + claim-safe assignment ─────────
 # HARDWARE RULE: PiLNK only ever touches a dongle that NOTHING else is
@@ -530,9 +505,13 @@ APP_PY="$PILNK_DIR/app.py"
 CONFIG_JSON="$PILNK_DIR/config.json"
 
 # Write config.json (gitignored — survives git pull)
-# Source of truth for node identity: code, location, OTA preference, VHF dongle serial.
-printf '{\n  "pilnk_code": "%s",\n  "lat": %s,\n  "lon": %s,\n  "auto_update": true,\n  "vhf_serial": "%s"\n}\n' "$CODE" "$LAT" "$LON" "$VHF_SERIAL" > "$CONFIG_JSON"
-ok "PiLNK Code + location + VHF serial saved to config.json"
+# Source of truth for node identity: code, OTA preference, VHF dongle serial.
+# Location is intentionally NOT written here — a fresh node has none until the
+# operator pins it on pilnk.io, after which the node adopts it from the ping
+# response (see _adopt_server_location() in app.py). Omitting the keys leaves
+# read_receiver_location() returning None until then, which is correct.
+printf '{\n  "pilnk_code": "%s",\n  "auto_update": true,\n  "vhf_serial": "%s"\n}\n' "$CODE" "$VHF_SERIAL" > "$CONFIG_JSON"
+ok "PiLNK Code + VHF serial saved to config.json"
 
 # Ensure config.json is gitignored (survives git pull)
 GITIGNORE="$PILNK_DIR/.gitignore"
@@ -643,7 +622,7 @@ echo ""
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 printf "\n  ${GREEN}${BOLD}🎉 PiLNK installed successfully!${RESET}\n\n"
 printf "  ${BOLD}Dashboard:${RESET}    http://$PI_IP:5000\n"
-printf "  ${BOLD}Location:${RESET}     $LAT, $LON\n"
+printf "  ${BOLD}Location:${RESET}     set it on pilnk.io → Profile → your node\n"
 printf "  ${BOLD}PiLNK Code:${RESET}  ${GREEN}$CODE${RESET}\n"
 echo ""
 printf "  ${CYAN}Open Chrome and go to: http://$PI_IP:5000${RESET}\n"
