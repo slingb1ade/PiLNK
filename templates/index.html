@@ -4253,12 +4253,12 @@ function updateAdvStats(allAircraft) {
     var type = (ac.t || ac.type || '').toUpperCase().trim() || 'UNKNOWN';
     var hex = ac.hex || '';
 
-    // Fastest
-    if (speed > 0 && (!advTodayLeaders.fastest || speed > advTodayLeaders.fastest.val)) {
+    // Fastest (gated — same bounds as all-time records; rejects ADS-B decode glitches)
+    if (speed >= 30 && speed <= 750 && (!advTodayLeaders.fastest || speed > advTodayLeaders.fastest.val)) {
       advTodayLeaders.fastest = { cs: cs, val: speed };
     }
-    // Highest
-    if (alt > 0 && (!advTodayLeaders.highest || alt > advTodayLeaders.highest.val)) {
+    // Highest (gated)
+    if (alt > 0 && alt <= 70000 && (!advTodayLeaders.highest || alt > advTodayLeaders.highest.val)) {
       advTodayLeaders.highest = { cs: cs, val: alt };
     }
     // Furthest
@@ -4413,8 +4413,8 @@ function checkAdvRecords(aircraft) {
     var alt = parseInt(ac.alt_baro || ac.alt || 0);
     var lat = parseFloat(ac.lat || 0);
     var lon = parseFloat(ac.lon || 0);
-    if (speed > 0 && (!advRecords.fastest || speed > advRecords.fastest.speed)) { advRecords.fastest = { callsign: cs, speed: speed, date: today }; changed = true; }
-    if (alt > 0 && (!advRecords.highest || alt > advRecords.highest.alt)) { advRecords.highest = { callsign: cs, alt: alt, date: today }; changed = true; }
+    if (speed >= 30 && speed <= 750 && (!advRecords.fastest || speed > advRecords.fastest.speed)) { advRecords.fastest = { callsign: cs, speed: speed, date: today }; changed = true; }
+    if (alt > 0 && alt <= 70000 && (!advRecords.highest || alt > advRecords.highest.alt)) { advRecords.highest = { callsign: cs, alt: alt, date: today }; changed = true; }
     if (lat && lon) {
       var dist = Math.round(haversineNm(RX_LAT, RX_LON, lat, lon));
       if (dist > 0 && (!advRecords.furthest || dist > advRecords.furthest.dist)) { advRecords.furthest = { callsign: cs, dist: dist, date: today }; changed = true; }

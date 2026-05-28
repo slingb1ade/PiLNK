@@ -281,6 +281,14 @@ def _load_pilnk_code():
 NODE_VERIFY_CODE = _load_pilnk_code()
 # Set this to your node's verify code from your profile page
 
+# Sanity gates for all-time records — single corrupt ADS-B frames have
+# polluted historical leaderboards with impossible values (e.g. 943 kts
+# civilian, 125,800 ft). Anything outside these bounds is a decode error.
+# Loose enough to still catch genuine military / U-2 / supercruise activity.
+STATS_MIN_SPEED_KTS = 30      # filter taxi / decode noise floor
+STATS_MAX_SPEED_KTS = 750     # SR-71 retired; F-22 supercruise ~600 kts; 750 = generous ceiling
+STATS_MAX_ALT_FT    = 70000   # U-2 operational ceiling; anything higher = decode error
+
 # Stats tracker (computed server-side for profile display)
 node_stats = {
     'today': time.strftime('%Y-%m-%d'),
@@ -344,12 +352,12 @@ def compute_node_stats(aircraft):
                 node_stats['seen_hexes'].add(hex_code)
                 node_stats['total_today'] += 1
 
-            # Fastest
-            if speed > 0 and (not node_stats['fastest'] or speed > node_stats['fastest']['val']):
+            # Fastest (gated — see STATS_MAX_SPEED_KTS above; rejects decode glitches)
+            if STATS_MIN_SPEED_KTS <= speed <= STATS_MAX_SPEED_KTS and (not node_stats['fastest'] or speed > node_stats['fastest']['val']):
                 node_stats['fastest'] = {'cs': cs, 'val': speed}
 
-            # Highest
-            if alt > 0 and (not node_stats['highest'] or alt > node_stats['highest']['val']):
+            # Highest (gated — see STATS_MAX_ALT_FT above; rejects decode glitches)
+            if 0 < alt <= STATS_MAX_ALT_FT and (not node_stats['highest'] or alt > node_stats['highest']['val']):
                 node_stats['highest'] = {'cs': cs, 'val': alt}
 
             # Furthest (haversine in nm) — requires receiver location
