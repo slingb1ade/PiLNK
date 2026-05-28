@@ -596,8 +596,15 @@ def _semver_gt(a, b):
     (1,0,21) > (1,0,22) is False; (1,0,22) > (1,0,22) is False.
     """
     try:
-        parse = lambda s: tuple(int(p) for p in s.split('.')[:3])
-        return parse(a) > parse(b)
+        # Parse all dotted parts (not capped at 3) so 4-part tweak versions
+        # like '1.2.10.1' compare correctly. Pad the shorter side with
+        # zeros so '1.2.9' and '1.2.9.0' compare equal (no spurious update).
+        parse = lambda s: [int(p) for p in s.strip().split('.') if p != '']
+        pa, pb = parse(a), parse(b)
+        n = max(len(pa), len(pb))
+        pa += [0] * (n - len(pa))
+        pb += [0] * (n - len(pb))
+        return tuple(pa) > tuple(pb)
     except (ValueError, AttributeError, TypeError):
         return False
 
