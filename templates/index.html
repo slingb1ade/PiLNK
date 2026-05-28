@@ -1726,7 +1726,7 @@ function renderHistoryList() {
 }
 
 // ── MAP ────────────────────────────────────────────────────
-var map = L.map('map',{zoomControl:false, scrollWheelZoom:true, wheelPxPerZoomLevel:120}).setView([RX_LAT,RX_LON],9);
+var map = L.map('map',{zoomControl:false, scrollWheelZoom:true, zoomSnap:0, zoomDelta:0.5, wheelPxPerZoomLevel:200, wheelDebounceTime:20}).setView([RX_LAT,RX_LON],9);
 map.createPane('rings');    map.getPane('rings').style.zIndex    = 420;
 map.createPane('trails');   map.getPane('trails').style.zIndex   = 450;
 map.createPane('avOverlay');map.getPane('avOverlay').style.zIndex = 440;
@@ -4736,7 +4736,7 @@ function setSortMode(mode){
 }
 setSortMode(window.sortMode);
 updateFlights();
-setInterval(updateFlights,5000);
+setInterval(updateFlights,2000);
 function updateLocalClock(){
   var el=document.getElementById('local-clock');
   if(!el) return;
