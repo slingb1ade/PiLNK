@@ -3146,6 +3146,26 @@ var radioAudioEl = (function(){
   el.addEventListener('error', function(){
     if (radioPlaying) setTimeout(reconnect, 200);
   });
+
+  // v1.2.9 Live Edge — keep playback within ~0.3s of the live stream front
+  // edge. Browsers (especially Safari) accumulate 5–15s of buffer on long-
+  // running <audio> streams and never catch up on their own, so ATC ends up
+  // permanently lagged. timeupdate fires ~4×/sec during playback; if we've
+  // drifted past LIVE_EDGE_DRIFT_SEC behind buffered.end, jump forward to
+  // (end - LIVE_EDGE_MARGIN_SEC). The threshold check makes the jump
+  // self-terminating — after a jump we're well under the threshold so we
+  // don't loop.
+  var LIVE_EDGE_DRIFT_SEC  = 1.0;
+  var LIVE_EDGE_MARGIN_SEC = 0.3;
+  el.addEventListener('timeupdate', function(){
+    if (!radioPlaying || el.paused) return;
+    if (el.buffered.length === 0) return;
+    var end = el.buffered.end(el.buffered.length - 1);
+    if ((end - el.currentTime) > LIVE_EDGE_DRIFT_SEC) {
+      try { el.currentTime = end - LIVE_EDGE_MARGIN_SEC; } catch(e){}
+    }
+  });
+
   return el;
 })();
 

@@ -192,7 +192,7 @@ class SDRController:
                     '-af', 'volume=12dB,highpass=f=200,lowpass=f=3400',
                     '-c:a', 'libopus',
                     '-b:a', OPUS_BITRATE,
-                    '-application', 'voip',
+                    '-application', 'lowdelay',
                     '-vbr', 'on',
                     '-frame_duration', '20',
                     '-f', 'ogg',
