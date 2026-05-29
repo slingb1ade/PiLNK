@@ -325,7 +325,7 @@ NODE_VERIFY_CODE = _load_pilnk_code()
 # Loose enough to still catch genuine military / U-2 / supercruise activity.
 STATS_MIN_SPEED_KTS = 30      # filter taxi / decode noise floor
 STATS_MAX_SPEED_KTS = 750     # SR-71 retired; F-22 supercruise ~600 kts; 750 = generous ceiling
-STATS_MAX_ALT_FT    = 70000   # U-2 operational ceiling; anything higher = decode error
+STATS_MAX_ALT_FT    = 60000   # FL600 — above any commercial traffic; rejects Gillham code decode glitches (e.g. C150 at FL960)
 
 # Stats tracker (computed server-side for profile display)
 node_stats = {
