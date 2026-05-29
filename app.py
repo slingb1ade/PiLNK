@@ -114,7 +114,7 @@ def _adopt_server_location(new_lat, new_lon):
 # port 8080) and saves a network round-trip on every poll. Works on
 # any install that runs dump1090-fa, including amd64 boxes that don't
 # bundle the SkyAware web UI.
-DUMP1090_AIRCRAFT_JSON = '/run/dump1090-fa/aircraft.json'
+DUMP1090_AIRCRAFT_JSON = _config.get('aircraft_json_path', '/run/dump1090-fa/aircraft.json')
 
 def read_aircraft_json():
     """Return raw bytes from dump1090-fa's aircraft.json, or None on error."""
