@@ -1026,6 +1026,26 @@ def rainviewer_proxy():
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
+# ── RainViewer tile proxy — same-origin tiles for cloud cover pixel sampling ──
+# Proxies PNG tiles from tilecache.rainviewer.com so the browser treats them as
+# same-origin, allowing canvas getImageData() without tainting. Only used when
+# the cloud cover toggle is on; normal rain overlay still hits tilecache direct.
+@app.route('/api/rv-tile/<path:tile_path>')
+def rainviewer_tile_proxy(tile_path):
+    try:
+        r = requests.get(
+            'https://tilecache.rainviewer.com/' + tile_path,
+            timeout=5,
+            headers={'User-Agent': 'PiLNK/1.0 (+https://pilnk.io)'}
+        )
+        resp = make_response(r.content)
+        resp.headers['Content-Type'] = 'image/png'
+        resp.headers['Access-Control-Allow-Origin'] = '*'
+        resp.headers['Cache-Control'] = 'public, max-age=300'
+        return resp
+    except Exception:
+        return make_response(b'', 204)  # silent empty on failure — never block aircraft render
+
 # ── Planespotters.net proxy — aircraft photos ──────────────
 @app.route('/api/planespotters/<path:hex>')
 def planespotters_proxy(hex):
