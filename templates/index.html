@@ -1040,6 +1040,100 @@
       <button class="theme-toggle" id="themeBtn" onclick="toggleTheme()">🌙 Dark</button>
     </div>
   </div>
+  <!-- ── PHASE 2 PAIRING BANNER ────────────────────────────────────────────
+       Shown only on a fresh, unclaimed node (no PiLNK Code yet). Polls
+       /api/pairing/status; displays the pairing code so a headless operator
+       can claim the node from pilnk.io without reading terminal scrollback.
+       Self-contained (markup + style + script) so it's cleanly reversible. -->
+  <div id="pairBanner" style="display:none;">
+    <div class="pair-inner">
+      <div class="pair-icon">📡</div>
+      <div class="pair-body">
+        <div class="pair-title">This node isn't claimed yet</div>
+        <div class="pair-steps">
+          Log in at <strong>pilnk.io</strong> → your <strong>Profile</strong> → enter this pairing code:
+        </div>
+      </div>
+      <div class="pair-code" id="pairCode">------</div>
+      <div class="pair-wait" id="pairWait">waiting…</div>
+    </div>
+  </div>
+  <style>
+    #pairBanner{
+      background:linear-gradient(90deg,rgba(59,130,246,0.14),rgba(59,130,246,0.04));
+      border-bottom:1px solid rgba(59,130,246,0.35);
+      padding:10px 16px;
+    }
+    #pairBanner .pair-inner{
+      display:flex;align-items:center;gap:14px;flex-wrap:wrap;
+      max-width:1100px;margin:0 auto;
+    }
+    #pairBanner .pair-icon{font-size:1.6rem;line-height:1;}
+    #pairBanner .pair-body{flex:1 1 260px;min-width:0;}
+    #pairBanner .pair-title{font-weight:700;font-size:0.95rem;margin-bottom:2px;}
+    #pairBanner .pair-steps{font-size:0.8rem;color:var(--text-dim);}
+    #pairBanner .pair-code{
+      font-family:ui-monospace,Menlo,Consolas,monospace;
+      font-size:1.7rem;font-weight:800;letter-spacing:0.22em;
+      color:#3b82f6;padding:4px 14px;border:1px solid rgba(59,130,246,0.4);
+      border-radius:8px;background:rgba(59,130,246,0.08);
+      user-select:all;cursor:text;
+    }
+    #pairBanner .pair-wait{
+      font-size:0.72rem;color:var(--text-dim);min-width:64px;text-align:right;
+    }
+    #pairBanner .pair-wait.claimed{color:#22c55e;font-weight:700;}
+    #pairBanner .pair-wait.error{color:#ef4444;}
+  </style>
+  <script>
+  (function(){
+    // Poll the local pairing status. The endpoint only reports active:true on
+    // a node with no stored PiLNK Code, so on every already-claimed node the
+    // banner stays hidden and this loop costs one quiet request every 5s.
+    var bannerEl = document.getElementById('pairBanner');
+    var codeEl   = document.getElementById('pairCode');
+    var waitEl   = document.getElementById('pairWait');
+    if(!bannerEl) return;
+    var stopped = false;
+    function poll(){
+      if(stopped) return;
+      fetch('/api/pairing/status', {cache:'no-store'})
+        .then(function(r){ return r.ok ? r.json() : null; })
+        .then(function(d){
+          if(!d){ schedule(); return; }
+          if(d.claimed){
+            // Node just got claimed — show a brief success state, then the
+            // page will naturally have a live node on its next normal load.
+            codeEl.textContent = d.pairing_code || '✓';
+            waitEl.textContent = 'claimed ✓';
+            waitEl.className = 'pair-wait claimed';
+            bannerEl.style.display = 'block';
+            stopped = true;          // stop polling; node is live now
+            return;
+          }
+          if(d.active && d.pairing_code){
+            codeEl.textContent = d.pairing_code;
+            waitEl.textContent = 'waiting…';
+            waitEl.className = 'pair-wait';
+            bannerEl.style.display = 'block';
+          } else if(d.error){
+            // Registration failed (e.g. offline at boot). Surface it quietly.
+            codeEl.textContent = '----';
+            waitEl.textContent = 'retry on restart';
+            waitEl.className = 'pair-wait error';
+            bannerEl.style.display = (d.error === 'expired') ? 'block' : 'none';
+          } else {
+            // active:false, not claimed, no error => normal claimed node.
+            bannerEl.style.display = 'none';
+          }
+          schedule();
+        })
+        .catch(function(){ schedule(); });   // endpoint missing on old nodes — stay hidden
+    }
+    function schedule(){ if(!stopped) setTimeout(poll, 5000); }
+    poll();
+  })();
+  </script>
   <div id="body">
     <div id="sidebar-backdrop" onclick="toggleSidebar()"></div>
     <div id="sidebar">

@@ -142,37 +142,13 @@ if [ -f /etc/piaware.conf ] || dpkg -l piaware &>/dev/null 2>&1; then
   fi
 fi
 
-# ── One question ───────────────────────────────────────────
+# ── No questions ───────────────────────────────────────────
 step "CONFIGURATION"
 echo ""
-printf "  One question and PiLNK installs itself.\n"
-printf "  Your PiLNK Code is on your pilnk.io profile page.\n"
-printf "  You'll set your node's location on the website after install —\n"
-printf "  no need to look up your coordinates here.\n"
-echo ""
-
-# PiLNK Code (8 hex characters from profile page)
-printf "${CYAN}  PiLNK Code${RESET} (8 characters from pilnk.io → Profile): " > /dev/tty
-read -r CODE < /dev/tty
-CODE=$(echo "$CODE" | tr '[:lower:]' '[:upper:]' | tr -d ' ')
-if echo "$CODE" | grep -qE '^[A-F0-9]{8}$'; then
-  ok "PiLNK Code accepted"
-elif echo "$CODE" | grep -qE '^[A-Z0-9]{4}-[A-Z0-9]{4}$'; then
-  warn "That looks like an old-format code (has a dash)."
-  warn "New accounts use 8-character codes without a dash."
-  warn "Check your profile page at pilnk.io for your PiLNK Code."
-  printf "  Continue with $CODE anyway? [y/N] " > /dev/tty
-  read -r yn < /dev/tty
-  [[ ! "$yn" =~ ^[Yy]$ ]] && exit 1
-else
-  err "Invalid PiLNK Code."
-  err "Your code is 8 characters, e.g. 4E4F196F"
-  err "Find it at pilnk.io → Profile"
-  exit 1
-fi
-
-echo ""
-printf "  ${BOLD}PiLNK Code:${RESET} $CODE\n"
+printf "  No setup questions — PiLNK installs itself.\n"
+printf "  After install, this node shows a short ${BOLD}pairing code${RESET}.\n"
+printf "  You'll claim it on pilnk.io (Profile) to link it to your account,\n"
+printf "  then set its location on the map there. Nothing to type here.\n"
 echo ""
 printf "  Ready to install? [Y/n] " > /dev/tty
 read -r yn < /dev/tty
@@ -499,19 +475,20 @@ if [ "$CLAIMED_COUNT" -gt 0 ]; then
 fi
 
 
-# ── Write PiLNK Code to config.json ───────────────────────
-step "PiLNK CODE"
+# ── Write config.json (node identity comes from pairing) ──
+step "NODE CONFIG"
 APP_PY="$PILNK_DIR/app.py"
 CONFIG_JSON="$PILNK_DIR/config.json"
 
 # Write config.json (gitignored — survives git pull)
-# Source of truth for node identity: code, OTA preference, VHF dongle serial.
-# Location is intentionally NOT written here — a fresh node has none until the
-# operator pins it on pilnk.io, after which the node adopts it from the ping
-# response (see _adopt_server_location() in app.py). Omitting the keys leaves
-# read_receiver_location() returning None until then, which is correct.
-printf '{\n  "pilnk_code": "%s",\n  "auto_update": true,\n  "vhf_serial": "%s"\n}\n' "$CODE" "$VHF_SERIAL" > "$CONFIG_JSON"
-ok "PiLNK Code + VHF serial saved to config.json"
+# Phase 2 pairing: NO pilnk_code is written here. On first boot app.py sees
+# no code, registers with pilnk.io, and shows a pairing code the operator
+# claims from their profile — the real verify_code then flows down and app.py
+# writes it into this file itself. Location is likewise NOT written: a fresh
+# node has none until the operator pins it on pilnk.io, after which the node
+# adopts it from the ping response (see _adopt_server_location() in app.py).
+printf '{\n  "auto_update": true,\n  "vhf_serial": "%s"\n}\n' "$VHF_SERIAL" > "$CONFIG_JSON"
+ok "Node config saved — pairing code will show on first boot"
 
 # Ensure config.json is gitignored (survives git pull)
 GITIGNORE="$PILNK_DIR/.gitignore"
@@ -622,8 +599,9 @@ echo ""
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 printf "\n  ${GREEN}${BOLD}🎉 PiLNK installed successfully!${RESET}\n\n"
 printf "  ${BOLD}Dashboard:${RESET}    http://$PI_IP:5000\n"
+printf "  ${BOLD}Pairing:${RESET}      open the dashboard — a pairing code shows at the top\n"
+printf "  ${BOLD}Claim it:${RESET}     pilnk.io → Profile → enter the code to link this node\n"
 printf "  ${BOLD}Location:${RESET}     set it on pilnk.io → Profile → your node\n"
-printf "  ${BOLD}PiLNK Code:${RESET}  ${GREEN}$CODE${RESET}\n"
 echo ""
 printf "  ${CYAN}Open Chrome and go to: http://$PI_IP:5000${RESET}\n"
 printf "  ${CYAN}Your node will appear on the PiLNK network map${RESET}\n"
