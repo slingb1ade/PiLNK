@@ -1049,8 +1049,8 @@
     <div class="pair-inner">
       <div class="pair-icon">📡</div>
       <div class="pair-body">
-        <div class="pair-title">This node isn't claimed yet</div>
-        <div class="pair-steps">
+        <div class="pair-title" id="pairTitle">This node isn't claimed yet</div>
+        <div class="pair-steps" id="pairSteps">
           Log in at <strong>pilnk.io</strong> → your <strong>Profile</strong> → enter this pairing code:
         </div>
       </div>
@@ -1093,6 +1093,8 @@
     var bannerEl = document.getElementById('pairBanner');
     var codeEl   = document.getElementById('pairCode');
     var waitEl   = document.getElementById('pairWait');
+    var titleEl  = document.getElementById('pairTitle');
+    var stepsEl  = document.getElementById('pairSteps');
     if(!bannerEl) return;
     var stopped = false;
     function poll(){
@@ -1102,8 +1104,11 @@
         .then(function(d){
           if(!d){ schedule(); return; }
           if(d.claimed){
-            // Node just got claimed — show a brief success state, then the
-            // page will naturally have a live node on its next normal load.
+            // Node just got claimed — show a consistent success state. Update
+            // the title + steps too (not just the wait badge), otherwise the
+            // banner contradicts itself: "isn't claimed yet" next to "claimed ✓".
+            if(titleEl) titleEl.textContent = 'Node claimed!';
+            if(stepsEl) stepsEl.innerHTML = 'This node is now linked to your account and reporting to the network.';
             codeEl.textContent = d.pairing_code || '✓';
             waitEl.textContent = 'claimed ✓';
             waitEl.className = 'pair-wait claimed';
@@ -1117,11 +1122,16 @@
             waitEl.className = 'pair-wait';
             bannerEl.style.display = 'block';
           } else if(d.error){
-            // Registration failed (e.g. offline at boot). Surface it quietly.
+            // Registration genuinely failed (e.g. no internet at boot). Surface
+            // it quietly. NOTE: an expired/dead code no longer lands here — the
+            // node self-heals (clears the dead code + re-registers a fresh one
+            // automatically), so this is only for hard registration failures.
+            if(titleEl) titleEl.textContent = "Couldn't reach pilnk.io";
+            if(stepsEl) stepsEl.innerHTML = 'The node will keep retrying. Check its internet connection.';
             codeEl.textContent = '----';
-            waitEl.textContent = 'retry on restart';
+            waitEl.textContent = 'retrying…';
             waitEl.className = 'pair-wait error';
-            bannerEl.style.display = (d.error === 'expired') ? 'block' : 'none';
+            bannerEl.style.display = 'block';
           } else {
             // active:false, not claimed, no error => normal claimed node.
             bannerEl.style.display = 'none';
