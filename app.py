@@ -303,11 +303,14 @@ trail_thread = threading.Thread(target=record_trails, daemon=True)
 trail_thread.start()
 
 # ── PiLNK.io server ping — sends aircraft data + stats every 30s
-# PiLNK Code is read from config.json (created by installer, gitignored)
+# PiLNK Code is read from config.json (created by installer, gitignored).
+# Phase 2 web-pairing: if no code is stored, app.py self-bootstraps via
+# register_pending → pairing code shown at startup → operator claims on
+# pilnk.io → poll_token confirms claim → verify_code written to config.json
+# and ping thread starts live (no restart).
 def _load_pilnk_code():
-    config_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'config.json')
     try:
-        with open(config_path, 'r') as f:
+        with open(CONFIG_PATH, 'r') as f:
             cfg = json.load(f)
             code = cfg.get('pilnk_code', '').strip()
             if code:
@@ -316,8 +319,173 @@ def _load_pilnk_code():
         pass
     return 'YOUR_VERIFY_CODE_HERE'
 
+def _save_pending(pairing_code, poll_token):
+    """Persist pairing state so a reboot mid-pairing resumes (same code, same token)."""
+    try:
+        cfg = {}
+        try:
+            with open(CONFIG_PATH, 'r') as f:
+                cfg = json.load(f)
+        except Exception:
+            pass
+        cfg['pending'] = {'pairing_code': pairing_code, 'poll_token': poll_token}
+        tmp = CONFIG_PATH + '.tmp'
+        with open(tmp, 'w') as f:
+            json.dump(cfg, f, indent=2)
+        os.replace(tmp, CONFIG_PATH)
+    except Exception as e:
+        print(f'[PILNK-PAIR] Warning: could not save pending state: {e}')
+
+def _load_pending():
+    """Return (pairing_code, poll_token) from a previous run, or (None, None)."""
+    try:
+        with open(CONFIG_PATH, 'r') as f:
+            cfg = json.load(f)
+        p = cfg.get('pending')
+        if p and p.get('pairing_code') and p.get('poll_token'):
+            return p['pairing_code'], p['poll_token']
+    except Exception:
+        pass
+    return None, None
+
+def _clear_pending_adopt_code(verify_code):
+    """On successful claim: write verify_code into config.json, drop the pending block."""
+    global NODE_VERIFY_CODE, _config
+    try:
+        cfg = {}
+        try:
+            with open(CONFIG_PATH, 'r') as f:
+                cfg = json.load(f)
+        except Exception:
+            pass
+        cfg['pilnk_code'] = verify_code
+        cfg.pop('pending', None)
+        tmp = CONFIG_PATH + '.tmp'
+        with open(tmp, 'w') as f:
+            json.dump(cfg, f, indent=2)
+        os.replace(tmp, CONFIG_PATH)
+        _config = cfg
+        NODE_VERIFY_CODE = verify_code
+        print(f'[PILNK-PAIR] Claimed! verify_code adopted — ping thread starting')
+        return True
+    except Exception as e:
+        print(f'[PILNK-PAIR] Failed to adopt verify_code: {e}')
+        return False
+
+# Pairing state (shared between pairing thread and the /api/pairing/status endpoint)
+pairing_state = {
+    'active': False,        # True while waiting to be claimed
+    'claimed': False,       # True once successfully claimed
+    'pairing_code': None,   # 6-char code displayed at startup
+    'error': None,          # set if registration fails
+}
+pairing_state_lock = threading.Lock()
+
+def _pairing_poll_thread(poll_token):
+    """Poll claim_poll every 5s until claimed, then start the ping thread live."""
+    global pairing_state
+    while True:
+        try:
+            payload = json.dumps({'action': 'claim_poll', 'poll_token': poll_token}).encode()
+            req = urllib.request.Request(
+                'https://pilnk.io/api/node.php',
+                data=payload,
+                headers={'Content-Type': 'application/json', 'User-Agent': 'PiLNK/1.0'}
+            )
+            resp = urllib.request.urlopen(req, timeout=10)
+            rj = json.loads(resp.read().decode())
+            if rj.get('claimed') and rj.get('verify_code'):
+                # Adopt and start ping
+                if _clear_pending_adopt_code(rj['verify_code']):
+                    with pairing_state_lock:
+                        pairing_state['active'] = False
+                        pairing_state['claimed'] = True
+                    ping_t = threading.Thread(target=ping_server, daemon=True)
+                    ping_t.start()
+                    print('[PILNK] Server ping active — reporting to pilnk.io')
+                    return   # done — this thread exits
+            elif rj.get('expired'):
+                # Token expired — operator took >24h. Fresh restart will re-register.
+                print('[PILNK-PAIR] Pairing code expired. Restart the service to get a new code.')
+                with pairing_state_lock:
+                    pairing_state['active'] = False
+                    pairing_state['error'] = 'expired'
+                return
+        except Exception as e:
+            print(f'[PILNK-PAIR] Poll error (will retry): {e}')
+        time.sleep(5)
+
+def _start_pairing_flow():
+    """Register with pilnk.io (or resume a saved pairing), print the code, start poll thread."""
+    global pairing_state
+
+    # Resume from a previous run if we already have a token
+    saved_code, saved_token = _load_pending()
+    if saved_code and saved_token:
+        print(f'[PILNK-PAIR] Resuming pairing from previous run')
+        with pairing_state_lock:
+            pairing_state['active'] = True
+            pairing_state['pairing_code'] = saved_code
+        _print_pairing_banner(saved_code)
+        t = threading.Thread(target=_pairing_poll_thread, args=(saved_token,), daemon=True)
+        t.start()
+        return
+
+    # Fresh registration
+    try:
+        import platform
+        pi_model = None
+        try:
+            with open('/proc/device-tree/model', 'r') as f:
+                pi_model = f.read().strip().rstrip('\x00')
+        except Exception:
+            pass
+        payload = json.dumps({
+            'action': 'register_pending',
+            'node_name': platform.node(),
+            'pi_model': pi_model,
+        }).encode()
+        req = urllib.request.Request(
+            'https://pilnk.io/api/node.php',
+            data=payload,
+            headers={'Content-Type': 'application/json', 'User-Agent': 'PiLNK/1.0'}
+        )
+        resp = urllib.request.urlopen(req, timeout=15)
+        rj = json.loads(resp.read().decode())
+        pairing_code = rj.get('pairing_code')
+        poll_token = rj.get('poll_token')
+        if not pairing_code or not poll_token:
+            raise ValueError(f'Unexpected registration response: {rj}')
+        _save_pending(pairing_code, poll_token)
+        with pairing_state_lock:
+            pairing_state['active'] = True
+            pairing_state['pairing_code'] = pairing_code
+        _print_pairing_banner(pairing_code)
+        t = threading.Thread(target=_pairing_poll_thread, args=(poll_token,), daemon=True)
+        t.start()
+    except Exception as e:
+        print(f'[PILNK-PAIR] Registration failed: {e}')
+        with pairing_state_lock:
+            pairing_state['error'] = str(e)
+        print('[PILNK-PAIR] Will retry on next restart. Check your internet connection.')
+
+def _print_pairing_banner(code):
+    bar = '=' * 58
+    print(f'\n{bar}')
+    print(f'  PILNK NODE PAIRING')
+    print(f'{bar}')
+    print(f'')
+    print(f'  Pairing code:   >>> {code} <<<')
+    print(f'')
+    print(f'  1. Log in at  https://pilnk.io')
+    print(f'  2. Go to your Profile → Node section')
+    print(f'  3. Enter the code above to claim this node')
+    print(f'')
+    print(f'  Waiting... (code valid for 24 hours)')
+    print(f'{bar}\n')
+
 NODE_VERIFY_CODE = _load_pilnk_code()
-# Set this to your node's verify code from your profile page
+# Populated at startup from config.json; updated in-memory when pairing completes.
 
 # Sanity gates for all-time records — single corrupt ADS-B frames have
 # polluted historical leaderboards with impossible values (e.g. 943 kts
@@ -750,7 +918,19 @@ if NODE_VERIFY_CODE != 'YOUR_VERIFY_CODE_HERE':
     ping_thread.start()
     print('[PILNK] Server ping active — reporting to pilnk.io')
 else:
-    print('[PILNK] Set your PiLNK Code in config.json or re-run the installer')
+    # No code in config.json — start Phase 2 pairing flow
+    _start_pairing_flow()
+
+# ── Pairing status endpoint (polled by local dashboard while unclaimed)
+@app.route('/api/pairing/status', methods=['GET'])
+def api_pairing_status():
+    with pairing_state_lock:
+        return jsonify({
+            'active':       pairing_state['active'],
+            'claimed':      pairing_state['claimed'],
+            'pairing_code': pairing_state['pairing_code'],
+            'error':        pairing_state['error'],
+        })
 
 # Start OTA checker thread
 ota_thread = threading.Thread(target=ota_checker, daemon=True)
