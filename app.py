@@ -372,6 +372,27 @@ def _clear_pending_adopt_code(verify_code):
         print(f'[PILNK-PAIR] Failed to adopt verify_code: {e}')
         return False
 
+def _clear_pending():
+    """Drop ONLY the pending block (no code adopted). Used to discard a dead/expired
+    pairing token so _start_pairing_flow() registers genuinely fresh instead of
+    resuming the same poisoned token via _load_pending()."""
+    try:
+        cfg = {}
+        try:
+            with open(CONFIG_PATH, 'r') as f:
+                cfg = json.load(f)
+        except Exception:
+            pass
+        if 'pending' not in cfg:
+            return
+        cfg.pop('pending', None)
+        tmp = CONFIG_PATH + '.tmp'
+        with open(tmp, 'w') as f:
+            json.dump(cfg, f, indent=2)
+        os.replace(tmp, CONFIG_PATH)
+    except Exception as e:
+        print(f'[PILNK-PAIR] Warning: could not clear pending state: {e}')
+
 # Pairing state (shared between pairing thread and the /api/pairing/status endpoint)
 pairing_state = {
     'active': False,        # True while waiting to be claimed
@@ -405,12 +426,20 @@ def _pairing_poll_thread(poll_token):
                     print('[PILNK] Server ping active — reporting to pilnk.io')
                     return   # done — this thread exits
             elif rj.get('expired'):
-                # Token expired — operator took >24h. Fresh restart will re-register.
-                print('[PILNK-PAIR] Pairing code expired. Restart the service to get a new code.')
+                # The token is dead — either the operator took >24h (TTL lapsed) OR the
+                # row was poisoned (claimed by a since-deleted user, so the server can
+                # never hand down a verify_code). Either way this code is unusable.
+                # SELF-HEAL: discard the dead pending token and re-register a FRESH code
+                # automatically — no manual restart needed. We MUST _clear_pending()
+                # first, otherwise _start_pairing_flow() would _load_pending() and resume
+                # this very same dead token, looping forever on the poison.
+                print('[PILNK-PAIR] Pairing code dead/expired — re-registering a fresh code...')
                 with pairing_state_lock:
                     pairing_state['active'] = False
-                    pairing_state['error'] = 'expired'
-                return
+                    pairing_state['error'] = None
+                _clear_pending()
+                _start_pairing_flow()   # registers fresh, prints new code, starts a new poll thread
+                return                  # this (old) thread exits; the new one takes over
         except Exception as e:
             print(f'[PILNK-PAIR] Poll error (will retry): {e}')
         time.sleep(5)
