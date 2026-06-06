@@ -35,6 +35,17 @@
   .tab-btn{flex:1;padding:8px 4px;font-family:'Orbitron',sans-serif;font-size:0.45rem;letter-spacing:0.08em;color:var(--text-dim);background:none;border:none;cursor:pointer;text-transform:uppercase;transition:all 0.2s;border-bottom:2px solid transparent;}
   .tab-btn:hover{color:var(--blue-mid);}
   .tab-btn.active{color:var(--blue-mid);border-bottom-color:var(--blue-mid);}
+  /* ── Sidebar view selector ── full dropdown that replaces the old 5-button tab bar so the sidebar scales to any number of views (6+). Trigger shows the current view; menu drops down over the panel below. ── */
+  .nav-dd{position:relative;flex-shrink:0;}
+  .nav-trigger{width:100%;display:flex;align-items:center;justify-content:space-between;gap:8px;padding:11px 14px;background:var(--bg-card);border:none;border-bottom:1px solid var(--border);cursor:pointer;font-family:'Orbitron',sans-serif;font-size:0.6rem;font-weight:600;letter-spacing:0.18em;text-transform:uppercase;color:var(--blue-mid);transition:background 0.2s,color 0.2s;}
+  .nav-trigger:hover{color:var(--blue-light);background:var(--border);}
+  .nav-caret{font-size:0.7rem;color:var(--text-dim);transition:transform 0.2s;}
+  .nav-dd.open .nav-caret{transform:rotate(180deg);}
+  .nav-menu{display:none;position:absolute;top:100%;left:0;right:0;background:var(--bg-panel);border:1px solid var(--border);border-top:none;box-shadow:0 10px 28px rgba(0,0,0,0.4);z-index:1500;max-height:60vh;overflow-y:auto;}
+  .nav-dd.open .nav-menu{display:block;}
+  .nav-item{width:100%;text-align:left;padding:10px 14px;background:none;border:none;border-left:2px solid transparent;cursor:pointer;font-family:'Orbitron',sans-serif;font-size:0.55rem;letter-spacing:0.12em;text-transform:uppercase;color:var(--text-dim);transition:color 0.15s,background 0.15s,border-color 0.15s;}
+  .nav-item:hover{color:var(--blue-mid);background:var(--bg-card);}
+  .nav-item.active{color:var(--blue-light);border-left-color:var(--blue-mid);background:var(--bg-card);}
   .tab-content{display:none;flex:1;flex-direction:column;overflow:hidden;min-height:0;}
   .tab-content.active{display:flex;}
   .scroll-area{overflow-y:auto;overflow-x:hidden;}
@@ -1033,12 +1044,19 @@
 
       <!-- FLIGHT STATUS STRIP REMOVED — delayed shown on map tags -->
 
-      <div class="tab-bar">
-        <button class="tab-btn active" onclick="showTab('traffic',event)">Traffic</button>
-        <button class="tab-btn" onclick="showTab('radio',event)">Radio</button>
-        <button class="tab-btn" onclick="showTab('history',event)">History</button>
-        <button class="tab-btn" onclick="showTab('options',event)">Options</button>
-        <button class="tab-btn" onclick="showTab('stats',event)">Stats</button>
+      <!-- Sidebar view selector — full dropdown (replaces the old 5-button tab bar; scales to any number of views) -->
+      <div class="nav-dd" id="navDD">
+        <button class="nav-trigger" id="navTrigger" onclick="toggleNavMenu(event)" aria-haspopup="true" aria-expanded="false">
+          <span id="navTriggerLabel">Traffic</span>
+          <span class="nav-caret">▾</span>
+        </button>
+        <div class="nav-menu" id="navMenu" role="menu">
+          <button class="nav-item active" data-tab="traffic" role="menuitem" onclick="navPick('traffic','Traffic')">Traffic</button>
+          <button class="nav-item" data-tab="radio" role="menuitem" onclick="navPick('radio','Radio')">Radio</button>
+          <button class="nav-item" data-tab="history" role="menuitem" onclick="navPick('history','History')">History</button>
+          <button class="nav-item" data-tab="options" role="menuitem" onclick="navPick('options','Options')">Options</button>
+          <button class="nav-item" data-tab="stats" role="menuitem" onclick="navPick('stats','Stats')">Stats</button>
+        </div>
       </div>
 
       <!-- TRAFFIC TAB — flight list -->
@@ -1584,6 +1602,33 @@ function showTab(name, e) {
   if (name === 'history') loadHistory();
   if (name === 'radio') radioCheckVHF();
 }
+
+// ── Sidebar view dropdown ── wraps showTab() (untouched) and keeps the
+// trigger label + active item in sync. Scales to any number of views.
+function toggleNavMenu(e){
+  if (e) e.stopPropagation();
+  var dd = document.getElementById('navDD');
+  var open = dd.classList.toggle('open');
+  var t = document.getElementById('navTrigger');
+  if (t) t.setAttribute('aria-expanded', open ? 'true' : 'false');
+}
+function closeNavMenu(){
+  var dd = document.getElementById('navDD');
+  if (dd){ dd.classList.remove('open'); var t=document.getElementById('navTrigger'); if(t) t.setAttribute('aria-expanded','false'); }
+}
+function navPick(name, label){
+  showTab(name);
+  var lbl = document.getElementById('navTriggerLabel');
+  if (lbl) lbl.textContent = label;
+  document.querySelectorAll('.nav-item').forEach(function(i){ i.classList.remove('active'); });
+  var it = document.querySelector('.nav-item[data-tab="'+name+'"]');
+  if (it) it.classList.add('active');
+  closeNavMenu();
+}
+document.addEventListener('click', function(ev){
+  var dd = document.getElementById('navDD');
+  if (dd && dd.classList.contains('open') && !dd.contains(ev.target)) closeNavMenu();
+});
 
 // ── FLIGHT HISTORY ────────────────────────────────────────
 var historyLoaded = false;
