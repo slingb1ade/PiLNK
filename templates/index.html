@@ -21,6 +21,10 @@
   .logo-version{display:inline-block;font-family:'Share Tech Mono',monospace;font-size:0.55rem;letter-spacing:0.12em;background:var(--green);color:#000;padding:2px 6px;border-radius:3px;font-weight:700;margin-left:8px;vertical-align:middle;position:relative;top:-2px;}
   .header-right{display:flex;align-items:center;gap:20px;}
   .status-bar{display:flex;align-items:center;gap:20px;font-size:0.65rem;color:var(--text-dim);letter-spacing:0.1em;}
+  /* ── Network OFFLINE pill ── hidden while the node is reaching pilnk.io; shows a loud red badge in the header when pings stop landing (driven by /api/net/status, 3 missed pings). ── */
+  .net-offline-pill{display:none;align-items:center;gap:6px;background:#dc2626;color:#fff;font-family:'Orbitron',sans-serif;font-size:0.6rem;font-weight:700;letter-spacing:0.18em;padding:5px 12px;border-radius:20px;box-shadow:0 0 10px rgba(220,38,38,0.7);text-transform:uppercase;white-space:nowrap;animation:netPulse 1.6s ease-in-out infinite;}
+  .net-offline-pill.show{display:inline-flex;}
+  @keyframes netPulse{0%,100%{box-shadow:0 0 8px rgba(220,38,38,0.55);}50%{box-shadow:0 0 18px rgba(220,38,38,0.95);}}
   .dot{display:inline-block;width:7px;height:7px;border-radius:50%;background:var(--green);box-shadow:0 0 6px var(--green);margin-right:5px;}
   .theme-toggle{background:var(--bg-card);border:1px solid var(--border);border-radius:20px;padding:4px 12px;cursor:pointer;font-size:0.68rem;color:var(--text-dim);font-family:'Share Tech Mono',monospace;transition:all 0.2s;}
   .theme-toggle:hover{border-color:var(--blue-mid);color:var(--text);}
@@ -910,10 +914,10 @@
       <span class="logo-text">PiLNK</span><span class="logo-version" id="logoVersion">v1.0.0</span>
     </div>
     <div class="header-right">
+      <div id="netOfflinePill" class="net-offline-pill" title="This node is not reaching the PiLNK network">● OFFLINE</div>
       <div class="status-bar">
         <span><span class="dot"></span>ADS-B</span>
         <span id="hdr-count">-- AIRCRAFT</span>
-        <span id="hdr-freq">118.700 MHz</span>
       </div>
       <div id="local-clock" class="header-clock" title="Local time">--:--:--</div>
       <button class="theme-toggle" id="themeBtn" onclick="toggleTheme()">🌙 Dark</button>
@@ -3309,10 +3313,6 @@ function radioUpdateUI() {
     status.style.color = '';
   }
 
-  // Update header freq display
-  var hdrFreq = document.getElementById('hdr-freq');
-  if (hdrFreq) hdrFreq.textContent = freqMhz + ' MHz';
-
   // Update traffic tab mini status
   var tDot = document.getElementById('trafficRadioDot');
   var tFreq = document.getElementById('trafficRadioFreq');
@@ -5332,6 +5332,28 @@ function otaCheckNow() { ota.checkNow(); }
   <div class="wx-loading" id="wxLoading">Loading weather data...</div>
   <div id="wxContent" style="display:none;"></div>
 </div>
+<!-- ── Network OFFLINE pill poller ──────────────────────────────────────
+     Polls /api/net/status every 15s. Shows the red OFFLINE badge only when
+     the node IS paired but pings have stopped landing (online=false). On an
+     unpaired node (pairing banner showing) or an old node missing the
+     endpoint, it stays hidden — no false alarms. Self-contained + reversible. -->
+<script>
+(function(){
+  var pill = document.getElementById('netOfflinePill');
+  if (!pill) return;
+  function poll(){
+    fetch('/api/net/status', {cache:'no-store'})
+      .then(function(r){ return r.ok ? r.json() : null; })
+      .then(function(d){
+        if (d && d.paired === true && d.online === false) pill.classList.add('show');
+        else pill.classList.remove('show');
+      })
+      .catch(function(){ pill.classList.remove('show'); });
+  }
+  poll();
+  setInterval(poll, 15000);
+})();
+</script>
 
 </body>
 </html>

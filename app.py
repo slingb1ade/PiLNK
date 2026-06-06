@@ -651,7 +651,17 @@ def get_stats_payload():
         }
 
 
+# ── Network liveness ──────────────────────────────────────────────────────
+# The ping loop stamps PING_LAST_OK_TS on every successful report to pilnk.io.
+# /api/net/status reads it so the dashboard can show a clear OFFLINE pill when
+# we stop reaching the network. A node counts as "online" only if it is paired
+# AND pinged within NET_STALE_S (i.e. 3 missed 30s pings before we alarm, so a
+# single blip never false-triggers).
+NET_STALE_S = 90
+PING_LAST_OK_TS = 0.0
+
 def ping_server():
+    global PING_LAST_OK_TS
     while True:
         try:
             # Grab current aircraft from dump1090
@@ -724,6 +734,7 @@ def ping_server():
             except Exception as e:
                 print(f'[PILNK] Config adopt skipped: {e}')
 
+            PING_LAST_OK_TS = time.time()
             print(f'[PILNK] Ping sent — {len(aircraft)} aircraft')
         except Exception as e:
             print(f'[PILNK] Ping failed: {e}')
@@ -1025,6 +1036,25 @@ sdr = SDRController(device_serial=_config.get('vhf_serial', '00000002'))
 @app.route('/')
 def index():
     return render_template('index.html')
+
+@app.route('/api/net/status')
+def net_status():
+    """Network liveness for the dashboard OFFLINE pill. Reports whether this
+    node is paired and whether its last successful ping to pilnk.io is recent.
+    online = paired AND pinged within NET_STALE_S. Safe on every node: an
+    unpaired node returns paired=false so the UI shows the pairing banner
+    rather than a false OFFLINE alarm."""
+    now = time.time()
+    ts = PING_LAST_OK_TS
+    paired = bool(NODE_VERIFY_CODE)
+    age = (now - ts) if ts else None
+    online = bool(paired and ts and (now - ts) < NET_STALE_S)
+    return jsonify({
+        'paired': paired,
+        'online': online,
+        'last_ok_age_s': round(age, 1) if age is not None else None,
+        'stale_after_s': NET_STALE_S,
+    })
 
 # ── Audio API — controls VHF radio via SDR controller ─────
 @app.route('/audio/start', methods=['POST'])
