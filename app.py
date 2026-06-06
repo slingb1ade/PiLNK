@@ -1056,6 +1056,115 @@ def net_status():
         'stale_after_s': NET_STALE_S,
     })
 
+@app.route('/api/services')
+def services_status():
+    """systemd health for the System tab. Read-only `systemctl show` (no root).
+    Only units that actually exist on this node are returned, so nodes with a
+    different stack never show phantom rows. Fully defensive — any failure just
+    omits that unit."""
+    import subprocess
+    candidates = ['pilnk', 'dump1090-fa', 'dump978-fa']
+    out = []
+    for unit in candidates:
+        try:
+            r = subprocess.run(
+                ['systemctl', 'show', unit, '-p', 'LoadState', '-p', 'ActiveState', '-p', 'SubState'],
+                capture_output=True, text=True, timeout=4
+            )
+            props = {}
+            for line in r.stdout.splitlines():
+                if '=' in line:
+                    k, v = line.split('=', 1)
+                    props[k] = v
+            if props.get('LoadState') != 'loaded':
+                continue  # unit not installed on this node — skip
+            out.append({
+                'name': unit,
+                'active': props.get('ActiveState', '') == 'active',
+                'state': props.get('ActiveState', 'unknown'),
+                'sub': props.get('SubState', ''),
+            })
+        except Exception:
+            continue
+    return jsonify({'services': out})
+
+@app.route('/api/system')
+def system_health():
+    """Node health for the System tab: CPU/mem/disk/temp/uptime (psutil),
+    receiver RF stats (dump1090 stats.json), and version/OTA. Every field is
+    optional — anything unavailable returns null so the UI degrades cleanly.
+    NOTE: the receiver._debug_* fields are temporary probe aids to surface the
+    real stats.json key names; they get stripped once the shape is confirmed."""
+    info = {'vitals': {}, 'receiver': {}, 'version': {}}
+
+    # ── System vitals (psutil) ──
+    try:
+        import psutil
+        v = info['vitals']
+        try: v['load1'] = round(os.getloadavg()[0], 2)
+        except Exception: v['load1'] = None
+        v['cpu_pct'] = psutil.cpu_percent(interval=0.2)
+        v['mem_pct'] = psutil.virtual_memory().percent
+        v['disk_pct'] = psutil.disk_usage('/').percent
+        try: v['uptime_s'] = int(time.time() - psutil.boot_time())
+        except Exception: v['uptime_s'] = None
+        temp = None
+        try:
+            temps = psutil.sensors_temperatures() or {}
+            for key in ('cpu_thermal', 'coretemp', 'cpu-thermal'):
+                if key in temps and temps[key]:
+                    temp = round(temps[key][0].current, 1); break
+            if temp is None:
+                for arr in temps.values():
+                    if arr:
+                        temp = round(arr[0].current, 1); break
+        except Exception:
+            temp = None
+        if temp is None:
+            try:
+                with open('/sys/class/thermal/thermal_zone0/temp') as f:
+                    temp = round(int(f.read().strip()) / 1000.0, 1)
+            except Exception:
+                temp = None
+        v['temp_c'] = temp
+    except Exception as e:
+        info['vitals_error'] = str(e)
+
+    # ── Receiver RF (dump1090 stats.json, same dir as aircraft.json) ──
+    try:
+        stats_path = os.path.join(os.path.dirname(DUMP1090_AIRCRAFT_JSON), 'stats.json')
+        with open(stats_path) as f:
+            sj = json.load(f)
+        rx = info['receiver']
+        blk = sj.get('last1min') or sj.get('total') or {}
+        local = blk.get('local') or {}
+        sig = local.get('signal')
+        noise = local.get('noise')
+        rx['signal'] = sig
+        rx['noise'] = noise
+        rx['snr'] = round(sig - noise, 1) if (sig is not None and noise is not None) else None
+        rx['peak_signal'] = local.get('peak_signal')
+        rx['strong_signals'] = local.get('strong_signals')
+        rx['gain_db'] = local.get('gain_db')
+        msgs = blk.get('messages')
+        rx['messages_1min'] = msgs
+        rx['msg_per_sec'] = round(msgs / 60.0, 1) if isinstance(msgs, (int, float)) else None
+    except Exception as e:
+        info['receiver_error'] = str(e)
+
+    # ── Version / OTA (already tracked) ──
+    try:
+        info['version'] = {
+            'current': ota_status.get('current') or _get_local_version(),
+            'latest': ota_status.get('latest'),
+            'available': ota_status.get('available', False),
+            'last_check': ota_status.get('last_check'),
+        }
+    except Exception as e:
+        info['version_error'] = str(e)
+
+    return jsonify(info)
+
 # ── Audio API — controls VHF radio via SDR controller ─────
 @app.route('/audio/start', methods=['POST'])
 def audio_start():

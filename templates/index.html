@@ -46,6 +46,22 @@
   .nav-item{width:100%;text-align:left;padding:10px 14px;background:none;border:none;border-left:2px solid transparent;cursor:pointer;font-family:'Orbitron',sans-serif;font-size:0.55rem;letter-spacing:0.12em;text-transform:uppercase;color:var(--text-dim);transition:color 0.15s,background 0.15s,border-color 0.15s;}
   .nav-item:hover{color:var(--blue-mid);background:var(--bg-card);}
   .nav-item.active{color:var(--blue-light);border-left-color:var(--blue-mid);background:var(--bg-card);}
+  /* ── System Health tab ── service pills, stat grid, line rows. Temp goes amber >70 / red >80. ── */
+  .sys-services{display:flex;flex-direction:column;gap:6px;}
+  .sys-svc-row{display:flex;align-items:center;justify-content:space-between;font-family:'Share Tech Mono',monospace;font-size:0.72rem;color:var(--text);}
+  .sys-pill{font-family:'Orbitron',sans-serif;font-size:0.5rem;font-weight:700;letter-spacing:0.12em;padding:3px 9px;border-radius:12px;text-transform:uppercase;white-space:nowrap;}
+  .sys-pill.up{background:rgba(34,197,94,0.15);color:var(--green);border:1px solid rgba(34,197,94,0.45);}
+  .sys-pill.down{background:rgba(239,68,68,0.15);color:#ef4444;border:1px solid rgba(239,68,68,0.45);}
+  .sys-grid{display:grid;grid-template-columns:1fr 1fr;gap:8px;}
+  .sys-stat{background:var(--bg-card);border:1px solid var(--border);border-radius:5px;padding:8px 10px;}
+  .sys-stat-label{font-family:'Orbitron',sans-serif;font-size:0.45rem;letter-spacing:0.14em;color:var(--text-dim);text-transform:uppercase;margin-bottom:3px;}
+  .sys-stat-val{font-family:'Share Tech Mono',monospace;font-size:0.85rem;color:var(--text);font-variant-numeric:tabular-nums;}
+  .sys-stat-val.warn{color:#f59e0b;}
+  .sys-stat-val.hot{color:#ef4444;}
+  .sys-line{display:flex;align-items:center;justify-content:space-between;font-family:'Share Tech Mono',monospace;font-size:0.72rem;padding:4px 0;}
+  .sys-line-label{color:var(--text-dim);}
+  .sys-line-val{color:var(--text);font-variant-numeric:tabular-nums;}
+  .sys-muted{color:var(--text-dim);font-size:0.66rem;}
   .tab-content{display:none;flex:1;flex-direction:column;overflow:hidden;min-height:0;}
   .tab-content.active{display:flex;}
   .scroll-area{overflow-y:auto;overflow-x:hidden;}
@@ -1056,6 +1072,7 @@
           <button class="nav-item" data-tab="history" role="menuitem" onclick="navPick('history','History')">History</button>
           <button class="nav-item" data-tab="options" role="menuitem" onclick="navPick('options','Options')">Options</button>
           <button class="nav-item" data-tab="stats" role="menuitem" onclick="navPick('stats','Stats')">Stats</button>
+          <button class="nav-item" data-tab="system" role="menuitem" onclick="navPick('system','System')">System</button>
         </div>
       </div>
 
@@ -1398,6 +1415,56 @@
         </div>
       </div>
 
+      <!-- SYSTEM HEALTH TAB — node-side health: services, receiver RF, vitals, network link, version -->
+      <div class="tab-content" id="tab-system">
+        <div class="scroll-area">
+
+          <div class="panel">
+            <div class="panel-title">Service Status</div>
+            <div class="sys-services" id="sysServices"><div class="sys-muted">Loading…</div></div>
+          </div>
+
+          <div class="panel">
+            <div class="panel-title">Receiver</div>
+            <div class="sys-grid">
+              <div class="sys-stat"><div class="sys-stat-label">Signal</div><div class="sys-stat-val" id="rx-signal">--</div></div>
+              <div class="sys-stat"><div class="sys-stat-label">Noise</div><div class="sys-stat-val" id="rx-noise">--</div></div>
+              <div class="sys-stat"><div class="sys-stat-label">SNR</div><div class="sys-stat-val" id="rx-snr">--</div></div>
+              <div class="sys-stat"><div class="sys-stat-label">Peak</div><div class="sys-stat-val" id="rx-peak">--</div></div>
+              <div class="sys-stat"><div class="sys-stat-label">Gain</div><div class="sys-stat-val" id="rx-gain">--</div></div>
+              <div class="sys-stat"><div class="sys-stat-label">Msg/sec</div><div class="sys-stat-val" id="rx-rate">--</div></div>
+              <div class="sys-stat"><div class="sys-stat-label">Strong sigs</div><div class="sys-stat-val" id="rx-strong">--</div></div>
+            </div>
+          </div>
+
+          <div class="panel">
+            <div class="panel-title">System</div>
+            <div class="sys-grid">
+              <div class="sys-stat"><div class="sys-stat-label">CPU Temp</div><div class="sys-stat-val" id="sys-temp">--</div></div>
+              <div class="sys-stat"><div class="sys-stat-label">CPU Load</div><div class="sys-stat-val" id="sys-load">--</div></div>
+              <div class="sys-stat"><div class="sys-stat-label">CPU Usage</div><div class="sys-stat-val" id="sys-cpu">--</div></div>
+              <div class="sys-stat"><div class="sys-stat-label">Memory</div><div class="sys-stat-val" id="sys-mem">--</div></div>
+              <div class="sys-stat"><div class="sys-stat-label">Disk</div><div class="sys-stat-val" id="sys-disk">--</div></div>
+              <div class="sys-stat"><div class="sys-stat-label">Uptime</div><div class="sys-stat-val" id="sys-uptime">--</div></div>
+            </div>
+          </div>
+
+          <div class="panel">
+            <div class="panel-title">Network Link</div>
+            <div class="sys-line"><span class="sys-line-label">Status</span><span class="sys-pill" id="net-status">--</span></div>
+            <div class="sys-line"><span class="sys-line-label">Last reported</span><span class="sys-line-val" id="net-last">--</span></div>
+          </div>
+
+          <div class="panel">
+            <div class="panel-title">Version</div>
+            <div class="sys-line"><span class="sys-line-label">Current</span><span class="sys-line-val" id="ver-current">--</span></div>
+            <div class="sys-line"><span class="sys-line-label">Latest</span><span class="sys-line-val" id="ver-latest">--</span></div>
+            <div class="sys-line"><span class="sys-line-label">Update</span><span class="sys-pill" id="ver-status">--</span></div>
+          </div>
+
+        </div>
+      </div>
+
     </div><!-- end sidebar -->
     <div id="map"></div>
   </div>
@@ -1623,12 +1690,86 @@ function navPick(name, label){
   document.querySelectorAll('.nav-item').forEach(function(i){ i.classList.remove('active'); });
   var it = document.querySelector('.nav-item[data-tab="'+name+'"]');
   if (it) it.classList.add('active');
+  if (name === 'system') sysTabActivate();
   closeNavMenu();
 }
 document.addEventListener('click', function(ev){
   var dd = document.getElementById('navDD');
   if (dd && dd.classList.contains('open') && !dd.contains(ev.target)) closeNavMenu();
 });
+
+// ── System Health tab ── polls /api/system + /api/services while the tab is visible.
+function sysFmtUptime(s){
+  if (s == null) return '--';
+  var d = Math.floor(s/86400), h = Math.floor((s%86400)/3600), m = Math.floor((s%3600)/60);
+  return d > 0 ? (d+'d '+h+'h') : (h+'h '+m+'m');
+}
+function sysSet(id, val){ var el = document.getElementById(id); if (el) el.textContent = val; }
+function sysRender(sys, svc){
+  var sc = document.getElementById('sysServices');
+  if (sc){
+    if (svc && svc.services && svc.services.length){
+      sc.innerHTML = svc.services.map(function(s){
+        var cls = s.active ? 'up' : 'down';
+        var txt = s.active ? 'ACTIVE' : (s.state || 'DOWN').toUpperCase();
+        return '<div class="sys-svc-row"><span>'+s.name+'</span><span class="sys-pill '+cls+'">'+txt+'</span></div>';
+      }).join('');
+    } else if (svc){ sc.innerHTML = '<div class="sys-muted">No services reported.</div>'; }
+  }
+  if (!sys) return;
+  var rx = sys.receiver || {}, v = sys.vitals || {}, ver = sys.version || {};
+  sysSet('rx-signal', rx.signal==null?'--':rx.signal+' dBFS');
+  sysSet('rx-noise',  rx.noise==null?'--':rx.noise+' dBFS');
+  sysSet('rx-snr',    rx.snr==null?'--':rx.snr+' dB');
+  sysSet('rx-peak',   rx.peak_signal==null?'--':rx.peak_signal+' dBFS');
+  sysSet('rx-gain',   rx.gain_db==null?'auto':rx.gain_db+' dB');
+  sysSet('rx-rate',   rx.msg_per_sec==null?'--':rx.msg_per_sec+'/s');
+  sysSet('rx-strong', rx.strong_signals==null?'--':rx.strong_signals);
+  var tEl = document.getElementById('sys-temp');
+  if (tEl){
+    tEl.textContent = (v.temp_c==null)?'--':v.temp_c+'\u00b0C';
+    tEl.className = 'sys-stat-val' + (v.temp_c>=80?' hot':(v.temp_c>=70?' warn':''));
+  }
+  sysSet('sys-load', v.load1==null?'--':v.load1);
+  sysSet('sys-cpu',  v.cpu_pct==null?'--':v.cpu_pct+'%');
+  sysSet('sys-mem',  v.mem_pct==null?'--':v.mem_pct+'%');
+  sysSet('sys-disk', v.disk_pct==null?'--':v.disk_pct+'%');
+  sysSet('sys-uptime', sysFmtUptime(v.uptime_s));
+  sysSet('ver-current', ver.current||'--');
+  sysSet('ver-latest',  ver.latest||'--');
+  var vs = document.getElementById('ver-status');
+  if (vs){
+    if (ver.available){ vs.textContent='UPDATE'; vs.className='sys-pill down'; }
+    else { vs.textContent='UP TO DATE'; vs.className='sys-pill up'; }
+  }
+}
+function sysRefreshNet(){
+  fetch('/api/net/status',{cache:'no-store'}).then(function(r){return r.ok?r.json():null;}).then(function(d){
+    var ns = document.getElementById('net-status'), nl = document.getElementById('net-last');
+    if (ns){
+      if (d && d.online){ ns.textContent='ONLINE'; ns.className='sys-pill up'; }
+      else { ns.textContent='OFFLINE'; ns.className='sys-pill down'; }
+    }
+    if (nl) nl.textContent = (d && d.last_ok_age_s!=null) ? Math.round(d.last_ok_age_s)+'s ago' : '--';
+  }).catch(function(){});
+}
+function sysRefresh(){
+  Promise.all([
+    fetch('/api/system',{cache:'no-store'}).then(function(r){return r.ok?r.json():null;}).catch(function(){return null;}),
+    fetch('/api/services',{cache:'no-store'}).then(function(r){return r.ok?r.json():null;}).catch(function(){return null;})
+  ]).then(function(res){ sysRender(res[0], res[1]); });
+  sysRefreshNet();
+}
+var sysTimer = null;
+function sysTabActivate(){
+  sysRefresh();
+  if (sysTimer) clearInterval(sysTimer);
+  sysTimer = setInterval(function(){
+    var t = document.getElementById('tab-system');
+    if (t && t.classList.contains('active')) sysRefresh();
+    else { clearInterval(sysTimer); sysTimer = null; }
+  }, 5000);
+}
 
 // ── FLIGHT HISTORY ────────────────────────────────────────
 var historyLoaded = false;
