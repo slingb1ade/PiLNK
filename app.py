@@ -1395,6 +1395,23 @@ def rainviewer_tile_proxy(tile_path):
         return make_response(b'', 204)  # silent empty on failure — never block aircraft render
 
 # ── Planespotters.net proxy — aircraft photos ──────────────
+# ── Perf telemetry (dev prototype) — last FPS sample reported by the dashboard HUD ──
+_perf_last = {}
+@app.route('/api/perf', methods=['GET'])
+def perf_get():
+    return jsonify(_perf_last or {'note': 'no sample yet'})
+
+@app.route('/api/perf/report', methods=['POST'])
+def perf_report():
+    global _perf_last
+    try:
+        d = request.get_json(force=True, silent=True) or {}
+        _perf_last = {'fps': d.get('fps'), 'min': d.get('min'),
+                      'ms': d.get('ms'), 'ac': d.get('ac'), 'ts': round(time.time())}
+    except Exception:
+        pass
+    return ('', 204)
+
 @app.route('/api/planespotters/<path:hex>')
 def planespotters_proxy(hex):
     """Proxy to planespotters.net public photo API.

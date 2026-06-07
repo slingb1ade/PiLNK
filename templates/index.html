@@ -9,8 +9,8 @@
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
 <style>
   @import url('https://fonts.googleapis.com/css2?family=Orbitron:wght@400;600;700&family=Share+Tech+Mono&family=Noto+Color+Emoji&display=swap');
-  :root{--bg-deep:#f0f4ff;--bg-panel:#ffffff;--bg-card:#f5f8ff;--border:#dbeafe;--blue-dim:#2563eb;--blue-mid:#3b82f6;--blue-light:#1d4ed8;--text:#1e3a6e;--text-dim:#6b8ab0;--green:#16a34a;--shadow:0 1px 4px rgba(59,130,246,0.1);}
-  [data-theme="dark"]{--bg-deep:#060a14;--bg-panel:#0a1020;--bg-card:#0d1526;--border:#0f2040;--blue-dim:#1d4ed8;--blue-mid:#3b82f6;--blue-light:#60a5fa;--text:#e0e8ff;--text-dim:#3a5a8a;--green:#22c55e;--shadow:none;}
+  :root{--bg-deep:#f0f4ff;--bg-panel:#ffffff;--bg-card:#f5f8ff;--border:#dbeafe;--blue-dim:#2563eb;--blue-mid:#3b82f6;--blue-light:#1d4ed8;--text:#1e3a6e;--text-dim:#5c7aa3;--green:#16a34a;--success:#16a34a;--warn:#d97706;--danger:#dc2626;--info:#2563eb;--shadow:0 1px 2px rgba(30,58,110,.06),0 4px 12px rgba(30,58,110,.09);--shadow-2:0 8px 24px rgba(30,58,110,.13);--edge:inset 0 1px 0 rgba(255,255,255,.65);--r-1:6px;--r-2:10px;--r-3:14px;--sp-1:4px;--sp-2:8px;--sp-3:12px;--sp-4:16px;--sp-5:24px;}
+  [data-theme="dark"]{--bg-deep:#060a14;--bg-panel:#0a1020;--bg-card:#0d1526;--border:#0f2040;--blue-dim:#1d4ed8;--blue-mid:#3b82f6;--blue-light:#60a5fa;--text:#e0e8ff;--text-dim:#6f8cbf;--green:#22c55e;--success:#22c55e;--warn:#f59e0b;--danger:#ef4444;--info:#60a5fa;--shadow:0 1px 2px rgba(0,0,0,.4),0 6px 18px rgba(0,0,0,.45);--shadow-2:0 12px 30px rgba(0,0,0,.55);--edge:inset 0 1px 0 rgba(255,255,255,.05);--r-1:6px;--r-2:10px;--r-3:14px;--sp-1:4px;--sp-2:8px;--sp-3:12px;--sp-4:16px;--sp-5:24px;}
   *{margin:0;padding:0;box-sizing:border-box;}
   html,body{height:100%;width:100%;overflow:hidden;background:var(--bg-deep);color:var(--text);font-family:'Share Tech Mono',monospace,'Apple Color Emoji','Segoe UI Emoji','Noto Color Emoji','Twemoji Mozilla';transition:background 0.3s,color 0.3s;}
   #app{display:flex;flex-direction:column;height:100vh;width:100vw;}
@@ -18,7 +18,7 @@
   .logo{display:flex;align-items:center;gap:10px;}
   .logo svg{width:32px;height:32px;}
   .logo-text{font-family:'Orbitron',sans-serif;font-size:1.1rem;font-weight:700;color:var(--text);letter-spacing:5px;}
-  .logo-version{display:inline-block;font-family:'Share Tech Mono',monospace;font-size:0.55rem;letter-spacing:0.12em;background:var(--green);color:#000;padding:2px 6px;border-radius:3px;font-weight:700;margin-left:8px;vertical-align:middle;position:relative;top:-2px;}
+  .logo-version{display:inline-block;font-family:'Share Tech Mono',monospace;font-size:0.55rem;letter-spacing:0.12em;background:transparent;color:var(--blue-mid);border:1px solid var(--border);padding:1px 6px;border-radius:var(--r-1);font-weight:700;margin-left:8px;vertical-align:middle;position:relative;top:-2px;}
   .header-right{display:flex;align-items:center;gap:20px;}
   .status-bar{display:flex;align-items:center;gap:20px;font-size:0.65rem;color:var(--text-dim);letter-spacing:0.1em;}
   /* ── Network OFFLINE pill ── hidden while the node is reaching pilnk.io; shows a loud red badge in the header when pings stop landing (driven by /api/net/status, 3 missed pings). ── */
@@ -32,7 +32,7 @@
   #body{flex:1;display:flex;min-height:0;}
   #sidebar{flex-shrink:0;width:240px;background:var(--bg-panel);border-right:1px solid var(--border);display:flex;flex-direction:column;overflow:hidden;}
   .tab-bar{display:flex;border-bottom:1px solid var(--border);flex-shrink:0;}
-  .tab-btn{flex:1;padding:8px 4px;font-family:'Orbitron',sans-serif;font-size:0.45rem;letter-spacing:0.08em;color:var(--text-dim);background:none;border:none;cursor:pointer;text-transform:uppercase;transition:all 0.2s;border-bottom:2px solid transparent;}
+  .tab-btn{flex:1;padding:8px 4px;font-family:'Orbitron',sans-serif;font-size:0.58rem;letter-spacing:0.08em;color:var(--text-dim);background:none;border:none;cursor:pointer;text-transform:uppercase;transition:all 0.2s;border-bottom:2px solid transparent;}
   .tab-btn:hover{color:var(--blue-mid);}
   .tab-btn.active{color:var(--blue-mid);border-bottom-color:var(--blue-mid);}
   /* ── Sidebar view selector ── full dropdown that replaces the old 5-button tab bar so the sidebar scales to any number of views (6+). Trigger shows the current view; menu drops down over the panel below. ── */
@@ -54,7 +54,7 @@
   .sys-pill.down{background:rgba(239,68,68,0.15);color:#ef4444;border:1px solid rgba(239,68,68,0.45);}
   .sys-grid{display:grid;grid-template-columns:1fr 1fr;gap:8px;}
   .sys-stat{background:var(--bg-card);border:1px solid var(--border);border-radius:5px;padding:8px 10px;}
-  .sys-stat-label{font-family:'Orbitron',sans-serif;font-size:0.45rem;letter-spacing:0.14em;color:var(--text-dim);text-transform:uppercase;margin-bottom:3px;}
+  .sys-stat-label{font-family:'Orbitron',sans-serif;font-size:0.58rem;letter-spacing:0.14em;color:var(--text-dim);text-transform:uppercase;margin-bottom:3px;}
   .sys-stat-val{font-family:'Share Tech Mono',monospace;font-size:0.85rem;color:var(--text);font-variant-numeric:tabular-nums;}
   .sys-stat-val.warn{color:#f59e0b;}
   .sys-stat-val.hot{color:#ef4444;}
@@ -230,7 +230,7 @@
   .av-status{font-size:0.6rem;color:var(--text-dim);margin-top:6px;font-style:italic;}
   /* Map */
   #map{flex:1;min-width:0;min-height:0;}
-  .map-legend{background:rgba(255,255,255,0.15);border:1px solid rgba(255,255,255,0.2);border-radius:8px;padding:8px 12px;font-family:'Share Tech Mono',monospace;font-size:0.6rem;color:var(--text-dim);backdrop-filter:blur(4px);box-shadow:0 2px 8px rgba(0,0,0,0.2);}
+  .map-legend{background:var(--bg-card);border:1px solid var(--border);border-radius:8px;padding:8px 12px;font-family:'Share Tech Mono',monospace;font-size:0.6rem;color:var(--text-dim);box-shadow:var(--shadow);}
   .map-legend-row{display:flex;align-items:center;gap:6px;margin-bottom:3px;}
   .map-legend-row:last-child{margin-bottom:0;}
   .map-legend-dot{width:8px;height:8px;border-radius:50%;flex-shrink:0;}
@@ -290,14 +290,14 @@
   .stats-live-card{display:flex;align-items:center;gap:10px;background:var(--bg-card);border:1px solid var(--border);border-radius:8px;padding:10px 12px;}
   .stats-live-dot{width:10px;height:10px;border-radius:50%;flex-shrink:0;animation:stats-pulse 2s ease-in-out infinite;}
   .stats-live-num{font-family:'Orbitron',sans-serif;font-size:1.3rem;font-weight:700;color:var(--text);line-height:1;}
-  .stats-live-label{font-family:'Share Tech Mono',monospace;font-size:0.48rem;letter-spacing:0.2em;color:var(--text-dim);margin-top:2px;}
+  .stats-live-label{font-family:'Share Tech Mono',monospace;font-size:0.58rem;letter-spacing:0.2em;color:var(--text-dim);margin-top:2px;}
   @keyframes stats-pulse{0%,100%{opacity:1;}50%{opacity:0.5;}}
   .stats-leaders{display:flex;flex-direction:column;gap:6px;}
   .stats-leader-card{display:flex;align-items:center;gap:10px;background:var(--bg-card);border:1px solid var(--border);border-radius:8px;padding:10px 12px;transition:border-color 0.3s;}
   .stats-leader-card:hover{border-color:var(--blue-mid);}
   .stats-leader-icon{font-size:1.1rem;flex-shrink:0;width:26px;text-align:center;}
   .stats-leader-info{flex:1;min-width:0;}
-  .stats-leader-label{font-family:'Share Tech Mono',monospace;font-size:0.45rem;letter-spacing:0.2em;color:var(--text-dim);}
+  .stats-leader-label{font-family:'Share Tech Mono',monospace;font-size:0.58rem;letter-spacing:0.2em;color:var(--text-dim);}
   .stats-leader-callsign{font-family:'Share Tech Mono',monospace;font-size:0.72rem;color:var(--blue-light);font-weight:bold;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
   .stats-leader-val{font-family:'Orbitron',sans-serif;font-size:1rem;font-weight:700;color:var(--text);text-align:right;min-width:50px;}
   .stats-leader-unit{font-family:'Share Tech Mono',monospace;font-size:0.5rem;color:var(--text-dim);letter-spacing:0.1em;width:22px;flex-shrink:0;}
@@ -346,7 +346,7 @@
     transition:fill 1s ease;
   }
   /* Icon outline via CSS */
-  .leaflet-marker-icon svg{filter:drop-shadow(0 0 1px rgba(0,0,0,0.8)) drop-shadow(0 0 0.5px rgba(0,0,0,0.6));}
+  .leaflet-marker-icon svg{filter:drop-shadow(0 0 1px rgba(0,0,0,0.7));}
   /* Tooltip — offset up-right of plane with diagonal leader line back to plane */
   #pilnkTooltip{position:fixed;z-index:9500;pointer-events:none;display:none;transform:translate(60px, calc(-100% - 60px));}
   .tt-inner{position:relative;background:var(--bg-panel);border:2px solid var(--blue-mid);border-radius:8px;padding:10px 14px;box-shadow:0 6px 24px rgba(0,0,0,0.15);white-space:nowrap;font-family:'Share Tech Mono',monospace;min-width:190px;}
@@ -816,6 +816,30 @@
   #pilnk-splash .ps-status .ps-dot{animation:none !important;opacity:0.6;}
   #pilnk-splash .ps-scan{animation:none !important;display:none;}
 }
+  /* ════════ UI POLISH PROTOTYPE — design-token pass (dev Pi, 2026-06-07) ════════
+     Appended at end of cascade so it layers over existing component rules without
+     editing them. Remove this block to revert the visual polish. */
+  .icn{width:1em;height:1em;display:inline-block;vertical-align:-0.15em;fill:none;stroke:currentColor;stroke-width:2;stroke-linecap:round;stroke-linejoin:round;flex-shrink:0;}
+  .search-btn .icn,.sidebar-toggle .icn{width:1.05em;height:1.05em;}
+  .leaflet-marker-icon circle[style*="rx-pulse"]{animation:none !important;}   /* idle: kill the always-on receiver pulse so the page can stop painting */
+  /* Soft, layered elevation + subtle lit top-edge instead of flat 1px boxes */
+  #header{box-shadow:var(--shadow);}
+  .panel{box-shadow:var(--edge);}
+  .sys-stat,.stats-live-card,.stats-leader-card,.flight-item,.airport-item,.streak-item{box-shadow:var(--edge);transition:border-color .2s ease,box-shadow .2s ease,transform .2s ease,filter .2s ease;}
+  .sys-stat:hover,.flight-item:hover,.airport-item:hover{box-shadow:var(--shadow-2);transform:translateY(-1px);}
+  .dash-toast{box-shadow:var(--shadow-2) !important;}
+  .nav-menu{box-shadow:var(--shadow-2) !important;}
+  /* Skip layout/paint of off-screen list rows — real win on a CPU-bound Pi */
+  .flight-item,.airport-item{content-visibility:auto;contain-intrinsic-size:auto 44px;}
+  /* Thin themed scrollbars */
+  .scroll-area::-webkit-scrollbar,.nav-menu::-webkit-scrollbar{width:8px;height:8px;}
+  .scroll-area::-webkit-scrollbar-thumb,.nav-menu::-webkit-scrollbar-thumb{background:var(--border);border-radius:8px;}
+  .scroll-area::-webkit-scrollbar-thumb:hover{background:var(--blue-mid);}
+  .scroll-area,.nav-menu{scrollbar-width:thin;scrollbar-color:var(--border) transparent;}
+  /* Keyboard focus affordance (was missing) */
+  :focus-visible{outline:2px solid var(--blue-mid);outline-offset:2px;border-radius:3px;}
+  /* Respect reduced-motion globally */
+  @media (prefers-reduced-motion:reduce){*{animation-duration:.001ms !important;animation-iteration-count:1 !important;transition-duration:.001ms !important;}}
 </style>
 </head>
 <body>
@@ -834,7 +858,7 @@
   color:#e2e8f0;padding:10px 16px;
   display:none;align-items:center;gap:14px;
   animation:otaSlideIn 0.35s ease-out;">
-  <div style="font-size:1.1rem;flex-shrink:0;">📦</div>
+  <div style="font-size:1.1rem;flex-shrink:0;"><svg class="icn" viewBox="0 0 24 24"><path d="M21 16V8l-9-5-9 5v8l9 5 9-5z"/><path d="M3.3 7 12 12l8.7-5M12 22V12"/></svg></div>
   <div style="flex:1;min-width:0;font-size:0.78rem;line-height:1.4;">
     <span id="otaBannerText">New PiLNK version available</span>
     <span id="otaBannerVersion" style="color:#60a5fa;font-weight:700;margin-left:6px;"></span>
@@ -924,7 +948,7 @@
 </script>
 <div id="app">
   <div id="header">
-    <button class="sidebar-toggle" onclick="toggleSidebar()" aria-label="Toggle sidebar" aria-expanded="false" id="sidebarToggleBtn">☰</button>
+    <button class="sidebar-toggle" onclick="toggleSidebar()" aria-label="Toggle sidebar" aria-expanded="false" id="sidebarToggleBtn"><svg class="icn" viewBox="0 0 24 24"><path d="M3 6h18M3 12h18M3 18h18"/></svg></button>
     <div class="logo">
       <svg viewBox="0 0 128 128" xmlns="http://www.w3.org/2000/svg">
         <defs><radialGradient id="hsg" cx="30%" cy="30%" r="70%"><stop offset="0%" stop-color="#3b82f6" stop-opacity="0.45"/><stop offset="100%" stop-color="#3b82f6" stop-opacity="0"/></radialGradient><clipPath id="hc"><circle cx="64" cy="64" r="52"/></clipPath></defs>
@@ -957,7 +981,7 @@
        Self-contained (markup + style + script) so it's cleanly reversible. -->
   <div id="pairBanner" style="display:none;">
     <div class="pair-inner">
-      <div class="pair-icon">📡</div>
+      <div class="pair-icon"><svg class="icn" viewBox="0 0 24 24"><path d="M4.93 19.07a10 10 0 0 1 0-14.14M19.07 4.93a10 10 0 0 1 0 14.14M7.76 16.24a6 6 0 0 1 0-8.48M16.24 7.76a6 6 0 0 1 0 8.48"/><circle cx="12" cy="12" r="2"/></svg></div>
       <div class="pair-body">
         <div class="pair-title" id="pairTitle">This node isn't claimed yet</div>
         <div class="pair-steps" id="pairSteps">
@@ -1080,8 +1104,8 @@
       <div class="tab-content active" id="tab-traffic">
         <!-- Mobile quick-nav (hidden on desktop) -->
         <div class="traffic-quick-nav">
-          <button class="qn-btn" onclick="showTab('options',event)">⚙ OPTIONS</button>
-          <button class="qn-btn" onclick="showTab('stats',event)">📊 STATS</button>
+          <button class="qn-btn" onclick="showTab('options',event)"><svg class="icn" viewBox="0 0 24 24"><path d="M4 21v-7M4 10V3M12 21v-9M12 8V3M20 21v-5M20 12V3M1 14h6M9 8h6M17 16h6"/></svg> OPTIONS</button>
+          <button class="qn-btn" onclick="showTab('stats',event)"><svg class="icn" viewBox="0 0 24 24"><path d="M3 3v18h18M8 17v-5M13 17V8M18 17v-9"/></svg> STATS</button>
         </div>
         <!-- Quick radio status -->
         <div style="padding:8px 12px;display:flex;align-items:center;justify-content:space-between;border-bottom:1px solid var(--border);">
@@ -1089,7 +1113,7 @@
             <div id="trafficRadioDot" style="width:6px;height:6px;border-radius:50%;background:#64748b;"></div>
             <span id="trafficRadioFreq" style="font-family:'Orbitron',sans-serif;font-size:0.6rem;color:var(--text-dim);">Radio Off</span>
           </div>
-          <button onclick="showTab('radio',event)" style="background:none;border:1px solid var(--border);border-radius:4px;color:var(--text-dim);font-family:'Share Tech Mono',monospace;font-size:0.5rem;padding:3px 8px;cursor:pointer;">📻 Radio</button>
+          <button onclick="showTab('radio',event)" style="background:none;border:1px solid var(--border);border-radius:4px;color:var(--text-dim);font-family:'Share Tech Mono',monospace;font-size:0.5rem;padding:3px 8px;cursor:pointer;"><svg class="icn" viewBox="0 0 24 24"><circle cx="12" cy="12" r="2"/><path d="M4.9 4.9a16 16 0 0 0 0 14.2M19.1 4.9a16 16 0 0 1 0 14.2M7.8 7.8a10 10 0 0 0 0 8.4M16.2 7.8a10 10 0 0 1 0 8.4"/></svg> Radio</button>
         </div>
         <div id="flight-panel">
           <div class="sort-row">
@@ -1160,7 +1184,7 @@
               <div class="panel-title">Airport Frequencies</div>
               <div class="search-input-row">
                 <input type="text" class="search-input" id="airportSearch" placeholder="Search airport..." onkeydown="if(event.key==='Enter')searchAirports()"/>
-                <button class="search-btn" onclick="searchAirports()">🔍</button>
+                <button class="search-btn" onclick="searchAirports()" aria-label="Search"><svg class="icn" viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.4-3.4"/></svg></button>
               </div>
               <div class="search-status" id="searchStatus"></div>
               <div class="airport-list" id="airportList" style="max-height:140px;overflow-y:auto;padding:0;margin-top:6px;"></div>
@@ -1304,7 +1328,7 @@
             <div class="panel-title">Map Options</div>
             <div class="panel-title">Node</div>
             <div class="toggle-row" style="margin-bottom:8px;">
-              <span>🔄 Check for Updates</span>
+              <span><svg class="icn" viewBox="0 0 24 24"><path d="M21 12a9 9 0 1 1-2.64-6.36M21 3v5h-5"/></svg> Check for Updates</span>
               <button id="otaCheckBtn" onclick="otaCheckNow()" style="background:var(--blue-dim);border:none;border-radius:5px;color:white;font-family:'Share Tech Mono',monospace;font-size:0.62rem;letter-spacing:0.1em;padding:5px 10px;cursor:pointer;">Check</button>
             </div>
             <div class="panel-title" style="margin-top:8px;">Extras</div>
@@ -1498,7 +1522,7 @@
       <div class="cc-photo-credit" id="ccPhotoCredit"></div>
     </div>
     <div class="cc-data" id="ccData">
-      <button class="cc-close" onclick="closeCinematicCard()">✕</button>
+      <button class="cc-close" onclick="closeCinematicCard()"><svg class="icn" viewBox="0 0 24 24"><path d="M18 6 6 18M6 6l12 12"/></svg></button>
       <div class="cc-top">
         <div class="cc-badge" id="ccBadge" style="display:none;"><span>NOW PASSING</span></div>
         <div class="cc-callsign" id="ccCallsign">–</div>
@@ -1535,7 +1559,7 @@
         <div class="cc-phase" id="ccPhase"></div>
         <div style="display:flex;align-items:center;gap:10px;">
           <div class="cc-planespotters" id="ccPhotoSource">📷 Planespotters.net</div>
-          <button id="ccAddPhotoBtn" onclick="ccAddPhoto()" style="display:none;background:none;border:1px solid rgba(167,139,250,0.3);border-radius:4px;color:#a78bfa;font-family:'Share Tech Mono',monospace;font-size:0.48rem;padding:2px 8px;cursor:pointer;letter-spacing:0.05em;">📸 Add Photo</button>
+          <button id="ccAddPhotoBtn" onclick="ccAddPhoto()" style="display:none;background:none;border:1px solid rgba(167,139,250,0.3);border-radius:4px;color:#a78bfa;font-family:'Share Tech Mono',monospace;font-size:0.58rem;padding:2px 8px;cursor:pointer;letter-spacing:0.05em;">📸 Add Photo</button>
         </div>
       </div>
     </div>
@@ -2036,7 +2060,7 @@ var RecenterControl = L.Control.extend({
     div.innerHTML =
       '<a href="#" role="button" aria-label="Recenter on node" title="Recenter on node"' +
       ' style="display:flex;align-items:center;justify-content:center;width:34px;height:34px;' +
-      'font-size:1rem;line-height:1;text-decoration:none;color:var(--text);">📍</a>';
+      'font-size:1rem;line-height:1;text-decoration:none;color:var(--text);"><svg class="icn" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M12 2v4M12 18v4M2 12h4M18 12h4"/></svg></a>';
     L.DomEvent.disableClickPropagation(div);
     L.DomEvent.on(div, 'click', function(e) {
       L.DomEvent.preventDefault(e);
@@ -2161,7 +2185,13 @@ map.on('zoom', function(){ if(typeof positionTooltipOnMarker==='function') posit
 function applyTileFilter() {
   var dark = document.documentElement.getAttribute('data-theme') === 'dark';
   var pane = map.getPanes().tilePane;
-  if (!dark) { pane.style.filter = ''; return; }
+  if (!dark) {
+    // Light mode: mute the bright OSM street base so aircraft + weather pop
+    // (UI polish prototype). Sat/topo keep their natural colours.
+    pane.style.filter = (currentTileLayerName === 'osm' || currentTileLayerName === 'wx')
+      ? 'saturate(0.78)' : '';
+    return;
+  }
   // Per-layer dark-mode treatment. OSM uses an invert+hue-rotate
   // recipe (street maps look dramatic and clean inverted). Topo
   // earth-tones look unnatural inverted, so we darken instead —
@@ -2307,8 +2337,19 @@ function buildWxLayers() {
 // Make one frame visible, fade all others to near-zero (not 0, so tiles
 // stay in the rendering pipeline ready for the next crossfade).
 function showWxFrame(idx) {
+  // Pi-friendly: hide non-visible frames with display:none so the GPU isn't
+  // compositing 14 stacked full-screen raster layers every frame. opacity:0.001
+  // STILL composites; display:none does not. Tiles stay loaded (img elements in a
+  // display:none container still preload), so frame switching is instant.
+  // Trade-off: hard frame swap instead of an opacity crossfade.
   wxLayers.forEach(function(l, i) {
-    l.setOpacity(i === idx ? wxOpacity : 0.001);
+    var c = l.getContainer ? l.getContainer() : null;
+    if (i === idx) {
+      if (c) c.style.display = '';
+      l.setOpacity(wxOpacity);
+    } else if (c) {
+      c.style.display = 'none';
+    }
   });
   wxCurrentFrame = idx;
 }
@@ -3166,6 +3207,7 @@ function updateMarker(a){
 
 // ── FLIGHTS ───────────────────────────────────────────────
 function updateFlights(){
+  if(document.hidden) return;   // skip the whole tick when the display is blanked / tab backgrounded
   fetch('/flights').then(function(r){return r.json();}).then(function(data){
     var ac=(data.aircraft||[]).filter(function(a){return a.lat&&a.lon&&a.flight;});
     document.getElementById('hdr-count').textContent=ac.length+' AIRCRAFT';
@@ -5541,5 +5583,53 @@ function otaCheckNow() { ota.checkNow(); }
 })();
 </script>
 
+<!-- ════ PERF HUD (dev prototype) — press "p" to toggle; reports FPS to /api/perf ════ -->
+<div id="perfHud" style="position:fixed;top:58px;right:10px;z-index:99998;font-family:'Share Tech Mono',monospace;font-size:0.62rem;line-height:1.4;background:var(--bg-panel);border:1px solid var(--border);border-radius:8px;box-shadow:var(--shadow);padding:6px 9px;color:var(--text);pointer-events:none;min-width:92px;">
+  <div style="color:var(--text-dim);letter-spacing:0.14em;font-size:0.5rem;margin-bottom:2px;">PERF · press P</div>
+  <div><span id="perfFps" style="font-size:1rem;font-weight:700;">–</span> fps</div>
+  <div id="perfMs" style="color:var(--text-dim);">– ms</div>
+  <div id="perfMin" style="color:var(--text-dim);">min –</div>
+</div>
+<script>
+(function(){
+  var hud=document.getElementById('perfHud'); if(!hud) return;
+  try{ hud.style.display=(localStorage.getItem('perfHud')==='1')?'block':'none'; }catch(e){ hud.style.display='none'; }
+  window.addEventListener('keydown',function(e){
+    var tag=(e.target&&e.target.tagName||'').toLowerCase();
+    if((e.key==='p'||e.key==='P')&&!e.metaKey&&!e.ctrlKey&&tag!=='input'&&tag!=='textarea'){
+      var on=hud.style.display!=='none';
+      hud.style.display=on?'none':'block';
+      if(on){stop();}else{start();}   // fully stop the rAF loop when hidden so the page can idle
+      try{localStorage.setItem('perfHud',on?'0':'1');}catch(e2){}
+    }
+  });
+  var fEl=document.getElementById('perfFps'),mEl=document.getElementById('perfMs'),nEl=document.getElementById('perfMin');
+  var last=performance.now(),frames=0,acc=0,minFps=999,rep=0,rafId=null,running=false;
+  function start(){ if(running) return; running=true; last=performance.now(); rafId=requestAnimationFrame(loop); }
+  function stop(){ running=false; if(rafId) cancelAnimationFrame(rafId); rafId=null; }
+  function report(f,mn){
+    try{
+      var ac=(window.lastAircraft?Object.keys(window.lastAircraft).length:null);
+      fetch('/api/perf/report',{method:'POST',headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({fps:f,min:mn,ms:+(1000/Math.max(f,1)).toFixed(1),ac:ac}),keepalive:true}).catch(function(){});
+    }catch(e){}
+  }
+  function loop(now){
+    var dt=now-last; last=now; frames++; acc+=dt;
+    if(acc>=500){
+      var fps=Math.round(frames*1000/acc);
+      if(fps<minFps)minFps=fps;
+      fEl.textContent=fps;
+      fEl.style.color=fps>=50?'var(--success)':(fps>=30?'var(--warn)':'var(--danger)');
+      mEl.textContent=(acc/frames).toFixed(1)+' ms';
+      nEl.textContent='min '+minFps;
+      if(++rep>=6){ rep=0; report(fps,minFps); }   // ~every 3s
+      frames=0; acc=0;
+    }
+    if(running) rafId=requestAnimationFrame(loop);
+  }
+  try{ if(localStorage.getItem('perfHud')==='1') start(); }catch(e){}
+})();
+</script>
 </body>
 </html>
