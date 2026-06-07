@@ -2021,6 +2021,14 @@ var AircraftCanvasLayer = L.Layer.extend({
       var cat = getCat(a.t, a.category), col = getPhase(a, cs).color;
       var sp = getPlaneSprite(cat, col);
       ctx.save();
+      if(window.CLOUD_COVER_ON && window.wxSampler){
+        var _st = _cloudState[cs] || (_cloudState[cs]={occ:1,hidden:false});   // keyed by callsign — survives the per-tick object swap
+        var _ct = 1 - cloudCurve(wxSampler.intensityAt(a.lat, a.lon));
+        var _pv = _st.occ;
+        _st.occ = _st.occ + (_ct - _st.occ)*0.25;   // ease the fade
+        if(Math.abs(_st.occ-_ct)>0.004 || Math.abs(_st.occ-_pv)>0.004){ window._cloudAnimating=true; if(window.kickCloud) window.kickCloud(); }
+        ctx.globalAlpha = Math.max(window.CLOUD_GHOST_FLOOR, _st.occ);
+      }
       ctx.translate(p.x, p.y);
       ctx.rotate((a.track||0) * Math.PI/180);
       if(sp && sp.ready && sp.canvas){
@@ -2038,6 +2046,75 @@ var AircraftCanvasLayer = L.Layer.extend({
 var aircraftLayer = new AircraftCanvasLayer();
 aircraftLayer.addTo(map);
 window.aircraftLayer = aircraftLayer;
+
+// ══════════ CLOUD COVER (weather occlusion) — fade aircraft into rain cells ══════════
+// Phase 1: engine + synthetic test cloud (Shift+C) so we can develop without real rain.
+// Phase 2 feeds wxSampler.intensityAt() from real RainViewer tiles via /api/rv-tile.
+// Opt-in, default OFF — when off, redraw() never touches globalAlpha (normal behaviour).
+window.CLOUD_COVER_ON   = false;
+window.CLOUD_GHOST_FLOOR = 0.07;   // 0 = planes vanish in the cell core; 0.07 = faint ghost
+function cloudCurve(inten){         // rain intensity 0..1 -> occlusion strength 0..1
+  return inten<=0 ? 0 : Math.min(1, inten*1.15);
+}
+window.wxSampler = (function(){
+  var testCell = null;             // synthetic rain for testing: {lat,lon,r(nm),peak}
+  return {
+    setTestCell:function(lat,lon,r,peak){ testCell={lat:lat,lon:lon,r:r||80,peak:(peak==null?1:peak)}; },
+    clearTestCell:function(){ testCell=null; },
+    isTest:function(){ return !!testCell; },
+    intensityAt:function(lat,lon){
+      if(testCell){
+        var d=haversineNm(testCell.lat,testCell.lon,lat,lon);
+        if(d>=testCell.r) return 0;
+        return Math.max(0,Math.min(1,(1-d/testCell.r)*1.8*testCell.peak));  // solid core, gradient only at the rim
+      }
+      return 0;  // real RainViewer sampling lands here in Phase 2
+    }
+  };
+})();
+var _cloudState={};   // per-callsign cloud occlusion state (occ, hidden) — survives the per-tick aircraft-object swap
+var _cloudRaf=null, _cloudFrame=0;
+window.kickCloud=function(){ if(window.CLOUD_COVER_ON && !_cloudRaf) _cloudRaf=requestAnimationFrame(_cloudTick); };
+function _cloudTick(){
+  if(!window.CLOUD_COVER_ON){ _cloudRaf=null; return; }
+  window._cloudAnimating=false;
+  if(window.aircraftLayer) aircraftLayer.redraw();   // hook re-flags _cloudAnimating while any plane is still easing
+  if((++_cloudFrame % 6)===0){                        // hide/show trails at the cloud edge — hysteresis stops the flicker
+    for(var tc in _cloudState){ var st=_cloudState[tc];
+      var nowIn = st.hidden ? (st.occ < 0.65) : (st.occ < 0.35);
+      if(nowIn !== st.hidden){ st.hidden=nowIn; redrawTrail(tc); }
+    }
+  }
+  _cloudRaf = window._cloudAnimating ? requestAnimationFrame(_cloudTick) : null;  // idle once everything's settled
+}
+function setCloudCover(on){
+  window.CLOUD_COVER_ON=!!on;
+  try{ localStorage.setItem('cloudCover',on?'1':'0'); }catch(e){}
+  if(on){ if(!_cloudRaf) _cloudRaf=requestAnimationFrame(_cloudTick); }
+  else { for(var k in _cloudState){ _cloudState[k].occ=1; _cloudState[k].hidden=false; }
+         Object.keys(trails).forEach(function(c){ redrawTrail(c); });
+         if(window.aircraftLayer) aircraftLayer.redraw(); }
+}
+// DEV trigger — Shift+C drops a synthetic rain cell over the current aircraft cluster
+var _cloudTestCircle=null;
+window.cloudTest=function(r,peak){
+  var lat=0,lon=0,n=0;
+  for(var k in lastAircraft){ var a=lastAircraft[k]; if(a&&a.lat!=null){ lat+=a.lat; lon+=a.lon; n++; } }
+  if(n){ lat/=n; lon/=n; } else { lat=RX_LAT; lon=RX_LON; }
+  var rr=r||120;
+  wxSampler.setTestCell(lat,lon,rr,peak==null?1:peak);
+  if(_cloudTestCircle) map.removeLayer(_cloudTestCircle);
+  _cloudTestCircle=L.circle([lat,lon],{radius:rr*1852,color:'#38bdf8',weight:1,fillColor:'#38bdf8',fillOpacity:0.12,interactive:false}).addTo(map);
+  setCloudCover(true);
+  return 'Test cloud @'+lat.toFixed(3)+','+lon.toFixed(3)+' r='+rr+'nm — planes inside fade. Shift+C to clear.';
+};
+window.cloudTestOff=function(){ wxSampler.clearTestCell(); if(_cloudTestCircle){ map.removeLayer(_cloudTestCircle); _cloudTestCircle=null; } setCloudCover(false); return 'Test cloud cleared.'; };
+window.addEventListener('keydown',function(e){
+  var tag=(e.target&&e.target.tagName||'').toLowerCase();
+  if((e.key==='C'||e.key==='c')&&e.shiftKey&&tag!=='input'&&tag!=='textarea'){
+    if(window.CLOUD_COVER_ON&&wxSampler.isTest()) cloudTestOff(); else cloudTest();
+  }
+});
 
 // Canvas is the default renderer. setDomPlanes(true) re-enables the old DOM markers
 // as a fallback (A/B compare / escape hatch); setDomPlanes(false) returns to canvas only.
@@ -2896,6 +2973,8 @@ function updateTrail(a){
 function redrawTrail(cs){
   if(trailPoly[cs]){map.removeLayer(trailPoly[cs]);delete trailPoly[cs];}
   if(!trailsOn||!trails[cs]||trails[cs].length<2)return;
+  // Cloud cover: a plane inside the cloud hides its trail entirely (drawn again once it emerges)
+  if(window.CLOUD_COVER_ON && _cloudState[cs] && _cloudState[cs].hidden) return;
   var pts=trails[cs], g=L.featureGroup([]).addTo(map);
   for(var i=1;i<pts.length;i++){var f=i/pts.length;L.polyline([[pts[i-1].lat,pts[i-1].lon],[pts[i].lat,pts[i].lon]],{color:pts[i].color,weight:1.5+f*3,opacity:0.2+f*0.8,lineCap:'round',lineJoin:'round',renderer:trailRenderer}).addTo(g);}
   trailPoly[cs]=g;
@@ -2906,6 +2985,7 @@ function removeTrail(cs,fade){
   delete trails[cs];
   delete phaseAlt[cs];
   delete heliPhase[cs];
+  delete _cloudState[cs];
 }
 function toggleTrails(on){trailsOn=on;if(on)Object.keys(trails).forEach(function(cs){redrawTrail(cs);});else Object.keys(trailPoly).forEach(function(cs){map.removeLayer(trailPoly[cs]);delete trailPoly[cs];});}
 

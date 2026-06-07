@@ -22,6 +22,8 @@ logging.basicConfig(
 )
 
 app = Flask(__name__)
+app.config['TEMPLATES_AUTO_RELOAD'] = True  # dev: reflect templates/index.html edits on a refresh (no restart needed)
+app.jinja_env.auto_reload = True
 CORS(app)
 app.config['SECRET_KEY'] = 'pilnk_secret'
 socketio = SocketIO(app, cors_allowed_origins="*")
