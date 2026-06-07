@@ -1380,20 +1380,43 @@ def rainviewer_proxy():
 # Proxies PNG tiles from tilecache.rainviewer.com so the browser treats them as
 # same-origin, allowing canvas getImageData() without tainting. Only used when
 # the cloud cover toggle is on; normal rain overlay still hits tilecache direct.
+# ── RainViewer tile proxy (same-origin) + server-side cache ──
+# Serves PNG radar tiles same-origin (so canvas getImageData() isn't tainted) AND
+# caches them in memory so the radar overlay + cloud-cover sampler don't hammer
+# RainViewer, which 429s under load. Repeated tiles (animation loops, re-pans, both
+# layers) come from cache; stale tiles are served when RainViewer errors/throttles.
+_RV_TILE_CACHE = {}      # tile_path -> (timestamp, png_bytes)
+_RV_TILE_TTL = 300       # seconds
+def _rv_tile_response(content):
+    resp = make_response(content)
+    resp.headers['Content-Type'] = 'image/png'
+    resp.headers['Access-Control-Allow-Origin'] = '*'
+    resp.headers['Cache-Control'] = 'public, max-age=300'
+    return resp
 @app.route('/api/rv-tile/<path:tile_path>')
 def rainviewer_tile_proxy(tile_path):
+    now = time.time()
+    ent = _RV_TILE_CACHE.get(tile_path)
+    if ent and (now - ent[0]) < _RV_TILE_TTL:
+        return _rv_tile_response(ent[1])
     try:
         r = requests.get(
             'https://tilecache.rainviewer.com/' + tile_path,
             timeout=5,
             headers={'User-Agent': 'PiLNK/1.0 (+https://pilnk.io)'}
         )
-        resp = make_response(r.content)
-        resp.headers['Content-Type'] = 'image/png'
-        resp.headers['Access-Control-Allow-Origin'] = '*'
-        resp.headers['Cache-Control'] = 'public, max-age=300'
-        return resp
+        if r.status_code == 200 and r.content:
+            _RV_TILE_CACHE[tile_path] = (now, r.content)
+            if len(_RV_TILE_CACHE) > 3000:
+                for k in sorted(_RV_TILE_CACHE, key=lambda kk: _RV_TILE_CACHE[kk][0])[:1000]:
+                    _RV_TILE_CACHE.pop(k, None)
+            return _rv_tile_response(r.content)
+        if ent:
+            return _rv_tile_response(ent[1])           # serve stale on 429 / upstream error
+        return make_response(b'', 204)
     except Exception:
+        if ent:
+            return _rv_tile_response(ent[1])
         return make_response(b'', 204)  # silent empty on failure — never block aircraft render
 
 # ── Planespotters.net proxy — aircraft photos ──────────────

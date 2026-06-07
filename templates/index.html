@@ -1294,6 +1294,10 @@
               <span>Show Rain Radar</span>
               <label class="toggle-switch"><input type="checkbox" id="wxToggle" onchange="toggleWxOverlay(this.checked)"/><span class="toggle-slider"></span></label>
             </div>
+            <div class="toggle-row" title="Aircraft fade into rain cells — the visual illusion of flying into cloud. Off by default; turns the radar on so you can see the weather.">
+              <span>Cloud cover</span>
+              <label class="toggle-switch"><input type="checkbox" id="cloudCoverToggle" onchange="setCloudCover(this.checked)"/><span class="toggle-slider"></span></label>
+            </div>
             <div class="wx-toggles" id="wxSubToggles" style="opacity:0.4;pointer-events:none;">
               <div class="wx-toggle-row"><span style="display:flex;align-items:center;"><span class="wx-dot" style="background:#38bdf8;"></span>Past frames</span><label class="toggle-switch" style="transform:scale(0.85);"><input type="checkbox" id="wxAnimate" checked onchange="toggleWxAnimation(this.checked)"/><span class="toggle-slider"></span></label></div>
               <div class="wx-toggle-row" id="wxNexradRow" style="display:none;"><span style="display:flex;align-items:center;" title="High-resolution NOAA NEXRAD base reflectivity. US lower-48 only. Updates every ~5 min."><span class="wx-dot" style="background:#f59e0b;"></span>NEXRAD (US, high-res)</span><label class="toggle-switch" style="transform:scale(0.85);"><input type="checkbox" id="wxNexradToggle" onchange="toggleNexrad(this.checked)"/><span class="toggle-slider"></span></label></div>
@@ -2068,10 +2072,65 @@ window.wxSampler = (function(){
         if(d>=testCell.r) return 0;
         return Math.max(0,Math.min(1,(1-d/testCell.r)*1.8*testCell.peak));  // solid core, gradient only at the rim
       }
-      return 0;  // real RainViewer sampling lands here in Phase 2
+      return _rvIntensityAt(lat,lon);  // real RainViewer rain under the plane (Phase 2)
     }
   };
 })();
+// ── Real RainViewer sampling (Phase 2) ── same-origin offscreen mosaic of the
+// current rain frame so intensityAt() is a cheap synchronous pixel read.
+var _rvCanvas=document.createElement('canvas');
+var _rvCtx=_rvCanvas.getContext('2d',{willReadFrequently:true});
+var _rvData=null, _rvBuilding=false, _rvTileCache={};
+function _rvTileUrl(p,z,x,y){ return '/api/rv-tile/'+p+'/256/'+z+'/'+x+'/'+y+'/2/1_1.png'; }
+function rebuildRainMosaic(){
+  if(!window.CLOUD_COVER_ON || (window.wxSampler&&wxSampler.isTest()) || _rvBuilding) return;
+  if(!wxFrames || !wxFrames.length || !wxFrames[wxCurrentFrame]){ _rvData=null; return; }
+  var frame=wxFrames[wxCurrentFrame], z=Math.min(map.getZoom()|0,6), b=map.getBounds();
+  var nw=map.project(b.getNorthWest(),z).divideBy(256).floor();
+  var se=map.project(b.getSouthEast(),z).divideBy(256).floor();
+  var x0=nw.x,y0=nw.y,x1=se.x,y1=se.y, cols=x1-x0+1, rows=y1-y0+1;
+  if(cols<1||rows<1||cols*rows>36){ _rvData=null; return; }
+  var w=cols*256,h=rows*256; _rvCanvas.width=w; _rvCanvas.height=h; _rvCtx.clearRect(0,0,w,h);
+  var ox=x0*256, oy=y0*256, pending=0, done=false;
+  function finalize(){ try{ _rvData={data:_rvCtx.getImageData(0,0,w,h).data,w:w,h:h,z:z,ox:ox,oy:oy}; }catch(e){ _rvData=null; } _rvBuilding=false; }
+  _rvBuilding=true;
+  for(var ty=y0;ty<=y1;ty++){ for(var tx=x0;tx<=x1;tx++){ (function(tx,ty){
+    var key=frame.path+'/'+z+'/'+tx+'/'+ty, dx=(tx-x0)*256, dy=(ty-y0)*256, im=_rvTileCache[key];
+    if(im&&im.complete&&im.naturalWidth){ try{_rvCtx.drawImage(im,dx,dy);}catch(e){} return; }
+    pending++; im=new Image(); im.crossOrigin='anonymous';
+    im.onload=function(){ try{_rvCtx.drawImage(im,dx,dy);}catch(e){} _rvTileCache[key]=im; if(--pending===0&&done) finalize(); };
+    im.onerror=function(){ if(--pending===0&&done) finalize(); };
+    im.src=_rvTileUrl(frame.path,z,tx,ty);
+  })(tx,ty); } }
+  done=true; if(pending===0) finalize();
+}
+function _rvIntensityAt(lat,lon){
+  if(!_rvData) return 0;
+  var pt=map.project([lat,lon],_rvData.z), px=Math.floor(pt.x-_rvData.ox), py=Math.floor(pt.y-_rvData.oy);
+  if(px<0||py<0||px>=_rvData.w||py>=_rvData.h) return 0;
+  var d=_rvData.data, i=(py*_rvData.w+px)*4, al=d[i+3];
+  if(al<16) return 0;                                   // transparent -> no rain
+  // colour->intensity (rough; tune on real tiles): alpha = presence, warmth = heavier rain
+  var r=d[i], bl=d[i+2];
+  return Math.max(0, Math.min(1, (al/255)*(0.3 + Math.max(0,(r-bl)/255)*0.7)));
+}
+var _rvMoveTimer=null;
+map.on('moveend zoomend', function(){ if(!(window.CLOUD_COVER_ON && window.wxSampler && !wxSampler.isTest())) return; clearTimeout(_rvMoveTimer); _rvMoveTimer=setTimeout(rebuildRainMosaic, 600); });
+// DEV: diagnostic — what the sampler sees in the current view (pan over real rain to verify)
+window.rainProbe=function(){
+  if(window.wxSampler && wxSampler.isTest()){ return 'rainProbe: synthetic test cell active (Shift+C) — cloudTestOff() first.'; }
+  if(!window.CLOUD_COVER_ON){ return 'rainProbe: run setCloudCover(true) first (give the radar a few seconds to load).'; }
+  rebuildRainMosaic();
+  setTimeout(function(){
+    var c=map.getCenter();
+    if(!_rvData){ console.log('rainProbe: no mosaic yet — tiles still loading? run it again in a moment.'); return; }
+    var d=_rvData.data, n=0, tot=_rvData.w*_rvData.h, maxA=0;
+    for(var i=0;i<d.length;i+=4){ var a=d[i+3]; if(a>maxA)maxA=a; if(a>16)n++; }
+    var fp=wxFrames[wxCurrentFrame]&&wxFrames[wxCurrentFrame].path;
+    console.log('rainProbe @'+c.lat.toFixed(2)+','+c.lng.toFixed(2)+' z'+Math.round(map.getZoom())+' | '+(100*n/tot).toFixed(1)+'% rain · maxAlpha='+maxA+' · intensity@center='+_rvIntensityAt(c.lat,c.lng).toFixed(2)+' · frame='+fp);
+  }, 2500);
+  return 'rainProbe: sampling… watch the console in ~2.5s.';
+};
 var _cloudState={};   // per-callsign cloud occlusion state (occ, hidden) — survives the per-tick aircraft-object swap
 var _cloudRaf=null, _cloudFrame=0;
 window.kickCloud=function(){ if(window.CLOUD_COVER_ON && !_cloudRaf) _cloudRaf=requestAnimationFrame(_cloudTick); };
@@ -2090,7 +2149,13 @@ function _cloudTick(){
 function setCloudCover(on){
   window.CLOUD_COVER_ON=!!on;
   try{ localStorage.setItem('cloudCover',on?'1':'0'); }catch(e){}
-  if(on){ if(!_cloudRaf) _cloudRaf=requestAnimationFrame(_cloudTick); }
+  if(on){ if(!_cloudRaf) _cloudRaf=requestAnimationFrame(_cloudTick);
+          if(window.wxSampler && !wxSampler.isTest()){
+            var _wt=document.getElementById('wxToggle');
+            if(_wt && !_wt.checked){ _wt.checked=true; toggleWxOverlay(true); }   // show the rain the planes fade into
+            else if(!wxFrames || !wxFrames.length){ if(typeof loadRainViewer==='function') loadRainViewer(); }
+            else rebuildRainMosaic();
+          } }
   else { for(var k in _cloudState){ _cloudState[k].occ=1; _cloudState[k].hidden=false; }
          Object.keys(trails).forEach(function(c){ redrawTrail(c); });
          if(window.aircraftLayer) aircraftLayer.redraw(); }
@@ -2386,7 +2451,7 @@ function buildWxLayers() {
   stopWxAnimation();
   removeWxLayers();
   wxFrames.forEach(function(frame) {
-    var url = wxHost + frame.path + '/256/{z}/{x}/{y}/2/1_1.png';
+    var url = '/api/rv-tile' + frame.path + '/256/{z}/{x}/{y}/2/1_1.png';
     var layer = L.tileLayer(url, {
       opacity: 0.001,
       className: 'wx-tile-layer',
@@ -2406,6 +2471,7 @@ function buildWxLayers() {
   }
   wxCurrentFrame = latestObservedIdx;
   showWxFrame(wxCurrentFrame);
+  if(window.CLOUD_COVER_ON && window.wxSampler && !wxSampler.isTest()) rebuildRainMosaic();
   document.getElementById('wxStatus').textContent =
     'Radar: ' + wxFrames.length + ' frames — ' + wxFrameTime(wxCurrentFrame);
   if (wxAnimateOn) startWxAnimation();
