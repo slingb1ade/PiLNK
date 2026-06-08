@@ -372,39 +372,40 @@
 
   /* ── CINEMATIC CARD ───────────────────────────────────── */
   #cinematicOverlay{
-    position:fixed;inset:0;z-index:10000;
-    display:flex;align-items:center;justify-content:center;
-    background:rgba(0,0,0,0);
+    position:fixed;
+    top:52px;            /* below #header */
+    left:440px;          /* clears the LH wind compass */
+    right:56px;          /* clears the RH recenter button */
+    z-index:10000;
+    overflow:hidden;     /* clip the slide so the card emerges from under the navbar */
     pointer-events:none;
-    transition:background 0.4s;
+    /* no backdrop, no flex centering — this is a top-sliding panel, not a modal */
   }
   #cinematicOverlay.active{
-    background:rgba(0,0,0,0.55);
     pointer-events:auto;
-    backdrop-filter:blur(2px);
   }
   #cinematicCard{
-    width:min(820px,92vw);
+    width:100%;
+    height:290px;                 /* fixed — map stays visible below the panel */
     background:var(--bg-panel);
-    border:1px solid var(--blue-mid);
-    border-radius:12px;
+    border-bottom:1px solid var(--blue-mid);
+    border-radius:0 0 10px 10px;  /* both bottom corners — floating panel between the controls */
     overflow:hidden;
     display:flex;
-    box-shadow:0 32px 80px rgba(0,0,0,0.5), 0 0 0 1px rgba(59,130,246,0.2);
-    opacity:0;
-    transform:translateY(32px) scale(0.97);
-    transition:opacity 0.35s ease, transform 0.35s ease;
+    flex-direction:row;
+    box-shadow:0 8px 40px rgba(0,0,0,0.5), 0 0 0 1px rgba(59,130,246,0.15);
+    transform:translateY(-100%);  /* slides DOWN from above the navbar line */
+    transition:transform 0.35s cubic-bezier(0.4,0,0.2,1);
     position:relative;
   }
   #cinematicOverlay.active #cinematicCard{
-    opacity:1;
-    transform:translateY(0) scale(1);
+    transform:translateY(0);
   }
-  /* Photo panel — left 58% */
+  /* Photo panel — left column (340px) */
   .cc-photo{
-    flex:0 0 58%;
+    flex:0 0 340px;
+    height:100%;
     position:relative;
-    min-height:280px;
     background:radial-gradient(ellipse at center, var(--bg-panel) 0%, var(--bg-deep) 100%);
     overflow:hidden;
   }
@@ -434,14 +435,74 @@
     transform:scaleX(1);
     transition:transform linear;
   }
-  /* Data panel — right 42% */
+  /* Data panel — centre column (fills the middle) */
   .cc-data{
     flex:1;
+    height:100%;
     padding:24px 24px 20px;
     display:flex;flex-direction:column;
     justify-content:space-between;
     position:relative;
+    overflow-y:auto;
+  }
+  /* Transcript panel — right column (Endgame: ATC live transcript) */
+  .cc-transcript{
+    flex:0 0 30%;
+    display:flex;
+    flex-direction:column;
+    border-left:1px solid var(--border);
+    height:100%;
     overflow:hidden;
+  }
+  .cc-transcript-hdr{
+    display:flex;
+    align-items:center;
+    gap:8px;
+    padding:12px 14px 10px;
+    border-bottom:1px solid var(--border);
+    font-family:'Share Tech Mono',monospace;
+    font-size:0.58rem;
+    letter-spacing:0.2em;
+    color:var(--text-dim);
+    text-transform:uppercase;
+    flex-shrink:0;
+  }
+  .cc-transcript-freq{
+    margin-left:auto;
+    color:var(--blue-light);
+    font-size:0.65rem;
+    letter-spacing:0.08em;
+  }
+  .cc-transcript-body{
+    flex:1;
+    overflow-y:auto;
+    padding:10px 12px;
+    display:flex;
+    flex-direction:column-reverse;  /* newest line at the bottom */
+  }
+  .cc-transcript-empty{
+    font-family:'Share Tech Mono',monospace;
+    font-size:0.6rem;
+    color:var(--text-dim);
+    text-align:center;
+    padding:20px 0;
+    opacity:0.6;
+  }
+  /* Individual transcript lines — added dynamically when ATC is live */
+  .cc-tx-line{
+    font-family:'Share Tech Mono',monospace;
+    font-size:0.62rem;
+    color:var(--text);
+    line-height:1.6;
+    padding:2px 0;
+    border-bottom:1px solid var(--border);
+  }
+  .cc-tx-time{
+    color:var(--text-dim);
+    margin-right:8px;
+  }
+  .cc-tx-text{
+    color:var(--text);
   }
   .cc-top{}
   .cc-badge{
@@ -671,10 +732,6 @@
     font-family:'Share Tech Mono',monospace;
     font-size:0.55rem;color:var(--text-dim);
     letter-spacing:0.05em;
-  }
-  @keyframes cc-in{
-    from{opacity:0;transform:translateY(28px) scale(0.96);}
-    to{opacity:1;transform:translateY(0) scale(1);}
   }
 
   /* Photo layer needs z-index */
@@ -1516,17 +1573,16 @@
 </div>
 
 <!-- CINEMATIC CARD -->
-<div id="cinematicOverlay" onclick="handleCCOverlayClick(event)">
+<div id="cinematicOverlay">
   <div id="cinematicCard">
+    <div class="cc-timer-bar" id="ccTimerBar" style="position:absolute;top:0;left:0;z-index:5;"></div>
     <div class="cc-photo" id="ccPhoto">
-      <div class="cc-timer-bar" id="ccTimerBar"></div>
       <!-- Photo layer -->
       <div class="cc-photo-no-img" id="ccNoImg"></div>
       <img id="ccImg" src="" alt="" style="display:none;position:absolute;inset:0;width:100%;height:100%;object-fit:contain;" onload="ccImgLoaded()"/>
       <div class="cc-photo-credit" id="ccPhotoCredit"></div>
     </div>
     <div class="cc-data" id="ccData">
-      <button class="cc-close" onclick="closeCinematicCard()"><svg class="icn" viewBox="0 0 24 24"><path d="M18 6 6 18M6 6l12 12"/></svg></button>
       <div class="cc-top">
         <div class="cc-badge" id="ccBadge" style="display:none;"><span>NOW PASSING</span></div>
         <div class="cc-callsign" id="ccCallsign">–</div>
@@ -1564,6 +1620,18 @@
         <div style="display:flex;align-items:center;gap:10px;">
           <div class="cc-planespotters" id="ccPhotoSource">📷 Planespotters.net</div>
           <button id="ccAddPhotoBtn" onclick="ccAddPhoto()" style="display:none;background:none;border:1px solid rgba(167,139,250,0.3);border-radius:4px;color:#a78bfa;font-family:'Share Tech Mono',monospace;font-size:0.58rem;padding:2px 8px;cursor:pointer;letter-spacing:0.05em;">📸 Add Photo</button>
+        </div>
+      </div>
+    </div>
+    <div class="cc-transcript" id="ccTranscript">
+      <div class="cc-transcript-hdr">
+        <span class="cc-live-dot" id="ccAtcDot" style="display:none;background:#dc2626;box-shadow:0 0 6px #dc2626;"></span>
+        <span>ATC TRANSCRIPT</span>
+        <span class="cc-transcript-freq" id="ccAtcFreq"></span>
+      </div>
+      <div class="cc-transcript-body" id="ccTranscriptBody">
+        <div class="cc-transcript-empty" id="ccTranscriptEmpty">
+          📡 Live ATC transcript — coming soon
         </div>
       </div>
     </div>
@@ -4162,6 +4230,14 @@ function openCinematicCard(cs, auto) {
   document.getElementById('ccPhotoCredit').textContent = '';
   document.getElementById('ccPhotoSource').textContent = '📷 Loading...';
 
+  // Transcript — reset to empty state (Endgame: the ATC pipeline fills this when live)
+  // Placeholder until the ATC pipeline is live. When it lands, swap this back to a
+  // per-aircraft message like "No ATC coverage available for this aircraft."
+  document.getElementById('ccTranscriptBody').innerHTML =
+    '<div class="cc-transcript-empty" id="ccTranscriptEmpty">📡 Live ATC transcript — coming soon</div>';
+  document.getElementById('ccAtcDot').style.display = 'none';
+  document.getElementById('ccAtcFreq').textContent = '';
+
   if (a.hex) {
     // Step 1: Check PiLNK community photos first
     fetchPiLNKPhoto(a.hex, function(pilnkPhoto) {
@@ -4227,6 +4303,11 @@ function openCinematicCard(cs, auto) {
   var overlay = document.getElementById('cinematicOverlay');
   overlay.classList.add('active');
 
+  // Click ANYWHERE to dismiss. Deferred attach (setTimeout 0) so the click that
+  // opened this card doesn't immediately close it; capture phase so it fires
+  // before any target handler (lets marker-to-marker switching still work).
+  setTimeout(function(){ document.addEventListener('click', ccCloseOnAnyClick, true); }, 0);
+
   // Timer bar — auto dismiss after 14s for auto-triggered
   if (auto) {
     var bar = document.getElementById('ccTimerBar');
@@ -4255,12 +4336,34 @@ function closeCinematicCard() {
   if (ccDismissTimer) { clearTimeout(ccDismissTimer); ccDismissTimer = null; }
   stopCCWaveform();
   document.getElementById('cinematicOverlay').classList.remove('active');
+  document.removeEventListener('click', ccCloseOnAnyClick, true);
   document.getElementById('ccAddPhotoBtn').style.display = 'none';
   showAllLabels(); // restore labels after card closes
 }
 
-function handleCCOverlayClick(e) {
-  if (e.target === document.getElementById('cinematicOverlay')) closeCinematicCard();
+// Click-anywhere dismissal — attached while a card is open, removed on close.
+function ccCloseOnAnyClick(e) {
+  closeCinematicCard();
+}
+
+function updateCCTranscript(lines, freq) {
+  // Endgame hook — the ATC transcript pipeline (SDR++ -> Whisper) will call this
+  // when live transcript data exists for the shown aircraft. Does nothing today.
+  //   lines: array of { time:'HH:MM:SS', text:'string' }  (newest first)
+  //   freq:  string e.g. '124.3 MHz'
+  if (!ccVisible) return;
+  var body = document.getElementById('ccTranscriptBody');
+  var dot = document.getElementById('ccAtcDot');
+  var freqEl = document.getElementById('ccAtcFreq');
+  if (!lines || !lines.length) return;
+  dot.style.display = 'inline-block';
+  freqEl.textContent = freq || '';
+  body.innerHTML = lines.map(function(l) {
+    return '<div class="cc-tx-line">' +
+      '<span class="cc-tx-time">' + l.time + '</span>' +
+      '<span class="cc-tx-text">' + l.text + '</span>' +
+    '</div>';
+  }).join('');
 }
 
 function ccAddPhoto() {
