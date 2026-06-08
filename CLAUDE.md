@@ -16,7 +16,7 @@ ADS-B (and planned VHF-ATC) flight tracking that runs on distributed nodes — R
 ## Who does what
 
 - **AJ** — sole authority (Rule #27). Picks every **version number + codename**. Performs **all git pushes** (authenticates to GitHub). Approves every service restart.
-- **You (Claude Code)** — the **builder**. Write and test features on the dev box. Follow the gates below; never ship past them on your own.
+- **You (Claude Code, web)** — the **builder**, running in a cloud sandbox on a clone of this repo. Write the feature, then push a **branch** and open a **PR** with a change summary. You do **not** touch the Pi4/Pi5 and you do **not** push to `main`. Your output is a PR for AJ to test on real hardware — never assume a change is "shipped." Hardware testing (Pi4 → Pi5) and the merge/push to `main` are AJ's.
 - **Hub Claude** (claude.ai + PiLNK Hub MCP) — **release supervisor**: runs the read-only verify gate, syncs `version.php`, confirms the live endpoint, drafts tester comms.
 
 ---
@@ -56,7 +56,8 @@ ADS-B (and planned VHF-ATC) flight tracking that runs on distributed nodes — R
 ## Release flow (condensed — full detail in `SOP-github-push.md`)
 
 ```
-[ ] Pi4: build + dev test — solid, no regressions
+[ ] Web Claude Code: build feature -> push branch + open PR on GitHub
+[ ] Pi4: pull the PR branch + dev test — solid, no regressions
 [ ] Pi5: install + final test + hard-refresh
 [ ] Pi5: GLOBAL CHECK (AJ-NZ / Jim-US / KICTPI-US / M0CRT-UK)   (#25)
 [ ] Pi5: bump VERSION file — AJ picks number + codename          (#28)
