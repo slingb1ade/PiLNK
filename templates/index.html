@@ -2156,6 +2156,7 @@ function setCloudCover(on){
             if(_wt && !_wt.checked){ _wt.checked=true; toggleWxOverlay(true); }   // show the rain the planes fade into
             else if(!wxFrames || !wxFrames.length){ if(typeof loadRainViewer==='function') loadRainViewer(); }
             else rebuildRainMosaic();
+            pinWxLatest();   // freeze the time-lapse so the rain you see is the rain that fades
           } }
   else { for(var k in _cloudState){ _cloudState[k].occ=1; _cloudState[k].hidden=false; }
          Object.keys(trails).forEach(function(c){ redrawTrail(c); });
@@ -2505,9 +2506,18 @@ function wxFrameTime(idx) {
   return wxFrames[idx].isForecast ? (t + ' (forecast)') : t;
 }
 
+function pinWxLatest() {   // Cloud Cover: freeze radar on the latest observed (non-forecast) frame so display == occlusion
+  stopWxAnimation();
+  if (!wxFrames || !wxFrames.length) return;
+  var li = 0;
+  for (var i = wxFrames.length - 1; i >= 0; i--) { if (!wxFrames[i].isForecast) { li = i; break; } }
+  showWxFrame(li);
+  if (window.CLOUD_COVER_ON && window.wxSampler && !wxSampler.isTest()) rebuildRainMosaic();
+}
 function startWxAnimation() {
   if (wxAnimTimer) clearInterval(wxAnimTimer);
   if (!wxLayers.length) return;
+  if (window.CLOUD_COVER_ON) { pinWxLatest(); return; }   // Cloud Cover pins the latest real frame — no time-lapse
   // 900ms interval pairs with the 350ms crossfade for a smooth loop:
   // ~350ms blend + ~550ms hold = readable but smooth
   wxAnimTimer = setInterval(function() {
@@ -4502,35 +4512,68 @@ function loadMETAR() {
     });
 }
 
+// Decode METAR present-weather codes (e.g. "-RA" -> "Light rain (-RA)"). Shared by the sidebar widget and the W panel.
+function decodeWx(s) {
+  if (!s) return 'None';
+  var INT = {'-':'light ', '+':'heavy '};
+  var CODE = {MI:'shallow',BC:'patches of',PR:'partial',DR:'drifting',BL:'blowing',SH:'showers',TS:'thunderstorm',FZ:'freezing',
+    DZ:'drizzle',RA:'rain',SN:'snow',SG:'snow grains',IC:'ice crystals',PL:'ice pellets',GR:'hail',GS:'small hail',UP:'precip',
+    BR:'mist',FG:'fog',FU:'smoke',VA:'volcanic ash',DU:'dust',SA:'sand',HZ:'haze',PY:'spray',
+    PO:'dust whirls',SQ:'squalls',FC:'funnel cloud',SS:'sandstorm',DS:'duststorm'};
+  var parts = String(s).split(' ').map(function(tok) {
+    var pre = '';
+    if (tok[0] === '-' || tok[0] === '+') { pre = INT[tok[0]]; tok = tok.slice(1); }
+    else if (tok.slice(0,2) === 'VC') { pre = 'nearby '; tok = tok.slice(2); }
+    var words = []; for (var i = 0; i < tok.length; i += 2) { var c = tok.substr(i,2); words.push(CODE[c] || c); }
+    return (pre + words.join(' ')).trim();
+  });
+  var out = parts.join(', ');
+  return (out.charAt(0).toUpperCase() + out.slice(1)) + ' (' + s + ')';
+}
+// Build cloud groups (e.g. "FEW019 SCT028 BKN043") + ceiling (lowest BKN/OVC, ft) from the AWC clouds[] array.
+function wxClouds(m) {
+  var out = '', ceil = null;
+  if (Array.isArray(m.clouds) && m.clouds.length) {
+    out = m.clouds.map(function(c) {
+      if (c.cover === 'CLR' || c.cover === 'SKC' || c.cover === 'NCD' || c.base == null) return c.cover;
+      if ((c.cover === 'BKN' || c.cover === 'OVC' || c.cover === 'OVX') && (ceil === null || c.base < ceil)) ceil = c.base;
+      return c.cover + ('00' + Math.round(c.base / 100)).slice(-3);
+    }).join(' ');
+  } else if (m.cover) { out = m.cover; }
+  return { groups: out || '—', ceiling: ceil };
+}
 function renderMETAR(m) {
   var el = document.getElementById('metarContent');
   if (!el) return;
 
-  // Wind
-  var windDir = m.wdir !== undefined ? m.wdir + '°' : '--';
+  var windDir = (m.wdir === 'VRB') ? 'VRB' : (m.wdir !== undefined ? m.wdir + '°' : '--');
   var windSpd = m.wspd !== undefined ? m.wspd + 'kt' : '--';
   var windGust = m.wgst ? ' G' + m.wgst + 'kt' : '';
-  var wind = windDir + ' / ' + windSpd + windGust;
+  var wind = (m.wspd === 0) ? 'Calm' : (windDir + ' / ' + windSpd + windGust);
 
-  // Visibility
-  var vis = m.visib !== undefined ? m.visib + ' SM' : '--';
-
-  // Temp/Dewpoint
+  var vis = (m.visib !== undefined && m.visib !== null) ? m.visib + ' SM' : '--';
   var temp = m.temp !== undefined ? m.temp + '°C' : '--';
   var dew = m.dewp !== undefined ? m.dewp + '°C' : '--';
+  var qnh = m.altim !== undefined ? 'Q' + Math.round(m.altim) : '--';   // AWC altim is already hPa (e.g. 1018 == Q1018)
 
-  // QNH
-  var qnh = m.altim !== undefined ? 'Q' + Math.round(m.altim * 33.8639) : '--';
+  var cl = wxClouds(m);
+  var ceilStr = (cl.ceiling !== null) ? cl.ceiling.toLocaleString() + ' ft' : 'None';
+  var wx = decodeWx(m.wxString);
+  var fc = (m.fltCat || '').toUpperCase();
+  var fcBadge = fc ? '<span class="wx-flight-rule wx-' + fc + '">' + fc + '</span>' : '';
 
-  // Conditions
-  var conds = (m.wxString || m.clouds || '').toString() || 'No significant weather';
+  function row(l, v) { return '<div class="metar-row"><span class="metar-label">' + l + '</span><span class="metar-val">' + v + '</span></div>'; }
 
   el.innerHTML =
-    '<div class="metar-conditions">' + (m.rawOb ? m.rawOb.substring(0,40) : METAR_STATION) + '</div>' +
-    '<div class="metar-row"><span class="metar-label">Wind</span><span class="metar-val">' + wind + '</span></div>' +
-    '<div class="metar-row"><span class="metar-label">Visibility</span><span class="metar-val">' + vis + '</span></div>' +
-    '<div class="metar-row"><span class="metar-label">Temp / Dew</span><span class="metar-val">' + temp + ' / ' + dew + '</span></div>' +
-    '<div class="metar-row"><span class="metar-label">QNH</span><span class="metar-val">' + qnh + '</span></div>';
+    (fcBadge ? '<div style="margin-bottom:6px;">' + fcBadge + '</div>' : '') +
+    row('Wind', wind) +
+    row('Visibility', vis) +
+    row('Weather', wx) +
+    row('Clouds', cl.groups) +
+    row('Ceiling', ceilStr) +
+    row('Temp / Dew', temp + ' / ' + dew) +
+    row('QNH', qnh) +
+    (m.rawOb ? '<div class="metar-conditions" style="margin-top:8px;white-space:normal;word-break:break-word;line-height:1.35;">' + m.rawOb + '</div>' : '');
 
   var timeEl = document.getElementById('metarTime');
   if (timeEl && m.reportTime) {
@@ -5478,31 +5521,30 @@ var wxPanel = (function() {
     var raw = m.rawOb || m.raw_text || m.metar || 'N/A';
     var temp = m.temp !== undefined ? m.temp + '°C' : 'N/A';
     var dewp = m.dewp !== undefined ? m.dewp + '°C' : 'N/A';
-    var alt  = m.altim !== undefined ? m.altim.toFixed(0) + ' hPa' : (m.altimeter ? m.altimeter + ' inHg' : 'N/A');
-    var vis  = m.visib !== undefined ? m.visib + ' SM' : 'N/A';
-    var wdir = m.wdir !== undefined ? m.wdir + '°' : 'N/A';
+    var alt  = m.altim !== undefined ? Math.round(m.altim) + ' hPa' : 'N/A';
+    var vis  = (m.visib !== undefined && m.visib !== null) ? m.visib + ' SM' : 'N/A';
+    var wdir = (m.wdir === 'VRB') ? 'VRB' : (m.wdir !== undefined ? m.wdir + '°' : 'N/A');
     var wspd = m.wspd !== undefined ? m.wspd + ' kt' : 'N/A';
     var wgst = m.wgst ? ' G' + m.wgst + 'kt' : '';
-    var ceil = m.cloud_base_ft_agl || 9999;
-    var visNum = parseFloat(m.visib) || 10;
-    var fr = flightRule(visNum, ceil);
+    var wind = (m.wspd === 0) ? 'Calm' : (wdir + ' / ' + wspd + wgst);
 
-    var clouds = '';
-    if (m.sky_condition) {
-      var sky = Array.isArray(m.sky_condition) ? m.sky_condition : [m.sky_condition];
-      clouds = sky.map(function(s) {
-        return (s.sky_cover || '') + ' ' + (s.cloud_base_ft_agl ? s.cloud_base_ft_agl + 'ft' : '');
-      }).join(' · ');
-    }
+    var cl = wxClouds(m);
+    var clouds = (cl.groups && cl.groups !== '—') ? cl.groups : '';
+    var ceilStr = (cl.ceiling !== null) ? cl.ceiling.toLocaleString() + ' ft' : 'None';
+    var wx = decodeWx(m.wxString);
+    var visNum = parseFloat(m.visib); if (isNaN(visNum)) visNum = 10;
+    var fr = m.fltCat ? m.fltCat.toUpperCase() : flightRule(visNum, cl.ceiling == null ? 9999 : cl.ceiling);
 
-    var html = '<div class="wx-station">' + station + '</div>';
-    html += '<div class="wx-time">' + (m.observation_time || m.reportTime || '') + '</div>';
+    var html = '<div class="wx-station">' + (m.name || station) + '</div>';
+    html += '<div class="wx-time">' + (m.reportTime || m.observation_time || '') + '</div>';
     html += '<span class="wx-flight-rule wx-' + fr + '">' + fr + '</span>';
     html += '<div class="wx-section-title">METAR</div>';
     html += '<div class="wx-raw">' + raw + '</div>';
-    html += '<div class="wx-row"><span class="wx-lbl">Wind</span><span class="wx-val">' + wdir + ' / ' + wspd + wgst + '</span></div>';
+    html += '<div class="wx-row"><span class="wx-lbl">Wind</span><span class="wx-val">' + wind + '</span></div>';
     html += '<div class="wx-row"><span class="wx-lbl">Visibility</span><span class="wx-val">' + vis + '</span></div>';
+    html += '<div class="wx-row"><span class="wx-lbl">Weather</span><span class="wx-val">' + wx + '</span></div>';
     if (clouds) html += '<div class="wx-row"><span class="wx-lbl">Clouds</span><span class="wx-val">' + clouds + '</span></div>';
+    html += '<div class="wx-row"><span class="wx-lbl">Ceiling</span><span class="wx-val">' + ceilStr + '</span></div>';
     html += '<div class="wx-row"><span class="wx-lbl">Temp / Dew</span><span class="wx-val">' + temp + ' / ' + dewp + '</span></div>';
     html += '<div class="wx-row"><span class="wx-lbl">QNH</span><span class="wx-val">' + alt + '</span></div>';
 
@@ -5512,11 +5554,14 @@ var wxPanel = (function() {
   function renderTaf(t) {
     if (!t) return;
     var content = document.getElementById('wxContent');
-    var raw = t.rawTAF || t.raw_text || '';
+    var raw = (t.raw || t.rawTAF || t.raw_text || '').trim();
     if (!raw) return;
-
+    // NOAA source prepends a "YYYY/MM/DD HH:MM" line and doubles the TAF keyword — tidy both, keep the line breaks.
+    var lines = raw.split('\n');
+    if (/^\d{4}\/\d{2}\/\d{2}/.test(lines[0])) lines.shift();
+    var taf = lines.join('\n').replace(/^TAF\s+TAF\b/, 'TAF').trim();
     var html = '<div class="wx-section-title">TAF</div>';
-    html += '<div class="wx-raw">' + raw + '</div>';
+    html += '<div class="wx-raw">' + taf.replace(/\n\s*/g, '<br>') + '</div>';
     content.innerHTML += html;
   }
 
