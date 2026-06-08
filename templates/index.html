@@ -1584,6 +1584,7 @@ fetch('/api/location').then(function(r){return r.json();}).then(function(d){
     // Update nearest airport for METAR, aviation data, etc.
     if(typeof updateNearestAirport === 'function') updateNearestAirport(RX_LAT, RX_LON);
     // Redraw distance rings at new location
+    if(typeof drawRxMarker === 'function') drawRxMarker();
     if(typeof drawRings === 'function' && typeof ringsOn !== 'undefined' && ringsOn) drawRings();
     // Show the NEXRAD toggle only if this receiver is inside US lower-48
     if(typeof setupNexradVisibility === 'function') setupNexradVisibility();
@@ -2947,11 +2948,19 @@ function buildRingChips(){
 }
 function toggleRing(nm,on){if(on)activeRings[nm]=true;else delete activeRings[nm];buildRingChips();drawRings();}
 function setUnit(u){ringUnit=u;document.getElementById('unitNm').classList.toggle('active',u==='nm');document.getElementById('unitKm').classList.toggle('active',u==='km');buildRingChips();drawRings();}
-function toggleRings(on){ringsOn=on;document.getElementById('ringSettings').style.opacity=on?'1':'0.4';if(on)drawRings();else{Object.values(ringLayers).forEach(function(l){map.removeLayer(l);});Object.keys(ringLayers).forEach(function(k){delete ringLayers[k];});if(rxMarker){map.removeLayer(rxMarker);rxMarker=null;}}}
+function toggleRings(on){ringsOn=on;document.getElementById('ringSettings').style.opacity=on?'1':'0.4';if(on)drawRings();else{Object.values(ringLayers).forEach(function(l){map.removeLayer(l);});Object.keys(ringLayers).forEach(function(k){delete ringLayers[k];});}}
+
+function drawRxMarker(){
+  // Node receiver marker — ALWAYS drawn, independent of the rings toggle.
+  if(rxMarker){map.removeLayer(rxMarker);rxMarker=null;}
+  var dark=document.documentElement.getAttribute('data-theme')==='dark';
+  var lc2=dark?'#60a5fa':'#2563eb';
+  var ri=L.divIcon({className:'',html:'<div title="PiLNK Receiver"><svg width="28" height="28" viewBox="0 0 28 28"><circle cx="14" cy="14" r="12" fill="none" stroke="'+lc2+'" stroke-width="1" opacity="0.3" style="animation:rx-pulse 2s ease-in-out infinite;transform-origin:14px 14px;"/><circle cx="14" cy="14" r="8" fill="none" stroke="'+lc2+'" stroke-width="1" opacity="0.5" style="animation:rx-pulse 2s ease-in-out infinite 0.5s;transform-origin:14px 14px;"/><line x1="14" y1="14" x2="14" y2="4" stroke="'+lc2+'" stroke-width="2" stroke-linecap="round"/><line x1="10" y1="7" x2="14" y2="4" stroke="'+lc2+'" stroke-width="1.5" stroke-linecap="round"/><line x1="18" y1="7" x2="14" y2="4" stroke="'+lc2+'" stroke-width="1.5" stroke-linecap="round"/><circle cx="14" cy="14" r="4" fill="'+lc2+'"/><circle cx="14" cy="14" r="2" fill="white"/></svg></div>',iconSize:[28,28],iconAnchor:[14,14]});
+  rxMarker=L.marker([RX_LAT,RX_LON],{icon:ri,interactive:true,zIndexOffset:1000}).addTo(map).bindTooltip('📡 PiLNK Receiver',{permanent:false,direction:'top'});
+}
 
 function drawRings(){
   Object.values(ringLayers).forEach(function(l){map.removeLayer(l);});Object.keys(ringLayers).forEach(function(k){delete ringLayers[k];});
-  if(rxMarker){map.removeLayer(rxMarker);rxMarker=null;}
   if(!ringsOn)return;
   var dark=document.documentElement.getAttribute('data-theme')==='dark';
   var lc=dark?'#60a5fa':'#0f172a', tc=dark?'#93c5fd':'#0f172a';
@@ -2964,9 +2973,6 @@ function drawRings(){
     var lm=L.marker([RX_LAT+dOff,RX_LON],{icon:li,interactive:false,pane:'rings'}).addTo(map);
     ringLayers[nm]=L.featureGroup([circle,lm]).addTo(map);
   });
-  var lc2=dark?'#60a5fa':'#2563eb';
-  var ri=L.divIcon({className:'',html:'<div title="PiLNK Receiver"><svg width="28" height="28" viewBox="0 0 28 28"><circle cx="14" cy="14" r="12" fill="none" stroke="'+lc2+'" stroke-width="1" opacity="0.3" style="animation:rx-pulse 2s ease-in-out infinite;transform-origin:14px 14px;"/><circle cx="14" cy="14" r="8" fill="none" stroke="'+lc2+'" stroke-width="1" opacity="0.5" style="animation:rx-pulse 2s ease-in-out infinite 0.5s;transform-origin:14px 14px;"/><line x1="14" y1="14" x2="14" y2="4" stroke="'+lc2+'" stroke-width="2" stroke-linecap="round"/><line x1="10" y1="7" x2="14" y2="4" stroke="'+lc2+'" stroke-width="1.5" stroke-linecap="round"/><line x1="18" y1="7" x2="14" y2="4" stroke="'+lc2+'" stroke-width="1.5" stroke-linecap="round"/><circle cx="14" cy="14" r="4" fill="'+lc2+'"/><circle cx="14" cy="14" r="2" fill="white"/></svg></div>',iconSize:[28,28],iconAnchor:[14,14]});
-  rxMarker=L.marker([RX_LAT,RX_LON],{icon:ri,interactive:true,zIndexOffset:1000}).addTo(map).bindTooltip('📡 PiLNK Receiver',{permanent:false,direction:'top'});
 }
 
 // ── PHASE ─────────────────────────────────────────────────
@@ -3092,7 +3098,7 @@ function toggleTheme(){
   document.documentElement.setAttribute('data-theme',next);localStorage.setItem('pilnk-theme',next);
   updateThemeBtn(next);applyTileFilter();
   Object.keys(lastAircraft).forEach(function(cs){updateMarker(lastAircraft[cs]);});
-  if(ringsOn)drawRings();if(avOverlayOn&&avData)redrawAvOverlay();
+  drawRxMarker();if(ringsOn)drawRings();if(avOverlayOn&&avData)redrawAvOverlay();
 }
 function updateThemeBtn(t){var b=document.getElementById('themeBtn');if(b)b.textContent=t==='light'?'🌙 Dark':'☀ Light';}
 
@@ -4368,7 +4374,11 @@ function getLabelText(a) {
 
 function updateLabel(a) {
   var cs = a.flight ? a.flight.trim() : a.hex;
-  if (!cs || !markers[cs]) return;
+  // Label markers are independent L.markers (only need lat/lon + text), so they
+  // must NOT depend on a DOM plane marker existing — in canvas-plane mode
+  // (SHOW_DOM_PLANES=false) markers{} is always empty. Checking markers[cs] here
+  // silently suppressed every label once canvas planes became the default.
+  if (!cs) return;
   var text = getLabelText(a);
   if (!text) return;
 
@@ -4904,6 +4914,7 @@ function applyThemeAt(t) {
   // Update data-theme for logic that checks it
   root.setAttribute('data-theme', t > 0.5 ? 'dark' : 'light');
   applyTileFilter();
+  drawRxMarker();
   if (ringsOn) drawRings();
   if (avOverlayOn && avData) redrawAvOverlay();
 }
