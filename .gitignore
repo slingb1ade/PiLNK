@@ -22,3 +22,8 @@ __pycache__/
 # in the repo, but ignoring them prevents future accidents)
 *.bak
 *.bak.*
+
+# Dev artifacts / scratch / runtime data (never belong in the repo)
+_airspy_syntax_check.sh
+aircraft.csv.gz
+recordings/
