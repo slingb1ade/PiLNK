@@ -723,6 +723,7 @@ def get_stats_payload():
             'squawk': node_stats['squawk'],
             'top_types': [{'type': t, 'count': c} for t, c in sorted_types],
             'hour_counts': node_stats['hour_counts'],
+            'coverage': {'max_nm': coverage['max_nm'], 'min_elev': coverage['min_elev']},
             'records': records
         }
 

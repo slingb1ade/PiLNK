@@ -2535,7 +2535,7 @@ function setTileLayer(name) {
     // is volunteer-hosted with maxZoom 17 — going higher returns 404s.
     var configs = {
       sat:  {url: 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', attribution: '© Esri', maxZoom: 18},
-      topo: {url: 'https://{s}.tile.opentopomap.org/{z}/{x}/{y}.png', attribution: '© OpenTopoMap (CC-BY-SA)', maxZoom: 17}
+      topo: {url: 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Topo_Map/MapServer/tile/{z}/{y}/{x}', attribution: 'Tiles © Esri', maxZoom: 19}
     };
     var cfg = configs[name];
     if (cfg) {
