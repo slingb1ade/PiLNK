@@ -62,6 +62,11 @@
   .sys-line-label{color:var(--text-dim);}
   .sys-line-val{color:var(--text);font-variant-numeric:tabular-nums;}
   .sys-muted{color:var(--text-dim);font-size:0.66rem;}
+  .cov-toggle{display:flex;gap:4px;margin-bottom:2px;}
+  .cov-btn{flex:1;padding:3px 0;font-family:'Share Tech Mono',monospace;font-size:0.58rem;letter-spacing:0.08em;text-transform:uppercase;color:var(--text-dim);background:var(--bg-card);border:1px solid var(--border);border-radius:var(--r-1);cursor:pointer;transition:all 0.15s;}
+  .cov-btn:hover{color:var(--text);}
+  .cov-btn.active{color:var(--blue-mid);border-color:var(--blue-mid);}
+  .cov-legend{font-family:'Share Tech Mono',monospace;font-size:0.55rem;color:var(--text-dim);text-align:center;letter-spacing:0.04em;min-height:14px;}
   .tab-content{display:none;flex:1;flex-direction:column;overflow:hidden;min-height:0;}
   .tab-content.active{display:flex;}
   .scroll-area{overflow-y:auto;overflow-x:hidden;}
@@ -1523,6 +1528,16 @@
           </div>
 
           <div class="panel">
+            <div class="panel-title">Coverage</div>
+            <div class="cov-toggle">
+              <button class="cov-btn active" id="covBtnRange" onclick="covMode('range')">Range</button>
+              <button class="cov-btn" id="covBtnHorizon" onclick="covMode('horizon')">Horizon</button>
+            </div>
+            <canvas id="covCanvas" width="412" height="412" style="width:206px;height:206px;display:block;margin:4px auto 2px;"></canvas>
+            <div class="cov-legend" id="covLegend">Accumulating data&hellip;</div>
+          </div>
+
+          <div class="panel">
             <div class="panel-title">System</div>
             <div class="sys-grid">
               <div class="sys-stat"><div class="sys-stat-label">CPU Temp</div><div class="sys-stat-val" id="sys-temp">--</div></div>
@@ -1840,6 +1855,90 @@ function sysRender(sys, svc){
     else { vs.textContent='UP TO DATE'; vs.className='sys-pill up'; }
   }
 }
+// ── Coverage polar plot ── per-bearing range footprint + horizon floor from /api/coverage.
+var covData = null, covModeCur = 'range';
+function covMode(m){
+  covModeCur = m;
+  var br = document.getElementById('covBtnRange'), bh = document.getElementById('covBtnHorizon');
+  if (br) br.classList.toggle('active', m === 'range');
+  if (bh) bh.classList.toggle('active', m === 'horizon');
+  covDraw();
+}
+function covCss(n, fb){ var v = getComputedStyle(document.documentElement).getPropertyValue(n).trim(); return v || fb; }
+function covDraw(){
+  var cv = document.getElementById('covCanvas'); if (!cv) return;
+  var ctx = cv.getContext('2d'), W = cv.width, H = cv.height, cx = W/2, cy = H/2;
+  ctx.clearRect(0, 0, W, H);
+  var cBorder = covCss('--border', '#dbeafe'), cDim = covCss('--text-dim', '#5c7aa3'), cBlue = covCss('--blue-mid', '#3b82f6');
+  var R = Math.min(W, H)/2 - 30;
+  var d = covData, n = (d && d.sectors) || 36, secDeg = 360 / n;
+  var legend = document.getElementById('covLegend');
+  var vals = null, rings = [], ringLabels = null, legendTxt = 'Accumulating data\u2026';
+
+  if (covModeCur === 'range'){
+    var mx = 0, mxI = -1;
+    if (d) for (var i = 0; i < n; i++) if (d.max_nm[i] > mx){ mx = d.max_nm[i]; mxI = i; }
+    var step = mx <= 100 ? 25 : (mx <= 200 ? 50 : 100);
+    var top = Math.max(step, Math.ceil(mx / step) * step);
+    ringLabels = [];
+    for (var r = step; r <= top; r += step){ rings.push(r / top); ringLabels.push(r); }
+    if (d) vals = d.max_nm.map(function(v){ return Math.max(0, Math.min(1, v / top)); });
+    if (mx > 0) legendTxt = 'Best ' + Math.round(mx) + ' nm @ ' + Math.round(mxI * secDeg + secDeg/2) + '\u00b0 \u00b7 rings ' + step + ' nm';
+  } else {
+    rings = [0.25, 0.5, 0.75, 1];
+    var worst = -1, worstI = -1, any = false;
+    if (d){
+      vals = d.min_elev.map(function(v){
+        if (v == null) return 0;
+        any = true;
+        var e = Math.max(0, Math.min(10, v));
+        return 1 - e / 10;
+      });
+      for (var j = 0; j < n; j++){ var e2 = d.min_elev[j]; if (e2 != null && e2 > worst){ worst = e2; worstI = j; } }
+    }
+    if (any){
+      legendTxt = (worst > 0.5)
+        ? 'Most blocked ' + worst.toFixed(1) + '\u00b0 floor @ ' + Math.round(worstI * secDeg + secDeg/2) + '\u00b0'
+        : 'Clear horizon floor all round';
+      legendTxt += ' \u00b7 full = 0\u00b0';
+    }
+  }
+
+  ctx.lineWidth = 1; ctx.strokeStyle = cBorder;
+  for (var k = 0; k < rings.length; k++){
+    ctx.beginPath(); ctx.arc(cx, cy, R * rings[k], 0, Math.PI * 2); ctx.stroke();
+  }
+  ctx.save(); ctx.globalAlpha = 0.55;
+  for (var a = 0; a < 360; a += 30){
+    var rad = (a - 90) * Math.PI / 180;
+    ctx.beginPath(); ctx.moveTo(cx, cy); ctx.lineTo(cx + R * Math.cos(rad), cy + R * Math.sin(rad)); ctx.stroke();
+  }
+  ctx.restore();
+  ctx.fillStyle = cDim; ctx.font = '700 18px "Share Tech Mono", monospace';
+  ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  ctx.fillText('N', cx, cy - R - 14); ctx.fillText('S', cx, cy + R + 14);
+  ctx.fillText('E', cx + R + 14, cy); ctx.fillText('W', cx - R - 14, cy);
+  if (ringLabels){
+    ctx.font = '14px "Share Tech Mono", monospace'; ctx.globalAlpha = 0.8;
+    for (var m2 = 0; m2 < ringLabels.length; m2++){
+      ctx.fillText(String(ringLabels[m2]), cx + 2, cy - R * rings[m2] + 11);
+    }
+    ctx.globalAlpha = 1;
+  }
+  if (vals){
+    ctx.beginPath();
+    for (var p = 0; p < n; p++){
+      var brg = (p * secDeg + secDeg/2 - 90) * Math.PI / 180;
+      var pr = R * vals[p];
+      var px = cx + pr * Math.cos(brg), py = cy + pr * Math.sin(brg);
+      if (p === 0) ctx.moveTo(px, py); else ctx.lineTo(px, py);
+    }
+    ctx.closePath();
+    ctx.fillStyle = cBlue; ctx.globalAlpha = 0.16; ctx.fill();
+    ctx.globalAlpha = 1; ctx.lineWidth = 2.5; ctx.strokeStyle = cBlue; ctx.stroke();
+  }
+  if (legend) legend.textContent = legendTxt;
+}
 function sysRefreshNet(){
   fetch('/api/net/status',{cache:'no-store'}).then(function(r){return r.ok?r.json():null;}).then(function(d){
     var ns = document.getElementById('net-status'), nl = document.getElementById('net-last');
@@ -1853,8 +1952,9 @@ function sysRefreshNet(){
 function sysRefresh(){
   Promise.all([
     fetch('/api/system',{cache:'no-store'}).then(function(r){return r.ok?r.json():null;}).catch(function(){return null;}),
-    fetch('/api/services',{cache:'no-store'}).then(function(r){return r.ok?r.json():null;}).catch(function(){return null;})
-  ]).then(function(res){ sysRender(res[0], res[1]); });
+    fetch('/api/services',{cache:'no-store'}).then(function(r){return r.ok?r.json():null;}).catch(function(){return null;}),
+    fetch('/api/coverage',{cache:'no-store'}).then(function(r){return r.ok?r.json():null;}).catch(function(){return null;})
+  ]).then(function(res){ sysRender(res[0], res[1]); if (res[2]) covData = res[2]; covDraw(); });
   sysRefreshNet();
 }
 var sysTimer = null;

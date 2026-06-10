@@ -541,9 +541,61 @@ node_stats = {
 }
 node_stats_lock = threading.Lock()
 
+# ── Coverage map (polar reception footprint) ──────────────────────────────
+# Per-bearing footprint accumulated for ALL TIME (persisted; survives restarts
+# and OTA updates). 36 × 10° sectors, two metrics per sector:
+#   max_nm   — furthest position ever decoded on that bearing (range footprint)
+#   min_elev — lowest elevation angle (deg) received on that bearing at
+#              >= COVERAGE_ELEV_MIN_NM out: the long-range horizon floor.
+#              Terrain lifts this floor, so the plot literally draws your
+#              obstructions (e.g. a mountain range) from your own ADS-B data.
+# Sanity gates mirror the all-time records — a single corrupt frame must not
+# poison a persisted footprint, hence the COVERAGE_MAX_NM cap.
+COVERAGE_SECTORS     = 36
+COVERAGE_MAX_NM      = 400   # radio horizon @ FL600 ≈ 300 nm; past 400 = decode glitch
+COVERAGE_ELEV_MIN_NM = 20    # horizon floor ignores close-in low traffic (in FRONT of, not behind, obstructions)
+COVERAGE_SAVE_S      = 300   # flush to disk at most every 5 min
+COVERAGE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'coverage.json')
+
+coverage = {'max_nm': [0.0] * COVERAGE_SECTORS, 'min_elev': [None] * COVERAGE_SECTORS}
+_coverage_dirty = False
+_coverage_saved_at = 0.0
+
+def _coverage_load():
+    global coverage
+    try:
+        if os.path.exists(COVERAGE_FILE):
+            with open(COVERAGE_FILE, 'r') as f:
+                d = json.load(f)
+            mx, el = d.get('max_nm'), d.get('min_elev')
+            if isinstance(mx, list) and len(mx) == COVERAGE_SECTORS and isinstance(el, list) and len(el) == COVERAGE_SECTORS:
+                coverage = {'max_nm': [float(v or 0) for v in mx],
+                            'min_elev': [None if v is None else float(v) for v in el]}
+    except Exception as e:
+        print(f'[PILNK] Coverage load failed (starting fresh): {e}')
+
+def _coverage_save_if_due():
+    """Flush coverage to disk, rate-limited. Called inside node_stats_lock."""
+    global _coverage_dirty, _coverage_saved_at
+    if not _coverage_dirty or (time.time() - _coverage_saved_at) < COVERAGE_SAVE_S:
+        return
+    try:
+        tmp = COVERAGE_FILE + '.tmp'
+        with open(tmp, 'w') as f:
+            json.dump({'max_nm': coverage['max_nm'], 'min_elev': coverage['min_elev'],
+                       'sectors': COVERAGE_SECTORS, 'updated': int(time.time())}, f)
+        os.replace(tmp, COVERAGE_FILE)
+        _coverage_dirty = False
+        _coverage_saved_at = time.time()
+    except Exception as e:
+        print(f'[PILNK] Coverage save failed: {e}')
+
+_coverage_load()
+
 def compute_node_stats(aircraft):
     """Update running stats from current aircraft snapshot."""
     import math
+    global _coverage_dirty
     with node_stats_lock:
         # Reset if new day
         today = time.strftime('%Y-%m-%d')
@@ -606,6 +658,25 @@ def compute_node_stats(aircraft):
                 if dist > 0 and (not node_stats['furthest'] or dist > node_stats['furthest']['val']):
                     node_stats['furthest'] = {'cs': cs, 'val': dist}
 
+                # Coverage map — per-bearing range + horizon floor (all-time, persisted)
+                if 0 < dist <= COVERAGE_MAX_NM:
+                    y = math.sin(dLon) * math.cos(math.radians(lat))
+                    x = math.cos(math.radians(RX_LAT)) * math.sin(math.radians(lat)) - \
+                        math.sin(math.radians(RX_LAT)) * math.cos(math.radians(lat)) * math.cos(dLon)
+                    bearing = (math.degrees(math.atan2(y, x)) + 360) % 360
+                    sector = int(bearing // (360 / COVERAGE_SECTORS)) % COVERAGE_SECTORS
+                    if dist > coverage['max_nm'][sector]:
+                        coverage['max_nm'][sector] = dist
+                        _coverage_dirty = True
+                    if dist >= COVERAGE_ELEV_MIN_NM and 0 < alt <= STATS_MAX_ALT_FT:
+                        d_m = dist * 1852.0
+                        # elevation angle incl. earth curvature drop (4/3-earth radio horizon; 2×R_eff ≈ 16,989 km)
+                        elev = math.degrees(math.atan2(alt * 0.3048 - d_m * d_m / 16989000.0, d_m))
+                        cur = coverage['min_elev'][sector]
+                        if cur is None or elev < cur:
+                            coverage['min_elev'][sector] = round(elev, 2)
+                            _coverage_dirty = True
+
             # Squawk
             if squawk and squawk not in ('1200', '0000'):
                 priority = 4 if squawk == '7500' else 3 if squawk == '7700' else 2 if squawk == '7600' else 1
@@ -623,6 +694,9 @@ def compute_node_stats(aircraft):
         # Hourly peak
         if len(aircraft) > node_stats['hour_counts'][hour]:
             node_stats['hour_counts'][hour] = len(aircraft)
+
+        # Coverage flush (rate-limited to every COVERAGE_SAVE_S)
+        _coverage_save_if_due()
 
 
 def get_stats_payload():
@@ -1736,6 +1810,17 @@ def save_stats_records():
     except Exception:
         pass
     return jsonify({'success': False}), 400
+
+# -- Coverage map (polar reception footprint) --
+@app.route('/api/coverage')
+def get_coverage():
+    with node_stats_lock:
+        return jsonify({
+            'sectors': COVERAGE_SECTORS,
+            'max_nm': coverage['max_nm'],
+            'min_elev': coverage['min_elev'],
+            'elev_min_nm': COVERAGE_ELEV_MIN_NM
+        })
 
 # ── OTA Update API ─────────────────────────────────────────
 @app.route('/api/ota/status')
