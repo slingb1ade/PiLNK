@@ -1110,6 +1110,8 @@
             waitEl.className = 'pair-wait claimed';
             bannerEl.style.display = 'block';
             stopped = true;          // stop polling; node is live now
+            // Auto-dismiss the success banner — one-time confirmation, not permanent.
+            setTimeout(function(){ bannerEl.style.display = 'none'; }, 6000);
             return;
           }
           if(d.active && d.pairing_code){
