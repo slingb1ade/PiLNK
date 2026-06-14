@@ -1,7 +1,22 @@
 #!/bin/bash
 # ╔═══════════════════════════════════════════════════════╗
-# ║         PiLNK Installer  v2.10                       ║
-# ║         pilnk.io  |  Built in Auckland NZ            ║
+# ║   PiLNK Installer  v3.1                                ║
+# ║   Trixie / readsb / Airspy — CLAIM-SAFE edition        ║
+# ║   pilnk.io  |  Built in Auckland NZ                    ║
+# ╠═══════════════════════════════════════════════════════╣
+# ║  HARDWARE RULE: PiLNK never touches a dongle that      ║
+# ║  another decoder/feeder is using (FR24, PiAware,       ║
+# ║  RadarBox, dump1090-fa, dump978-fa).                   ║
+# ║                                                         ║
+# ║  Decoder decision (consume-first):                      ║
+# ║    healthy readsb      → consume its aircraft.json     ║
+# ║    healthy dump1090-fa → consume its aircraft.json     ║
+# ║                          (FlightAware/FR24 untouched)  ║
+# ║    Airspy              → airspy_adsb → readsb net-only ║
+# ║    free RTL-SDR        → readsb (local rtlsdr)         ║
+# ║                                                         ║
+# ║  Run AS YOUR USER (not sudo):                           ║
+# ║    curl -sSL https://pilnk.io/install.sh | bash         ║
 # ╚═══════════════════════════════════════════════════════╝
 
 set -e
@@ -16,27 +31,42 @@ warn() { printf "${YELLOW}⚠ %s${RESET}\n" "$1"; }
 err()  { printf "${RED}✗ %s${RESET}\n" "$1"; }
 step() { printf "\n${BOLD}${BLUE}[ %s ]${RESET}\n" "$1"; }
 
+# ── Don't run as root ─────────────────────────────────────
+if [ "$(id -u)" -eq 0 ]; then
+  err "Don't run this as root / with sudo."
+  err "Run it as your normal user — it'll ask for sudo when it needs it:"
+  err "  curl -sSL https://pilnk.io/install.sh | bash"
+  exit 1
+fi
+
 # ── /dev/tty safety ───────────────────────────────────────
 if ! (echo "" > /dev/tty) 2>/dev/null; then
   warn "/dev/tty unavailable. Run via:"
-  warn "  curl pilnk.io/install.sh > /tmp/install.sh && bash /tmp/install.sh"
+  warn "  curl -sSL https://pilnk.io/install.sh > /tmp/install.sh && bash /tmp/install.sh"
   exit 1
 fi
 
 # ── Banner ─────────────────────────────────────────────────
 clear
-printf "${BLUE}"
-cat << 'EOF'
-  ██████╗ ██╗██╗     ███╗   ██╗██╗  ██╗
-  ██╔══██╗██║██║     ████╗  ██║██║ ██╔╝
-  ██████╔╝██║██║     ██╔██╗ ██║█████╔╝
-  ██╔═══╝ ██║██║     ██║╚██╗██║██╔═██╗
-  ██║     ██║███████╗██║ ╚████║██║  ██╗
-  ╚═╝     ╚═╝╚══════╝╚═╝  ╚═══╝╚═╝  ╚═╝
-EOF
-printf "${RESET}"
+# Braille radar (rendered from the real pilnk.io hero-radar SVG) + PiLNK wordmark.
+# 256-colour blues; degrades gracefully to plain text on basic terminals.
+RADAR='\033[38;5;39m'   # radar dish/sweep — bright blue
+WORD='\033[38;5;111m'   # PiLNK wordmark — periwinkle
+printf "\n"
+printf "  ${RADAR}⠀⠀⠀⠀⠀⠀⠀⠀⣀⡠⠤⠤⡤⣤⣄⣀⠀⠀⠀⠀⠀⠀⠀⠀${RESET}\n"
+printf "  ${RADAR}⠀⠀⠀⠀⢀⡠⠒⠉⠀⠀⠀⠀⣷⣿⣿⣿⣿⣶⣄⡀⠀⠀⠀⠀${RESET}\n"
+printf "  ${RADAR}⠀⠀⠀⡰⠋⠀⠀⠀⠀⠀⠀⠈⣿⣿⣿⣿⣿⡿⠇⠙⢆⠀⠀⠀${RESET}\n"
+printf "  ${RADAR}⠀⠀⡜⠀⠀⠀⠀⠀⠀⠀⠀⠠⡿⣿⣿⣿⡿⣿⣇⠀⠀⢣⠀⠀${RESET}   ${WORD}${BOLD}██████╗ ██╗██╗     ███╗   ██╗██╗  ██╗${RESET}\n"
+printf "  ${RADAR}⠀⡸⠀⠀⠀⠀⠀⠀⠀⠀⠀⢀⡃⠀⠉⠳⡄⠀⠈⠄⠀⠀⢇⠀${RESET}   ${WORD}${BOLD}██╔══██╗██║██║     ████╗  ██║██║ ██╔╝${RESET}\n"
+printf "  ${RADAR}⠀⡇⠀⠀⠀⠀⠀⡀⠀⢀⠀⣠⣄⣑⣀⣀⣀⣀⣀⣀⣀⣀⣸⠀${RESET}   ${WORD}${BOLD}██████╔╝██║██║     ██╔██╗ ██║█████╔╝ ${RESET}\n"
+printf "  ${RADAR}⠀⡇⠀⠀⠀⠀⠀⠁⠀⠈⠀⠙⠋⠉⠉⠉⠉⠉⠉⠉⠉⠉⢹⠀${RESET}   ${WORD}${BOLD}██╔═══╝ ██║██║     ██║╚██╗██║██╔═██╗ ${RESET}\n"
+printf "  ${RADAR}⠀⢱⠀⠀⠀⠀⠀⠀⣤⡄⠀⠈⠁⠀⠀⠀⠀⠀⠀⠀⠀⠀⡎⠀${RESET}   ${WORD}${BOLD}██║     ██║███████╗██║ ╚████║██║  ██╗${RESET}\n"
+printf "  ${RADAR}⠀⠀⢣⠀⠀⠀⠀⠀⠉⠀⠀⠐⠂⠀⢠⡄⠀⠀⠀⠀⠀⡜⠀⠀${RESET}   ${WORD}${BOLD}╚═╝     ╚═╝╚══════╝╚═╝  ╚═══╝╚═╝  ╚═╝${RESET}\n"
+printf "  ${RADAR}⠀⠀⠀⠱⣄⠀⠀⠀⠀⠀⠀⠀⠀⠀⠈⠁⠀⠀⠀⣠⠎⠀⠀⠀${RESET}\n"
+printf "  ${RADAR}⠀⠀⠀⠀⠈⠑⠤⣀⠀⠀⠀⠀⠀⠀⠀⠀⣀⠤⠊⠁⠀⠀⠀⠀${RESET}\n"
+printf "  ${RADAR}⠀⠀⠀⠀⠀⠀⠀⠀⠉⠑⠒⠒⠒⠒⠊⠉⠀⠀⠀⠀⠀⠀⠀⠀${RESET}\n"
 echo ""
-printf "  ${CYAN}Aviation Intelligence Network — v2.10${RESET}\n"
+printf "  ${CYAN}Aviation Intelligence Network — v3.1 · Trixie / readsb / Airspy · claim-safe${RESET}\n"
 printf "  ${CYAN}pilnk.io${RESET}\n"
 echo ""
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
@@ -45,15 +75,13 @@ echo ""
 # ── Pre-flight checks ──────────────────────────────────────
 step "PRE-FLIGHT CHECKS"
 
-# Internet connection
-if ! curl -s --max-time 5 https://pilnk.io > /dev/null 2>&1; then
-  err "No internet connection detected."
-  err "Please check your network and try again."
+if ! curl -s --max-time 6 https://github.com > /dev/null 2>&1; then
+  err "No internet connection to github.com detected."
+  err "The app, readsb, and airspy_adsb are all fetched from GitHub."
   exit 1
 fi
-ok "Internet connection"
+ok "Internet connection (github.com reachable)"
 
-# Python version
 PY_VER=$(python3 -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")' 2>/dev/null || echo "0.0")
 PY_MAJOR=$(echo "$PY_VER" | cut -d. -f1)
 PY_MINOR=$(echo "$PY_VER" | cut -d. -f2)
@@ -63,7 +91,6 @@ if [ "$PY_MAJOR" -lt 3 ] || { [ "$PY_MAJOR" -eq 3 ] && [ "$PY_MINOR" -lt 8 ]; };
 fi
 ok "Python $PY_VER"
 
-# pip3
 if command -v pip3 &>/dev/null; then
   ok "pip3 available"
 else
@@ -77,70 +104,25 @@ OS_VER=$(grep ^VERSION_CODENAME= /etc/os-release 2>/dev/null | cut -d= -f2 | tr 
 OS_PRETTY=$(grep ^PRETTY_NAME= /etc/os-release 2>/dev/null | cut -d= -f2 | tr -d '"')
 ARCH=$(dpkg --print-architecture 2>/dev/null || uname -m)
 
-# Warn (don't block) on Trixie (Debian 13). It was hard-blocked before, but
-# PiLNK runs fine on Trixie in practice (the dev Pi4 has all along). Surface
-# the caveat and let the user opt in — same pattern as the Ubuntu path below.
 if echo "$OS_VER" | grep -qi "trixie"; then
-  warn "Detected: ${OS_PRETTY:-Debian Trixie (13)}"
-  warn "Trixie isn't the primary tested target (Bookworm is) — most things work,"
-  warn "and PiLNK runs fine on it in practice, but you may hit edge cases."
-  printf "  Continue anyway? [y/N] " > /dev/tty
-  read -r yn < /dev/tty
-  [[ ! "$yn" =~ ^[Yy]$ ]] && exit 1
-fi
-
-# Warn (don't block) on Ubuntu — most things work, but it's not the
-# primary tested target. amd64 users on Ubuntu can opt in at their
-# own risk.
-if echo "$OS_ID" | grep -qi "ubuntu"; then
-  warn "Ubuntu detected — PiLNK is primarily tested on Debian/Raspberry Pi OS."
-  warn "Most things should work but you may hit edge cases."
-  printf "  Continue anyway? [y/N] " > /dev/tty
-  read -r yn < /dev/tty
-  [[ ! "$yn" =~ ^[Yy]$ ]] && exit 1
-fi
-
-# Warn on unknown OS codenames (still allow continue)
-if ! echo "$OS_VER" | grep -qi "bookworm\|bullseye"; then
-  warn "Detected: ${OS_PRETTY:-Unknown OS}"
-  warn "PiLNK is tested on Bookworm and Bullseye."
-  printf "  Continue anyway? [y/N] " > /dev/tty
-  read -r yn < /dev/tty
-  [[ ! "$yn" =~ ^[Yy]$ ]] && exit 1
+  ok "Debian 13 (Trixie) detected — readsb decoder path"
+elif echo "$OS_VER" | grep -qi "bookworm"; then
+  ok "Debian 12 (Bookworm) detected — readsb decoder path"
+elif echo "$OS_VER" | grep -qi "bullseye"; then
+  ok "Debian 11 (Bullseye) detected — readsb decoder path"
 else
-  ok "OS: $OS_PRETTY"
+  warn "Detected: ${OS_PRETTY:-Unknown OS}"
+  warn "Untested OS — proceeding best-effort with readsb."
+  printf "  Continue anyway? [y/N] " > /dev/tty
+  read -r yn < /dev/tty
+  [[ ! "$yn" =~ ^[Yy]$ ]] && exit 1
 fi
 
-# Architecture banner — drives dump1090-fa repo selection later
 case "$ARCH" in
-  arm64|armhf|armel)
-    ok "Architecture: $ARCH (ARM — Raspberry Pi or compatible)"
-    ;;
-  amd64)
-    ok "Architecture: $ARCH (x86_64 server)"
-    ;;
-  *)
-    warn "Architecture: $ARCH (untested — proceeding with best-effort fallback)"
-    ;;
+  arm64|armhf|armel) ok "Architecture: $ARCH (ARM — Raspberry Pi or compatible)" ;;
+  amd64)             ok "Architecture: $ARCH (x86_64)" ;;
+  *)                 warn "Architecture: $ARCH (untested — readsb compiles from source, should be fine)" ;;
 esac
-
-# ── PiAware Detection ─────────────────────────────────────
-PIAWARE_IMAGE=false
-if [ -f /etc/piaware.conf ] || dpkg -l piaware &>/dev/null 2>&1; then
-  PIAWARE_IMAGE=true
-  ok "PiAware detected — will use existing dump1090-fa"
-  # Fix stale FlightAware apt mirror (causes 404 errors)
-  if ls /etc/apt/sources.list.d/*flightaware* &>/dev/null 2>&1; then
-    info "Fixing FlightAware apt mirror..."
-    for f in /etc/apt/sources.list.d/*flightaware*; do
-      if grep -q "flightaware.com/mirror" "$f" 2>/dev/null; then
-        sudo sed -i 's/^deb /#deb /' "$f" 2>/dev/null
-      fi
-    done
-    sudo apt-get update -qq 2>/dev/null || true
-    ok "FlightAware mirror fixed"
-  fi
-fi
 
 # ── No questions ───────────────────────────────────────────
 step "CONFIGURATION"
@@ -153,12 +135,6 @@ echo ""
 printf "  Ready to install? [Y/n] " > /dev/tty
 read -r yn < /dev/tty
 [[ "$yn" =~ ^[Nn]$ ]] && echo "Cancelled." && exit 0
-
-echo ""
-printf "  ${GREEN}Starting installation...${RESET}\n"
-echo ""
-printf "\n  Press ENTER to begin, or Ctrl+C to cancel " > /dev/tty
-read -r < /dev/tty
 echo ""
 
 # ── System update ──────────────────────────────────────────
@@ -166,110 +142,355 @@ step "SYSTEM UPDATE"
 sudo apt-get update -qq || { err "apt-get update failed — check your internet connection"; exit 1; }
 ok "Package lists updated"
 
-# ── Install ALL system dependencies ───────────────────────
+# ── System dependencies ───────────────────────────────────
 step "SYSTEM DEPENDENCIES"
-info "Installing all required system packages..."
+info "Installing system packages..."
 sudo apt-get install -y \
-  python3 \
-  python3-pip \
-  python3-venv \
-  git \
-  curl \
-  wget \
-  rtl-sdr \
-  librtlsdr-dev \
-  sox \
-  ffmpeg \
+  python3 python3-pip python3-venv \
+  git curl wget usbutils \
+  rtl-sdr librtlsdr-dev libusb-1.0-0-dev \
+  gcc make ncurses-dev zlib1g-dev pkg-config libc6-dev \
+  sox ffmpeg \
   2>/dev/null || true
 ok "System packages installed"
 
-# Blacklist DVB driver so it doesn't grab RTL-SDR dongles
+# Blacklist DVB driver so it doesn't grab RTL-SDR dongles before readsb can.
 if [ ! -f /etc/modprobe.d/blacklist-rtlsdr.conf ]; then
   echo "blacklist dvb_usb_rtl28xxu" | sudo tee /etc/modprobe.d/blacklist-rtlsdr.conf > /dev/null
   sudo rmmod dvb_usb_rtl28xxu 2>/dev/null || true
   ok "DVB driver blacklisted (prevents dongle conflicts)"
 fi
 
-# Install dump1090-fa if not present (skip on PiAware — already installed)
-if command -v dump1090-fa &>/dev/null; then
-  ok "dump1090-fa already present"
-elif [ "$PIAWARE_IMAGE" = true ]; then
-  ok "PiAware image — dump1090-fa managed by PiAware"
-else
-  info "Installing dump1090-fa..."
+# ── EXISTING FEEDERS & DECODERS — look before we touch ────
+# CLAIM-SAFE RULE: before assigning any hardware or installing any decoder,
+# find out what is ALREADY running and what it owns. PiLNK coexists; it
+# never displaces a working feeder without explicit operator consent.
+#
+# Verified upstream behaviour (do not re-derive around this):
+#   • wiedehopf readsb-install.sh runs `apt remove -y dump1090-fa` — installing
+#     readsb REMOVES a working dump1090-fa. No readsb-alongside-dump1090-fa.
+#   • readsb-install.sh EXITS on a PiAware SD-card image (piaware-config.txt).
+#   • readsb-install.sh re-points fr24feed/rbfeeder to 127.0.0.1:30005, so
+#     network-mode FR24/RadarBox survive a readsb install; dump1090-fa does not.
+step "EXISTING FEEDERS & DECODERS"
 
-  # Architecture-aware repo selection. FlightAware's official apt repo
-  # only ships ARM packages. amd64 users are served by the well-known
-  # abcd567a community repo (long-time FA contributor, recommended in
-  # FA's own forum threads for x86_64 installs).
-  case "$ARCH" in
-    arm64|armhf|armel)
-      if ! ls /etc/apt/sources.list.d/*flightaware* &>/dev/null 2>&1; then
-        info "Adding FlightAware repository (ARM)..."
-        wget -qO /tmp/flightaware-repo.deb "https://www.flightaware.com/adsb/piaware/files/packages/pool/piaware/f/flightaware-apt-repository/flightaware-apt-repository_1.2_all.deb" 2>/dev/null || true
-        if [ -f /tmp/flightaware-repo.deb ] && [ -s /tmp/flightaware-repo.deb ]; then
-          sudo dpkg -i /tmp/flightaware-repo.deb 2>/dev/null || true
-          sudo apt-get update -qq 2>/dev/null || true
-          ok "FlightAware repository added"
-        fi
-      fi
-      ;;
-    amd64)
-      # abcd567a community repo for amd64. Path is per-Debian-version:
-      #   Bookworm (Debian 12) → /debian12/
-      # Modern keyring location (/etc/apt/keyrings/) per Debian convention.
-      # Errors are deliberately not suppressed so download failures
-      # (404, network, etc.) surface immediately instead of silently
-      # leaving 0-byte files that apt then can't use.
-      if [ ! -s /etc/apt/sources.list.d/abcd567a.list ]; then
-        info "Adding abcd567a community repository (amd64 / Bookworm)..."
-        sudo mkdir -p /etc/apt/keyrings
-        if ! sudo wget -O /etc/apt/sources.list.d/abcd567a.list https://abcd567a.github.io/debian12/abcd567a.list; then
-          err "Failed to download abcd567a.list"
-          sudo rm -f /etc/apt/sources.list.d/abcd567a.list
-          exit 1
-        fi
-        if ! sudo wget -O /etc/apt/keyrings/abcd567a-key.gpg https://abcd567a.github.io/debian12/KEY2.gpg; then
-          err "Failed to download abcd567a GPG key"
-          sudo rm -f /etc/apt/keyrings/abcd567a-key.gpg
-          exit 1
-        fi
-        sudo apt-get update
-        ok "abcd567a repository added"
-      fi
-      ;;
-    *)
-      warn "Architecture $ARCH has no known dump1090-fa repo path"
-      warn "Will attempt apt install but expect failure"
-      ;;
-  esac
+READSB_HEALTHY=0
+if systemctl is-active --quiet readsb 2>/dev/null && [ -s /run/readsb/aircraft.json ]; then
+  READSB_HEALTHY=1
+  ok "readsb is already running and healthy (/run/readsb/aircraft.json live)"
+fi
 
-  # Try apt install — works for both arm and amd64 repo paths above
-  if sudo apt-get install -y dump1090-fa 2>/dev/null; then
-    ok "dump1090-fa installed via apt"
+DUMP1090_HEALTHY=0
+if systemctl is-active --quiet dump1090-fa 2>/dev/null && [ -s /run/dump1090-fa/aircraft.json ]; then
+  DUMP1090_HEALTHY=1
+  ok "dump1090-fa is running and healthy (FlightAware/PiAware feeder detected)"
+fi
+
+PIAWARE_IMAGE=0
+if [ -f /boot/piaware-config.txt ] || [ -f /boot/firmware/piaware-config.txt ]; then
+  PIAWARE_IMAGE=1
+  info "PiAware SD-card image detected"
+fi
+
+# Feeders that may hold a dongle DIRECTLY (no dump1090-fa in between).
+# fr24feed in receiver="dvbt"/sdr mode and rbfeeder in non-network mode own
+# an RTL dongle themselves, usually with NO serial named anywhere we can read.
+# We count these as UNNAMED claims and stay cautious around them.
+UNNAMED_CLAIMS=0
+UNNAMED_REPORT=""
+if systemctl is-active --quiet fr24feed 2>/dev/null; then
+  if grep -qiE '^[[:space:]]*receiver[[:space:]]*=[[:space:]]*"?(dvbt|sdr)' /etc/fr24feed.ini 2>/dev/null; then
+    UNNAMED_CLAIMS=$((UNNAMED_CLAIMS + 1))
+    UNNAMED_REPORT="${UNNAMED_REPORT}    fr24feed (FlightRadar24) — DIRECT SDR mode, holding a dongle"$'\n'
+    warn "fr24feed is running in direct SDR mode — it owns one RTL dongle itself."
   else
-    # ARM-only fallback: direct .deb download from FlightAware
-    case "$ARCH" in
-      arm64|armhf|armel)
-        info "apt failed — trying direct download from FlightAware..."
-        wget -qO /tmp/dump1090-fa.deb "https://flightaware.com/adsb/piaware/files/packages/pool/piaware/p/piaware-support/dump1090-fa_10.1_${ARCH}.deb" 2>/dev/null || true
-        if [ -f /tmp/dump1090-fa.deb ] && [ -s /tmp/dump1090-fa.deb ] && sudo dpkg -i /tmp/dump1090-fa.deb 2>/dev/null; then
-          sudo apt-get install -f -y 2>/dev/null || true
-          ok "dump1090-fa installed (direct download)"
-        else
-          warn "dump1090-fa could not be auto-installed"
-          warn "Install manually — see https://discussions.flightaware.com/c/adsb"
-        fi
-        ;;
-      amd64)
-        warn "dump1090-fa could not be auto-installed for amd64"
-        warn "Manual install:"
-        warn "  https://github.com/abcd567a/piaware-ubuntu-debian-amd64"
-        ;;
-      *)
-        warn "dump1090-fa could not be auto-installed for $ARCH"
-        ;;
-    esac
+    info "fr24feed is running in network mode (consumes a decoder feed — holds no dongle)."
+  fi
+fi
+if systemctl is-active --quiet rbfeeder 2>/dev/null; then
+  if grep -qiE '^[[:space:]]*network_mode[[:space:]]*=[[:space:]]*(false|no)' /etc/rbfeeder.ini 2>/dev/null; then
+    UNNAMED_CLAIMS=$((UNNAMED_CLAIMS + 1))
+    UNNAMED_REPORT="${UNNAMED_REPORT}    rbfeeder (RadarBox) — DIRECT SDR mode, holding a dongle"$'\n'
+    warn "rbfeeder is running in direct SDR mode — it owns one RTL dongle itself."
+  else
+    info "rbfeeder is running in network mode (holds no dongle)."
+  fi
+fi
+
+# ── SDR HARDWARE DETECTION ────────────────────────────────
+# Airspy (Mini or R2) is INVISIBLE to rtl_test (different driver/USB stack), so
+# we detect it separately via lsusb text-match. RTL-SDR is enumerated by rtl_test.
+step "SDR HARDWARE DETECTION"
+
+AIRSPY_PRESENT=0
+if command -v lsusb &>/dev/null && lsusb | grep -iq airspy; then
+  AIRSPY_PRESENT=1
+  AIRSPY_DESC=$(lsusb | grep -i airspy | head -n1 | sed 's/^.*ID [0-9a-f:]* //')
+  ok "Airspy detected: ${AIRSPY_DESC:-Airspy device}"
+fi
+
+RTL_PRESENT=0
+RTL_SNS=""
+RTL_COUNT=0
+if command -v rtl_test &>/dev/null; then
+  RTL_OUT=$(timeout 3 rtl_test 2>&1 || true)
+  RTL_SNS=$(echo "$RTL_OUT" | grep -oE 'SN: [0-9A-Za-z]+' | awk '{print $2}' | grep . | sort -u)
+  RTL_COUNT=$(echo "$RTL_SNS" | grep -c . || true)
+  if [ "$RTL_COUNT" -gt 0 ]; then
+    RTL_PRESENT=1
+    ok "RTL-SDR detected: ${RTL_COUNT} dongle(s)"
+  fi
+fi
+if [ "$AIRSPY_PRESENT" -eq 0 ] && [ "$RTL_PRESENT" -eq 0 ]; then
+  info "No SDR hardware detected (yet)."
+fi
+
+# ── CLAIM-SAFE SERIAL ACCOUNTING ──────────────────────────
+# Enumerate every RTL serial already claimed by an ACTIVE decoder with a
+# named serial in /etc/default, subtract from detected, and only ever assign
+# from the FREE set. readsb is handled separately: if it's healthy we consume
+# its output (its dongle is moot); if we're (re)configuring readsb ourselves,
+# its old serial is ours to reuse — so readsb is NOT in this claims list.
+_decoder_serial() {
+  local conf="$1" s=""
+  [ -f "$conf" ] || return 0
+  s=$(grep -oE '^[A-Za-z_]*SERIAL=[^[:space:]]+' "$conf" 2>/dev/null | head -n1 | cut -d= -f2- | tr -d '\042\047')
+  if [ -z "$s" ]; then
+    s=$(grep -oE '(serial=|--device[ =])[0-9A-Za-z]+' "$conf" 2>/dev/null | head -n1 | sed -E 's/^(serial=|--device[ =])//')
+  fi
+  printf '%s' "$s" | tr -d '[:space:]'
+}
+
+CLAIMED_SNS=""
+CLAIMED_REPORT=""
+CLAIMED_COUNT=0
+for pair in "dump1090-fa:/etc/default/dump1090-fa" \
+            "dump978-fa:/etc/default/dump978-fa"; do
+  svc="${pair%%:*}"; conf="${pair##*:}"
+  systemctl is-active --quiet "$svc" 2>/dev/null || continue
+  sn=$(_decoder_serial "$conf")
+  if [ -n "$sn" ]; then
+    CLAIMED_SNS="${CLAIMED_SNS}${sn}"$'\n'
+    CLAIMED_REPORT="${CLAIMED_REPORT}    SN ${sn} — in use by ${svc}"$'\n'
+    CLAIMED_COUNT=$((CLAIMED_COUNT + 1))
+  else
+    UNNAMED_CLAIMS=$((UNNAMED_CLAIMS + 1))
+    UNNAMED_REPORT="${UNNAMED_REPORT}    ${svc} — active with no named serial, holding a dongle"$'\n'
+    warn "${svc} is running without a configured serial — staying cautious about its dongle."
+  fi
+done
+
+FREE_SNS="$RTL_SNS"
+if [ -n "$CLAIMED_SNS" ] && [ -n "$RTL_SNS" ]; then
+  FREE_SNS=$(comm -23 <(echo "$RTL_SNS") <(echo "$CLAIMED_SNS" | grep . | sort -u))
+fi
+FREE_COUNT=$(echo "$FREE_SNS" | grep -c . || true)
+
+if [ "$RTL_PRESENT" -eq 1 ]; then
+  info "Dongles — detected: ${RTL_COUNT}, named claims: ${CLAIMED_COUNT}, unnamed claims: ${UNNAMED_CLAIMS}, free: ${FREE_COUNT}"
+  [ -n "$CLAIMED_REPORT" ] && printf '%s' "$CLAIMED_REPORT"
+  [ -n "$UNNAMED_REPORT" ] && printf '%s' "$UNNAMED_REPORT"
+fi
+
+# ── DECODER MODE DECISION (consume-first) ─────────────────
+#   1. healthy readsb       → consume — touch NOTHING
+#   2. healthy dump1090-fa  → consume — touch NOTHING (FR24/PiAware safe)
+#      (unless an Airspy is plugged in — then the operator clearly intends
+#       an upgrade; warn that readsb-install REMOVES dump1090-fa + confirm)
+#   3. Airspy present       → airspy branch (PiAware image → hard stop)
+#   4. free RTL-SDR         → rtlsdr branch (PiAware image → hard stop;
+#                              dongle ONLY from the FREE set)
+#   5. nothing              → install app only, decoder later
+step "DECODER MODE"
+
+DECODER_MODE=""
+ADSB_SERIAL=""
+VHF_SERIAL=""
+AIRCRAFT_JSON_PATH="/run/readsb/aircraft.json"   # default; consume overrides
+SVC_AFTER="readsb.service"
+
+if [ "$READSB_HEALTHY" -eq 1 ] && [ "$AIRSPY_PRESENT" -eq 0 ]; then
+  DECODER_MODE="consume"
+  AIRCRAFT_JSON_PATH="/run/readsb/aircraft.json"
+  ok "readsb already feeding — PiLNK will consume its aircraft.json. Installing NO decoder."
+
+elif [ "$DUMP1090_HEALTHY" -eq 1 ] && [ "$AIRSPY_PRESENT" -eq 0 ]; then
+  DECODER_MODE="consume"
+  AIRCRAFT_JSON_PATH="/run/dump1090-fa/aircraft.json"
+  SVC_AFTER="dump1090-fa.service"
+  ok "Healthy dump1090-fa found — PiLNK will read its feed. Installing NO decoder."
+  ok "Your FlightAware / FR24 / RadarBox setup stays EXACTLY as it is."
+
+elif [ "$AIRSPY_PRESENT" -eq 1 ]; then
+  DECODER_MODE="airspy"
+  if [ "$PIAWARE_IMAGE" -eq 1 ]; then
+    err "The Airspy path needs readsb, and readsb will not install on a PiAware"
+    err "SD-card image (it refuses, to protect the PiAware config)."
+    err "Use a separate non-PiAware box for the Airspy, or reflash with Raspberry Pi OS."
+    exit 1
+  fi
+  if [ "$DUMP1090_HEALTHY" -eq 1 ]; then
+    echo "" > /dev/tty
+    warn "An Airspy is plugged in, but a HEALTHY dump1090-fa is also running."
+    warn "The Airspy path installs readsb, which REMOVES dump1090-fa —"
+    warn "FlightAware feeding from this box WILL STOP."
+    warn "(FR24/RadarBox in network mode are auto re-pointed to readsb and survive.)"
+    warn "Best practice: run the Airspy on its own Pi, keep FlightAware on this one."
+    printf "  Replace dump1090-fa with readsb and continue? [y/N] " > /dev/tty
+    read -r yn < /dev/tty
+    [[ ! "$yn" =~ ^[Yy]$ ]] && { echo "Cancelled — nothing was changed."; exit 1; }
+  fi
+  ok "Decoder mode: Airspy (airspy_adsb → readsb net-only)"
+
+elif [ "$RTL_PRESENT" -eq 1 ]; then
+  if [ "$PIAWARE_IMAGE" -eq 1 ]; then
+    err "readsb will not install on a PiAware SD-card image (it refuses, to"
+    err "protect the PiAware config) — and this box has no healthy dump1090-fa"
+    err "to consume. Start dump1090-fa first, or use a non-PiAware box."
+    exit 1
+  fi
+  # CLAIM-SAFE pick: PiLNK's readsb only ever takes a FREE dongle.
+  if [ "$FREE_COUNT" -eq 0 ]; then
+    DECODER_MODE=""
+    warn "All ${RTL_COUNT} detected dongle(s) are claimed by other decoders/feeders."
+    warn "PiLNK will NOT take a dongle another service is using."
+    warn "Add another RTL-SDR and re-run, or free one up. Installing the app only."
+  elif [ "$UNNAMED_CLAIMS" -gt 0 ]; then
+    # Something (e.g. fr24feed direct mode) holds a dongle we can't name, so
+    # the "free" list may still contain the claimed one. A human must pick.
+    DECODER_MODE="rtlsdr"
+    echo "" > /dev/tty
+    warn "${UNNAMED_CLAIMS} running feeder(s) hold a dongle whose serial can't be read,"
+    warn "so one of the dongles listed below may actually be THEIRS."
+    warn "Pick the dongle that is FREE for PiLNK — NOT the one your feeder uses:"
+    echo "$FREE_SNS" | grep . | nl -s '. SN: ' > /dev/tty
+    printf "  Enter the line number of the FREE dongle for ADS-B (or 0 to skip): " > /dev/tty
+    read -r ADSB_PICK < /dev/tty
+    ADSB_PICK=$(printf '%s' "${ADSB_PICK:-0}" | grep -oE '^[0-9]+' || echo 0)
+    if [ "$ADSB_PICK" -eq 0 ]; then
+      DECODER_MODE=""
+      warn "Skipped — installing the app only. Re-run when a free dongle is added."
+    else
+      ADSB_SERIAL=$(echo "$FREE_SNS" | grep . | sed -n "${ADSB_PICK}p")
+      if [ -z "$ADSB_SERIAL" ]; then
+        DECODER_MODE=""
+        warn "Invalid pick — installing the app only, decoder unconfigured."
+      else
+        ok "Decoder mode: RTL-SDR — ADS-B → SN $ADSB_SERIAL (operator-confirmed free)"
+      fi
+    fi
+  elif [ "$FREE_COUNT" -eq 1 ]; then
+    DECODER_MODE="rtlsdr"
+    ADSB_SERIAL=$(echo "$FREE_SNS" | grep . | head -n1)
+    ok "Decoder mode: RTL-SDR — single free dongle SN $ADSB_SERIAL → ADS-B"
+  else
+    DECODER_MODE="rtlsdr"
+    echo "" > /dev/tty
+    warn "Found $FREE_COUNT free RTL-SDR dongles:"
+    echo "$FREE_SNS" | grep . | nl -s '. SN: ' > /dev/tty
+    printf "  Which line is your ADS-B dongle? [1]: " > /dev/tty
+    read -r ADSB_PICK < /dev/tty
+    ADSB_PICK=$(printf '%s' "${ADSB_PICK:-1}" | grep -oE '^[0-9]+' || echo 1)
+    ADSB_SERIAL=$(echo "$FREE_SNS" | grep . | sed -n "${ADSB_PICK}p")
+    if [ -z "$ADSB_SERIAL" ]; then ADSB_SERIAL=$(echo "$FREE_SNS" | grep . | head -n1); fi
+    ok "Decoder mode: RTL-SDR — ADS-B → SN $ADSB_SERIAL"
+  fi
+
+else
+  DECODER_MODE=""
+  warn "No Airspy and no RTL-SDR detected, and no existing decoder to consume."
+  warn "PiLNK will still install; plug in a receiver and re-run."
+fi
+
+# ── VHF audio dongle assignment (claim-safe) ──────────────
+# VHF audio uses a FREE RTL-SDR that is NOT the ADS-B dongle. If an unnamed
+# claim exists (e.g. fr24feed direct mode) we cannot prove the leftover dongle
+# is free, so we leave VHF off rather than risk poaching — the operator can
+# set 'vhf_serial' in ~/pilnk/config.json by hand if they know better.
+if [ "$RTL_PRESENT" -eq 1 ] && [ "$DECODER_MODE" != "" ]; then
+  if [ "$UNNAMED_CLAIMS" -gt 0 ]; then
+    VHF_CAND=""
+    info "Unnamed dongle claims present — VHF audio left off to stay safe."
+    info "(Set 'vhf_serial' in ~/pilnk/config.json yourself if you have a spare.)"
+  else
+    VHF_CAND=$(echo "$FREE_SNS" | grep . | grep -v "^${ADSB_SERIAL}$" | head -n1)
+  fi
+  if [ -n "$VHF_CAND" ]; then
+    VHF_SERIAL="$VHF_CAND"
+    ok "VHF audio → free RTL-SDR SN $VHF_SERIAL"
+  elif [ "$UNNAMED_CLAIMS" -eq 0 ]; then
+    info "No spare free dongle for VHF audio — audio left off."
+  fi
+fi
+
+# ── Install readsb (wiedehopf) — ONLY when WE provide the decoder ──
+if [ "$DECODER_MODE" = "airspy" ] || [ "$DECODER_MODE" = "rtlsdr" ]; then
+  step "ADS-B DECODER (readsb)"
+  if command -v readsb &>/dev/null; then
+    ok "readsb already installed"
+  else
+    info "Installing readsb — compiles from source, takes a few minutes..."
+    sudo bash -c "$(wget -O - https://github.com/wiedehopf/adsb-scripts/raw/master/readsb-install.sh)" || {
+      err "readsb install failed."
+      err "See https://github.com/wiedehopf/adsb-scripts/wiki/Automatic-installation-for-readsb"
+      exit 1
+    }
+    ok "readsb installed"
+  fi
+fi
+
+# ── Decoder branch ────────────────────────────────────────
+if [ "$DECODER_MODE" = "airspy" ]; then
+  step "AIRSPY DECODER (airspy_adsb)"
+  # wiedehopf's airspy-conf does the whole job: downloads the right airspy_adsb
+  # binary for this arch+libc (Trixie glibc 2.41 → bookworm build), installs a
+  # systemd service + udev rules, and RECONFIGURES the readsb we just installed
+  # to --net-only consuming airspy_adsb's Beast stream on port 47787.
+  info "Installing + configuring airspy_adsb (wiedehopf airspy-conf)..."
+  if sudo bash -c "$(wget -O - https://raw.githubusercontent.com/wiedehopf/airspy-conf/master/install.sh)"; then
+    ok "airspy_adsb installed; readsb reconfigured to net-only"
+  else
+    err "airspy-conf failed. readsb is installed but has no Airspy feed yet."
+    err "Manual: https://github.com/wiedehopf/airspy-conf"
+    warn "Continuing — PiLNK will install but report 0 aircraft until the Airspy feeds readsb."
+  fi
+  sleep 2
+  if systemctl is-active --quiet airspy_adsb 2>/dev/null; then
+    ok "airspy_adsb service is running"
+  else
+    warn "airspy_adsb not active yet — check: sudo systemctl status airspy_adsb"
+  fi
+
+elif [ "$DECODER_MODE" = "rtlsdr" ]; then
+  step "PIN RTL-SDR DONGLE"
+  # Pin readsb to the chosen FREE ADS-B dongle so it can't auto-grab device
+  # index 0 — which could be a dongle another feeder owns.
+  READSB_DEFAULT="/etc/default/readsb"
+  if [ -n "$ADSB_SERIAL" ] && [ -f "$READSB_DEFAULT" ]; then
+    if grep -q -- "--device " "$READSB_DEFAULT"; then
+      sudo sed -i "s/--device [^ ]*/--device $ADSB_SERIAL/" "$READSB_DEFAULT"
+    else
+      sudo sed -i "s|RECEIVER_OPTIONS=\"|RECEIVER_OPTIONS=\"--device $ADSB_SERIAL |" "$READSB_DEFAULT"
+    fi
+    ok "readsb pinned to ADS-B dongle SN $ADSB_SERIAL"
+    sudo udevadm control --reload-rules 2>/dev/null || true
+    sudo udevadm trigger 2>/dev/null || true
+    sudo systemctl restart readsb 2>/dev/null || true
+    sleep 2
+  fi
+
+elif [ "$DECODER_MODE" = "consume" ]; then
+  step "CONSUME MODE"
+  ok "Using the existing decoder's feed at ${AIRCRAFT_JSON_PATH}"
+  ok "No decoder installed, no dongle touched, no existing service modified."
+fi
+
+# Decoder health (skip when nothing to check)
+if [ "$DECODER_MODE" = "airspy" ] || [ "$DECODER_MODE" = "rtlsdr" ]; then
+  if systemctl is-active --quiet readsb 2>/dev/null; then
+    ok "readsb service is running"
+  else
+    warn "readsb not active yet — check: sudo systemctl status readsb"
   fi
 fi
 
@@ -285,227 +506,59 @@ if [ -d "$PILNK_DIR/.git" ]; then
 else
   info "Cloning PiLNK..."
   git clone -q https://github.com/slingb1ade/PiLNK.git "$PILNK_DIR" 2>/dev/null || {
-    mkdir -p "$PILNK_DIR/templates"
-    warn "Could not clone from GitHub — creating minimal structure"
+    err "Could not clone PiLNK from GitHub."
+    err "Check that https://github.com/slingb1ade/PiLNK is reachable."
+    exit 1
   }
   ok "PiLNK cloned"
 fi
 cd "$PILNK_DIR"
-
-# ── Python packages ────────────────────────────────────────
-step "PYTHON PACKAGES"
-info "Installing all required Python packages..."
-
-# Install base packages first
-sudo pip3 install \
-  flask \
-  flask-socketio \
-  flask-cors \
-  requests \
-  numpy \
-  python-dotenv \
-  --break-system-packages -q 2>/dev/null || \
-sudo pip install \
-  flask \
-  flask-socketio \
-  flask-cors \
-  requests \
-  numpy \
-  python-dotenv \
-  --break-system-packages -q 2>/dev/null || true
-ok "Base Python packages installed"
-
-# faster-whisper removed — ATC transcription disabled until v2.0
-
-# ── Location ─────────────────────────────────────────────
-# Location is set on the website now (pilnk.io → Profile → your node),
-# not here. The node learns its coordinates from the pilnk.io ping
-# response and writes them into config.json itself — see
-# _adopt_server_location() in app.py. PiLNK uses the position only for
-# the dashboard map + range maths (no MLAT), so the decoder's own
-# RECEIVER_LAT/LON is deliberately left untouched. If you also run a
-# FlightAware MLAT feeder, set its location separately in piaware.
-step "LOCATION"
-ok "Set your node location on pilnk.io after install (Profile → your node)"
-
-# ── SDR dongle detection + claim-safe assignment ─────────
-# HARDWARE RULE: PiLNK only ever touches a dongle that NOTHING else is
-# using. We enumerate every serial already claimed by an ACTIVE decoder
-# (dump1090-fa, dump978-fa, readsb), subtract those from what rtl_test
-# can see, and assign ONLY from the free set:
-#   0 free  → assign nothing; tell the operator (never poach a busy one)
-#   1 free  → ADS-B, the primary job (VHF left unconfigured)
-#   2+ free → ask which is ADS-B (interactive); remaining free → VHF
-# No serial is hardcoded as "the ADS-B one" or "the VHF one". Legacy SN
-# 00000002 is a last-resort VHF fallback ONLY when present AND free.
-step "SDR DONGLE DETECTION"
-
-VHF_SERIAL=""          # set only from the free set; empty = no VHF dongle
-ADSB_SERIAL=""         # free dongle chosen for ADS-B (or one dump1090-fa already owns)
-LEGACY_SN="00000002"
-
-# Pull a decoder's configured serial out of its /etc/default file.
-# Handles RECEIVER_SERIAL="x" and an inline serial=x / --device x in an
-# options string. Echoes the serial, or nothing.
-_decoder_serial() {
-  local conf="$1" s=""
-  [ -f "$conf" ] || return 0
-  s=$(grep -oE '^[A-Za-z_]*SERIAL=[^[:space:]]+' "$conf" 2>/dev/null | head -n1 | cut -d= -f2- | tr -d '\042\047')
-  if [ -z "$s" ]; then
-    s=$(grep -oE '(serial=|--device[ =])[0-9A-Za-z]+' "$conf" 2>/dev/null | head -n1 | sed -E 's/^(serial=|--device[ =])//')
-  fi
-  printf '%s' "$s" | tr -d '[:space:]'
-}
-
-# Set of serials currently CLAIMED by an active decoder (+ a human report).
-CLAIMED_SNS=""
-CLAIMED_REPORT=""
-CLAIMED_COUNT=0
-for pair in "dump1090-fa:/etc/default/dump1090-fa" \
-            "dump978-fa:/etc/default/dump978-fa" \
-            "readsb:/etc/default/readsb"; do
-  svc="${pair%%:*}"; conf="${pair##*:}"
-  systemctl is-active --quiet "$svc" 2>/dev/null || continue
-  sn=$(_decoder_serial "$conf")
-  if [ -n "$sn" ]; then
-    CLAIMED_SNS="${CLAIMED_SNS}${sn}"$'\n'
-    CLAIMED_REPORT="${CLAIMED_REPORT}    SN ${sn} — in use by ${svc}"$'\n'
-    CLAIMED_COUNT=$((CLAIMED_COUNT + 1))
-    if [ "$svc" = "dump1090-fa" ]; then ADSB_SERIAL="$sn"; fi
-  else
-    CLAIMED_REPORT="${CLAIMED_REPORT}    (serial not configured) — ${svc} active, holding a dongle"$'\n'
-    warn "${svc} is running without a configured serial — can't name the dongle it holds; staying cautious."
-  fi
-done
-
-if ! command -v rtl_test &>/dev/null; then
-  warn "rtl_test not available — cannot enumerate dongles."
-  warn "VHF audio left unconfigured; add a dongle and set 'vhf_serial' in ~/pilnk/config.json later."
-else
-  RTL_OUT=$(timeout 3 rtl_test 2>&1 || true)
-  DETECTED_SNS=$(echo "$RTL_OUT" | grep -oE 'SN: [0-9A-Za-z]+' | awk '{print $2}' | grep . | sort -u)
-  DETECTED_COUNT=$(echo "$DETECTED_SNS" | grep -c . || true)
-
-  if [ -n "$CLAIMED_SNS" ]; then
-    FREE_SNS=$(comm -23 <(echo "$DETECTED_SNS") <(echo "$CLAIMED_SNS" | grep . | sort -u))
-  else
-    FREE_SNS="$DETECTED_SNS"
-  fi
-  FREE_COUNT=$(echo "$FREE_SNS" | grep -c . || true)
-
-  info "Dongles — detected: ${DETECTED_COUNT}, claimed by other decoders: ${CLAIMED_COUNT}, free: ${FREE_COUNT}"
-  if [ -n "$CLAIMED_REPORT" ]; then printf '%s' "$CLAIMED_REPORT"; fi
-
-  if [ "$DETECTED_COUNT" -eq 0 ]; then
-    warn "No RTL-SDR dongles detected — nothing to assign."
-    warn "Plug a dongle in and re-run if you want ADS-B and/or VHF audio."
-  elif [ "$FREE_COUNT" -eq 0 ]; then
-    warn "All detected dongles are already in use by other decoders — PiLNK will NOT take one."
-    if [ -n "$ADSB_SERIAL" ]; then
-      ok "ADS-B is already served by dump1090-fa on SN ${ADSB_SERIAL} — leaving it alone."
-    else
-      warn "PiLNK needs its own FREE dongle for ADS-B. Add another RTL-SDR and re-run, or free one up."
-      warn "Continuing install with ADS-B left unconfigured (non-fatal)."
-    fi
-  elif [ "$FREE_COUNT" -eq 1 ]; then
-    ONLY_FREE=$(echo "$FREE_SNS" | grep . | head -n1)
-    if [ -n "$ADSB_SERIAL" ]; then
-      VHF_SERIAL="$ONLY_FREE"
-      ok "ADS-B already on SN ${ADSB_SERIAL} (dump1090-fa); lone free SN ${ONLY_FREE} → VHF audio."
-    else
-      ADSB_SERIAL="$ONLY_FREE"
-      ok "Single free dongle SN ${ONLY_FREE} → ADS-B (primary job). VHF left unconfigured."
-      info "Add a second dongle later for VHF audio."
-    fi
-  else
-    if [ -n "$ADSB_SERIAL" ]; then
-      VHF_SERIAL=$(echo "$FREE_SNS" | grep . | head -n1)
-      ok "ADS-B already on SN ${ADSB_SERIAL}; free SN ${VHF_SERIAL} → VHF audio."
-    elif [ -r /dev/tty ]; then
-      echo "" > /dev/tty
-      warn "${FREE_COUNT} free dongles — which is ADS-B (the primary job)?"
-      echo "$FREE_SNS" | grep . | nl -s '. SN: ' > /dev/tty
-      printf "  Enter the line number for ADS-B [1]: " > /dev/tty
-      read -r ADSB_PICK < /dev/tty
-      ADSB_PICK=$(printf '%s' "${ADSB_PICK:-1}" | grep -oE '^[0-9]+' || echo 1)
-      ADSB_SERIAL=$(echo "$FREE_SNS" | grep . | sed -n "${ADSB_PICK}p")
-      if [ -z "$ADSB_SERIAL" ]; then ADSB_SERIAL=$(echo "$FREE_SNS" | grep . | head -n1); fi
-      ok "ADS-B → SN ${ADSB_SERIAL}"
-      VHF_SERIAL=$(echo "$FREE_SNS" | grep . | grep -v "^${ADSB_SERIAL}$" | head -n1)
-      if [ -n "$VHF_SERIAL" ]; then ok "VHF audio → SN ${VHF_SERIAL}"; fi
-    else
-      ADSB_SERIAL=$(echo "$FREE_SNS" | grep . | head -n1)
-      VHF_SERIAL=$(echo "$FREE_SNS" | grep . | grep -v "^${ADSB_SERIAL}$" | head -n1)
-      warn "Non-interactive install: assumed SN ${ADSB_SERIAL} for ADS-B${VHF_SERIAL:+, SN ${VHF_SERIAL} for VHF}."
-      warn "Re-run interactively or edit configs to change."
-    fi
-  fi
-
-  # Last-resort legacy VHF fallback: ONLY if VHF still unset AND the legacy
-  # SN is present, free, and not the ADS-B pick. Never an assumption.
-  if [ -z "$VHF_SERIAL" ] && [ "$ADSB_SERIAL" != "$LEGACY_SN" ] && echo "$FREE_SNS" | grep -q "^${LEGACY_SN}$"; then
-    VHF_SERIAL="$LEGACY_SN"
-    info "VHF audio → legacy SN ${LEGACY_SN} (present and free)."
-  fi
-fi
-
-# Pin dump1090-fa to the chosen ADS-B serial — only when we picked a NEW
-# free dongle (it wasn't already serving it) and it is NOT PiAware-managed.
-# This makes ADS-B deterministic instead of letting dump1090-fa auto-grab
-# device-index 0, which could be a dongle another decoder owns.
-if [ -n "$ADSB_SERIAL" ] && [ "$PIAWARE_IMAGE" != true ] && [ -f /etc/default/dump1090-fa ]; then
-  CURRENT_ADSB=$(_decoder_serial /etc/default/dump1090-fa)
-  if [ "$CURRENT_ADSB" != "$ADSB_SERIAL" ]; then
-    if grep -q '^RECEIVER_SERIAL=' /etc/default/dump1090-fa; then
-      sudo sed -i "s/^RECEIVER_SERIAL=.*/RECEIVER_SERIAL=\"${ADSB_SERIAL}\"/" /etc/default/dump1090-fa
-    else
-      echo "RECEIVER_SERIAL=\"${ADSB_SERIAL}\"" | sudo tee -a /etc/default/dump1090-fa > /dev/null
-    fi
-    ok "Pinned dump1090-fa to ADS-B dongle SN ${ADSB_SERIAL} (takes effect on dump1090-fa restart)."
-  fi
-fi
-
-# ── Assignment summary ───────────────────────────────────
-echo ""
-ok "Dongle assignment summary:"
-ok "  ADS-B : ${ADSB_SERIAL:-<none — add a free dongle and re-run>}"
-ok "  VHF   : ${VHF_SERIAL:-<none assigned>}"
-if [ "$CLAIMED_COUNT" -gt 0 ]; then
-  ok "  Left ${CLAIMED_COUNT} dongle(s) owned by other decoders untouched (listed above)."
-fi
-
-
-# ── Write config.json (node identity comes from pairing) ──
-step "NODE CONFIG"
 APP_PY="$PILNK_DIR/app.py"
 CONFIG_JSON="$PILNK_DIR/config.json"
 
-# Write config.json (gitignored — survives git pull)
-# Phase 2 pairing: NO pilnk_code is written here. On first boot app.py sees
-# no code, registers with pilnk.io, and shows a pairing code the operator
-# claims from their profile — the real verify_code then flows down and app.py
-# writes it into this file itself. Location is likewise NOT written: a fresh
-# node has none until the operator pins it on pilnk.io, after which the node
-# adopts it from the ping response (see _adopt_server_location() in app.py).
-printf '{\n  "auto_update": true,\n  "vhf_serial": "%s"\n}\n' "$VHF_SERIAL" > "$CONFIG_JSON"
-ok "Node config saved — pairing code will show on first boot"
+# ── Python packages ────────────────────────────────────────
+step "PYTHON PACKAGES"
+info "Installing Python packages..."
+sudo pip3 install \
+  flask flask-socketio flask-cors requests numpy python-dotenv \
+  --break-system-packages -q 2>/dev/null || \
+sudo pip install \
+  flask flask-socketio flask-cors requests numpy python-dotenv \
+  --break-system-packages -q 2>/dev/null || true
+ok "Python packages installed"
 
-# Ensure config.json is gitignored (survives git pull)
+# ── Write config.json ─────────────────────────────────────
+# The decoder JSON path is a config key (aircraft_json_path, app.py 1.2.10.1+).
+# Consume mode points it at the EXISTING decoder's JSON; readsb modes use
+# /run/readsb/aircraft.json. No app.py edit → auto_update stays TRUE (OTA).
+#
+# Phase 2 pairing: NO pilnk_code, lat or lon are written here. On first boot
+# app.py sees no code, registers with pilnk.io, and shows a pairing code the
+# operator claims from their profile — the real verify_code then flows down and
+# app.py writes it here itself. Location is set on pilnk.io and adopted from the
+# ping response (see _adopt_server_location() in app.py).
+step "NODE CONFIG"
+if [ ! -f "$APP_PY" ]; then
+  err "app.py not found — the GitHub clone may have failed."
+  exit 1
+fi
+if ! grep -q "aircraft_json_path" "$APP_PY"; then
+  warn "This app.py predates the aircraft_json_path key (1.2.10.1)."
+  warn "The node may read the dump1090-fa path instead of the configured one. Update PiLNK."
+fi
+printf '{\n  "auto_update": true,\n  "aircraft_json_path": "%s",\n  "vhf_serial": "%s"\n}\n' "$AIRCRAFT_JSON_PATH" "$VHF_SERIAL" \
+  > "$CONFIG_JSON"
+ok "config.json written — pairing code will show on first boot (aircraft_json_path → ${AIRCRAFT_JSON_PATH}; vhf_serial → ${VHF_SERIAL:-none}; auto_update ON)"
+
+# Keep config.json + secret out of git (survives any future pull)
 GITIGNORE="$PILNK_DIR/.gitignore"
 touch "$GITIGNORE"
 grep -q "config.json" "$GITIGNORE" 2>/dev/null || echo "config.json" >> "$GITIGNORE"
 grep -q ".secret_key" "$GITIGNORE" 2>/dev/null || echo ".secret_key" >> "$GITIGNORE"
 
-# Ensure app.py exists
-if [ ! -f "$APP_PY" ]; then
-  warn "app.py not found — it should come from the GitHub clone above"
-  warn "Check that https://github.com/slingb1ade/PiLNK is accessible"
-  exit 1
-fi
-
-# Ensure whisper import is commented out (crashes without faster-whisper)
+# Disable whisper import if present (crashes without faster-whisper)
 if grep -q "^from whisper_atc" "$APP_PY"; then
-  sed -i 's/^from whisper_atc/# from whisper_atc  # disabled until v2.0/' "$APP_PY"
+  sed -i 's/^from whisper_atc/# from whisper_atc  # disabled/' "$APP_PY"
   ok "Whisper import disabled (not installed)"
 fi
 
@@ -514,12 +567,12 @@ step "SYNTAX CHECK"
 if python3 -m py_compile "$APP_PY" 2>/dev/null; then
   ok "app.py syntax OK"
 else
-  err "app.py has a syntax error — attempting restore from GitHub..."
-  cd "$PILNK_DIR" && git checkout app.py 2>/dev/null || true
+  err "app.py has a syntax error — restoring clean copy from GitHub..."
+  git checkout app.py 2>/dev/null || true
   if python3 -m py_compile "$APP_PY" 2>/dev/null; then
-    ok "app.py restored successfully"
+    ok "app.py restored"
   else
-    err "Could not fix app.py — please report this at pilnk.io/forum"
+    err "Could not fix app.py — please report at pilnk.io/forum"
     exit 1
   fi
 fi
@@ -529,8 +582,9 @@ step "SERVICE SETUP"
 SERVICE_FILE="/etc/systemd/system/pilnk.service"
 sudo tee "$SERVICE_FILE" > /dev/null << SVCEOF
 [Unit]
-Description=PiLNK — The Open Source ATC Network
-After=network.target
+Description=PiLNK — The Open Source ATC Network (Trixie/readsb/Airspy)
+After=network.target ${SVC_AFTER}
+Wants=${SVC_AFTER}
 
 [Service]
 Type=simple
@@ -553,59 +607,54 @@ sleep 3
 if systemctl is-active --quiet pilnk; then
   ok "PiLNK service is running"
 else
-  warn "Service may still be starting — check with: sudo systemctl status pilnk"
-  warn "If it fails, run: sudo journalctl -u pilnk -n 20"
+  warn "Service may still be starting — check: sudo systemctl status pilnk"
+  warn "If it fails: sudo journalctl -u pilnk -n 20"
 fi
 
-# ── OTA restart permission (sudoers) ─────────────────────
-# update.sh restarts the pilnk service to load new code. Raspberry Pi OS grants
-# the default user passwordless sudo, so it "just worked" there — but Debian
-# (Bookworm/Trixie), Ubuntu and amd64 prompt for a password a headless OTA
-# can't supply, so the restart silently no-op'd: code updated on disk but the
-# service kept running the OLD code (and the update banner looped). Grant JUST
-# this one command, NOPASSWD, to the service user. Scoped tight + validated.
-step "OTA RESTART PERMISSION"
-SYSTEMCTL_BIN="$(command -v systemctl || echo /usr/bin/systemctl)"
-SUDOERS_OTA="/etc/sudoers.d/pilnk-ota"
-sudo tee "$SUDOERS_OTA" > /dev/null << SUDOEOF
-# PiLNK OTA — let the service user (re)start ONLY its own service without a
-# password, so update.sh can restart unattended. Installed by install.sh.
-$USER ALL=(root) NOPASSWD: $SYSTEMCTL_BIN restart pilnk, $SYSTEMCTL_BIN start pilnk, $SYSTEMCTL_BIN stop pilnk
-SUDOEOF
-sudo chmod 0440 "$SUDOERS_OTA"
-if sudo visudo -cf "$SUDOERS_OTA" >/dev/null 2>&1; then
-  ok "OTA restart permission granted (passwordless 'systemctl restart pilnk')"
-else
-  sudo rm -f "$SUDOERS_OTA"
-  warn "Couldn't validate the sudoers rule — removed it. OTA restarts will need"
-  warn "a manual 'sudo systemctl restart pilnk' until resolved."
-fi
-
-# ── Restart dump1090-fa with new location ────────────────
-step "ADS-B RECEIVER"
-sudo systemctl restart dump1090-fa 2>/dev/null || true
-sleep 1
-if systemctl is-active --quiet dump1090-fa 2>/dev/null; then
-  ok "dump1090-fa running"
-else
-  info "dump1090-fa not active (may need SDR dongle plugged in)"
-fi
-
-# ── Get Pi's IP ───────────────────────────────────────────
+# ── Pi IP ─────────────────────────────────────────────────
 PI_IP=$(hostname -I | awk '{print $1}')
 
 # ── Success! ──────────────────────────────────────────────
 echo ""
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-printf "\n  ${GREEN}${BOLD}🎉 PiLNK installed successfully!${RESET}\n\n"
+printf "\n  ${GREEN}${BOLD}🎉 PiLNK installed!${RESET}\n\n"
 printf "  ${BOLD}Dashboard:${RESET}    http://$PI_IP:5000\n"
+if [ "$DECODER_MODE" = "airspy" ] || [ "$DECODER_MODE" = "rtlsdr" ]; then
+printf "  ${BOLD}Decoder map:${RESET}  http://$PI_IP/tar1090   ${CYAN}(readsb's own view)${RESET}\n"
+fi
 printf "  ${BOLD}Pairing:${RESET}      open the dashboard — a pairing code shows at the top\n"
 printf "  ${BOLD}Claim it:${RESET}     pilnk.io → Profile → enter the code to link this node\n"
 printf "  ${BOLD}Location:${RESET}     set it on pilnk.io → Profile → your node\n"
+case "$DECODER_MODE" in
+  airspy)  printf "  ${BOLD}Decoder:${RESET}      Airspy → airspy_adsb → readsb (net-only)\n" ;;
+  rtlsdr)  printf "  ${BOLD}Decoder:${RESET}      RTL-SDR → readsb (SN ${ADSB_SERIAL:-?})\n" ;;
+  consume) printf "  ${BOLD}Decoder:${RESET}      existing feed → ${AIRCRAFT_JSON_PATH} ${GREEN}(nothing touched)${RESET}\n" ;;
+  *)       printf "  ${BOLD}Decoder:${RESET}      ${YELLOW}none configured — plug in a receiver and re-run${RESET}\n" ;;
+esac
+[ -n "$VHF_SERIAL" ] && printf "  ${BOLD}VHF audio:${RESET}    RTL-SDR SN ${VHF_SERIAL} → PiLNK rtl_fm\n"
 echo ""
-printf "  ${CYAN}Open Chrome and go to: http://$PI_IP:5000${RESET}\n"
-printf "  ${CYAN}Your node will appear on the PiLNK network map${RESET}\n"
-printf "  ${CYAN}once it pings pilnk.io (within 30 seconds).${RESET}\n"
+printf "  ${CYAN}Open Chrome → http://$PI_IP:5000 — aircraft appear within ~30s.${RESET}\n"
+echo ""
+printf "  ${YELLOW}Notes:${RESET}\n"
+case "$DECODER_MODE" in
+  consume)
+printf "    • PiLNK is CONSUMING your existing decoder's feed — FlightAware/FR24/\n"
+printf "      RadarBox were not touched. If that decoder stops, PiLNK shows 0 aircraft.\n"
+    ;;
+  airspy)
+printf "    • Decoder is readsb, fed by airspy_adsb.\n"
+printf "    • No aircraft? Check http://$PI_IP/tar1090 and:\n"
+printf "      sudo systemctl status airspy_adsb readsb\n"
+    ;;
+  rtlsdr)
+printf "    • Decoder is readsb on its own FREE dongle (SN ${ADSB_SERIAL:-?}).\n"
+printf "    • No aircraft? Check http://$PI_IP/tar1090 and: sudo systemctl status readsb\n"
+    ;;
+  *)
+printf "    • No decoder configured yet — plug in an RTL-SDR or Airspy and re-run.\n"
+    ;;
+esac
+printf "    • auto_update is ON (no local app edit — config key handles the path).\n"
 echo ""
 printf "  ${BLUE}pilnk.io${RESET}\n"
 echo ""
