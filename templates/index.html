@@ -4459,6 +4459,14 @@ function closeCinematicCard() {
 
 // Click-anywhere dismissal — attached while a card is open, removed on close.
 function ccCloseOnAnyClick(e) {
+  // Click-OUTSIDE-to-dismiss. Ignore clicks that land inside the card itself,
+  // otherwise interacting with anything in the card (the Add Photo button, and
+  // later the ATC transcript column) would instantly close it. This capture-
+  // phase listener fired before the button's own onclick, so clicking Add Photo
+  // closed the card AND cleared ccCurrentHex before ccAddPhoto() could run —
+  // which is why Add Photo "did nothing". Now only true outside clicks close.
+  var card = document.getElementById('cinematicCard');
+  if (card && e.target && card.contains(e.target)) return;
   closeCinematicCard();
 }
 
