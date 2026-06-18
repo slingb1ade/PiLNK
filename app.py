@@ -1494,6 +1494,94 @@ def rainviewer_tile_proxy(tile_path):
             return _rv_tile_response(ent[1])
         return make_response(b'', 204)  # silent empty on failure — never block aircraft render
 
+# ── LibreWXR proxy — OPERA (Europe) frame list, RainViewer-format ──
+# LibreWXR (api.librewxr.net) is a RainViewer-compatible drop-in serving EUMETNET
+# OPERA composites for Europe. EU nodes use it as their weather source; proxied
+# here for the same reasons as RainViewer (same-origin + a stable origin).
+@app.route('/api/librewxr')
+def librewxr_proxy():
+    try:
+        r = requests.get('https://api.librewxr.net/public/weather-maps.json', timeout=10)
+        resp = make_response(r.content)
+        resp.headers['Content-Type'] = 'application/json'
+        resp.headers['Access-Control-Allow-Origin'] = '*'
+        return resp
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+# ── LibreWXR tile proxy (same-origin) + server-side cache ──
+# Mirrors the RainViewer tile proxy: same-origin canvas-safe PNG tiles + a memory
+# cache with stale-on-error so the EU radar + occlusion sampler don't hammer
+# LibreWXR. NOTE: LibreWXR's smoothed tiles hang, so the dashboard requests the
+# un-smoothed 0_0 option for these (handled frontend-side).
+_LW_TILE_CACHE = {}      # tile_path -> (timestamp, png_bytes)
+_LW_TILE_TTL = 300       # seconds
+def _lw_tile_response(content):
+    resp = make_response(content)
+    resp.headers['Content-Type'] = 'image/png'
+    resp.headers['Access-Control-Allow-Origin'] = '*'
+    resp.headers['Cache-Control'] = 'public, max-age=300'
+    return resp
+@app.route('/api/lw-tile/<path:tile_path>')
+def librewxr_tile_proxy(tile_path):
+    now = time.time()
+    ent = _LW_TILE_CACHE.get(tile_path)
+    if ent and (now - ent[0]) < _LW_TILE_TTL:
+        return _lw_tile_response(ent[1])
+    try:
+        r = requests.get(
+            'https://api.librewxr.net/' + tile_path,
+            timeout=5,
+            headers={'User-Agent': 'PiLNK/1.0 (+https://pilnk.io)'}
+        )
+        if r.status_code == 200 and r.content:
+            _LW_TILE_CACHE[tile_path] = (now, r.content)
+            if len(_LW_TILE_CACHE) > 3000:
+                for k in sorted(_LW_TILE_CACHE, key=lambda kk: _LW_TILE_CACHE[kk][0])[:1000]:
+                    _LW_TILE_CACHE.pop(k, None)
+            return _lw_tile_response(r.content)
+        if ent:
+            return _lw_tile_response(ent[1])           # serve stale on upstream error
+        return make_response(b'', 204)
+    except Exception:
+        if ent:
+            return _lw_tile_response(ent[1])
+        return make_response(b'', 204)  # silent empty on failure — never block aircraft render
+
+# ── NEXRAD tile proxy (same-origin) + cache — for cloud-cover occlusion sampling ──
+# Iowa Mesonet n0q tiles proxied same-origin so the occlusion sampler can canvas-read
+# them (the display layer hits Mesonet direct). A 5-min bust keeps the sampled frame
+# tracking the live radar; short-TTL cache so panning doesn't hammer Mesonet.
+_NX_TILE_CACHE = {}
+_NX_TILE_TTL = 300
+@app.route('/api/nexrad-tile/<int:z>/<int:x>/<int:y>')
+def nexrad_tile_proxy(z, x, y):
+    bust = int(time.time() // 300)
+    key = '%d/%d/%d/%d' % (bust, z, x, y)
+    now = time.time()
+    ent = _NX_TILE_CACHE.get(key)
+    if ent and (now - ent[0]) < _NX_TILE_TTL:
+        return _lw_tile_response(ent[1])
+    try:
+        r = requests.get(
+            'https://mesonet.agron.iastate.edu/cache/tile.py/1.0.0/nexrad-n0q-900913/%d/%d/%d.png' % (z, x, y),
+            timeout=5,
+            headers={'User-Agent': 'PiLNK/1.0 (+https://pilnk.io)'}
+        )
+        if r.status_code == 200 and r.content:
+            _NX_TILE_CACHE[key] = (now, r.content)
+            if len(_NX_TILE_CACHE) > 3000:
+                for k in sorted(_NX_TILE_CACHE, key=lambda kk: _NX_TILE_CACHE[kk][0])[:1000]:
+                    _NX_TILE_CACHE.pop(k, None)
+            return _lw_tile_response(r.content)
+        if ent:
+            return _lw_tile_response(ent[1])
+        return make_response(b'', 204)
+    except Exception:
+        if ent:
+            return _lw_tile_response(ent[1])
+        return make_response(b'', 204)
+
 # ── Planespotters.net proxy — aircraft photos ──────────────
 # ── Perf telemetry (dev prototype) — last FPS sample reported by the dashboard HUD ──
 _perf_last = {}

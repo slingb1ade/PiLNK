@@ -1355,7 +1355,7 @@
           <div class="panel">
             <div class="panel-title">Weather Radar</div>
             <div class="toggle-row">
-              <span>Show Rain Radar</span>
+              <span>Weather</span>
               <label class="toggle-switch"><input type="checkbox" id="wxToggle" onchange="toggleWxOverlay(this.checked)"/><span class="toggle-slider"></span></label>
             </div>
             <div class="toggle-row" title="Aircraft fade into rain cells — the visual illusion of flying into cloud. Off by default; turns the radar on so you can see the weather.">
@@ -1363,14 +1363,14 @@
               <label class="toggle-switch"><input type="checkbox" id="cloudCoverToggle" onchange="setCloudCover(this.checked)"/><span class="toggle-slider"></span></label>
             </div>
             <div class="wx-toggles" id="wxSubToggles" style="opacity:0.4;pointer-events:none;">
-              <div class="wx-toggle-row"><span style="display:flex;align-items:center;"><span class="wx-dot" style="background:#38bdf8;"></span>Past frames</span><label class="toggle-switch" style="transform:scale(0.85);"><input type="checkbox" id="wxAnimate" checked onchange="toggleWxAnimation(this.checked)"/><span class="toggle-slider"></span></label></div>
-              <div class="wx-toggle-row" id="wxNexradRow" style="display:none;"><span style="display:flex;align-items:center;" title="High-resolution NOAA NEXRAD base reflectivity. US lower-48 only. Updates every ~5 min."><span class="wx-dot" style="background:#f59e0b;"></span>NEXRAD (US, high-res)</span><label class="toggle-switch" style="transform:scale(0.85);"><input type="checkbox" id="wxNexradToggle" onchange="toggleNexrad(this.checked)"/><span class="toggle-slider"></span></label></div>
+              <div class="wx-toggle-row" id="wxAnimateRow"><span style="display:flex;align-items:center;"><span class="wx-dot" style="background:#38bdf8;"></span>Past frames</span><label class="toggle-switch" style="transform:scale(0.85);"><input type="checkbox" id="wxAnimate" checked onchange="toggleWxAnimation(this.checked)"/><span class="toggle-slider"></span></label></div>
               <div class="wx-opacity-row">
                 <div class="slider-label" style="font-size:0.62rem;color:var(--text-dim);margin-bottom:4px;"><span>Opacity</span><span id="wx-opacity-val">80%</span></div>
                 <input type="range" min="10" max="100" value="80" oninput="setWxOpacity(this.value)"/>
               </div>
             </div>
-            <div class="wx-status" id="wxStatus">Enable to show live RainViewer radar</div>
+            <div class="wx-status" id="wxStatus">Enable to show live weather radar</div>
+            <div class="wx-status" id="wxSourceReadout" style="opacity:0.65;font-size:0.62rem;margin-top:3px;">Source: RainViewer</div>
           </div>
           <div class="panel">
             <div class="panel-title">Aviation Overlay</div>
@@ -1676,8 +1676,8 @@ fetch('/api/location').then(function(r){return r.json();}).then(function(d){
     // Redraw distance rings at new location
     if(typeof drawRxMarker === 'function') drawRxMarker();
     if(typeof drawRings === 'function' && typeof ringsOn !== 'undefined' && ringsOn) drawRings();
-    // Show the NEXRAD toggle only if this receiver is inside US lower-48
-    if(typeof setupNexradVisibility === 'function') setupNexradVisibility();
+    // Compute the active weather source from this node's own location (step 2)
+    if(typeof updateWxSource === 'function') updateWxSource();
   }
 }).catch(function(){});
 
@@ -2257,28 +2257,56 @@ window.wxSampler = (function(){
 var _rvCanvas=document.createElement('canvas');
 var _rvCtx=_rvCanvas.getContext('2d',{willReadFrequently:true});
 var _rvData=null, _rvBuilding=false, _rvTileCache={};
-function _rvTileUrl(p,z,x,y){ return '/api/rv-tile/'+p+'/256/'+z+'/'+x+'/'+y+'/2/1_1.png'; }
+function _rvTileUrl(p,z,x,y){ var s=wxSource||WX_SOURCES.rainviewer; return s.tileProxy+'/'+p+'/256/'+z+'/'+x+'/'+y+s.tileTail; }
 function rebuildRainMosaic(){
   if(!window.CLOUD_COVER_ON || (window.wxSampler&&wxSampler.isTest()) || _rvBuilding) return;
-  if(!wxFrames || !wxFrames.length || !wxFrames[wxCurrentFrame]){ _rvData=null; return; }
-  var frame=wxFrames[wxCurrentFrame], z=Math.min(map.getZoom()|0,6), b=map.getBounds();
+  var isNexrad=(wxActiveSource==='nexrad'), frame=null;
+  if(!isNexrad){
+    if(!wxFrames || !wxFrames.length || !wxFrames[wxCurrentFrame]){ _rvData=null; return; }
+    frame=wxFrames[wxCurrentFrame];
+  }
+  var z=Math.min(map.getZoom()|0,6), b=map.getBounds();
   var nw=map.project(b.getNorthWest(),z).divideBy(256).floor();
   var se=map.project(b.getSouthEast(),z).divideBy(256).floor();
   var x0=nw.x,y0=nw.y,x1=se.x,y1=se.y, cols=x1-x0+1, rows=y1-y0+1;
   if(cols<1||rows<1||cols*rows>36){ _rvData=null; return; }
   var w=cols*256,h=rows*256; _rvCanvas.width=w; _rvCanvas.height=h; _rvCtx.clearRect(0,0,w,h);
-  var ox=x0*256, oy=y0*256, pending=0, done=false;
-  function finalize(){ try{ _rvData={data:_rvCtx.getImageData(0,0,w,h).data,w:w,h:h,z:z,ox:ox,oy:oy}; }catch(e){ _rvData=null; } _rvBuilding=false; }
+  var ox=x0*256, oy=y0*256, pending=0, done=false, nxBucket=Math.floor(Date.now()/300000);
+  function finalize(){ try{ _rvData={data:_rvCtx.getImageData(0,0,w,h).data,w:w,h:h,z:z,ox:ox,oy:oy,nexrad:isNexrad}; }catch(e){ _rvData=null; } _rvBuilding=false; }
   _rvBuilding=true;
   for(var ty=y0;ty<=y1;ty++){ for(var tx=x0;tx<=x1;tx++){ (function(tx,ty){
-    var key=frame.path+'/'+z+'/'+tx+'/'+ty, dx=(tx-x0)*256, dy=(ty-y0)*256, im=_rvTileCache[key];
+    var key, url;
+    if(isNexrad){ key='nx/'+nxBucket+'/'+z+'/'+tx+'/'+ty; url='/api/nexrad-tile/'+z+'/'+tx+'/'+ty; }
+    else { key=(wxSource?wxSource.tileProxy:'')+frame.path+'/'+z+'/'+tx+'/'+ty; url=_rvTileUrl(frame.path,z,tx,ty); }
+    var dx=(tx-x0)*256, dy=(ty-y0)*256, im=_rvTileCache[key];
     if(im&&im.complete&&im.naturalWidth){ try{_rvCtx.drawImage(im,dx,dy);}catch(e){} return; }
     pending++; im=new Image(); im.crossOrigin='anonymous';
     im.onload=function(){ try{_rvCtx.drawImage(im,dx,dy);}catch(e){} _rvTileCache[key]=im; if(--pending===0&&done) finalize(); };
     im.onerror=function(){ if(--pending===0&&done) finalize(); };
-    im.src=_rvTileUrl(frame.path,z,tx,ty);
+    im.src=url;
   })(tx,ty); } }
   done=true; if(pending===0) finalize();
+}
+// NEXRAD (Iowa Mesonet n0q) uses the NWS reflectivity ramp, not the colour-2 blue
+// scale, so it needs its own colour->intensity map: teal/green (light) -> yellow ->
+// orange/red (heavy) -> magenta/purple/white (extreme). Read hue position along the
+// ramp — approximate but monotonic, which is what occlusion needs.
+function _nexradIntensity(r,g,b,a){
+  if(a<24) return 0;
+  var mx=Math.max(r,g,b), mn=Math.min(r,g,b), dlt=mx-mn, v=mx/255;
+  if(dlt<28 && v>0.82) return 1.0;     // near-white extreme core (hail spike)
+  if(dlt<20) return 0;                  // greyish / no clear echo
+  var h;
+  if(mx===r) h=((g-b)/dlt)%6; else if(mx===g) h=(b-r)/dlt+2; else h=(r-g)/dlt+4;
+  h*=60; if(h<0) h+=360;
+  if(h>=250) return 1.0;                // purple/magenta -> extreme
+  var inten;
+  if(h>=150) inten=0.15;                       // teal/cyan: lightest
+  else if(h>=90) inten=0.15+(150-h)/60*0.25;   // green
+  else if(h>=45) inten=0.40+(90-h)/45*0.28;    // green-yellow -> yellow
+  else if(h>=18) inten=0.68+(45-h)/27*0.22;    // orange
+  else inten=0.90+(18-h)/18*0.05;              // red
+  return Math.max(0, Math.min(1, inten));
 }
 function _rvIntensityAt(lat,lon){
   if(!_rvData) return 0;
@@ -2286,6 +2314,7 @@ function _rvIntensityAt(lat,lon){
   if(px<0||py<0||px>=_rvData.w||py>=_rvData.h) return 0;
   var d=_rvData.data, i=(py*_rvData.w+px)*4, al=d[i+3];
   if(al<16) return 0;                                   // transparent -> no rain
+  if(_rvData.nexrad) return _nexradIntensity(d[i],d[i+1],d[i+2],al);
   // colour->intensity (rough; tune on real tiles): alpha = presence, warmth = heavier rain
   var r=d[i], bl=d[i+2];
   return Math.max(0, Math.min(1, (al/255)*(0.3 + Math.max(0,(r-bl)/255)*0.7)));
@@ -2329,6 +2358,7 @@ function setCloudCover(on){
           if(window.wxSampler && !wxSampler.isTest()){
             var _wt=document.getElementById('wxToggle');
             if(_wt && !_wt.checked){ _wt.checked=true; toggleWxOverlay(true); }   // show the rain the planes fade into
+            else if(wxActiveSource==='nexrad'){ rebuildRainMosaic(); }            // NEXRAD has no wxFrames — sample it directly
             else if(!wxFrames || !wxFrames.length){ if(typeof loadRainViewer==='function') loadRainViewer(); }
             else rebuildRainMosaic();
             pinWxLatest();   // freeze the time-lapse so the rain you see is the rain that fades
@@ -2565,6 +2595,16 @@ var wxFrames     = [];   // {time, path} from API — never cleared except on fr
 var wxHost       = 'https://tilecache.rainviewer.com';
 var wxRefreshTimer = null;
 
+// Weather tile sources (RainViewer-format). The active one is chosen by the
+// node-region brain: rest-of-world -> RainViewer, EU -> LibreWXR (OPERA). Both
+// are proxied node-side (app.py) for same-origin canvas sampling. LibreWXR's
+// smoothed tiles hang, so it uses the un-smoothed 0_0 option (RainViewer keeps 1_1).
+var WX_SOURCES = {
+  rainviewer: { api:'/api/rainviewer', tileProxy:'/api/rv-tile', tileOpts:'/256/{z}/{x}/{y}/2/1_1.png', tileTail:'/2/1_1.png', attribution:'© RainViewer' },
+  librewxr:   { api:'/api/librewxr',   tileProxy:'/api/lw-tile', tileOpts:'/256/{z}/{x}/{y}/2/0_0.png', tileTail:'/2/0_0.png', attribution:'© LibreWXR · EUMETNET OPERA' }
+};
+var wxSource = WX_SOURCES.rainviewer;
+
 // Toggle the whole radar on/off
 function toggleWxOverlay(on) {
   wxOverlayOn = on;
@@ -2575,8 +2615,18 @@ function toggleWxOverlay(on) {
     stopWxAnimation();
     removeWxLayers();
     if (wxRefreshTimer) { clearInterval(wxRefreshTimer); wxRefreshTimer = null; }
-    document.getElementById('wxStatus').textContent = 'Enable to show live RainViewer radar';
+    toggleNexrad(false);   // clear NEXRAD too, in case it was the active source
+    document.getElementById('wxStatus').textContent = 'Enable to show live weather radar';
+  } else if (wxActiveSource === 'nexrad') {
+    // US node — NEXRAD is the active source (engine runs its own 5-min refresh)
+    document.getElementById('wxStatus').textContent = 'Loading NEXRAD (US)...';
+    toggleNexrad(true);
+    document.getElementById('wxStatus').textContent = 'NEXRAD (US) — live';
+    // NEXRAD has no wxFrames, so trigger occlusion sampling here if cloud cover is on.
+    if (window.CLOUD_COVER_ON && window.wxSampler && !wxSampler.isTest()) setTimeout(rebuildRainMosaic, 300);
   } else {
+    // EU -> LibreWXR (OPERA); rest-of-world -> RainViewer. Both via loadRainViewer.
+    wxSource = (wxActiveSource === 'opera') ? WX_SOURCES.librewxr : WX_SOURCES.rainviewer;
     document.getElementById('wxStatus').textContent = 'Loading radar data...';
     loadRainViewer();
     // Refresh every 5 minutes while on
@@ -2586,7 +2636,8 @@ function toggleWxOverlay(on) {
 
 // Fetch frame list from API then build layers
 function loadRainViewer() {
-  fetch('/api/rainviewer')
+  var src = wxSource || WX_SOURCES.rainviewer;
+  fetch(src.api)
     .then(function(r) { return r.json(); })
     .then(function(data) {
       wxHost = data.host || 'https://tilecache.rainviewer.com';
@@ -2604,12 +2655,14 @@ function loadRainViewer() {
         wxFrames.push({ time: f.time, path: f.path, isForecast: true });
       });
       if (!wxFrames.length) {
+        if (src !== WX_SOURCES.rainviewer) { wxSource = WX_SOURCES.rainviewer; loadRainViewer(); return; }
         document.getElementById('wxStatus').textContent = 'No radar frames available';
         return;
       }
       buildWxLayers();
     })
     .catch(function() {
+      if (src !== WX_SOURCES.rainviewer) { wxSource = WX_SOURCES.rainviewer; loadRainViewer(); return; }
       document.getElementById('wxStatus').textContent = 'Radar load failed';
     });
 }
@@ -2627,12 +2680,13 @@ function removeWxLayers() {
 function buildWxLayers() {
   stopWxAnimation();
   removeWxLayers();
+  var src = wxSource || WX_SOURCES.rainviewer;
   wxFrames.forEach(function(frame) {
-    var url = '/api/rv-tile' + frame.path + '/256/{z}/{x}/{y}/2/1_1.png';
+    var url = src.tileProxy + frame.path + src.tileOpts;
     var layer = L.tileLayer(url, {
       opacity: 0.001,
       className: 'wx-tile-layer',
-      attribution: '© RainViewer',
+      attribution: src.attribution,
       maxNativeZoom: 6,
       maxZoom: 20,
       zIndex: 500,
@@ -2771,14 +2825,38 @@ function toggleNexrad(on) {
   }
 }
 
-// Show the NEXRAD toggle row only for users physically inside the US
-// lower-48 bounds. Outside that area NEXRAD has no coverage so the
-// toggle would just produce empty tiles — hiding it avoids confusion.
-function setupNexradVisibility() {
-  var inUS = (RX_LAT >= 24 && RX_LAT <= 50 && RX_LON >= -125 && RX_LON <= -66);
-  var row = document.getElementById('wxNexradRow');
-  if (row) row.style.display = inUS ? 'flex' : 'none';
+// ── Weather source brain (2026-06-18) ──────────────────────────────────────
+// Picks ONE active radar source from the node's OWN location (RX_LAT/RX_LON):
+// US -> NEXRAD, Europe -> OPERA, rest-of-world -> RainViewer. Self-contained so
+// the network page (Phase 2) can reuse the exact same logic (build-once). Step 2
+// only COMPUTES the source + shows a debug readout; the layer + occlusion wiring
+// lands in steps 3 (NEXRAD) and 4 (OPERA).
+var wxActiveSource = 'rainviewer';
+
+function wxSourceFor(lat, lon) {
+  if (lat >= 24 && lat <= 50 && lon >= -125 && lon <= -66) return 'nexrad';   // US lower-48
+  if (lat >= 36 && lat <= 71 && lon >= -22 && lon <= 30)  return 'opera';     // Europe — OPERA coverage extent
+  return 'rainviewer';                                                        // rest-of-world
 }
+
+function wxSourceLabel(src) {
+  if (src === 'nexrad') return 'NEXRAD (US)';
+  if (src === 'opera')  return 'OPERA (EU)';
+  return 'RainViewer';
+}
+
+function updateWxSource() {
+  wxActiveSource = wxSourceFor(RX_LAT, RX_LON);
+  var el = document.getElementById('wxSourceReadout');
+  if (el) el.textContent = 'Source: ' + wxSourceLabel(wxActiveSource);
+  // NEXRAD is a single snapshot — hide the RainViewer-only "Past frames" row for it
+  var animRow = document.getElementById('wxAnimateRow');
+  if (animRow) animRow.style.display = (wxActiveSource === 'nexrad') ? 'none' : 'flex';
+  return wxActiveSource;
+}
+updateWxSource();  // compute once at load from the default coords; refined when /api/location resolves
+
+// (setupNexradVisibility retired step 3 — NEXRAD is now auto-selected by wxSourceFor)
 
 // ── ADSBDB ROUTE LOOKUP ───────────────────────────────────
 var routeCache = {};
