@@ -18,20 +18,35 @@ log "=== OTA UPDATE STARTED ==="
 OLD_VERSION=$(cat VERSION 2>/dev/null || echo 'unknown')
 log "Current version: $OLD_VERSION"
 
-# Step 1: Stash any local changes (config.json is gitignored so it's safe)
-log "Stashing local changes..."
-git stash 2>> "$LOG_FILE"
+# Step 1: Fetch the latest refs from GitHub (no working-tree changes yet).
+log "Fetching latest from GitHub..."
+git fetch origin main 2>> "$LOG_FILE"
+FETCH_RESULT=$?
 
-# Step 2: Pull latest from GitHub
-log "Pulling latest from GitHub..."
-git pull origin main 2>> "$LOG_FILE"
-PULL_RESULT=$?
+if [ $FETCH_RESULT -ne 0 ]; then
+    log "ERROR: git fetch failed (exit code $FETCH_RESULT) — likely a network blip."
+    log "Working tree untouched; nothing to restore. Will retry next cycle."
+    log "=== OTA UPDATE FAILED — fetch error ==="
+    exit 1
+fi
 
-if [ $PULL_RESULT -ne 0 ]; then
-    log "ERROR: git pull failed (exit code $PULL_RESULT)"
-    log "Attempting git stash pop to restore..."
-    git stash pop 2>> "$LOG_FILE"
-    log "=== OTA UPDATE FAILED ==="
+# Step 2: Force the working tree to exactly match origin/main.
+# reset --hard replaces the old stash+pull+pop dance ON PURPOSE:
+#   - No stash => no stash accumulation and no stale-stash pop (the old failure
+#     mode: a leftover stash getting popped on a later pull failure, dirtying
+#     the tree and looping the node on every subsequent update).
+#   - reset --hard ONLY touches TRACKED files. Every per-node file is gitignored
+#     (config.json, .secret_key, *.json runtime state, update.log, recordings/,
+#     *.bak) so local config and state are preserved untouched.
+#   - A node mirrors the official code; local edits to TRACKED files are
+#     intentionally discarded (the old stash-and-abandon discarded them too).
+log "Resetting working tree to origin/main..."
+git reset --hard origin/main 2>> "$LOG_FILE"
+RESET_RESULT=$?
+
+if [ $RESET_RESULT -ne 0 ]; then
+    log "ERROR: git reset --hard failed (exit code $RESET_RESULT). Tree unchanged."
+    log "=== OTA UPDATE FAILED — reset error ==="
     exit 1
 fi
 
