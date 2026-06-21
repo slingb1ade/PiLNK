@@ -1467,11 +1467,49 @@ def _merge_bds(ac, icao_upper):
                     ac['{}_{}'.format(prefix, f)] = rec[f]
 
 
-if _pms is not None:
-    threading.Thread(target=_bds_enrichment_loop, name='bds-enrichment',
-                     daemon=True).start()
-else:
-    logging.warning('[bds] pyModeS not installed — Mode S enrichment disabled')
+def _bds_bootstrap():
+    """Start Mode S enrichment, self-installing pyModeS if it is missing.
+
+    Existing nodes that OTA-update into a build that needs pyModeS will not have
+    it yet: the installer only adds it for fresh installs, and the OTA path
+    pulls code but never runs pip. So on first run we attempt a one-shot install
+    into the service user's ~/.local (--user, so no sudo is needed;
+    --break-system-packages for PEP 668 on Trixie/Bookworm), make it importable
+    in this already-running process, then re-import. numpy is already present
+    from the base install, so this is a small, fast download. Runs in a daemon
+    thread so the dashboard never blocks on it; if the install cannot run
+    (offline, locked-down host, no pip, ...) the feature simply stays dark — no
+    crash, identical to the previous behaviour.
+    """
+    global _pms
+    if _pms is None:
+        try:
+            import subprocess, sys, site, importlib
+            logging.info('[bds] pyModeS missing — attempting one-shot --user install')
+            subprocess.run(
+                [sys.executable, '-m', 'pip', 'install', '--user',
+                 '--break-system-packages', '--disable-pip-version-check',
+                 '-q', 'pyModeS'],
+                timeout=600, check=False,
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            )
+            # ~/.local may not have been on sys.path at startup (e.g. it did not
+            # exist yet) — add the user site dir so the fresh install imports now.
+            usp = site.getusersitepackages()
+            if usp and usp not in sys.path:
+                site.addsitedir(usp)
+            importlib.invalidate_caches()
+            import pyModeS as _pms_new
+            _pms = _pms_new
+            logging.info('[bds] pyModeS installed — Mode S enrichment enabled')
+        except Exception as e:
+            logging.warning('[bds] pyModeS unavailable (%s) — Mode S enrichment disabled', e)
+            _pms = None
+    if _pms is not None:
+        _bds_enrichment_loop()
+
+
+threading.Thread(target=_bds_bootstrap, name='bds-bootstrap', daemon=True).start()
 
 
 @app.route('/flights')

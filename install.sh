@@ -520,10 +520,10 @@ CONFIG_JSON="$PILNK_DIR/config.json"
 step "PYTHON PACKAGES"
 info "Installing Python packages..."
 sudo pip3 install \
-  flask flask-socketio flask-cors requests numpy python-dotenv \
+  flask flask-socketio flask-cors requests numpy python-dotenv pyModeS \
   --break-system-packages -q 2>/dev/null || \
 sudo pip install \
-  flask flask-socketio flask-cors requests numpy python-dotenv \
+  flask flask-socketio flask-cors requests numpy python-dotenv pyModeS \
   --break-system-packages -q 2>/dev/null || true
 ok "Python packages installed"
 
