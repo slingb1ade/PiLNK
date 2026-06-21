@@ -379,7 +379,7 @@
   #cinematicOverlay{
     position:fixed;
     top:52px;            /* below #header */
-    left:440px;          /* clears the LH wind compass */
+    left:400px;          /* sits ~10px off the LH wind compass */
     right:56px;          /* clears the RH recenter button */
     z-index:10000;
     overflow:hidden;     /* clip the slide so the card emerges from under the navbar */
@@ -406,10 +406,26 @@
   #cinematicOverlay.active #cinematicCard{
     transform:translateY(0);
   }
-  /* Photo panel — left column (340px) */
-  .cc-photo{
+  /* Left column (340px): callsign/model/airline header plate stacked above the photo */
+  .cc-left{
     flex:0 0 340px;
     height:100%;
+    display:flex;
+    flex-direction:column;
+    overflow:hidden;
+  }
+  .cc-header{
+    flex-shrink:0;
+    padding:10px 14px 8px;
+    border-bottom:1px solid var(--border);
+  }
+  .cc-header .cc-badge{ margin-bottom:6px; }
+  .cc-header .cc-route-row{ border-bottom:none; padding-bottom:0; }
+  .cc-header .cc-airline{ margin-bottom:0; }
+  .cc-photo{
+    flex:1 1 auto;
+    min-height:0;
+    width:100%;
     position:relative;
     background:radial-gradient(ellipse at center, var(--bg-panel) 0%, var(--bg-deep) 100%);
     overflow:hidden;
@@ -444,7 +460,7 @@
   .cc-data{
     flex:1;
     height:100%;
-    padding:24px 24px 20px;
+    padding:14px 18px 14px;
     display:flex;flex-direction:column;
     justify-content:space-between;
     position:relative;
@@ -528,10 +544,10 @@
   }
   .cc-callsign{
     font-family:'Orbitron',sans-serif;
-    font-size:clamp(1.2rem,3vw,1.8rem);
-    font-weight:700;letter-spacing:0.12em;
+    font-size:clamp(1rem,2.4vw,1.4rem);
+    font-weight:700;letter-spacing:0.1em;
     color:var(--text);line-height:1;
-    margin-bottom:4px;
+    margin-bottom:2px;
   }
   .cc-route{
     font-family:'Share Tech Mono',monospace;
@@ -540,7 +556,7 @@
   }
   .cc-route-row{
     display:flex;align-items:center;justify-content:space-between;
-    gap:8px;margin-bottom:4px;padding-bottom:6px;
+    gap:8px;margin-bottom:2px;padding-bottom:4px;
     border-bottom:1px solid var(--border);
   }
   .cc-model{
@@ -549,27 +565,27 @@
     letter-spacing:0.05em;text-align:right;flex-shrink:0;
   }
   .cc-airline{
-    font-size:0.7rem;color:var(--text-dim);
-    margin-bottom:18px;letter-spacing:0.05em;
+    font-size:0.64rem;color:var(--text-dim);
+    margin-bottom:8px;letter-spacing:0.05em;
   }
   .cc-stats{
-    display:grid;grid-template-columns:1fr 1fr;
-    gap:10px;margin-bottom:16px;
+    display:grid;grid-template-columns:repeat(4,1fr);
+    gap:6px;margin-bottom:8px;
   }
   .cc-stat{
     background:var(--bg-card);border:1px solid var(--border);
-    border-radius:6px;padding:8px 10px;
+    border-radius:6px;padding:5px 7px;min-width:0;
   }
   .cc-stat-label{
     font-family:'Share Tech Mono',monospace;
-    font-size:0.52rem;letter-spacing:0.2em;
+    font-size:0.46rem;letter-spacing:0.1em;
     color:var(--text-dim);text-transform:uppercase;
-    margin-bottom:3px;
+    margin-bottom:2px;
   }
   .cc-stat-val{
     font-family:'Orbitron',sans-serif;
-    font-size:0.85rem;font-weight:600;
-    color:var(--text);
+    font-size:0.7rem;font-weight:600;
+    color:var(--text);white-space:nowrap;
   }
   .cc-meta{
     display:flex;flex-wrap:wrap;gap:6px;
@@ -1595,23 +1611,50 @@
 </div>
 
 <!-- CINEMATIC CARD -->
+<style>
+  /* ── Mode S Comm-B enrichment sections ("Hidden Sky Data") ── */
+  .cc-bds{ margin:8px 0 0; border:1px solid rgba(167,139,250,0.22); border-radius:8px;
+           background:rgba(167,139,250,0.05); overflow:hidden; }
+  .cc-bds>summary{ cursor:pointer; list-style:none; padding:7px 10px;
+                   font-family:'Share Tech Mono',monospace; font-size:0.62rem;
+                   letter-spacing:0.08em; color:#c4b5fd; text-transform:uppercase;
+                   user-select:none; }
+  .cc-bds>summary::-webkit-details-marker{ display:none; }
+  .cc-bds>summary::after{ content:'\25B8'; float:right; color:#7c6aae; transition:transform .15s; }
+  .cc-bds[open]>summary::after{ transform:rotate(90deg); }
+  .cc-bds-primary{ margin:8px 0 0; border:1px solid rgba(167,139,250,0.32);
+                   border-radius:8px; background:rgba(167,139,250,0.10); padding:5px 0; }
+  .cc-bds-grid{ padding:4px 10px 9px; display:grid; grid-template-columns:1fr 1fr; gap:3px 14px; }
+  .cc-bds-row{ display:flex; justify-content:space-between; align-items:baseline;
+               font-family:'Share Tech Mono',monospace; font-size:0.66rem; }
+  .cc-bds-k{ color:#8b8b9e; }
+  .cc-bds-v{ color:#e8e6f0; font-weight:600; }
+  .cc-bds-u{ color:#7c6aae; font-weight:400; font-size:0.9em; }
+  .cc-bds-on{ color:#34d399; font-weight:700; }
+  .cc-bds-off{ color:#6b7280; }
+  @media (max-width:600px){ .cc-bds-grid{ grid-template-columns:1fr; } }
+</style>
 <div id="cinematicOverlay">
   <div id="cinematicCard">
     <div class="cc-timer-bar" id="ccTimerBar" style="position:absolute;top:0;left:0;z-index:5;"></div>
-    <div class="cc-photo" id="ccPhoto">
-      <!-- Photo layer -->
-      <div class="cc-photo-no-img" id="ccNoImg"></div>
-      <img id="ccImg" src="" alt="" style="display:none;position:absolute;inset:0;width:100%;height:100%;object-fit:contain;" onload="ccImgLoaded()"/>
-      <div class="cc-photo-credit" id="ccPhotoCredit"></div>
-    </div>
-    <div class="cc-data" id="ccData">
-      <div class="cc-top">
+    <div class="cc-left">
+      <div class="cc-header">
         <div class="cc-badge" id="ccBadge" style="display:none;"><span>NOW PASSING</span></div>
         <div class="cc-callsign" id="ccCallsign">–</div>
         <div class="cc-route-row">
           <div class="cc-model" id="ccModel"></div>
         </div>
         <div class="cc-airline" id="ccAirline"></div>
+      </div>
+      <div class="cc-photo" id="ccPhoto">
+        <!-- Photo layer -->
+        <div class="cc-photo-no-img" id="ccNoImg"></div>
+        <img id="ccImg" src="" alt="" style="display:none;position:absolute;inset:0;width:100%;height:100%;object-fit:contain;" onload="ccImgLoaded()"/>
+        <div class="cc-photo-credit" id="ccPhotoCredit"></div>
+      </div>
+    </div>
+    <div class="cc-data" id="ccData">
+      <div class="cc-top">
         <!-- ── MILITARY section (Phase 3) — hidden until populated by fetchMilInfo ── -->
         <div class="cc-mil" id="ccMil">
           <span class="cc-mil-pill" id="ccMilPill"></span>
@@ -1634,6 +1677,18 @@
           <div class="cc-stat"><div class="cc-stat-label">Heading</div><div class="cc-stat-val" id="ccHdg">–</div></div>
           <div class="cc-stat"><div class="cc-stat-label">V/Speed</div><div class="cc-stat-val" id="ccVs">–</div></div>
         </div>
+        <!-- Mode S Comm-B enrichment (Hidden Sky Data) — tiered; shown only when data present -->
+        <div class="cc-bds-primary" id="ccPrimary" style="display:none;">
+          <div class="cc-bds-grid" id="ccPrimaryBody"></div>
+        </div>
+        <details class="cc-bds" id="ccSecondary" style="display:none;">
+          <summary>＋ More flight data</summary>
+          <div class="cc-bds-grid" id="ccSecondaryBody"></div>
+        </details>
+        <details class="cc-bds" id="ccMet" style="display:none;">
+          <summary>🌬️ Meteorological</summary>
+          <div class="cc-bds-grid" id="ccMetBody"></div>
+        </details>
         <div class="cc-meta" id="ccMeta"></div>
         <div class="cc-waveform" id="ccWaveform"><span class="cc-waveform-label">● TRANSMITTING</span><canvas id="ccWaveCanvas" height="28"></canvas></div>
       </div>
@@ -4335,6 +4390,66 @@ function fetchPlanePhoto(hex, reg, type, callback) {
     .catch(function(){ photoCache[hex] = null; callback(null); });
 }
 
+function populateBDS(a) {
+  function row(label, val, unit) {
+    return '<div class="cc-bds-row"><span class="cc-bds-k">' + label +
+      '</span><span class="cc-bds-v">' + val +
+      (unit ? ' <span class="cc-bds-u">' + unit + '</span>' : '') + '</span></div>';
+  }
+  function onoff(v) { return v ? '<span class="cc-bds-on">ON</span>' : '<span class="cc-bds-off">off</span>'; }
+  function has(v) { return v !== undefined && v !== null; }
+  function block(id, rows) {
+    var el = document.getElementById(id);
+    var body = document.getElementById(id + 'Body');
+    if (!el || !body) return;
+    if (rows.length) {
+      body.innerHTML = rows.join('');
+      el.style.display = '';
+      if (el.tagName === 'DETAILS') el.open = false;   // Secondary/MET collapsed by default
+    } else {
+      el.style.display = 'none';
+      body.innerHTML = '';
+    }
+  }
+
+  // Tier 2 — PRIMARY (always expanded): Target Alt, Mach, TAS, Mag Heading, Wind
+  var pri = [];
+  if (has(a.bds40_selected_altitude_mcp)) pri.push(row('Target Alt', Math.round(a.bds40_selected_altitude_mcp).toLocaleString(), 'ft'));
+  if (has(a.bds60_mach))                  pri.push(row('Mach', a.bds60_mach.toFixed(2), ''));
+  if (has(a.bds50_true_airspeed))         pri.push(row('True Airspeed', Math.round(a.bds50_true_airspeed), 'kt'));
+  if (has(a.bds60_magnetic_heading))      pri.push(row('Mag Heading', a.bds60_magnetic_heading.toFixed(1), '°'));
+  if (has(a.gs) && has(a.bds50_true_airspeed)) {
+    var w = Math.round(a.gs - a.bds50_true_airspeed);
+    pri.push(row('Wind', (w >= 0 ? w + ' kt tailwind' : Math.abs(w) + ' kt headwind'), ''));
+  }
+  block('ccPrimary', pri);
+
+  // Tier 3 — SECONDARY (collapsed): Roll, Turn rate, Baro/Inertial V/S, QNH, IAS, FMS Alt, VNAV/ALT HOLD/APPR
+  var sec = [];
+  if (has(a.bds50_roll)) {
+    var rl = a.bds50_roll;
+    sec.push(row('Roll', Math.abs(rl).toFixed(1) + '°', rl > 0.1 ? 'right' : (rl < -0.1 ? 'left' : 'level')));
+  }
+  if (has(a.bds50_track_rate))             sec.push(row('Turn Rate', a.bds50_track_rate.toFixed(1), '°/s'));
+  if (has(a.bds60_baro_vertical_rate))     sec.push(row('Baro V/S', (a.bds60_baro_vertical_rate > 0 ? '+' : '') + Math.round(a.bds60_baro_vertical_rate), 'fpm'));
+  if (has(a.bds60_inertial_vertical_rate)) sec.push(row('Inertial V/S', (a.bds60_inertial_vertical_rate > 0 ? '+' : '') + Math.round(a.bds60_inertial_vertical_rate), 'fpm'));
+  if (has(a.bds40_baro_pressure_setting))  sec.push(row('QNH', a.bds40_baro_pressure_setting.toFixed(1), 'hPa'));
+  if (has(a.bds60_indicated_airspeed))     sec.push(row('IAS', Math.round(a.bds60_indicated_airspeed), 'kt'));
+  if (has(a.bds40_selected_altitude_fms))  sec.push(row('FMS Alt', Math.round(a.bds40_selected_altitude_fms).toLocaleString(), 'ft'));
+  if (has(a.bds40_vnav_mode))              sec.push(row('VNAV', onoff(a.bds40_vnav_mode), ''));
+  if (has(a.bds40_altitude_hold_mode))     sec.push(row('ALT HOLD', onoff(a.bds40_altitude_hold_mode), ''));
+  if (has(a.bds40_approach_mode))          sec.push(row('APPR', onoff(a.bds40_approach_mode), ''));
+  // TCAS status (BDS 3,0) — deferred pending pyModeS field verification
+  block('ccSecondary', sec);
+
+  // Tier 4 — MET (collapsed, only when present): BDS 4,4
+  var mt = [];
+  if (has(a.bds44_wind_speed))     mt.push(row('Wind Speed', Math.round(a.bds44_wind_speed), 'kt'));
+  if (has(a.bds44_wind_direction)) mt.push(row('Wind Direction', Math.round(a.bds44_wind_direction), '°'));
+  if (has(a.bds44_temperature))    mt.push(row('Temperature', a.bds44_temperature.toFixed(1), '°C'));
+  block('ccMet', mt);
+}
+
 function openCinematicCard(cs, auto) {
   var a = lastAircraft[cs];
   if (!a) return;
@@ -4359,6 +4474,9 @@ function openCinematicCard(cs, auto) {
   document.getElementById('ccSpd').textContent = a.gs ? Math.round(a.gs) + ' kt' : '–';
   document.getElementById('ccHdg').textContent = a.track ? Math.round(a.track) + '°' : '–';
   document.getElementById('ccVs').textContent = vr ? (vr>0?'+':'')+Math.round(vr)+' fpm' : '–';
+
+  // Mode S Comm-B enrichment sections (Hidden Sky Data) — additive, self-hiding
+  populateBDS(a);
 
   // Badge — only show for auto-triggered or transmitting
   var badge = document.getElementById('ccBadge');

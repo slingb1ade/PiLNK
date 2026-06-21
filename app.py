@@ -15,6 +15,7 @@ import gzip
 import csv
 import logging
 import urllib.request
+import socket
 
 logging.basicConfig(
     level=logging.INFO,
@@ -1380,6 +1381,99 @@ def audio_recording_serve(filename):
 def audio_status():
     return jsonify(sdr.get_status())
 
+# ── Mode S Comm-B enrichment ("Hidden Sky Data") ───────────────────────────
+# Passive consumer of dump1090-fa's raw AVR stream on :30002. Decodes Comm-B
+# (DF20/21) replies — BDS 4,0 / 5,0 / 6,0 / 4,4 — with pyModeS v3 and caches
+# the extra fields per ICAO; /flights merges fresh entries additively. Never
+# writes to dump1090-fa. Degrades gracefully: if pyModeS is missing or :30002
+# is down, enrichment is simply absent and /flights returns standard data.
+try:
+    import pyModeS as _pms
+except Exception:
+    _pms = None
+
+BDS_PORT = 30002
+BDS_CACHE_TTL = 60            # seconds a cached field stays valid for display
+enrichment_cache = {}        # {ICAO_UPPER: {field: value, ..., '_updated': ts}}
+_bds_lock = threading.Lock()
+_BDS_SKIP = {'df', 'icao', 'crc_valid', 'icao_verified', 'bds'}
+_BDS_FIELDS = {
+    'bds40': ('selected_altitude_mcp', 'selected_altitude_fms', 'baro_pressure_setting',
+              'vnav_mode', 'altitude_hold_mode', 'approach_mode'),
+    'bds50': ('roll', 'true_track', 'track_rate', 'true_airspeed'),
+    'bds60': ('magnetic_heading', 'indicated_airspeed', 'mach',
+              'baro_vertical_rate', 'inertial_vertical_rate'),
+    'bds44': ('wind_speed', 'wind_direction', 'temperature'),
+}
+
+
+def _bds_enrichment_loop():
+    """Daemon: read :30002, decode Comm-B replies, cache decoded fields per ICAO."""
+    seen = 0
+    while True:
+        try:
+            sock = socket.socket()
+            sock.connect(('127.0.0.1', BDS_PORT))
+            logging.info('[bds] connected to dump1090-fa :%d', BDS_PORT)
+            buf = ''
+            while True:
+                chunk = sock.recv(4096)
+                if not chunk:
+                    raise ConnectionError('stream closed')
+                buf += chunk.decode(errors='ignore')
+                while '\n' in buf:
+                    line, buf = buf.split('\n', 1)
+                    msg = line.strip().lstrip('*').rstrip(';').strip()
+                    if len(msg) != 28:           # Comm-B = 112-bit (28 hex chars)
+                        continue
+                    try:
+                        if (int(msg[0:2], 16) >> 3) not in (20, 21):
+                            continue
+                        res = _pms.decode(msg)
+                        if not res or not res.get('icao') or not res.get('crc_valid'):
+                            continue
+                        icao = res['icao'].upper()
+                        now = time.time()
+                        with _bds_lock:
+                            rec = enrichment_cache.setdefault(icao, {})
+                            for k, v in res.items():
+                                if k not in _BDS_SKIP and v is not None:
+                                    rec[k] = v
+                            rec['_updated'] = now
+                            seen += 1
+                            if seen % 2000 == 0:  # bound memory: evict long-stale ICAOs
+                                cutoff = now - BDS_CACHE_TTL * 5
+                                stale = [h for h, r in enrichment_cache.items()
+                                         if r.get('_updated', 0) < cutoff]
+                                for h in stale:
+                                    del enrichment_cache[h]
+                    except Exception:
+                        pass
+        except Exception as e:
+            logging.warning('[bds] stream error (%s) — reconnecting in 5s', e)
+            time.sleep(5)
+
+
+def _merge_bds(ac, icao_upper):
+    """Additively merge fresh (<TTL) cached BDS fields onto one aircraft dict."""
+    now = time.time()
+    with _bds_lock:
+        rec = enrichment_cache.get(icao_upper)
+        if not rec or (now - rec.get('_updated', 0)) >= BDS_CACHE_TTL:
+            return
+        for prefix, fields in _BDS_FIELDS.items():
+            for f in fields:
+                if f in rec:
+                    ac['{}_{}'.format(prefix, f)] = rec[f]
+
+
+if _pms is not None:
+    threading.Thread(target=_bds_enrichment_loop, name='bds-enrichment',
+                     daemon=True).start()
+else:
+    logging.warning('[bds] pyModeS not installed — Mode S enrichment disabled')
+
+
 @app.route('/flights')
 def flights():
     """Return aircraft data with type/registration enrichment from AIRCRAFT_DB.
@@ -1391,13 +1485,15 @@ def flights():
     if raw is None:
         return jsonify({'aircraft': []})
 
-    # Fast path: no enrichment data, just pass through (matches pre-v1.0.7)
-    if not AIRCRAFT_DB:
+    # Fast path: nothing to enrich at all → pass raw bytes through unchanged.
+    # Engages only when there's neither a type/reg DB nor live Mode S data.
+    if not AIRCRAFT_DB and not enrichment_cache:
         return Response(raw, mimetype='application/json')
 
     # Slow path: parse, enrich, re-serialize. Adds ~5ms for typical
     # 50-aircraft payload. dump1090's hex field is lowercase; AIRCRAFT_DB
-    # is keyed uppercase.
+    # is keyed uppercase. Mode S Comm-B fields (bds40_*/bds50_*/bds60_*/bds44_*)
+    # are merged additively when fresh.
     try:
         data = json.loads(raw)
         for ac in data.get('aircraft', []):
@@ -1405,13 +1501,14 @@ def flights():
             if not hex_code:
                 continue
             entry = AIRCRAFT_DB.get(hex_code)
-            if not entry:
-                continue
-            # Only fill if dump1090 didn't already provide it (rare, but possible)
-            if not ac.get('t') and entry['t']:
-                ac['t'] = entry['t']
-            if not ac.get('r') and entry['r']:
-                ac['r'] = entry['r']
+            if entry:
+                # Only fill if dump1090 didn't already provide it (rare, but possible)
+                if not ac.get('t') and entry['t']:
+                    ac['t'] = entry['t']
+                if not ac.get('r') and entry['r']:
+                    ac['r'] = entry['r']
+            # Mode S Comm-B enrichment — additive, no-op without fresh cache
+            _merge_bds(ac, hex_code)
         return jsonify(data)
     except (ValueError, TypeError) as e:
         # Parse failure: fall back to raw passthrough so we never 500
