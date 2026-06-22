@@ -1677,18 +1677,10 @@
           <div class="cc-stat"><div class="cc-stat-label">Heading</div><div class="cc-stat-val" id="ccHdg">–</div></div>
           <div class="cc-stat"><div class="cc-stat-label">V/Speed</div><div class="cc-stat-val" id="ccVs">–</div></div>
         </div>
-        <!-- Mode S Comm-B enrichment (Hidden Sky Data) — tiered; shown only when data present -->
+        <!-- Mode S Comm-B enrichment (Hidden Sky Data) — single box; shown only when data present -->
         <div class="cc-bds-primary" id="ccPrimary" style="display:none;">
           <div class="cc-bds-grid" id="ccPrimaryBody"></div>
         </div>
-        <details class="cc-bds" id="ccSecondary" style="display:none;">
-          <summary>＋ More flight data</summary>
-          <div class="cc-bds-grid" id="ccSecondaryBody"></div>
-        </details>
-        <details class="cc-bds" id="ccMet" style="display:none;">
-          <summary>🌬️ Meteorological</summary>
-          <div class="cc-bds-grid" id="ccMetBody"></div>
-        </details>
         <div class="cc-meta" id="ccMeta"></div>
         <div class="cc-waveform" id="ccWaveform"><span class="cc-waveform-label">● TRANSMITTING</span><canvas id="ccWaveCanvas" height="28"></canvas></div>
       </div>
@@ -4412,7 +4404,8 @@ function populateBDS(a) {
     }
   }
 
-  // Tier 2 — PRIMARY (always expanded): Target Alt, Mach, TAS, Mag Heading, Wind
+  // All Mode S Comm-B fields go into one box (no dropdowns — the card has room).
+  // Order: primary (Target Alt, Mach, TAS, Mag Heading, Wind), then the rest, then met.
   var pri = [];
   if (has(a.bds40_selected_altitude_mcp)) pri.push(row('Target Alt', Math.round(a.bds40_selected_altitude_mcp).toLocaleString(), 'ft'));
   if (has(a.bds60_mach))                  pri.push(row('Mach', a.bds60_mach.toFixed(2), ''));
@@ -4422,9 +4415,7 @@ function populateBDS(a) {
     var w = Math.round(a.gs - a.bds50_true_airspeed);
     pri.push(row('Wind', (w >= 0 ? w + ' kt tailwind' : Math.abs(w) + ' kt headwind'), ''));
   }
-  block('ccPrimary', pri);
-
-  // Tier 3 — SECONDARY (collapsed): Roll, Turn rate, Baro/Inertial V/S, QNH, IAS, FMS Alt, VNAV/ALT HOLD/APPR
+  // "More flight data" fields — combined into the same box
   var sec = [];
   if (has(a.bds50_roll)) {
     var rl = a.bds50_roll;
@@ -4440,14 +4431,12 @@ function populateBDS(a) {
   if (has(a.bds40_altitude_hold_mode))     sec.push(row('ALT HOLD', onoff(a.bds40_altitude_hold_mode), ''));
   if (has(a.bds40_approach_mode))          sec.push(row('APPR', onoff(a.bds40_approach_mode), ''));
   // TCAS status (BDS 3,0) — deferred pending pyModeS field verification
-  block('ccSecondary', sec);
-
-  // Tier 4 — MET (collapsed, only when present): BDS 4,4
+  // Meteorological fields (BDS 4,4 — rare) — combined into the same box
   var mt = [];
   if (has(a.bds44_wind_speed))     mt.push(row('Wind Speed', Math.round(a.bds44_wind_speed), 'kt'));
   if (has(a.bds44_wind_direction)) mt.push(row('Wind Direction', Math.round(a.bds44_wind_direction), '°'));
   if (has(a.bds44_temperature))    mt.push(row('Temperature', a.bds44_temperature.toFixed(1), '°C'));
-  block('ccMet', mt);
+  block('ccPrimary', pri.concat(sec, mt));
 }
 
 function openCinematicCard(cs, auto) {
