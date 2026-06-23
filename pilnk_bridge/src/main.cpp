@@ -23,6 +23,7 @@
 #include <signal_path/signal_path.h>
 #include <core.h>
 #include <radio_interface.h>
+#include "rtl_sdr_interface.h"
 #include <utils/flog.h>
 #include <json.hpp>
 #include <signal_path/sink.h>
@@ -62,7 +63,7 @@ SDRPP_MOD_INFO{
     /* Name:         */ "pilnk_bridge",
     /* Description:  */ "PiLNK native bridge - FFT + audio + control export",
     /* Author:       */ "AJ McLachlan / PiLNK",
-    /* Version:      */ 0, 4, 0,
+    /* Version:      */ 0, 5, 0,
     /* Max instances */ 1
 };
 
@@ -229,7 +230,7 @@ public:
 private:
     // -------- control command queue (drained on GUI thread) --------
     struct Command {
-        enum Type { FREQ, MODE, BANDWIDTH, PLAYING } type;
+        enum Type { FREQ, MODE, BANDWIDTH, PLAYING, SQUELCH_MODE, SQUELCH_LEVEL, GAIN_INDEX, AGC } type;
         double dval = 0; int ival = 0; bool bval = false;
     };
     std::mutex cmdMtx;
@@ -241,6 +242,12 @@ private:
         bool playing = false;
         int audioSampleRate = 48000;
         bool haveVfo = false;
+        // squelch (radio demod) + RF/tuner gain (RTL-SDR)
+        bool squelchEnabled = false;
+        float squelchLevel = -50.0f;
+        std::vector<float> rfGainSteps;
+        int rfGainIndex = 0;
+        bool rfAgc = false;
     };
     std::mutex statusMtx;
     StatusSnapshot status;
@@ -287,6 +294,29 @@ private:
                         core::modComManager.callInterface(vfo, RADIO_IFACE_CMD_SET_BANDWIDTH, &bw, NULL);
                     }
                     break;
+                case Command::SQUELCH_MODE:
+                    if (!vfo.empty()) {
+                        // SquelchMode (radio demod.h): OFF=0, POWER=1. int holds the enum value.
+                        int m = c.bval ? 1 : 0;
+                        core::modComManager.callInterface(vfo, RADIO_IFACE_CMD_SET_SQUELCH_MODE, &m, NULL);
+                    }
+                    break;
+                case Command::SQUELCH_LEVEL:
+                    if (!vfo.empty()) {
+                        float lvl = std::clamp((float)c.dval, -100.0f, 0.0f);
+                        core::modComManager.callInterface(vfo, RADIO_IFACE_CMD_SET_SQUELCH_LEVEL, &lvl, NULL);
+                    }
+                    break;
+                case Command::GAIN_INDEX: {
+                    int idx = c.ival;
+                    core::modComManager.callInterface(RTLSDR_IFACE_NAME, RTLSDR_IFACE_CMD_SET_GAIN_INDEX, &idx, NULL);
+                    break;
+                }
+                case Command::AGC: {
+                    bool on = c.bval;
+                    core::modComManager.callInterface(RTLSDR_IFACE_NAME, RTLSDR_IFACE_CMD_SET_AGC, &on, NULL);
+                    break;
+                }
             }
         }
     }
@@ -302,8 +332,26 @@ private:
             if (core::modComManager.callInterface(vfo, RADIO_IFACE_CMD_GET_MODE, NULL, &mode)) s.mode = mode;
             float bw = 0;
             if (core::modComManager.callInterface(vfo, RADIO_IFACE_CMD_GET_BANDWIDTH, NULL, &bw)) s.bandwidthHz = bw;
+            // squelch state (POWER=1 -> enabled)
+            int sqm = 0;
+            if (core::modComManager.callInterface(vfo, RADIO_IFACE_CMD_GET_SQUELCH_MODE, NULL, &sqm)) s.squelchEnabled = (sqm == 1);
+            float sql = -50.0f;
+            if (core::modComManager.callInterface(vfo, RADIO_IFACE_CMD_GET_SQUELCH_LEVEL, NULL, &sql)) s.squelchLevel = sql;
         } else {
             s.vfoHz = s.centerHz;
+        }
+        // RF/tuner gain (RTL-SDR source interface) — discrete steps
+        int gcount = 0;
+        if (core::modComManager.callInterface(RTLSDR_IFACE_NAME, RTLSDR_IFACE_CMD_GET_GAIN_COUNT, NULL, &gcount) && gcount > 0) {
+            s.rfGainSteps.reserve(gcount);
+            for (int i = 0; i < gcount; i++) {
+                float db = 0;
+                if (core::modComManager.callInterface(RTLSDR_IFACE_NAME, RTLSDR_IFACE_CMD_GET_GAIN_STEP, &i, &db)) s.rfGainSteps.push_back(db);
+            }
+            int gi = 0;
+            if (core::modComManager.callInterface(RTLSDR_IFACE_NAME, RTLSDR_IFACE_CMD_GET_GAIN_INDEX, NULL, &gi)) s.rfGainIndex = gi;
+            bool agc = false;
+            if (core::modComManager.callInterface(RTLSDR_IFACE_NAME, RTLSDR_IFACE_CMD_GET_AGC, NULL, &agc)) s.rfAgc = agc;
         }
         s.playing = gui::mainWindow.isPlaying();
         s.audioSampleRate = audioSampleRate.load();
@@ -323,6 +371,11 @@ private:
         j["bandwidthHz"] = s.bandwidthHz;
         j["playing"] = s.playing;
         j["audioSampleRate"] = s.audioSampleRate;
+        j["squelchEnabled"] = s.squelchEnabled;
+        j["squelchLevel"] = s.squelchLevel;
+        j["rfGainSteps"] = s.rfGainSteps;
+        j["rfGainIndex"] = s.rfGainIndex;
+        j["rfAgc"] = s.rfAgc;
         return j.dump();
     }
 
@@ -487,6 +540,17 @@ private:
                 c.type = Command::BANDWIDTH; c.dval = b["hz"].get<double>(); enqueue(c);
             } else if (path == "/sdr/playing" && b.contains("on")) {
                 c.type = Command::PLAYING; c.bval = b["on"].get<bool>(); enqueue(c);
+            } else if (path == "/sdr/squelch" && (b.contains("enabled") || b.contains("level"))) {
+                if (b.contains("enabled")) {
+                    Command sm; sm.type = Command::SQUELCH_MODE; sm.bval = b["enabled"].get<bool>(); enqueue(sm);
+                }
+                if (b.contains("level")) {
+                    Command sl; sl.type = Command::SQUELCH_LEVEL; sl.dval = b["level"].get<double>(); enqueue(sl);
+                }
+            } else if (path == "/sdr/gain" && b.contains("index")) {
+                c.type = Command::GAIN_INDEX; c.ival = b["index"].get<int>(); enqueue(c);
+            } else if (path == "/sdr/agc" && b.contains("on")) {
+                c.type = Command::AGC; c.bval = b["on"].get<bool>(); enqueue(c);
             } else {
                 ok = false;
             }

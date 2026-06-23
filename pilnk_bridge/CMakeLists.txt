@@ -10,6 +10,8 @@ target_include_directories(pilnk_bridge PRIVATE "src/")
 # This module's source is canonical in the PiLNK repo and the SDR++ build
 # tree symlinks to it, so relative "../../" paths would resolve wrongly.
 target_include_directories(pilnk_bridge PRIVATE "${CMAKE_SOURCE_DIR}/decoder_modules/radio/src")
+# RTL-SDR source dir for the shared rtl_sdr_interface.h (RF/tuner gain control)
+target_include_directories(pilnk_bridge PRIVATE "${CMAKE_SOURCE_DIR}/source_modules/rtl_sdr_source/src")
 
 # FFTW (single-precision) for the FFT tap
 find_package(PkgConfig)
