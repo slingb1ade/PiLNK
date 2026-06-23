@@ -19,6 +19,10 @@
   .logo svg{width:32px;height:32px;}
   .logo-text{font-family:'Orbitron',sans-serif;font-size:1.1rem;font-weight:700;color:var(--text);letter-spacing:5px;}
   .logo-version{display:inline-block;font-family:'Share Tech Mono',monospace;font-size:0.55rem;letter-spacing:0.12em;background:transparent;color:var(--blue-mid);border:1px solid var(--border);padding:1px 6px;border-radius:var(--r-1);font-weight:700;margin-left:8px;vertical-align:middle;position:relative;top:-2px;}
+  .powered-by-sdrpp{display:inline-flex;align-items:center;gap:5px;margin-left:10px;vertical-align:middle;text-decoration:none;opacity:0.8;transition:opacity 0.2s;}
+  .powered-by-sdrpp:hover{opacity:1;}
+  .powered-by-sdrpp .pb-label{font-family:'Share Tech Mono',monospace;font-size:0.46rem;letter-spacing:0.08em;color:var(--text-dim);text-transform:uppercase;line-height:1;white-space:nowrap;}
+  .powered-by-sdrpp img{height:25px;width:auto;display:block;}
   .header-right{display:flex;align-items:center;gap:20px;}
   .status-bar{display:flex;align-items:center;gap:20px;font-size:0.65rem;color:var(--text-dim);letter-spacing:0.1em;}
   /* ── Network OFFLINE pill ── hidden while the node is reaching pilnk.io; shows a loud red badge in the header when pings stop landing (driven by /api/net/status, 3 missed pings). ── */
@@ -1040,7 +1044,7 @@
         <circle cx="90" cy="38" r="4" fill="none" stroke="#3b82f6" stroke-width="1" style="animation:blip-ring 5s ease-out infinite;"/>
         <circle cx="64" cy="64" r="52" fill="none" stroke="#3b82f6" stroke-width="2"/>
       </svg>
-      <span class="logo-text">PiLNK</span><span class="logo-version" id="logoVersion">v1.0.0</span>
+      <span class="logo-text">PiLNK</span><span class="logo-version" id="logoVersion">v1.0.0</span><a href="https://github.com/AlexandreRouma/SDRPlusPlus" target="_blank" rel="noopener noreferrer" class="powered-by-sdrpp" title="Powered by SDR++ — open-source SDR software by Alexandre Rouma"><span class="pb-label">Powered by</span><img src="/static/sdrpp.png" alt="SDR++"/></a>
     </div>
     <div class="header-right">
       <div id="netOfflinePill" class="net-offline-pill" title="This node is not reaching the PiLNK network">● OFFLINE</div>
@@ -1172,7 +1176,7 @@
         </button>
         <div class="nav-menu" id="navMenu" role="menu">
           <button class="nav-item active" data-tab="traffic" role="menuitem" onclick="navPick('traffic','Traffic')">Traffic</button>
-          <button class="nav-item" data-tab="radio" role="menuitem" onclick="navPick('radio','Radio')">Radio</button>
+          <button class="nav-item" data-tab="radio" role="menuitem" onclick="navPick('radio','SDR Audio')">SDR Audio</button>
           <button class="nav-item" data-tab="history" role="menuitem" onclick="navPick('history','History')">History</button>
           <button class="nav-item" data-tab="options" role="menuitem" onclick="navPick('options','Options')">Options</button>
           <button class="nav-item" data-tab="stats" role="menuitem" onclick="navPick('stats','Stats')">Stats</button>
@@ -1193,7 +1197,7 @@
             <div id="trafficRadioDot" style="width:6px;height:6px;border-radius:50%;background:#64748b;"></div>
             <span id="trafficRadioFreq" style="font-family:'Orbitron',sans-serif;font-size:0.6rem;color:var(--text-dim);">Radio Off</span>
           </div>
-          <button onclick="showTab('radio',event)" style="background:none;border:1px solid var(--border);border-radius:4px;color:var(--text-dim);font-family:'Share Tech Mono',monospace;font-size:0.5rem;padding:3px 8px;cursor:pointer;"><svg class="icn" viewBox="0 0 24 24"><circle cx="12" cy="12" r="2"/><path d="M4.9 4.9a16 16 0 0 0 0 14.2M19.1 4.9a16 16 0 0 1 0 14.2M7.8 7.8a10 10 0 0 0 0 8.4M16.2 7.8a10 10 0 0 1 0 8.4"/></svg> Radio</button>
+          <button onclick="showTab('radio',event)" style="background:none;border:1px solid var(--border);border-radius:4px;color:var(--text-dim);font-family:'Share Tech Mono',monospace;font-size:0.5rem;padding:3px 8px;cursor:pointer;"><svg class="icn" viewBox="0 0 24 24"><circle cx="12" cy="12" r="2"/><path d="M4.9 4.9a16 16 0 0 0 0 14.2M19.1 4.9a16 16 0 0 1 0 14.2M7.8 7.8a10 10 0 0 0 0 8.4M16.2 7.8a10 10 0 0 1 0 8.4"/></svg> SDR Audio</button>
         </div>
         <div id="flight-panel">
           <div class="sort-row">
@@ -1212,18 +1216,22 @@
         <div style="flex:1;display:flex;flex-direction:column;overflow:hidden;min-height:0;">
           <div class="scroll-area" style="flex:1;overflow-y:auto;">
 
-            <!-- Legal notice — small, always visible. PiLNK ships the radio
-                 off by default; the user must explicitly press LISTEN. ATC
-                 reception is regulated in many countries (some allow it
-                 freely, some allow listening but ban onward disclosure,
-                 some prohibit it entirely). The choice and responsibility
-                 are firmly on the operator. -->
+            <!-- Legal notice — collapsible. Heading always visible; the body
+                 is tucked behind a tap to save vertical room at the top. The
+                 radio still ships OFF by default and the user must explicitly
+                 press LISTEN. The choice and responsibility are firmly on the
+                 operator. -->
             <div style="padding:8px 12px 4px;">
-              <div style="background:rgba(245,158,11,0.08);border:1px solid rgba(245,158,11,0.3);border-radius:6px;padding:8px 10px;font-size:0.58rem;line-height:1.5;color:#fbbf24;letter-spacing:0.02em;">
-                <strong style="color:#fcd34d;">⚠ Local laws apply.</strong>
-                ATC reception is regulated in many countries. You are responsible for confirming it is lawful in your jurisdiction before pressing LISTEN.
-                <a href="https://pilnk.io/terms.html" target="_blank" rel="noopener" style="color:#fcd34d;text-decoration:underline;white-space:nowrap;">Learn more →</a>
-              </div>
+              <details class="laws-note" style="background:rgba(245,158,11,0.08);border:1px solid rgba(245,158,11,0.3);border-radius:6px;">
+                <summary style="list-style:none;cursor:pointer;padding:7px 10px;font-size:0.6rem;color:#fcd34d;font-weight:700;letter-spacing:0.03em;display:flex;align-items:center;gap:6px;user-select:none;">
+                  <span style="flex:1;">⚠ Local Laws Apply</span>
+                  <span class="laws-chev" style="font-size:0.7rem;transition:transform 0.2s;">▸</span>
+                </summary>
+                <div style="padding:0 10px 9px;font-size:0.58rem;line-height:1.5;color:#fbbf24;letter-spacing:0.02em;">
+                  ATC reception is regulated in many countries. You are responsible for confirming it is lawful in your jurisdiction before pressing LISTEN.
+                  <a href="https://pilnk.io/terms.html" target="_blank" rel="noopener" style="color:#fcd34d;text-decoration:underline;white-space:nowrap;">Learn more →</a>
+                </div>
+              </details>
             </div>
 
             <!-- Status Bar -->
@@ -1235,6 +1243,33 @@
                 </div>
                 <div id="radioFreqDisplay" style="font-family:'Orbitron',sans-serif;font-size:0.9rem;font-weight:700;color:var(--blue-mid);">118.700 MHz</div>
               </div>
+            </div>
+
+            <!-- Native SDR waterfall + audio (pilnk_bridge) -->
+            <style>
+              .sdr-tgl{position:relative;width:34px;height:18px;border-radius:9px;border:1px solid var(--border);background:var(--bg-card);cursor:pointer;padding:0;flex:0 0 auto;transition:background .15s,border-color .15s;}
+              .sdr-tgl .knob{position:absolute;top:1px;left:1px;width:14px;height:14px;border-radius:50%;background:var(--text-dim);transition:left .15s,background .15s;}
+              .sdr-tgl.on{background:rgba(16,185,129,.25);border-color:var(--green);}
+              .sdr-tgl.on .knob{left:17px;background:var(--green);}
+              .sdr-tgl:disabled{opacity:.4;cursor:not-allowed;}
+              .sdr-tglst{font-size:0.55rem;color:var(--text-dim);letter-spacing:0.05em;min-width:22px;}
+              .sdr-sqldot{width:8px;height:8px;border-radius:50%;background:#3a3f4b;flex:0 0 auto;transition:background .1s;}
+              .sdr-sqldot.open{background:#00ff88;box-shadow:0 0 5px #00ff88;}
+              .sdr-pending{font-size:0.5rem;color:#f59e0b;letter-spacing:0.03em;}
+              #tab-radio input[type=range]{accent-color:var(--blue-mid);}
+              .laws-note summary::-webkit-details-marker{display:none;}
+              .laws-note[open] .laws-chev{transform:rotate(90deg);}
+            </style>
+            <div style="padding:0 12px 8px;">
+              <div style="position:relative;background:#05080f;border:1px solid var(--border);border-radius:8px;overflow:hidden;">
+                <canvas id="sdrSpectrum" width="1024" height="140" style="display:block;width:100%;height:64px;"></canvas>
+                <canvas id="sdrWaterfall" width="1024" height="320" style="display:block;width:100%;height:150px;cursor:crosshair;"></canvas>
+                <div id="sdrHint" style="position:absolute;inset:0;display:flex;align-items:center;justify-content:center;text-align:center;padding:0 16px;font-size:0.6rem;color:var(--text-dim);letter-spacing:0.04em;pointer-events:none;">Press &#9654; LISTEN to start the live spectrum</div>
+              </div>
+              <div style="display:flex;justify-content:space-between;font-family:'Share Tech Mono',monospace;font-size:0.5rem;color:var(--text-dim);padding:3px 2px 0;">
+                <span id="sdrScLeft">&mdash;</span><span id="sdrScMid">&mdash;</span><span id="sdrScRight">&mdash;</span>
+              </div>
+              <div id="sdrAudioBanner" style="display:none;margin-top:6px;background:rgba(59,130,246,0.1);border:1px solid rgba(59,130,246,0.3);border-radius:6px;padding:6px 10px;font-size:0.58rem;color:var(--blue-mid);text-align:center;cursor:pointer;">&#128263; Tap to enable audio</div>
             </div>
 
             <!-- Listen Button -->
@@ -1256,7 +1291,12 @@
             <!-- Record Button -->
             <div style="padding:0 12px 8px;">
               <button id="radioRecordBtn" onclick="radioRecordToggle()" disabled style="width:100%;padding:8px;border:1px solid var(--border);background:transparent;border-radius:8px;color:var(--text-dim);font-family:'Orbitron',sans-serif;font-size:0.62rem;font-weight:700;letter-spacing:0.15em;cursor:pointer;transition:all 0.2s;opacity:0.5;">● RECORD</button>
-              <div id="radioRecordStatus" style="display:none;font-size:0.6rem;color:#ef4444;text-align:center;margin-top:4px;letter-spacing:0.08em;font-family:'Share Tech Mono',monospace;">REC <span id="radioRecordTime">0:00</span></div>
+              <div style="display:flex;align-items:center;gap:6px;justify-content:flex-end;margin-top:6px;">
+                <span style="font-size:0.55rem;color:var(--text-dim);">Skip silence</span>
+                <button class="sdr-tgl on" id="sdrSkipSil" role="switch" aria-checked="true" title="record only transmissions — drop squelched gaps"><span class="knob"></span></button>
+                <span class="sdr-tglst" id="sdrSkipSilState">ON</span>
+              </div>
+              <div id="radioRecordStatus" style="display:none;font-size:0.6rem;color:#ef4444;text-align:center;margin-top:4px;letter-spacing:0.08em;font-family:'Share Tech Mono',monospace;">idle</div>
             </div>
 
             <!-- Airport Search -->
@@ -1285,18 +1325,36 @@
               </div>
             </div>
 
-            <!-- Squelch & Gain -->
+            <!-- Bridge Audio + RF Controls (native pilnk_bridge) -->
             <div class="panel">
               <div class="panel-title">Controls</div>
-              <div class="slider-wrap">
-                <div class="slider-row">
-                  <div class="slider-label"><span>Squelch</span><span id="sq-val">50</span></div>
-                  <input type="range" min="0" max="100" value="50" id="squelchSlider" oninput="radioSetSquelch(this.value)"/>
-                </div>
-                <div class="slider-row">
-                  <div class="slider-label"><span>RF Gain</span><span id="gain-val">35</span></div>
-                  <input type="range" min="0" max="50" value="35" id="gainSlider" oninput="radioSetGain(this.value)"/>
-                </div>
+              <div style="display:flex;align-items:center;gap:8px;margin-bottom:9px;">
+                <span style="font-size:0.6rem;color:var(--text-dim);width:64px;flex:0 0 auto;">Volume</span>
+                <input type="range" min="0" max="100" value="60" id="sdrVol" style="flex:1;"/>
+                <button id="sdrMute" title="mute" style="background:none;border:none;cursor:pointer;font-size:0.95rem;padding:0;line-height:1;">🔊</button>
+              </div>
+              <div style="display:flex;align-items:center;gap:8px;margin-bottom:9px;">
+                <span style="font-size:0.6rem;color:var(--text-dim);width:64px;flex:0 0 auto;">AF Gain</span>
+                <input type="range" min="-24" max="24" value="-6" id="sdrAfGain" style="flex:1;"/>
+                <span id="sdrAfGainVal" style="font-size:0.58rem;color:var(--text-dim);width:46px;text-align:right;font-family:'Share Tech Mono',monospace;flex:0 0 auto;">-6 dB</span>
+              </div>
+              <div style="display:flex;align-items:center;gap:7px;margin-bottom:9px;flex-wrap:wrap;">
+                <span style="font-size:0.6rem;color:var(--text-dim);width:64px;flex:0 0 auto;">Squelch</span>
+                <button class="sdr-tgl" id="sdrSqBtn" role="switch" aria-checked="false" title="squelch on/off" disabled><span class="knob"></span></button>
+                <span class="sdr-tglst" id="sdrSqState">OFF</span>
+                <input type="range" min="-100" max="0" value="-50" id="sdrSqLevel" disabled style="flex:1;min-width:80px;"/>
+                <span id="sdrSqLevelVal" style="font-size:0.55rem;color:var(--text-dim);font-family:'Share Tech Mono',monospace;width:58px;text-align:right;">-50 dBFS</span>
+                <span id="sdrSqDot" class="sdr-sqldot" title="green = audio passing"></span>
+                <span class="sdr-pending" id="sdrSqPending">bridge pending</span>
+              </div>
+              <div style="display:flex;align-items:center;gap:7px;flex-wrap:wrap;">
+                <span style="font-size:0.6rem;color:var(--text-dim);width:64px;flex:0 0 auto;">RF Gain</span>
+                <input type="range" min="0" max="1" value="0" id="sdrRfGain" disabled style="flex:1;min-width:80px;"/>
+                <span id="sdrRfGainVal" style="font-size:0.55rem;color:var(--text-dim);font-family:'Share Tech Mono',monospace;width:46px;text-align:right;">— dB</span>
+                <span style="font-size:0.5rem;color:var(--text-dim);">AGC</span>
+                <button class="sdr-tgl" id="sdrRfAgc" role="switch" aria-checked="false" title="tuner AGC (auto gain)" disabled><span class="knob"></span></button>
+                <span class="sdr-tglst" id="sdrRfAgcState">OFF</span>
+                <span class="sdr-pending" id="sdrRfPending">bridge pending</span>
               </div>
             </div>
 
@@ -1308,7 +1366,7 @@
 
             <!-- Info -->
             <div style="padding:6px 14px;font-size:0.5rem;color:var(--text-dim);letter-spacing:0.05em;line-height:1.6;">
-              📡 Audio plays locally on Pi (HDMI/3.5mm). VHF Airband: 118-137 MHz AM.
+              📡 Audio plays in your browser. Click the waterfall to tune. VHF Airband 118–137 MHz AM.
             </div>
 
           </div>
@@ -3918,375 +3976,394 @@ function positionTooltipOnMarker(){
   tt.style.top=(rect.top+pt.y)+'px';
 }
 
-// ── VHF RADIO CONTROLLER ──────────────────────────────────
-var radioPlaying = false;
-var radioCurrentFreq = 118700000; // Hz
-var radioRecentFreqs = JSON.parse(localStorage.getItem('pilnk-recent-freqs') || '[]');
-// VHF audio path needs a SECOND RTL-SDR dongle (the first is locked by
-// dump1090-fa for ADS-B). Backend reports availability via /audio/status.
-// Optimistic default: assume present until first check confirms otherwise.
-var vhfAvailable = true;
-function radioCheckVHF(){
-  fetch('/audio/status').then(function(r){return r.json();}).then(function(d){
-    vhfAvailable = (d.vhf_available !== false); // tolerate older builds without the field
-    radioUpdateUI();
-  }).catch(function(){});
-}
+// ── NATIVE SDR (pilnk_bridge) ─────────────────────────────
+// Browser-native airband receiver: live waterfall on canvas + WebAudio
+// playback, driven by the pilnk_bridge SDR++ module on :5656. Replaces the
+// old rtl_fm/Opus path. The radio is OFF until the operator presses LISTEN.
+(function(){
+  "use strict";
+  var $ = function(id){ return document.getElementById(id); };
+  var LE = true;
+  var isHttps = location.protocol === 'https:';
+  var HOST = location.hostname || '127.0.0.1';
+  var base   = function(){ return (isHttps?'https':'http')+'://'+HOST+':5656'; };
+  var wsbase = function(){ return (isHttps?'wss':'ws')+'://'+HOST+':5656'; };
 
-// Persistent <audio> element for Ogg/Opus streaming from the Pi.
-// Auto-reconnects on stream end (happens when the pipeline restarts
-// on freq/squelch/gain changes — Ogg stream ends, browser sees
-// 'ended', we reopen /audio/stream).
-var radioAudioEl = (function(){
-  var el = document.createElement('audio');
-  el.id = 'radioAudioStream';
-  el.preload = 'none';
-  el.style.display = 'none';
-  document.body.appendChild(el);
-  function reconnect(){
-    el.src = '/audio/stream?_=' + Date.now();
-    el.play().catch(function(){});
+  // ---- state ----
+  var fftWs=null, audioWs=null, wantConn=false, connected=false, retryT=null, statusT=null;
+  var latestFFT=null, fftDirty=false, rendering=false, didFirst=false;
+  var audioCtx=null, masterGain=null, afGainNode=null, limiter=null, nextTime=0;
+  var muted=false, volume=0.60, afGainDb=-6;
+  var sqOn=false, sqLevel=-50;
+  var rfSteps=null, rfIndex=0, rfAgc=false;
+  var caps={squelch:false, rfgain:false};
+  var audioOpenUntil=0, sqLastOpen=null;
+  var st={centerHz:0,vfoHz:118700000,mode:'AM',bandwidthHz:0,playing:false,audioSampleRate:48000};
+  var recentFreqs = JSON.parse(localStorage.getItem('pilnk-recent-freqs') || '[]');
+  var recording=false, recChunks=[], recSamples=0, skipSilence=true, recHold=0;
+  var REC_THRESH=0.005, REC_TAIL=0.3;
+
+  // ---- HTTP control ----
+  function post(path, body){
+    return fetch(base()+path, {method:'POST',
+      headers:{'Content-Type':'application/json'}, body:JSON.stringify(body)})
+      .then(function(r){return r.json();}).catch(function(e){return {ok:false,error:String(e)};});
   }
-  el.addEventListener('ended', function(){ if (radioPlaying) reconnect(); });
-  el.addEventListener('error', function(){
-    if (radioPlaying) setTimeout(reconnect, 200);
-  });
+  function pollStatus(){
+    if(!wantConn) return;
+    fetch(base()+'/sdr/status').then(function(r){return r.json();}).then(function(s){
+      st = s; syncCaps(); updateUI();
+    }).catch(function(){});
+  }
 
-  // v1.2.9 Live Edge — keep playback within ~0.3s of the live stream front
-  // edge. Browsers (especially Safari) accumulate 5–15s of buffer on long-
-  // running <audio> streams and never catch up on their own, so ATC ends up
-  // permanently lagged. timeupdate fires ~4×/sec during playback; if we've
-  // drifted past LIVE_EDGE_DRIFT_SEC behind buffered.end, jump forward to
-  // (end - LIVE_EDGE_MARGIN_SEC). The threshold check makes the jump
-  // self-terminating — after a jump we're well under the threshold so we
-  // don't loop.
-  var LIVE_EDGE_DRIFT_SEC  = 1.0;
-  var LIVE_EDGE_MARGIN_SEC = 0.3;
-  el.addEventListener('timeupdate', function(){
-    if (!radioPlaying || el.paused) return;
-    if (el.buffered.length === 0) return;
-    var end = el.buffered.end(el.buffered.length - 1);
-    if ((end - el.currentTime) > LIVE_EDGE_DRIFT_SEC) {
-      try { el.currentTime = end - LIVE_EDGE_MARGIN_SEC; } catch(e){}
+  // ---- WebSocket streams ----
+  function connect(){
+    if(connected) return;                 // idempotent — connect once per page load
+    wantConn = true;
+    clearTimeout(retryT);
+    try{ fftWs&&fftWs.close(); }catch(e){}
+    try{ audioWs&&audioWs.close(); }catch(e){}
+    fftWs = new WebSocket(wsbase()+'/sdr/fft');
+    fftWs.binaryType='arraybuffer';
+    fftWs.onopen = function(){ connected=true; pollStatus(); firstConnect(); };
+    fftWs.onmessage = function(ev){ onFFT(ev.data); };
+    fftWs.onclose = function(){ connected=false; updateUI(); scheduleRetry(); };
+    fftWs.onerror = function(){};
+    audioWs = new WebSocket(wsbase()+'/sdr/audio');
+    audioWs.binaryType='arraybuffer';
+    audioWs.onmessage = function(ev){ onAudio(ev.data); };
+    if(!statusT) statusT = setInterval(pollStatus, 2000);
+    if(!rendering){ rendering=true; requestAnimationFrame(render); }
+  }
+  function firstConnect(){
+    if(didFirst) return; didFirst=true;
+    // radio OFF by default — operator must press LISTEN (legal consent gate)
+    post('/sdr/playing',{on:false});
+    post('/sdr/mode',{mode:'AM'});         // airband is AM
+    st.playing=false; updateUI();
+  }
+  function scheduleRetry(){
+    if(!wantConn) return; clearTimeout(retryT);
+    retryT=setTimeout(function(){ connected=false; connect(); }, 2000);
+  }
+  function onFFT(buf){
+    if(buf.byteLength < 20) return;
+    var dv=new DataView(buf);
+    var centerHz=dv.getFloat64(0,LE), spanHz=dv.getFloat64(8,LE), nBins=dv.getUint32(16,LE);
+    if(20+nBins*4 > buf.byteLength) return;
+    var db=new Float32Array(buf,20,nBins);
+    latestFFT={centerHz:centerHz,spanHz:spanHz,nBins:nBins,db:db};
+    fftDirty=true;
+    var h=$('sdrHint'); if(h) h.style.display='none';
+  }
+
+  // ---- WebAudio ----
+  function startAudio(){
+    if(audioCtx) return;
+    audioCtx=new (window.AudioContext||window.webkitAudioContext)();
+    audioCtx.onstatechange=updateAudioBanner;
+    afGainNode=audioCtx.createGain();
+    masterGain=audioCtx.createGain();
+    limiter=audioCtx.createDynamicsCompressor();
+    limiter.threshold.value=-6; limiter.knee.value=6; limiter.ratio.value=12;
+    limiter.attack.value=0.003; limiter.release.value=0.1;
+    afGainNode.connect(masterGain); masterGain.connect(limiter); limiter.connect(audioCtx.destination);
+    applyAfGain(); applyVolume();
+    nextTime=audioCtx.currentTime+0.1;
+  }
+  function ensureAudio(){
+    if(!audioCtx) startAudio();
+    if(audioCtx && audioCtx.state==='suspended') audioCtx.resume().then(updateAudioBanner);
+    updateAudioBanner();
+  }
+  function updateAudioBanner(){
+    var on=!!(audioCtx && audioCtx.state==='running');
+    var b=$('sdrAudioBanner'); if(b) b.style.display=(on||!st.playing)?'none':'block';
+  }
+  function applyVolume(){ if(masterGain) masterGain.gain.value=muted?0:volume; }
+  function applyAfGain(){ if(afGainNode) afGainNode.gain.value=Math.pow(10, afGainDb/20); }
+  function onAudio(buf){
+    if(!audioCtx || audioCtx.state!=='running') return;
+    var samples=new Float32Array(buf); var n=samples.length; if(!n) return;
+    var sr=st.audioSampleRate||48000;
+    var ab=audioCtx.createBuffer(1,n,sr); ab.copyToChannel(samples,0);
+    var src=audioCtx.createBufferSource(); src.buffer=ab; src.connect(afGainNode);
+    var now=audioCtx.currentTime;
+    if(nextTime < now+0.02) nextTime=now+0.12;
+    if(nextTime > now+0.5)  nextTime=now+0.12;
+    src.start(nextTime); nextTime+=n/sr;
+    var p=0,i; for(i=0;i<n;i++) p+=samples[i]*samples[i];
+    var rms=Math.sqrt(p/n);
+    var open=rms>0.004;
+    if(open) audioOpenUntil=now+0.25;
+    var lit=open||now<audioOpenUntil;
+    if(lit!==sqLastOpen){ sqLastOpen=lit; var d=$('sdrSqDot'); if(d) d.classList.toggle('open',lit); }
+    if(recording){
+      var take=true;
+      if(skipSilence){ if(rms>REC_THRESH) recHold=now+REC_TAIL; take=rms>REC_THRESH||now<recHold; }
+      if(take){ recChunks.push(samples.slice()); recSamples+=n; }
     }
-  });
+  }
 
-  return el;
+  // ---- rendering ----
+  var sCtx=null, wCtx=null;
+  var SW=1024, SH=140, WW=1024, WH=320;
+  var MINDB=-110, MAXDB=-30;
+  var STOPS=[[0,[3,6,16]],[0.22,[10,32,86]],[0.45,[24,110,176]],[0.62,[40,190,170]],[0.78,[120,210,90]],[0.9,[235,200,50]],[1,[240,70,45]]];
+  function dbColor(d){
+    var t=(d-MINDB)/(MAXDB-MINDB); if(t<0)t=0; if(t>1)t=1;
+    for(var i=1;i<STOPS.length;i++){
+      if(t<=STOPS[i][0]){ var a=STOPS[i-1],b=STOPS[i],f=(t-a[0])/(b[0]-a[0]);
+        return [a[1][0]+(b[1][0]-a[1][0])*f, a[1][1]+(b[1][1]-a[1][1])*f, a[1][2]+(b[1][2]-a[1][2])*f]; }
+    }
+    return STOPS[STOPS.length-1][1];
+  }
+  function vfoX(width){
+    if(!latestFFT) return -1;
+    var lo=latestFFT.centerHz-latestFFT.spanHz/2;
+    return ((st.vfoHz-lo)/latestFFT.spanHz)*width;
+  }
+  function drawSpectrum(){
+    if(!sCtx) return;
+    sCtx.fillStyle='#05080f'; sCtx.fillRect(0,0,SW,SH);
+    sCtx.strokeStyle='rgba(120,140,180,.12)'; sCtx.lineWidth=1;
+    for(var i=1;i<5;i++){ var y=SH*i/5; sCtx.beginPath();sCtx.moveTo(0,y);sCtx.lineTo(SW,y);sCtx.stroke(); }
+    if(!latestFFT) return;
+    var nBins=latestFFT.nBins, db=latestFFT.db, x;
+    sCtx.beginPath(); sCtx.moveTo(0,SH);
+    for(x=0;x<SW;x++){ var d=db[Math.floor(x/SW*nBins)]; var t=(d-MINDB)/(MAXDB-MINDB); if(t<0)t=0; if(t>1)t=1; sCtx.lineTo(x,SH-t*SH); }
+    sCtx.lineTo(SW,SH); sCtx.closePath();
+    sCtx.fillStyle='rgba(59,130,246,.28)'; sCtx.fill();
+    sCtx.strokeStyle='#60a5fa'; sCtx.lineWidth=1.4; sCtx.stroke();
+    var vx=vfoX(SW);
+    if(vx>=0&&vx<=SW){ sCtx.strokeStyle='#ff3b6b'; sCtx.lineWidth=1.5; sCtx.beginPath();sCtx.moveTo(vx,0);sCtx.lineTo(vx,SH);sCtx.stroke(); }
+  }
+  function pushWaterfall(){
+    if(!wCtx || !latestFFT) return;
+    wCtx.drawImage($('sdrWaterfall'),0,0,WW,WH-1, 0,1,WW,WH-1);
+    var nBins=latestFFT.nBins, db=latestFFT.db, x;
+    var row=wCtx.createImageData(WW,1);
+    for(x=0;x<WW;x++){ var c=dbColor(db[Math.floor(x/WW*nBins)]); var o=x*4; row.data[o]=c[0];row.data[o+1]=c[1];row.data[o+2]=c[2];row.data[o+3]=255; }
+    wCtx.putImageData(row,0,0);
+    var vx=Math.round(vfoX(WW));
+    if(vx>=0&&vx<WW){ wCtx.fillStyle='#ff3b6b'; wCtx.fillRect(vx,0,1,3); }
+  }
+  function vfoLevelDb(){
+    if(!latestFFT) return null;
+    var lo=latestFFT.centerHz-latestFFT.spanHz/2;
+    var bw=Math.max(st.bandwidthHz||12500, (latestFFT.spanHz/latestFFT.nBins)*2);
+    var i0=Math.floor((st.vfoHz-bw/2-lo)/latestFFT.spanHz*latestFFT.nBins);
+    var i1=Math.ceil((st.vfoHz+bw/2-lo)/latestFFT.spanHz*latestFFT.nBins);
+    if(i0<0)i0=0; if(i1>latestFFT.nBins-1)i1=latestFFT.nBins-1; if(i1<i0) return null;
+    var peak=-300,i; for(i=i0;i<=i1;i++) if(latestFFT.db[i]>peak)peak=latestFFT.db[i];
+    return peak>-299?peak:null;
+  }
+  function updateMeter(){
+    var lv=vfoLevelDb(), fill=$('radioSignalBar'), val=$('radioSignalVal');
+    if(lv==null){ if(val)val.textContent='0'; if(fill)fill.style.width='0%'; return; }
+    var t=(lv-MINDB)/(MAXDB-MINDB); if(t<0)t=0; if(t>1)t=1;
+    if(fill) fill.style.width=(t*100).toFixed(1)+'%';
+    if(val) val.textContent=Math.round(t*100);
+  }
+  function render(){
+    requestAnimationFrame(render);
+    drawSpectrum(); updateMeter();
+    if(fftDirty){ pushWaterfall(); fftDirty=false; }
+  }
+
+  // ---- click-to-tune ----
+  function clickTune(e, el){
+    if(!latestFFT) return;
+    var r=el.getBoundingClientRect();
+    var frac=(e.clientX-r.left)/r.width;
+    var hz=Math.round(latestFFT.centerHz - latestFFT.spanHz/2 + frac*latestFFT.spanHz);
+    ensureAudio(); doTune(hz);
+  }
+
+  // ---- UI ----
+  function fmtMHz(hz){ return (hz/1e6).toFixed(3); }
+  function updateUI(){
+    var fd=$('radioFreqDisplay'); if(fd) fd.textContent=fmtMHz(st.vfoHz)+' MHz';
+    var dot=$('radioStatusDot'), status=$('radioStatusText'), btn=$('radioListenBtn');
+    if(st.playing){
+      if(btn){ btn.textContent='■ STOP'; btn.style.borderColor='#ef4444'; btn.style.color='#ef4444'; }
+      if(dot){ dot.style.background='#00ff88'; dot.style.boxShadow='0 0 6px #00ff88'; }
+      if(status){ status.textContent='RECEIVING '+fmtMHz(st.vfoHz)+' MHz'; status.style.color='#00ff88'; }
+    } else {
+      if(btn){ btn.textContent='▶ LISTEN'; btn.style.borderColor='var(--green)'; btn.style.color='var(--green)'; }
+      if(dot){ dot.style.background=connected?'#3b82f6':'#64748b'; dot.style.boxShadow='none'; }
+      if(status){ status.textContent=connected?'READY — press LISTEN':'CONNECTING…'; status.style.color='var(--text-dim)'; }
+    }
+    var rb=$('radioRecordBtn');
+    if(rb){ rb.disabled=!st.playing; rb.style.opacity=st.playing?'1':'0.5';
+      if(!recording){ rb.style.borderColor=st.playing?'#ef4444':'var(--border)'; rb.style.color=st.playing?'#ef4444':'var(--text-dim)'; } }
+    if(latestFFT){
+      var c=latestFFT.centerHz, sp=latestFFT.spanHz;
+      var l=$('sdrScLeft'),m=$('sdrScMid'),rr=$('sdrScRight');
+      if(l)l.textContent=fmtMHz(c-sp/2); if(rr)rr.textContent=fmtMHz(c+sp/2);
+      if(m)m.textContent=fmtMHz(c)+' · '+(sp/1e6).toFixed(2)+' MHz';
+    }
+    var tDot=$('trafficRadioDot'), tFreq=$('trafficRadioFreq');
+    if(tDot&&tFreq){
+      if(st.playing){ tDot.style.background='#00ff88'; tDot.style.boxShadow='0 0 4px #00ff88'; tFreq.textContent=fmtMHz(st.vfoHz)+' MHz'; tFreq.style.color='#00ff88'; }
+      else { tDot.style.background='#64748b'; tDot.style.boxShadow='none'; tFreq.textContent='Radio Off'; tFreq.style.color=''; }
+    }
+    updateAudioBanner();
+  }
+
+  // ---- capability + control sync ----
+  function syncCaps(){
+    if(!caps.squelch && ('squelchLevel' in st || 'squelchEnabled' in st)){
+      caps.squelch=true;
+      if(typeof st.squelchEnabled==='boolean') sqOn=st.squelchEnabled;
+      if(typeof st.squelchLevel==='number') sqLevel=st.squelchLevel;
+    }
+    if(!caps.rfgain && Array.isArray(st.rfGainSteps) && st.rfGainSteps.length){
+      caps.rfgain=true; rfSteps=st.rfGainSteps;
+      if(typeof st.rfGainIndex==='number') rfIndex=st.rfGainIndex;
+      if(typeof st.rfAgc==='boolean') rfAgc=st.rfAgc;
+    }
+    refreshControls();
+  }
+  function refreshControls(){
+    var sp=$('sdrSqPending'); if(sp) sp.style.display=caps.squelch?'none':'inline';
+    var sb=$('sdrSqBtn'), sl=$('sdrSqLevel');
+    if(sb){ sb.disabled=!caps.squelch; sb.classList.toggle('on',sqOn); sb.setAttribute('aria-checked',sqOn); }
+    var ss=$('sdrSqState'); if(ss) ss.textContent=sqOn?'ON':'OFF';
+    if(sl){ sl.disabled=!caps.squelch; sl.value=sqLevel; }
+    var slv=$('sdrSqLevelVal'); if(slv) slv.textContent=Math.round(sqLevel)+' dBFS';
+    var rp=$('sdrRfPending'); if(rp) rp.style.display=caps.rfgain?'none':'inline';
+    var rg=$('sdrRfGain'), ra=$('sdrRfAgc');
+    if(rg){ rg.disabled=!caps.rfgain||rfAgc; }
+    if(ra){ ra.disabled=!caps.rfgain; ra.classList.toggle('on',rfAgc); ra.setAttribute('aria-checked',rfAgc); }
+    var ras=$('sdrRfAgcState'); if(ras) ras.textContent=rfAgc?'ON':'OFF';
+    if(caps.rfgain && rfSteps && rg){ rg.min=0; rg.max=rfSteps.length-1; rg.step=1; rg.value=rfIndex;
+      var rv=$('sdrRfGainVal'); if(rv) rv.textContent=(rfSteps[rfIndex]!=null?rfSteps[rfIndex].toFixed(1):'—')+' dB'; }
+  }
+
+  // ---- tune + recent ----
+  function doTune(hz){
+    hz=Math.round(hz);
+    post('/sdr/frequency',{hz:hz}); st.vfoHz=hz; updateUI(); addRecent(hz);
+  }
+  function addRecent(freqHz){
+    var mhz=(freqHz/1e6).toFixed(3);
+    recentFreqs=recentFreqs.filter(function(r){return r.freq!==mhz;});
+    recentFreqs.unshift({freq:mhz, time:Date.now()});
+    if(recentFreqs.length>10) recentFreqs=recentFreqs.slice(0,10);
+    localStorage.setItem('pilnk-recent-freqs', JSON.stringify(recentFreqs));
+    renderRecent();
+  }
+  function renderRecent(){
+    var el=$('radioRecent'); if(!el) return;
+    if(!recentFreqs.length){ el.innerHTML='<div style="font-size:0.62rem;color:var(--text-dim);">No recent frequencies</div>'; return; }
+    el.innerHTML=recentFreqs.map(function(r){
+      var ago=Math.round((Date.now()-r.time)/60000);
+      var agoStr=ago<1?'just now':ago+'m ago';
+      return '<div style="display:flex;justify-content:space-between;align-items:center;padding:4px 0;border-bottom:1px solid var(--border);cursor:pointer;" onclick="radioSetFreq('+Math.round(parseFloat(r.freq)*1e6)+')">'+
+        '<span style="font-size:0.65rem;color:var(--blue-mid);font-weight:700;">'+r.freq+' MHz</span>'+
+        '<span style="font-size:0.5rem;color:var(--text-dim);">'+agoStr+'</span></div>';
+    }).join('');
+  }
+
+  // ---- recording (Whisper training data) ----
+  function fmtDur(s){ s=Math.floor(s); return Math.floor(s/60)+':'+String(s%60).padStart(2,'0'); }
+  function concatChunks(chunks){ var total=0,i; for(i=0;i<chunks.length;i++) total+=chunks[i].length; var out=new Float32Array(total); var off=0,j; for(j=0;j<chunks.length;j++){ out.set(chunks[j],off); off+=chunks[j].length; } return out; }
+  function encodeWAV(samples, sampleRate){
+    var n=samples.length, buf=new ArrayBuffer(44+n*2), dv=new DataView(buf);
+    function wr(o,str){ for(var i=0;i<str.length;i++) dv.setUint8(o+i,str.charCodeAt(i)); }
+    wr(0,'RIFF'); dv.setUint32(4,36+n*2,true); wr(8,'WAVE'); wr(12,'fmt ');
+    dv.setUint32(16,16,true); dv.setUint16(20,1,true); dv.setUint16(22,1,true);
+    dv.setUint32(24,sampleRate,true); dv.setUint32(28,sampleRate*2,true);
+    dv.setUint16(32,2,true); dv.setUint16(34,16,true); wr(36,'data'); dv.setUint32(40,n*2,true);
+    var o=44,k; for(k=0;k<n;k++){ var v=Math.max(-1,Math.min(1,samples[k])); dv.setInt16(o, v<0?v*0x8000:v*0x7FFF, true); o+=2; }
+    return new Blob([buf],{type:'audio/wav'});
+  }
+  function downloadBlob(blob,name){
+    var url=URL.createObjectURL(blob), a=document.createElement('a');
+    a.href=url; a.download=name; document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(function(){URL.revokeObjectURL(url);},1500);
+  }
+  function recInfo(txt){ var s=$('radioRecordStatus'); if(s){ s.style.display='block'; s.textContent=txt; } }
+
+  // ---- exposed globals (markup onclicks + showTab + airport search) ----
+  window.radioCheckVHF = function(){ connect(); };            // opening the Radio tab → connect
+  window.radioToggle = function(){
+    ensureAudio();
+    var target = !st.playing;
+    st.playing = target; updateUI();
+    post('/sdr/playing',{on:target});
+  };
+  window.radioSetFreq = function(freqHz){ ensureAudio(); doTune(parseInt(freqHz,10)); };
+  window.setFreq = function(mhz){ window.radioSetFreq(Math.round(parseFloat(mhz)*1e6)); };
+  window.radioManualTune = function(){
+    var input=$('manualFreq'); if(!input) return;
+    var mhz=parseFloat(input.value);
+    if(!mhz || mhz<118 || mhz>137) return;
+    window.radioSetFreq(Math.round(mhz*1e6));
+  };
+  window.radioRecordToggle = function(){
+    ensureAudio();
+    if(!st.playing && !recording){ recInfo('press LISTEN first'); return; }
+    var rb=$('radioRecordBtn');
+    if(!recording){
+      recChunks=[]; recSamples=0; recHold=0; recording=true;
+      if(rb){ rb.textContent='■ STOP REC'; rb.style.borderColor='#ef4444'; rb.style.color='#ef4444'; }
+      recInfo('REC 0:00 · 0.0 MB');
+    } else {
+      recording=false;
+      if(rb){ rb.textContent='● RECORD'; }
+      var sr=st.audioSampleRate||48000;
+      if(recSamples>0){
+        var blob=encodeWAV(concatChunks(recChunks), sr);
+        var fq=(st.vfoHz/1e6).toFixed(3);
+        var ts=new Date().toISOString().replace(/[:.]/g,'-').slice(0,19);
+        downloadBlob(blob, 'pilnk-atc-'+fq+'MHz-'+ts+'.wav');
+        recInfo('saved '+fmtDur(recSamples/sr)+' · '+(recSamples*2/1048576).toFixed(1)+' MB');
+      } else { recInfo('nothing captured (all silence?)'); }
+      recChunks=[];
+    }
+  };
+
+  // ---- wire the new controls ----
+  function wireControls(){
+    var sp=$('sdrSpectrum'), wf=$('sdrWaterfall');
+    sCtx = sp && sp.getContext('2d');
+    wCtx = wf && wf.getContext('2d');
+    if(sp) sp.addEventListener('click', function(e){ clickTune(e,sp); });
+    if(wf) wf.addEventListener('click', function(e){ clickTune(e,wf); });
+    var vol=$('sdrVol'); if(vol) vol.oninput=function(e){ volume=e.target.value/100; applyVolume(); };
+    var mute=$('sdrMute'); if(mute) mute.onclick=function(){ muted=!muted; mute.textContent=muted?'🔇':'🔊'; applyVolume(); };
+    var af=$('sdrAfGain'); if(af) af.oninput=function(e){ afGainDb=+e.target.value; var v=$('sdrAfGainVal'); if(v)v.textContent=(afGainDb>0?'+':'')+afGainDb+' dB'; applyAfGain(); };
+    var sb=$('sdrSqBtn'); if(sb) sb.onclick=function(){ if(!caps.squelch) return; sqOn=!sqOn; refreshControls(); post('/sdr/squelch',{enabled:sqOn,level:sqLevel}); };
+    var sl=$('sdrSqLevel'); if(sl){ sl.oninput=function(e){ sqLevel=+e.target.value; var v=$('sdrSqLevelVal'); if(v)v.textContent=Math.round(sqLevel)+' dBFS'; }; sl.onchange=function(){ if(caps.squelch) post('/sdr/squelch',{enabled:sqOn,level:sqLevel}); }; }
+    var rg=$('sdrRfGain'); if(rg){ rg.oninput=function(e){ rfIndex=+e.target.value; if(rfSteps&&rfSteps[rfIndex]!=null){ var v=$('sdrRfGainVal'); if(v)v.textContent=rfSteps[rfIndex].toFixed(1)+' dB'; } }; rg.onchange=function(){ if(caps.rfgain) post('/sdr/gain',{index:rfIndex}); }; }
+    var ra=$('sdrRfAgc'); if(ra) ra.onclick=function(){ if(!caps.rfgain) return; rfAgc=!rfAgc; refreshControls(); post('/sdr/agc',{on:rfAgc}); };
+    var ssb=$('sdrSkipSil'); if(ssb) ssb.onclick=function(){ skipSilence=!skipSilence; ssb.classList.toggle('on',skipSilence); ssb.setAttribute('aria-checked',skipSilence); var v=$('sdrSkipSilState'); if(v)v.textContent=skipSilence?'ON':'OFF'; };
+    var ban=$('sdrAudioBanner'); if(ban) ban.addEventListener('click', ensureAudio);
+    renderRecent();
+    refreshControls();
+    setInterval(function(){ if(!recording) return; var sr=st.audioSampleRate||48000; recInfo('REC '+fmtDur(recSamples/sr)+' · '+(recSamples*2/1048576).toFixed(1)+' MB'); }, 500);
+  }
+
+  // audio unlock (browser autoplay policy)
+  ['pointerdown','keydown','touchstart'].forEach(function(ev){ document.addEventListener(ev, ensureAudio, {passive:true}); });
+
+  if(document.readyState==='loading') document.addEventListener('DOMContentLoaded', wireControls);
+  else wireControls();
 })();
 
-function radioToggle() {
-  if (radioPlaying) radioStop();
-  else radioStart();
-}
 
-function radioStart(freqHz) {
-  var freq = freqHz || radioCurrentFreq;
-  var squelch = document.getElementById('squelchSlider').value;
-  var gain = document.getElementById('gainSlider').value;
 
-  fetch('/audio/start', {
-    method: 'POST',
-    headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify({freq: freq, squelch: parseInt(squelch), gain: parseInt(gain)})
-  })
-  .then(function(r) { return r.json(); })
-  .then(function(d) {
-    if (d.success) {
-      radioPlaying = true;
-      radioCurrentFreq = freq;
-      radioUpdateUI();
-      radioAddRecent(freq);
-      radioStartSignalPolling();
-      radioRecordUpdateUI();
-      // Open the streaming connection — browser plays Ogg/Opus directly
-      radioAudioEl.src = '/audio/stream?_=' + Date.now();
-      radioAudioEl.play().catch(function(e){ console.warn('Audio play blocked:', e); });
-    } else {
-      // Most common cause: rtl_fm exited immediately because no VHF dongle.
-      // Re-probe so the UI flips to disabled-state, then flash a brief
-      // "START FAILED" before settling into the proper "NO VHF" message.
-      radioCheckVHF();
-      var st = document.getElementById('radioStatusText');
-      if (st) {
-        st.textContent = 'START FAILED';
-        st.style.color = '#ef4444';
-        setTimeout(function(){ radioUpdateUI(); }, 2500);
-      }
-    }
-  })
-  .catch(function(){
-    var st = document.getElementById('radioStatusText');
-    if (st) {
-      st.textContent = 'START FAILED';
-      st.style.color = '#ef4444';
-      setTimeout(function(){ radioUpdateUI(); }, 2500);
-    }
-  });
-}
 
-function radioStop() {
-  // Set flag first so the 'ended' handler doesn't try to reconnect
-  radioPlaying = false;
-  radioRecording = false; // backend stops recording when audio stops
-  radioAudioEl.pause();
-  radioAudioEl.removeAttribute('src');
-  radioAudioEl.load();
-  radioStopSignalPolling();
-  if (radioRecordTimer) { clearInterval(radioRecordTimer); radioRecordTimer = null; }
-  radioRecordUpdateUI();
-  fetch('/audio/stop', {method: 'POST'})
-    .then(function(r) { return r.json(); })
-    .then(function(d) {
-      radioUpdateUI();
-    });
-}
-
-function radioSetFreq(freqHz) {
-  radioCurrentFreq = parseInt(freqHz);
-  if (radioPlaying) {
-    fetch('/audio/freq', {
-      method: 'POST',
-      headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({freq: radioCurrentFreq})
-    })
-    .then(function(r) { return r.json(); })
-    .then(function(d) {
-      radioUpdateUI();
-      radioAddRecent(radioCurrentFreq);
-    });
-  } else {
-    radioStart(radioCurrentFreq);
-  }
-}
-
-function radioSetSquelch(val) {
-  document.getElementById('sq-val').textContent = val;
-  if (radioPlaying) {
-    fetch('/audio/squelch', {
-      method: 'POST',
-      headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({level: parseInt(val)})
-    });
-  }
-}
-
-function radioSetGain(val) {
-  document.getElementById('gain-val').textContent = val;
-  if (radioPlaying) {
-    fetch('/audio/gain', {
-      method: 'POST',
-      headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({gain: parseInt(val)})
-    });
-  }
-}
-
-function radioManualTune() {
-  var input = document.getElementById('manualFreq');
-  var mhz = parseFloat(input.value);
-  if (!mhz || mhz < 118 || mhz > 137) { return; }
-  radioSetFreq(Math.round(mhz * 1e6));
-}
-
-function radioUpdateUI() {
-  var btn = document.getElementById('radioListenBtn');
-  var dot = document.getElementById('radioStatusDot');
-  var status = document.getElementById('radioStatusText');
-  var freqDisp = document.getElementById('radioFreqDisplay');
-
-  var freqMhz = (radioCurrentFreq / 1e6).toFixed(3);
-  freqDisp.textContent = freqMhz + ' MHz';
-
-  if (radioPlaying) {
-    btn.textContent = '■ STOP';
-    btn.disabled = false;
-    btn.style.opacity = '1';
-    btn.style.cursor = 'pointer';
-    btn.style.borderColor = '#ef4444';
-    btn.style.color = '#ef4444';
-    btn.title = '';
-    dot.style.background = '#00ff88';
-    dot.style.boxShadow = '0 0 6px #00ff88';
-    status.textContent = 'RECEIVING ' + freqMhz + ' MHz';
-    status.style.color = '#00ff88';
-  } else if (!vhfAvailable) {
-    btn.textContent = '⊘ NO VHF DONGLE';
-    btn.disabled = true;
-    btn.style.opacity = '0.5';
-    btn.style.cursor = 'not-allowed';
-    btn.style.borderColor = 'var(--border)';
-    btn.style.color = 'var(--text-dim)';
-    btn.title = 'A second RTL-SDR dongle is required for VHF audio. The first is used for ADS-B.';
-    dot.style.background = '#f59e0b';
-    dot.style.boxShadow = 'none';
-    status.textContent = 'NO VHF RECEIVER';
-    status.style.color = 'var(--text-dim)';
-  } else {
-    btn.textContent = '▶ LISTEN';
-    btn.disabled = false;
-    btn.style.opacity = '1';
-    btn.style.cursor = 'pointer';
-    btn.style.borderColor = '';
-    btn.style.color = '';
-    btn.title = '';
-    dot.style.background = '#64748b';
-    dot.style.boxShadow = 'none';
-    status.textContent = 'STOPPED';
-    status.style.color = '';
-  }
-
-  // Update traffic tab mini status
-  var tDot = document.getElementById('trafficRadioDot');
-  var tFreq = document.getElementById('trafficRadioFreq');
-  if (tDot && tFreq) {
-    if (radioPlaying) {
-      tDot.style.background = '#00ff88';
-      tDot.style.boxShadow = '0 0 4px #00ff88';
-      tFreq.textContent = freqMhz + ' MHz';
-      tFreq.style.color = '#00ff88';
-    } else {
-      tDot.style.background = '#64748b';
-      tDot.style.boxShadow = 'none';
-      tFreq.textContent = 'Radio Off';
-      tFreq.style.color = '';
-    }
-  }
-}
 
 // ── Signal-level meter polling ────────────────────────────
-var radioSignalTimer = null;
-function radioStartSignalPolling() {
-  if (radioSignalTimer) return;
-  radioSignalTimer = setInterval(function(){
-    fetch('/audio/level').then(function(r){return r.json();}).then(function(d){
-      var lvl = d.level || 0;
-      var bar = document.getElementById('radioSignalBar');
-      var val = document.getElementById('radioSignalVal');
-      if (bar) bar.style.width = lvl + '%';
-      if (val) val.textContent = lvl;
-    }).catch(function(){});
-  }, 200);
-}
-function radioStopSignalPolling() {
-  if (radioSignalTimer) { clearInterval(radioSignalTimer); radioSignalTimer = null; }
-  var bar = document.getElementById('radioSignalBar');
-  var val = document.getElementById('radioSignalVal');
-  if (bar) bar.style.width = '0%';
-  if (val) val.textContent = '0';
-}
+
 
 // ── Recording ─────────────────────────────────────────────
-var radioRecording = false;
-var radioRecordTimer = null;
-var radioRecordStartedAt = 0;
-function radioRecordToggle() {
-  if (radioRecording) radioRecordStop();
-  else radioRecordStart();
-}
-function radioRecordStart() {
-  if (!radioPlaying) return;
-  fetch('/audio/record/start', {method:'POST'})
-    .then(function(r){return r.json();})
-    .then(function(d){
-      if (d.success) {
-        radioRecording = true;
-        radioRecordStartedAt = Date.now();
-        radioRecordUpdateUI();
-        if (radioRecordTimer) clearInterval(radioRecordTimer);
-        radioRecordTimer = setInterval(radioRecordUpdateTime, 500);
-      }
-    }).catch(function(){});
-}
-function radioRecordStop() {
-  fetch('/audio/record/stop', {method:'POST'})
-    .then(function(r){return r.json();})
-    .catch(function(){})
-    .then(function(){
-      radioRecording = false;
-      if (radioRecordTimer) { clearInterval(radioRecordTimer); radioRecordTimer = null; }
-      radioRecordUpdateUI();
-    });
-}
-function radioRecordUpdateUI() {
-  var btn = document.getElementById('radioRecordBtn');
-  var status = document.getElementById('radioRecordStatus');
-  if (!btn || !status) return;
-  btn.disabled = !radioPlaying;
-  btn.style.opacity = radioPlaying ? '1' : '0.5';
-  if (radioRecording) {
-    btn.style.borderColor = '#ef4444';
-    btn.style.color = '#ef4444';
-    btn.textContent = '■ STOP REC';
-    status.style.display = 'block';
-  } else {
-    btn.style.borderColor = radioPlaying ? '#ef4444' : 'var(--border)';
-    btn.style.color = radioPlaying ? '#ef4444' : 'var(--text-dim)';
-    btn.textContent = '● RECORD';
-    status.style.display = 'none';
-  }
-}
-function radioRecordUpdateTime() {
-  var elapsed = Math.floor((Date.now() - radioRecordStartedAt) / 1000);
-  var m = Math.floor(elapsed / 60);
-  var s = elapsed % 60;
-  var t = m + ':' + (s < 10 ? '0' + s : s);
-  var el = document.getElementById('radioRecordTime');
-  if (el) el.textContent = t;
-}
 
-function radioAddRecent(freqHz) {
-  var mhz = (freqHz / 1e6).toFixed(3);
-  // Remove if already in list
-  radioRecentFreqs = radioRecentFreqs.filter(function(r) { return r.freq !== mhz; });
-  // Add to front
-  radioRecentFreqs.unshift({freq: mhz, time: Date.now()});
-  // Keep max 10
-  if (radioRecentFreqs.length > 10) radioRecentFreqs = radioRecentFreqs.slice(0, 10);
-  localStorage.setItem('pilnk-recent-freqs', JSON.stringify(radioRecentFreqs));
-  radioRenderRecent();
-}
 
-function radioRenderRecent() {
-  var el = document.getElementById('radioRecent');
-  if (!el) return;
-  if (!radioRecentFreqs.length) {
-    el.innerHTML = '<div style="font-size:0.62rem;color:var(--text-dim);">No recent frequencies</div>';
-    return;
-  }
-  el.innerHTML = radioRecentFreqs.map(function(r) {
-    var ago = Math.round((Date.now() - r.time) / 60000);
-    var agoStr = ago < 1 ? 'just now' : ago + 'm ago';
-    return '<div style="display:flex;justify-content:space-between;align-items:center;padding:4px 0;border-bottom:1px solid var(--border);cursor:pointer;" onclick="radioSetFreq(' + Math.round(parseFloat(r.freq) * 1e6) + ')">' +
-      '<span style="font-size:0.65rem;color:var(--blue-mid);font-weight:700;">' + r.freq + ' MHz</span>' +
-      '<span style="font-size:0.5rem;color:var(--text-dim);">' + agoStr + '</span>' +
-    '</div>';
-  }).join('');
-}
 
-// Legacy compatibility — old freq buttons call this
-function setFreq(freq, btn) {
-  radioSetFreq(Math.round(freq * 1e6));
-}
-
-// Poll radio status every 5 seconds
-setInterval(function() {
-  if (!radioPlaying) return;
-  fetch('/audio/status')
-    .then(function(r) { return r.json(); })
-    .then(function(d) {
-      if (!d.playing && radioPlaying) {
-        radioPlaying = false;
-        radioUpdateUI();
-      }
-    }).catch(function() {});
-}, 5000);
-
-// Render recent on load
-radioRenderRecent();
-// Check VHF dongle on first load — if no second RTL-SDR is plugged in,
-// the Listen button will start out disabled with a clear "NO VHF" hint
-// instead of silently failing on click.
-radioCheckVHF();
 
 // ── TRANSMIT ───────────────────────────────────────────────
 function highlightTransmitting(callsign){
