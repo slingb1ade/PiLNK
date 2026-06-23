@@ -1,0 +1,72 @@
+{
+ "B2": {
+  "src": "https://commons.wikimedia.org/wiki/Special:FilePath/B-2_Spirit_original.jpg",
+  "wiki": "Commons:B-2_Spirit_original.jpg (USAF, public domain)",
+  "bytes": 34906
+ },
+ "B21": {
+  "src": "https://upload.wikimedia.org/wikipedia/commons/thumb/4/4a/B-21-in-flight.jpg/3840px-B-21-in-flight.jpg",
+  "wiki": "Northrop_Grumman_B-21_Raider",
+  "bytes": 44068
+ },
+ "U2": {
+  "src": "https://upload.wikimedia.org/wikipedia/commons/9/95/Usaf.u2.750pix.jpg",
+  "wiki": "Lockheed_U-2",
+  "bytes": 88366
+ },
+ "F22": {
+  "src": "https://upload.wikimedia.org/wikipedia/commons/1/1e/F-22_Raptor_edit1_%28cropped%29.jpg",
+  "wiki": "Lockheed_Martin_F-22_Raptor",
+  "bytes": 55728
+ },
+ "F16": {
+  "src": "https://upload.wikimedia.org/wikipedia/commons/thumb/c/c9/F-16_June_2008.jpg/3840px-F-16_June_2008.jpg",
+  "wiki": "General_Dynamics_F-16_Fighting_Falcon",
+  "bytes": 50982
+ },
+ "B52": {
+  "src": "https://upload.wikimedia.org/wikipedia/commons/1/16/B-52_Stratofortress_assigned_to_the_307th_Bomb_Wing_%28cropped%29.jpg",
+  "wiki": "Boeing_B-52_Stratofortress",
+  "bytes": 79053
+ },
+ "B1": {
+  "src": "https://upload.wikimedia.org/wikipedia/commons/7/7d/B-1B_air_refueling.jpg",
+  "wiki": "Rockwell_B-1_Lancer",
+  "bytes": 63281
+ },
+ "C130": {
+  "src": "https://upload.wikimedia.org/wikipedia/commons/c/cc/Lockheed_C-130_Hercules.jpg",
+  "wiki": "Lockheed_C-130_Hercules",
+  "bytes": 88811
+ },
+ "K35": {
+  "src": "https://commons.wikimedia.org/wiki/Special:FilePath/KC-135_Stratotanker.jpg",
+  "wiki": "Commons:KC-135_Stratotanker.jpg",
+  "bytes": 38607
+ },
+ "K46": {
+  "src": "https://upload.wikimedia.org/wikipedia/commons/7/78/KC-46_Pegasus_prepares_to_refuel_C-17_%28cropped%29.jpg",
+  "wiki": "Boeing_KC-46_Pegasus",
+  "bytes": 30760
+ },
+ "E3": {
+  "src": "https://upload.wikimedia.org/wikipedia/commons/c/c5/E-3_Sentry_Airborne_Warning_and_Control_System_%28AWACS%29_conducts_a_mission.jpg",
+  "wiki": "Boeing_E-3_Sentry",
+  "bytes": 55622
+ },
+ "H60": {
+  "src": "https://upload.wikimedia.org/wikipedia/commons/2/2e/National-Guard-UH-60-Black-Hawk-operations-at-Fort-McCoy.jpg",
+  "wiki": "Sikorsky_UH-60_Black_Hawk",
+  "bytes": 41945
+ },
+ "H47": {
+  "src": "https://upload.wikimedia.org/wikipedia/commons/a/a0/CH-47_assigned_to_3rd_General_Support_Aviation_Battalion%2C_82nd_Combat_Aviation_Brigade.jpg",
+  "wiki": "Boeing_CH-47_Chinook",
+  "bytes": 36192
+ },
+ "V22": {
+  "src": "https://upload.wikimedia.org/wikipedia/commons/e/e3/MV-22_mcas_Miramar_2014.JPG",
+  "wiki": "Bell_Boeing_V-22_Osprey",
+  "bytes": 36123
+ }
+}
