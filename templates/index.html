@@ -525,7 +525,7 @@
   .cc-tx-text{
     color:var(--text);
   }
-  .cc-top{}
+  .cc-top{ flex:1 1 auto; display:flex; flex-direction:column; min-height:0; }
   .cc-badge{
     display:inline-flex;align-items:center;gap:6px;
     background:var(--border);
@@ -866,11 +866,12 @@
 /* ── BOOT SPLASH ───────────────────────────────────────────── */
 #pilnk-splash{position:fixed;inset:0;z-index:99999;background:radial-gradient(ellipse at 50% 30%,#0d1f3c 0%,#060d1a 75%);display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center;padding:0 20px;overflow:hidden;transition:opacity 0.8s ease;}
 #pilnk-splash.fading{opacity:0;pointer-events:none;}
-#pilnk-splash .ps-grid{position:absolute;inset:0;background-image:linear-gradient(rgba(59,130,246,0.07) 1px,transparent 1px),linear-gradient(90deg,rgba(59,130,246,0.07) 1px,transparent 1px);background-size:32px 32px;-webkit-mask-image:radial-gradient(ellipse 70% 60% at 50% 50%,black 0%,transparent 95%);mask-image:radial-gradient(ellipse 70% 60% at 50% 50%,black 0%,transparent 95%);}
+#pilnk-splash .ps-grid{position:absolute;left:-50%;right:-50%;bottom:0;height:72%;background-image:linear-gradient(rgba(96,165,250,0.40) 1px,transparent 1px),linear-gradient(90deg,rgba(96,165,250,0.40) 1px,transparent 1px);background-size:46px 46px;transform:perspective(340px) rotateX(72deg);transform-origin:50% 100%;-webkit-mask-image:linear-gradient(to top,#000 0%,#000 26%,transparent 76%);mask-image:linear-gradient(to top,#000 0%,#000 26%,transparent 76%);animation:ps-floor 3.2s linear infinite;}
 #pilnk-splash .ps-scan{position:absolute;left:0;right:0;height:1px;background:linear-gradient(90deg,transparent,rgba(59,130,246,0.6),transparent);animation:ps-scan 3.5s ease-in-out infinite;}
 #pilnk-splash .ps-skip{position:absolute;top:18px;right:18px;width:36px;height:36px;border-radius:50%;background:rgba(255,255,255,0.04);border:1px solid rgba(59,130,246,0.25);color:#8aabcf;font-size:16px;display:flex;align-items:center;justify-content:center;cursor:pointer;font-family:'Share Tech Mono',monospace;opacity:0;animation:ps-fadein 0.4s 1s forwards;transition:border-color 0.2s,color 0.2s;}
 #pilnk-splash .ps-skip:hover{border-color:#3b82f6;color:#e0e8ff;}
-#pilnk-splash .ps-radar{width:min(60vmin,380px);height:min(60vmin,380px);position:relative;animation:ps-rise 0.8s ease-out;}
+#pilnk-splash .ps-radar{width:min(60vmin,380px);height:min(60vmin,380px);position:relative;margin:-60px 0 -48px;transform-origin:50% 50%;animation:ps-rise3d 1s ease-out both;}
+#pilnk-splash .ps-radar::before{content:'';position:absolute;inset:-6%;border-radius:50%;background:radial-gradient(ellipse 62% 55% at 50% 55%,rgba(59,130,246,0.34),rgba(59,130,246,0.10) 46%,transparent 72%);filter:blur(16px);z-index:-1;}
 #pilnk-splash .ps-radar svg{width:100%;height:100%;}
 #pilnk-splash .ps-wordmark{margin-top:32px;font-family:'Orbitron',sans-serif;font-size:clamp(2.8rem,9vmin,5.5rem);font-weight:700;letter-spacing:0.3em;color:#e0e8ff;text-shadow:0 0 28px rgba(59,130,246,0.55);animation:ps-rise 0.8s 0.15s ease-out both;padding-left:0.3em;}
 #pilnk-splash .ps-tag{margin-top:10px;font-family:'Share Tech Mono',monospace;font-size:clamp(0.85rem,1.6vmin,1.05rem);letter-spacing:0.25em;color:#8aabcf;animation:ps-rise 0.8s 0.3s ease-out both;}
@@ -886,6 +887,8 @@
 @keyframes ps-blip2{0%,100%{opacity:0;}30%,50%{opacity:1;}}
 @keyframes ps-blip-ring2{0%{r:2;opacity:0.6;}100%{r:15;opacity:0;}}
 @keyframes ps-rise{from{opacity:0;transform:translateY(10px);}to{opacity:1;transform:translateY(0);}}
+@keyframes ps-rise3d{from{opacity:0;transform:perspective(1100px) rotateX(56deg) translateY(36px) scale(0.96);}to{opacity:1;transform:perspective(1100px) rotateX(56deg) translateY(0) scale(1);}}
+@keyframes ps-floor{from{background-position-y:0;}to{background-position-y:46px;}}
 @keyframes ps-fadein{from{opacity:0;}to{opacity:1;}}
 @keyframes ps-pulse{0%,100%{opacity:0.3;}50%{opacity:1;}}
 @media (prefers-reduced-motion:reduce){
@@ -893,6 +896,7 @@
   #pilnk-splash .ps-radar svg circle[style*="ps-blip"],#pilnk-splash .ps-radar svg circle[style*="ps-blip-ring"]{animation:none !important;opacity:0.7;}
   #pilnk-splash .ps-status .ps-dot{animation:none !important;opacity:0.6;}
   #pilnk-splash .ps-scan{animation:none !important;display:none;}
+  #pilnk-splash .ps-grid{animation:none !important;}
 }
   /* ════════ UI POLISH PROTOTYPE — design-token pass (dev Pi, 2026-06-07) ════════
      Appended at end of cascade so it layers over existing component rules without
@@ -970,8 +974,11 @@
       <defs>
         <radialGradient id="psSweepGrad" cx="30%" cy="30%" r="70%"><stop offset="0%" stop-color="#3b82f6" stop-opacity="0.55"/><stop offset="100%" stop-color="#3b82f6" stop-opacity="0"/></radialGradient>
         <radialGradient id="psBgGrad" cx="50%" cy="50%" r="50%"><stop offset="0%" stop-color="#0d1f3c"/><stop offset="100%" stop-color="#060d1a"/></radialGradient>
+        <linearGradient id="psWall" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#1c3e72"/><stop offset="1" stop-color="#091a34"/></linearGradient>
+        <radialGradient id="psDome" cx="42%" cy="38%" r="62%"><stop offset="0" stop-color="#ffffff" stop-opacity="0.16"/><stop offset="60%" stop-color="#cfe0ff" stop-opacity="0.04"/><stop offset="100%" stop-color="#ffffff" stop-opacity="0"/></radialGradient>
         <clipPath id="psClip"><circle cx="100" cy="100" r="90"/></clipPath>
       </defs>
+      <circle cx="100" cy="109" r="90" fill="url(#psWall)" stroke="#2f5fa0" stroke-width="1"/>
       <circle cx="100" cy="100" r="90" fill="url(#psBgGrad)"/>
       <circle cx="100" cy="100" r="90" fill="none" stroke="#1e3a6e" stroke-width="1"/>
       <circle cx="100" cy="100" r="65" fill="none" stroke="#1e3a6e" stroke-width="0.8"/>
@@ -988,6 +995,7 @@
       <circle cx="72" cy="130" r="3" fill="#00aaff" style="animation:ps-blip2 4s 1.5s ease-in-out infinite;"/>
       <circle cx="72" cy="130" r="3" fill="none" stroke="#00aaff" stroke-width="1" style="animation:ps-blip-ring2 4s 1.5s ease-out infinite;"/>
       <circle cx="125" cy="148" r="2.5" fill="#ff8800" style="animation:ps-blip 4s 2.8s ease-in-out infinite;"/>
+      <ellipse cx="80" cy="70" rx="80" ry="64" fill="url(#psDome)" clip-path="url(#psClip)"/>
       <circle cx="100" cy="100" r="90" fill="none" stroke="#3b82f6" stroke-width="2"/>
       <circle cx="100" cy="100" r="4" fill="#3b82f6"/>
       <circle cx="100" cy="100" r="2" fill="white"/>
@@ -1622,11 +1630,12 @@
   .cc-bds>summary::-webkit-details-marker{ display:none; }
   .cc-bds>summary::after{ content:'\25B8'; float:right; color:#7c6aae; transition:transform .15s; }
   .cc-bds[open]>summary::after{ transform:rotate(90deg); }
-  .cc-bds-primary{ margin:8px 0 0; border:1px solid rgba(167,139,250,0.32);
-                   border-radius:8px; background:rgba(167,139,250,0.10); padding:5px 0; }
-  .cc-bds-grid{ padding:4px 10px 9px; display:grid; grid-template-columns:1fr 1fr; gap:3px 14px; }
+  .cc-bds-primary{ margin:8px 0 5px; border:1px solid rgba(167,139,250,0.32);
+                   border-radius:8px; background:rgba(167,139,250,0.10); padding:5px 0;
+                   flex:1 1 auto; min-height:0; display:flex; flex-direction:column; justify-content:center; }
+  .cc-bds-grid{ padding:8px 12px; display:grid; grid-template-columns:1fr 1fr; gap:9px 18px; }
   .cc-bds-row{ display:flex; justify-content:space-between; align-items:baseline;
-               font-family:'Share Tech Mono',monospace; font-size:0.66rem; }
+               font-family:'Share Tech Mono',monospace; font-size:0.82rem; }
   .cc-bds-k{ color:#8b8b9e; }
   .cc-bds-v{ color:#e8e6f0; font-weight:600; }
   .cc-bds-u{ color:#7c6aae; font-weight:400; font-size:0.9em; }
@@ -1677,11 +1686,11 @@
           <div class="cc-stat"><div class="cc-stat-label">Heading</div><div class="cc-stat-val" id="ccHdg">–</div></div>
           <div class="cc-stat"><div class="cc-stat-label">V/Speed</div><div class="cc-stat-val" id="ccVs">–</div></div>
         </div>
-        <!-- Mode S Comm-B enrichment (Hidden Sky Data) — single box; shown only when data present -->
+        <div class="cc-meta" id="ccMeta"></div>
+        <!-- Mode S Comm-B enrichment (Hidden Sky Data) — single box; shown only when data present. Grows to fill the column down to the flight phase. -->
         <div class="cc-bds-primary" id="ccPrimary" style="display:none;">
           <div class="cc-bds-grid" id="ccPrimaryBody"></div>
         </div>
-        <div class="cc-meta" id="ccMeta"></div>
         <div class="cc-waveform" id="ccWaveform"><span class="cc-waveform-label">● TRANSMITTING</span><canvas id="ccWaveCanvas" height="28"></canvas></div>
       </div>
       <div class="cc-bottom">
@@ -1768,8 +1777,12 @@ var GLOBAL_AIRPORTS = [
   {icao:'KMIA', lat:25.795, lon:-80.290, hdg:90, name:'Miami'},
   {icao:'KBOS', lat:42.364, lon:-71.005, hdg:40, name:'Boston'},
   {icao:'KMSP', lat:44.881, lon:-93.221, hdg:300, name:'Minneapolis'},
+  {icao:'KICT', lat:37.650, lon:-97.433, hdg:10, name:'Wichita'},
   // UK / Europe
   {icao:'EGLL', lat:51.470, lon:-0.461, hdg:270, name:'London Heathrow'},
+  {icao:'EGSS', lat:51.885, lon:0.235, hdg:223, name:'London Stansted'},
+  {icao:'EGSH', lat:52.676, lon:1.283, hdg:90, name:'Norwich'},
+  {icao:'EGMC', lat:51.571, lon:0.696, hdg:233, name:'London Southend'},
   {icao:'EGCC', lat:53.353, lon:-2.274, hdg:230, name:'Manchester'},
   {icao:'EGBB', lat:52.454, lon:-1.748, hdg:330, name:'Birmingham'},
   {icao:'EIDW', lat:53.421, lon:-6.270, hdg:280, name:'Dublin'},
@@ -3506,8 +3519,18 @@ function getCatDisplay(c){
 }
 
 // ── ICONS ─────────────────────────────────────────────────
+// Ground/taxiing aircraft (PHASE.ground, grey) render at this fraction of
+// normal size so a busy apron/taxiway isn't a wall of full-size icons when
+// zoomed out. Detected via the grey phase colour baked into the SVG, so it
+// applies to BOTH the Leaflet markers and the canvas sprites (getPlaneSprite
+// reads this iconSize). Tune the one number freely.
+var GROUND_ICON_SCALE = 0.45;
 function mkIcon(svg,size,tx){
   var p=tx?'animation:tx-pulse 1s ease-in-out infinite;display:inline-block;':'';
+  if(svg.indexOf(PHASE.ground.color)!==-1){
+    var bs=Math.max(8,Math.round(size*GROUND_ICON_SCALE));
+    return L.divIcon({className:'',html:'<div style="cursor:pointer;width:'+bs+'px;height:'+bs+'px;"><div style="transform:scale('+GROUND_ICON_SCALE+');transform-origin:top left;'+p+'">'+svg+'</div></div>',iconSize:[bs,bs],iconAnchor:[bs/2,bs/2]});
+  }
   return L.divIcon({className:'',html:'<div style="cursor:pointer;"><div style="'+p+'">'+svg+'</div></div>',iconSize:[size,size],iconAnchor:[size/2,size/2]});
 }
 // Helicopter — X-rotor over body, tail boom, small tail rotor
@@ -3676,6 +3699,114 @@ function updateMarker(a){
   updateLabel(a);
 }
 
+// ── AIRPORT INSET (top-right, below the recenter button) ──────────────────
+// Pop-out mini-map locked to a chosen airport, zoomed to taxiway level, that
+// plots live nearby traffic at scale so you can watch aircraft taxi. Built as
+// a topright Leaflet control so it auto-stacks BELOW the recenter button and
+// never covers it. Airport picked from a distance-sorted list (nearest first).
+(function(){
+  var insetMap=null, insetMarkers={}, insetAirport=null, insetOpen=false, apList=[], userPicked=false;
+  var INSET_ZOOM=13, INSET_RANGE_NM=6;
+
+  // Picker list from the FULL worldwide OurAirports DB (already loaded for the
+  // radio tab), filtered to controlled (large/medium) airports, nearest first —
+  // so EVERY node gets its own local fields (KICT for Wichita, Norwich/Stansted
+  // for the UK, etc). Falls back to the curated GLOBAL_AIRPORTS list until that
+  // DB has loaded (or if the fetch fails).
+  function buildList(){
+    var src;
+    if(typeof airportDB!=='undefined' && airportDB && airportDB.length){
+      src=airportDB.filter(function(a){return CONTROLLED[a.type]&&a.latitude_deg&&a.longitude_deg;})
+                   .map(function(a){return {icao:a.ident,name:a.name,lat:parseFloat(a.latitude_deg),lon:parseFloat(a.longitude_deg)};});
+    } else {
+      src=GLOBAL_AIRPORTS.map(function(a){return {icao:a.icao,name:a.name,lat:a.lat,lon:a.lon};});
+    }
+    apList=src.map(function(a){a.d=haversineNm(RX_LAT,RX_LON,a.lat,a.lon);return a;})
+              .sort(function(x,y){return x.d-y.d;}).slice(0,40);
+    return apList;
+  }
+  function fillPicker(){
+    var sel=document.getElementById('apInsetSel'); if(!sel) return;
+    buildList();
+    sel.innerHTML=apList.map(function(o){return '<option value="'+o.icao+'">'+o.icao+' &mdash; '+o.name+' ('+Math.round(o.d)+' nm)</option>';}).join('');
+    if(!userPicked) insetAirport=apList[0];
+    else if(insetAirport && !apList.some(function(o){return o.icao===insetAirport.icao;})) insetAirport=apList[0];
+    if(insetAirport) sel.value=insetAirport.icao;
+  }
+  function ensureMap(){
+    if(insetMap) return;
+    insetMap=L.map('apInsetMap',{zoomControl:true,attributionControl:false})
+              .setView([insetAirport.lat,insetAirport.lon],INSET_ZOOM);
+    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',{maxZoom:19,subdomains:'abc'}).addTo(insetMap);
+  }
+  function setAirport(icao){
+    var ap=null; apList.forEach(function(a){if(a.icao===icao)ap=a;});
+    if(!ap) return; insetAirport=ap; userPicked=true;
+    if(insetMap){
+      Object.keys(insetMarkers).forEach(function(cs){insetMap.removeLayer(insetMarkers[cs]);delete insetMarkers[cs];});
+      insetMap.setView([ap.lat,ap.lon],INSET_ZOOM);
+    }
+    pushAircraft();
+  }
+  function pushAircraft(){
+    if(!insetOpen||!insetMap||!insetAirport) return;
+    var seen={};
+    Object.keys(lastAircraft).forEach(function(k){
+      var a=lastAircraft[k]; if(!a||!a.lat||!a.lon||!a.flight) return;
+      if(haversineNm(insetAirport.lat,insetAirport.lon,a.lat,a.lon)>INSET_RANGE_NM) return;
+      var cs=a.flight.trim(); seen[cs]=true;
+      var cat=getCat(a.t,a.category), ph=getPhase(a,cs);
+      var icon=makeIcon(cs,cat,a.track,ph.color,!!transmitting[cs]);
+      if(insetMarkers[cs]) insetMarkers[cs].setLatLng([a.lat,a.lon]).setIcon(icon);
+      else insetMarkers[cs]=L.marker([a.lat,a.lon],{icon:icon}).addTo(insetMap).bindTooltip(cs,{direction:'top'});
+    });
+    Object.keys(insetMarkers).forEach(function(cs){if(!seen[cs]){insetMap.removeLayer(insetMarkers[cs]);delete insetMarkers[cs];}});
+  }
+  window.updateAirportInset=pushAircraft;
+
+  function toggle(open){
+    insetOpen=(open===undefined)?!insetOpen:open;
+    document.getElementById('apInsetBtn').style.display=insetOpen?'none':'flex';
+    document.getElementById('apInsetPanel').style.display=insetOpen?'block':'none';
+    if(insetOpen){ loadAirportDB().then(openReady).catch(openReady); }
+  }
+  function openReady(){
+    fillPicker();
+    ensureMap();
+    setTimeout(function(){insetMap.invalidateSize();insetMap.setView([insetAirport.lat,insetAirport.lon],INSET_ZOOM);pushAircraft();},60);
+  }
+
+  var AirportInset=L.Control.extend({
+    options:{position:'topright'},
+    onAdd:function(){
+      var wrap=L.DomUtil.create('div','pilnk-apinset');
+      wrap.style.cssText='margin-top:8px;';
+      wrap.innerHTML=
+        '<a href="#" id="apInsetBtn" role="button" title="Airport view" '+
+          'style="display:flex;align-items:center;justify-content:center;width:34px;height:34px;background:var(--bg-panel,#0b0f1a);border:1px solid var(--border,#1e293b);border-radius:4px;font-size:1.05rem;text-decoration:none;box-shadow:0 1px 5px rgba(0,0,0,0.4);">🛬</a>'+
+        '<div id="apInsetPanel" style="display:none;width:480px;background:var(--bg-panel,#0b0f1a);border:1px solid var(--border,#1e293b);border-radius:8px;box-shadow:0 10px 34px rgba(0,0,0,0.55);overflow:hidden;">'+
+          '<div style="display:flex;align-items:center;gap:8px;padding:8px 10px;border-bottom:1px solid var(--border,#1e293b);">'+
+            '<span style="font-size:0.95rem;">🛬</span>'+
+            '<select id="apInsetSel" style="flex:1;min-width:0;background:var(--bg,#060c18);color:var(--text,#e2e8f0);border:1px solid var(--border,#1e293b);border-radius:4px;font-family:monospace;font-size:0.72rem;padding:3px 4px;"></select>'+
+            '<a href="#" id="apInsetClose" title="Close" style="color:var(--text-dim,#94a3b8);text-decoration:none;font-size:0.95rem;line-height:1;padding:0 2px;">&#10005;</a>'+
+          '</div>'+
+          '<div id="apInsetMap" style="width:480px;height:270px;"></div>'+
+        '</div>';
+      L.DomEvent.disableClickPropagation(wrap);
+      L.DomEvent.disableScrollPropagation(wrap);
+      setTimeout(function(){
+        fillPicker();   // initial list from the curated fallback; upgrades to the full local list on first open
+        var sel=document.getElementById('apInsetSel');
+        sel.onchange=function(){setAirport(sel.value);};
+        document.getElementById('apInsetBtn').onclick=function(e){L.DomEvent.preventDefault(e);toggle(true);};
+        document.getElementById('apInsetClose').onclick=function(e){L.DomEvent.preventDefault(e);toggle(false);};
+      },0);
+      return wrap;
+    }
+  });
+  new AirportInset().addTo(map);
+})();
+
 // ── FLIGHTS ───────────────────────────────────────────────
 function updateFlights(){
   if(document.hidden) return;   // skip the whole tick when the display is blanked / tab backgrounded
@@ -3701,6 +3832,7 @@ function updateFlights(){
     });
     // Update advanced stats with full aircraft array
     updateAdvStats(ac);
+    if(window.updateAirportInset) updateAirportInset();
     // Only remove aircraft that haven't been seen for 60 seconds — handles brief ADS-B dropouts
     // Key off lastAircraft (not markers) so cleanup works in canvas-only mode too.
     Object.keys(lastAircraft).forEach(function(cs){
