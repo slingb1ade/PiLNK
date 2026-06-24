@@ -1818,6 +1818,40 @@ def planespotters_proxy(hex):
         logging.error(f'[planespotters] exception: {e}')
         return jsonify({'photos': []}), 500
 
+# ── airport-data.com proxy — secondary aircraft photos ─────
+@app.route('/api/acphoto/<path:hex>')
+def acphoto_proxy(hex):
+    """Proxy to airport-data.com's free ac_thumb.json photo API.
+
+    Used as a SECONDARY photo source on the dashboard click-card: the
+    dash tries PiLNK community photos, then Planespotters, and only
+    calls this when both come up empty. Queried per-hex (Mode-S code).
+
+    DISPLAY-ONLY: the result is shown in the card but is never written
+    to the PiLNK community photo DB — that table stays real user uploads.
+
+    airport-data.com returns {status,count,data:[{image,link,photographer}]}
+    (200px thumbnails); we pass that JSON straight through. Browser-style
+    UA + short timeout, same approach as the Planespotters proxy. On any
+    error we return an empty result so the cascade simply shows no photo.
+    """
+    try:
+        code = (hex or '').strip().upper()
+        url = 'https://airport-data.com/api/ac_thumb.json?m=' + code + '&n=1'
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (PiLNK community ADS-B tracker; https://pilnk.io)',
+            'Accept': 'application/json',
+        }
+        r = requests.get(url, headers=headers, timeout=8)
+        logging.info(f'[acphoto] {url} → status={r.status_code} len={len(r.content)}')
+        resp = make_response(r.content)
+        resp.headers['Content-Type'] = 'application/json'
+        resp.headers['Access-Control-Allow-Origin'] = '*'
+        return resp
+    except Exception as e:
+        logging.error(f'[acphoto] exception: {e}')
+        return jsonify({'status': 404, 'count': 0, 'data': []}), 500
+
 # ── METAR proxy ────────────────────────────────────────────
 @app.route('/api/metar/<station>')
 def metar_proxy(station):

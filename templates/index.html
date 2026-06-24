@@ -4311,6 +4311,7 @@ var ccWaveTimer = null;
 var ccCurrentCS = null;
 var ccShownCS = {};        // tracks which callsigns have been auto-shown this session
 var photoCache = {};       // hex -> photo data
+var apdPhotoCache = {};    // hex -> airport-data.com photo (display-only, per session)
 
 var NOTABLE_TYPES = {
   A380:1,A388:1,A389:1,
@@ -4514,6 +4515,31 @@ function fetchPlanePhoto(hex, reg, type, callback) {
     .catch(function(){ photoCache[hex] = null; callback(null); });
 }
 
+function fetchAirportDataPhoto(hex, callback) {
+  // Secondary photo source (airport-data.com), via the node's /api/acphoto
+  // proxy. Display-only — never written to the community DB. Cached per
+  // session like the others (undefined=unfetched, null=none, object=photo).
+  if (apdPhotoCache[hex] !== undefined) { callback(apdPhotoCache[hex]); return; }
+  fetch('/api/acphoto/' + hex)
+    .then(function(r){ return r.json(); })
+    .then(function(data) {
+      var photo = null;
+      if (data && data.data && data.data.length > 0) {
+        var p = data.data[0];
+        if (p && p.image) {
+          photo = {
+            url: p.image,
+            photographer: p.photographer || '',
+            link: p.link || ''
+          };
+        }
+      }
+      apdPhotoCache[hex] = photo;
+      callback(photo);
+    })
+    .catch(function(){ apdPhotoCache[hex] = null; callback(null); });
+}
+
 function populateBDS(a) {
   function row(label, val, unit) {
     return '<div class="cc-bds-row"><span class="cc-bds-k">' + label +
@@ -4694,7 +4720,20 @@ function openCinematicCard(cs, auto) {
               document.getElementById('ccModel').textContent = photo.model;
             }
           } else {
-            document.getElementById('ccPhotoSource').textContent = '';
+            // Step 3: airport-data.com — secondary source, display-only
+            // (never saved to the community DB). Fills the slot silently
+            // if a shot exists; otherwise the slot stays empty. No button.
+            fetchAirportDataPhoto(a.hex, function(apd) {
+              if (ccCurrentHex !== a.hex) return; // user opened another card
+              if (apd && apd.url) {
+                document.getElementById('ccImg').src = apd.url;
+                document.getElementById('ccPhotoCredit').textContent =
+                  apd.photographer ? ('📷 ' + apd.photographer) : '';
+                document.getElementById('ccPhotoSource').textContent = '📷 airport-data.com';
+              } else {
+                document.getElementById('ccPhotoSource').textContent = '';
+              }
+            });
           }
           document.getElementById('ccAddPhotoBtn').style.display = 'inline-block';
         });
