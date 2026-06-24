@@ -148,6 +148,10 @@ AIRCRAFT_DB_LEGACY = '/usr/local/share/pilnk-aircraft-db/aircraft.csv.gz'
 AIRCRAFT_DB_URL    = 'https://github.com/wiedehopf/tar1090-db/raw/csv/aircraft.csv.gz'
 AIRCRAFT_DB_MAX_AGE = 7 * 24 * 3600   # 7 days — refresh weekly
 AIRCRAFT_DB = {}  # hex (uppercase) -> {'t': type, 'r': registration}
+# Optional national-register overlay (CAA/FAA-derived). Same Mictronics
+# ';' format (hex;reg;type). Merged on top of AIRCRAFT_DB after every load.
+# Absent on most nodes -> silent no-op. See scripts/build-overlay-nz.py.
+AIRCRAFT_OVERLAY_LOCAL = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'aircraft-overlay.csv.gz')
 
 def _aircraft_db_path():
     """Return the first available aircraft DB path, or None.
@@ -203,6 +207,47 @@ def load_aircraft_db():
         logging.error(f'Failed to load aircraft DB: {e}')
         return 0
 
+def load_aircraft_overlay():
+    """Merge an optional national-register overlay on top of AIRCRAFT_DB.
+
+    The primary source (wiedehopf/tar1090-db) has coverage gaps for some
+    national fleets — light aircraft, microlights, gliders, amateur-built —
+    which surface as unidentified "ghosts". A node operator can drop an
+    authoritative overlay built from their CAA/FAA register at
+    aircraft-overlay.csv.gz (same ';' format: hex;reg;type) and it is merged
+    here. Overlay registration wins; a blank overlay type preserves whatever
+    the primary DB already had. Silent no-op when the file is absent, so this
+    is harmless on every node that doesn't use one. Call AFTER load_aircraft_db
+    (which rebuilds AIRCRAFT_DB from scratch), so the overlay survives refreshes.
+    """
+    path = AIRCRAFT_OVERLAY_LOCAL
+    if not os.path.exists(path):
+        return 0
+    try:
+        merged = 0
+        with gzip.open(path, 'rt', encoding='utf-8', errors='replace') as f:
+            for row in csv.reader(f, delimiter=';'):
+                if len(row) < 2:
+                    continue
+                hex_code = (row[0] or '').strip().upper()
+                if len(hex_code) != 6:
+                    continue
+                reg = (row[1] or '').strip()
+                typ = (row[2].strip() if len(row) > 2 else '')
+                if not (reg or typ):
+                    continue
+                existing = AIRCRAFT_DB.get(hex_code, {})
+                AIRCRAFT_DB[hex_code] = {
+                    't': typ or existing.get('t', ''),
+                    'r': reg or existing.get('r', ''),
+                }
+                merged += 1
+        logging.info(f'Aircraft overlay merged: {merged} entries from {path}')
+        return merged
+    except Exception as e:
+        logging.error(f'Failed to load aircraft overlay: {e}')
+        return 0
+
 def _download_aircraft_db():
     """Fetch Mictronics aircraft DB and save to AIRCRAFT_DB_LOCAL.
 
@@ -246,6 +291,7 @@ def _ensure_aircraft_db_async():
             logging.info('[aircraft-db] Missing — downloading on startup')
             if _download_aircraft_db():
                 load_aircraft_db()
+                load_aircraft_overlay()
             return
         try:
             age = time.time() - os.path.getmtime(path)
@@ -256,6 +302,7 @@ def _ensure_aircraft_db_async():
             logging.info(f'[aircraft-db] DB at {path} is {days:.1f} days old — refreshing')
             if _download_aircraft_db():
                 load_aircraft_db()
+                load_aircraft_overlay()
         else:
             hours = age / 3600
             logging.info(f'[aircraft-db] DB at {path} is {hours:.1f} hours old — fresh enough')
@@ -263,6 +310,7 @@ def _ensure_aircraft_db_async():
 
 # Load on startup. Non-fatal if missing.
 load_aircraft_db()
+load_aircraft_overlay()   # merge optional national-register overlay (e.g. NZ CAA)
 # Kick off a background refresh — won't block startup, downloads if needed
 _ensure_aircraft_db_async()
 

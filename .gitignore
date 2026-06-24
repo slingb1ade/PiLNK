@@ -27,4 +27,5 @@ __pycache__/
 # Dev artifacts / scratch / runtime data (never belong in the repo)
 _airspy_syntax_check.sh
 aircraft.csv.gz
+aircraft-overlay.csv.gz
 recordings/
