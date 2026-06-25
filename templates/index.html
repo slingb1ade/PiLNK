@@ -406,6 +406,43 @@
   #cinematicOverlay.active #cinematicCard{
     transform:translateY(0);
   }
+  /* ── Mobile (≤768px / portrait): on phones the wind compass is hidden,
+     so the desktop left:400px clearance is unnecessary — span the screen.
+     The three-column landscape row can't fit a portrait width, so stack it
+     vertically (header + photo, then the data), drop the dormant ATC
+     transcript column, and cap the height with scroll so it stays compact.
+     NB: the inner overrides are scoped under #cinematicCard so they
+     out-specify the base .cc-* rules that appear LATER in this stylesheet —
+     a plain .cc-* rule here loses on source order and only half-applies
+     (that caused the overlapping-text / visible-transcript bug). We also
+     flatten the flex-grow + space-between (which assume a fixed card
+     height) to plain top-down flow so nothing can stack on top of itself. */
+  @media (max-width:768px){
+    #cinematicOverlay{ left:8px; right:8px; }
+    #cinematicCard{
+      flex-direction:column;
+      height:auto;
+      max-height:82vh;
+      overflow-y:auto;
+    }
+    #cinematicCard .cc-left{ flex:0 0 auto; height:auto; }
+    #cinematicCard .cc-photo{ flex:0 0 auto; height:200px; }
+    #cinematicCard .cc-data{ flex:0 0 auto; height:auto; justify-content:flex-start; }
+    #cinematicCard .cc-top{ flex:0 0 auto; }
+    #cinematicCard .cc-bds-primary{ flex:0 0 auto; }
+    #cinematicCard .cc-transcript{ display:none; }
+  }
+  /* ── Phone / small-tablet LANDSCAPE: wide but short. The desktop card is
+     pinned left:400px (to clear the wind compass), which leaves too little
+     width for the three columns — so the data + transcript get crushed
+     off-screen and only the 340px photo column shows. Give the card the
+     full screen width and drop the dormant transcript so the photo and data
+     sit side-by-side and both show. Row layout kept (suits the wide-short
+     shape); the desktop card height is fine for a landscape phone. */
+  @media (max-width:1200px) and (orientation:landscape){
+    #cinematicOverlay{ left:8px; right:8px; }
+    #cinematicCard .cc-transcript{ display:none; }
+  }
   /* Left column (340px): callsign/model/airline header plate stacked above the photo */
   .cc-left{
     flex:0 0 340px;
