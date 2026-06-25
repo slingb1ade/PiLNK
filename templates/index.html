@@ -3752,6 +3752,7 @@ function updateMarker(a){
 // never covers it. Airport picked from a distance-sorted list (nearest first).
 (function(){
   var insetMap=null, insetMarkers={}, insetAirport=null, insetOpen=false, apList=[], userPicked=false;
+  var insetDark=(document.documentElement.getAttribute('data-theme')==='dark');
   var INSET_ZOOM=13, INSET_RANGE_NM=6;
 
   // Picker list from the FULL worldwide OurAirports DB (already loaded for the
@@ -3781,9 +3782,25 @@ function updateMarker(a){
   }
   function ensureMap(){
     if(insetMap) return;
+    // Recover from a prior half-init: if L.map() once marked this container but
+    // the chained .setView() threw before insetMap was assigned, the guard above
+    // is useless and L.map() throws "Map container is already initialized" on
+    // every later open. Clear the marker so we can cleanly (re)create it.
+    var c=document.getElementById('apInsetMap');
+    if(c && c._leaflet_id){ c._leaflet_id=undefined; c.innerHTML=''; }
+    if(!insetAirport) insetAirport = apList[0] || {lat:RX_LAT,lon:RX_LON,icao:'',name:'RX'};
     insetMap=L.map('apInsetMap',{zoomControl:true,attributionControl:false})
               .setView([insetAirport.lat,insetAirport.lon],INSET_ZOOM);
     L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',{maxZoom:19,subdomains:'abc'}).addTo(insetMap);
+    applyInsetFilter();
+  }
+  // Match the big map's light/dark treatment on the inset's own tile pane.
+  // Inset is always OSM, so we reuse the OSM recipe from applyTileFilter().
+  function applyInsetFilter(){
+    if(!insetMap) return;
+    insetMap.getPanes().tilePane.style.filter = insetDark
+      ? 'invert(1) hue-rotate(180deg) brightness(0.65) saturate(1.4)'
+      : 'saturate(0.78)';
   }
   function setAirport(icao){
     var ap=null; apList.forEach(function(a){if(a.icao===icao)ap=a;});
@@ -3834,6 +3851,7 @@ function updateMarker(a){
           '<div style="display:flex;align-items:center;gap:8px;padding:8px 10px;border-bottom:1px solid var(--border,#1e293b);">'+
             '<span style="font-size:0.95rem;">🛬</span>'+
             '<select id="apInsetSel" style="flex:1;min-width:0;background:var(--bg,#060c18);color:var(--text,#e2e8f0);border:1px solid var(--border,#1e293b);border-radius:4px;font-family:monospace;font-size:0.72rem;padding:3px 4px;"></select>'+
+            '<a href="#" id="apInsetTheme" title="Light / dark" style="color:var(--text-dim,#94a3b8);text-decoration:none;font-size:0.95rem;line-height:1;padding:0 4px;">🌙</a>'+
             '<a href="#" id="apInsetClose" title="Close" style="color:var(--text-dim,#94a3b8);text-decoration:none;font-size:0.95rem;line-height:1;padding:0 2px;">&#10005;</a>'+
           '</div>'+
           '<div id="apInsetMap" style="width:480px;height:270px;"></div>'+
@@ -3846,6 +3864,9 @@ function updateMarker(a){
         sel.onchange=function(){setAirport(sel.value);};
         document.getElementById('apInsetBtn').onclick=function(e){L.DomEvent.preventDefault(e);toggle(true);};
         document.getElementById('apInsetClose').onclick=function(e){L.DomEvent.preventDefault(e);toggle(false);};
+        var apTheme=document.getElementById('apInsetTheme');
+        apTheme.textContent=insetDark?'🌙':'☀️';
+        apTheme.onclick=function(e){L.DomEvent.preventDefault(e);insetDark=!insetDark;applyInsetFilter();this.textContent=insetDark?'🌙':'☀️';};
       },0);
       return wrap;
     }
