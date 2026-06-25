@@ -290,6 +290,14 @@
   .squawk-cs{font-family:'Orbitron',sans-serif;font-size:0.75rem;font-weight:700;margin-bottom:4px;}
   .squawk-code{font-family:'Share Tech Mono',monospace;font-size:0.65rem;}
   .squawk-desc{font-size:0.6rem;color:var(--text-dim);margin-top:3px;}
+  /* ── Emergency squawk surfacing (7700/7600/7500) — colour via --ep / inline bg ── */
+  .flight-sqk-badge{display:inline-block;margin-left:6px;padding:0 5px;border-radius:4px;font-family:'Share Tech Mono',monospace;font-size:0.55rem;font-weight:700;color:#fff;vertical-align:middle;animation:emergBadgeFlash 1.2s ease-in-out infinite;}
+  @keyframes emergBadgeFlash{0%,100%{opacity:1;}50%{opacity:0.5;}}
+  .emerg-pulse{position:relative;width:0;height:0;pointer-events:none;}
+  .emerg-pulse::before,.emerg-pulse::after{content:'';position:absolute;left:0;top:0;width:18px;height:18px;margin:-9px 0 0 -9px;border-radius:50%;border:2px solid var(--ep,#dc2626);box-shadow:0 0 6px var(--ep,#dc2626);animation:emergPulse 1.6s ease-out infinite;}
+  .emerg-pulse::after{animation-delay:0.8s;}
+  @keyframes emergPulse{0%{transform:scale(0.5);opacity:0.9;}100%{transform:scale(5);opacity:0;}}
+  .cc-emerg{display:none;margin:4px 0 6px;padding:5px 10px;border-radius:6px;font-family:'Orbitron',sans-serif;font-size:0.7rem;font-weight:700;letter-spacing:0.05em;color:#fff;animation:emergBadgeFlash 1.2s ease-in-out infinite;}
   /* Advanced Stats */
   .stats-live-grid{display:grid;grid-template-columns:1fr 1fr;gap:8px;}
   .stats-live-card{display:flex;align-items:center;gap:10px;background:var(--bg-card);border:1px solid var(--border);border-radius:8px;padding:10px 12px;}
@@ -1687,6 +1695,7 @@
       <div class="cc-header">
         <div class="cc-badge" id="ccBadge" style="display:none;"><span>NOW PASSING</span></div>
         <div class="cc-callsign" id="ccCallsign">–</div>
+        <div class="cc-emerg" id="ccEmerg" style="display:none;"></div>
         <div class="cc-route-row">
           <div class="cc-model" id="ccModel"></div>
         </div>
@@ -3886,6 +3895,7 @@ function updateFlights(){
       }
     });
     if(window.aircraftLayer) aircraftLayer.redraw();
+    updateEmergencyPulses();
     var list=document.getElementById('flightList');
     if(!ac.length){list.innerHTML='<div class="no-flights">No aircraft found</div>';return;}
     // Sort sidebar by sort mode (distance default, phase optional)
@@ -3902,11 +3912,12 @@ function updateFlights(){
     list.innerHTML=ac.map(function(a){
       var cs=a.flight.trim(), cat=getCat(a.t,a.category), tx=!!transmitting[cs], sel=selectedFlight===cs;
       var ph=getPhase(a,cs), col=ph.color==='#ffffff'?'#dc2626':ph.color;
+      var sqInfo=a.squawk&&SQUAWK_CODES[a.squawk];
       var em=inlineIcon(cat, 14, col);
       var cached=routeCache[cs];
       var routeHtml=cached&&cached.route?'<div class="flight-route">'+cached.route+'</div>':'';
       return '<div class="flight-item '+(sel?'selected ':'')+(tx?'transmitting':'')+'" style="border-left:3px solid '+col+';" onclick="sidebarSelect(\''+cs+'\')">' +
-        '<div class="flight-cs" style="color:'+col+';">'+function(){var f=getFlag(cs);return f==='✈'?em+' '+cs:f+' '+em+' '+cs;}()+'</div>' +
+        '<div class="flight-cs" style="color:'+col+';">'+function(){var f=getFlag(cs);return f==='✈'?em+' '+cs:f+' '+em+' '+cs;}()+(sqInfo?'<span class="flight-sqk-badge" style="background:'+sqInfo.color+';">'+sqInfo.icon+' '+a.squawk+'</span>':'')+'</div>' +
         '<div class="flight-details">'+(a.alt_baro?Math.round(a.alt_baro)+'ft':'--')+' · '+(a.gs?Math.round(a.gs)+'kt':'--')+' · '+(a.track?Math.round(a.track)+'°':'--')+'</div>' +
         routeHtml+
         '<div style="font-size:0.6rem;color:var(--text-dim);">'+(a.t?a.t+' · ':'')+ph.label+'</div>' +
@@ -4667,6 +4678,16 @@ function openCinematicCard(cs, auto) {
   // Populate data
   document.getElementById('ccCallsign').textContent = cs;
   document.getElementById('ccCallsign').style.color = col;
+  // Emergency squawk banner — colour-coded flashing alert for 7700/7600/7500.
+  (function(){
+    var el = document.getElementById('ccEmerg');
+    var info = a.squawk && SQUAWK_CODES[a.squawk];
+    if (info) {
+      el.textContent = info.label + ' · SQUAWK ' + a.squawk;
+      el.style.background = info.color;
+      el.style.display = 'block';
+    } else { el.style.display = 'none'; }
+  })();
   document.getElementById('ccAlt').textContent = a.alt_baro ? Math.round(a.alt_baro).toLocaleString() + ' ft' : '–';
   document.getElementById('ccSpd').textContent = a.gs ? Math.round(a.gs) + ' kt' : '–';
   document.getElementById('ccHdg').textContent = a.track ? Math.round(a.track) + '°' : '–';
@@ -5075,9 +5096,9 @@ function showAllLabels() {
 
 // ── SQUAWK ALERTS ──────────────────────────────────────────
 var SQUAWK_CODES = {
-  '7700': { label: '⚠ EMERGENCY', color: '#dc2626', cls: 'squawk-7700', desc: 'General emergency declared' },
-  '7600': { label: '📡 COMMS FAILURE', color: '#f59e0b', cls: 'squawk-7600', desc: 'Radio communications failure' },
-  '7500': { label: '🚨 HIJACK', color: '#eab308', cls: 'squawk-7500', desc: 'Unlawful interference / hijack' }
+  '7700': { label: '⚠ EMERGENCY', icon: '⚠', color: '#dc2626', cls: 'squawk-7700', desc: 'General emergency declared' },
+  '7600': { label: '📡 COMMS FAILURE', icon: '📡', color: '#f59e0b', cls: 'squawk-7600', desc: 'Radio communications failure' },
+  '7500': { label: '🚨 HIJACK', icon: '🚨', color: '#eab308', cls: 'squawk-7500', desc: 'Unlawful interference / hijack' }
 };
 var activeSquawks = {}; // cs -> squawk code
 var squawkAlertSound = null;
@@ -5129,6 +5150,39 @@ function playSquawkTone(sq) {
     gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 1.5);
     osc.start(); osc.stop(ctx.currentTime + 1.5);
   } catch(e) {}
+}
+
+// ── Emergency squawk map pulse ──────────────────────────────
+// A colour-coded radar-ping ring follows any aircraft squawking
+// 7700/7600/7500 while AIRBORNE. It auto-removes the instant the
+// aircraft lands (alt_baro becomes 'ground' → icon greys out) or
+// the code is cleared. Renderer-agnostic: a CSS-animated overlay
+// marker that just tracks the plane's latlng, independent of the
+// canvas/DOM plane rendering (so the animation never stutters on
+// the per-tick icon rebuild).
+var emergMarkers = {}; // cs -> L.marker (pulse ring)
+function updateEmergencyPulses(){
+  var seen = {};
+  Object.keys(lastAircraft).forEach(function(cs){
+    var a = lastAircraft[cs];
+    if(!a || a.lat==null || a.lon==null) return;
+    var info = a.squawk && SQUAWK_CODES[a.squawk];
+    var airborne = a.alt_baro !== 'ground';
+    if(info && airborne){
+      seen[cs] = 1;
+      if(!emergMarkers[cs]){
+        emergMarkers[cs] = L.marker([a.lat,a.lon], {
+          icon: L.divIcon({className:'',html:'<div class="emerg-pulse" style="--ep:'+info.color+';"></div>',iconSize:[0,0],iconAnchor:[0,0]}),
+          interactive:false, keyboard:false
+        }).addTo(map);
+      } else {
+        emergMarkers[cs].setLatLng([a.lat,a.lon]);
+      }
+    }
+  });
+  Object.keys(emergMarkers).forEach(function(cs){
+    if(!seen[cs]){ map.removeLayer(emergMarkers[cs]); delete emergMarkers[cs]; }
+  });
 }
 
 // ── METAR ──────────────────────────────────────────────────
