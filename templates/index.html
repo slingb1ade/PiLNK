@@ -4482,9 +4482,19 @@ function countryFlagEmoji(cc) {
 
 function fetchPiLNKPhoto(hex, callback) {
   if (pilnkPhotoCache[hex] !== undefined) { callback(pilnkPhotoCache[hex]); return; }
-  fetch('https://pilnk.io/api/photos.php?action=get&hex=' + hex)
+  // This is the only photo fetch that hits an external host (pilnk.io) straight
+  // from the browser, with no server-side timeout in front of it — the
+  // Planespotters + airport-data tiers go via the node, which caps upstream
+  // calls at 8s. If this connection ever stalls, the whole photo cascade would
+  // hang on "📷 Loading…" forever (cb never fires, Steps 2/3 never run). Bound
+  // it: abort after 6s and fall through to the next tier. A genuine "no photo"
+  // still returns {photos:[]} fast via the path below; only a real stall is cut.
+  var ctrl = new AbortController();
+  var killer = setTimeout(function(){ ctrl.abort(); }, 6000);
+  fetch('https://pilnk.io/api/photos.php?action=get&hex=' + hex, { signal: ctrl.signal })
     .then(function(r) { return r.json(); })
     .then(function(d) {
+      clearTimeout(killer);
       var photo = null;
       if (d && d.photos && d.photos.length > 0) {
         var p = d.photos[0]; // highest voted
@@ -4499,7 +4509,10 @@ function fetchPiLNKPhoto(hex, callback) {
       callback(photo);
     })
     .catch(function() {
-      pilnkPhotoCache[hex] = null;
+      clearTimeout(killer);
+      // Don't cache null on a stall/abort — a transient pilnk.io hiccup
+      // shouldn't suppress this aircraft's community photo for the whole
+      // session. (A genuine "no photo" caches via the success path above.)
       callback(null);
     });
 }
@@ -4777,6 +4790,12 @@ function openCinematicCard(cs, auto) {
       }
     });
     ccCurrentHex = a.hex;
+  } else {
+    // Hex-less target (rare — e.g. some MLAT/TIS-B contacts): no photo lookup
+    // is possible, so clear the "📷 Loading…" placeholder instead of leaving it
+    // spinning, and hide Add-Photo (nothing to key a community photo on).
+    document.getElementById('ccPhotoSource').textContent = '';
+    document.getElementById('ccAddPhotoBtn').style.display = 'none';
   }
 
   // ── MILITARY LOOKUP (Phase 3) ─────────────────────────────
