@@ -792,6 +792,7 @@ def ping_server():
         try:
             # Grab current aircraft from dump1090
             aircraft = []
+            emergency_aircraft = []
             raw = read_aircraft_json()
             if raw is not None:
                 try:
@@ -811,6 +812,29 @@ def ping_server():
                                 't': a.get('t', ''),
                                 'track': a.get('track', 0)
                             })
+
+                    # ── Emergency black-box payload ─────────────────────────
+                    # Aircraft squawking an emergency code (incl. the 2200
+                    # pipe-test) get their FULL record — every dump1090 field
+                    # plus live Mode S (BDS40/50/60) enrichment — in a separate
+                    # array. Normal traffic stays lean; emergencies are rare, so
+                    # the heavier payload is negligible. The server
+                    # (node.php recordEmergencyHistory) records these.
+                    EMERGENCY_SQUAWKS = ('7700', '7600', '7500', '2200')
+                    for a in data.get('aircraft', []):
+                        if str(a.get('squawk', '')).strip() not in EMERGENCY_SQUAWKS:
+                            continue
+                        rec = dict(a)
+                        hex_up = (rec.get('hex') or '').upper()
+                        if hex_up:
+                            entry = AIRCRAFT_DB.get(hex_up) if AIRCRAFT_DB else None
+                            if entry:
+                                if not rec.get('t') and entry.get('t'):
+                                    rec['t'] = entry['t']
+                                if not rec.get('r') and entry.get('r'):
+                                    rec['r'] = entry['r']
+                            _merge_bds(rec, hex_up)
+                        emergency_aircraft.append(rec)
                 except (ValueError, KeyError):
                     pass
 
@@ -826,6 +850,8 @@ def ping_server():
                 'node_stats': get_stats_payload(),
                 'version': _get_local_version(),
             }
+            if emergency_aircraft:
+                ping_data['emergency_aircraft'] = emergency_aircraft
             # Only report location UP when we actually have one. Omitting it for
             # a not-yet-located node avoids seeding a 0,0 "null island" row; the
             # server seeds from this only when its own value is null (see the
