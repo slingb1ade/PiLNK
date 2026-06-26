@@ -77,6 +77,15 @@ if grep -q "^from whisper_atc" app.py 2>/dev/null; then
     log "Whisper import commented out (safety)"
 fi
 
+# Step 3.5: Wire in (or update) the SDR self-heal machinery. Idempotent — does
+# nothing after the first successful wire-in. Runs under the same passwordless
+# sudo this script already uses for the restart below. Never blocks the update.
+if [ -f "$PILNK_DIR/bootstrap-selfheal.sh" ]; then
+    log "Running self-heal bootstrap..."
+    PILNK_DIR="$PILNK_DIR" bash "$PILNK_DIR/bootstrap-selfheal.sh" 2>> "$LOG_FILE" || \
+        log "self-heal bootstrap returned non-zero (continuing — non-fatal)"
+fi
+
 # Step 4: Restart the PiLNK service to load the new code.
 log "Restarting PiLNK service..."
 

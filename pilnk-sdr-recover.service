@@ -1,0 +1,10 @@
+[Unit]
+Description=PiLNK SDR self-heal (recover decoder after hardware change)
+# Don't fight the decoder during its own startup.
+After=multi-user.target
+
+[Service]
+Type=oneshot
+ExecStart=/home/PILNK_USER/pilnk/sdr-recover.sh
+# Recovery does its own internal sleeps; cap it so a wedged restart can't hang.
+TimeoutStartSec=60

@@ -1,0 +1,17 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# PiLNK — SDR hotplug self-heal  (99-pilnk-sdr.rules)
+# Installed to /etc/udev/rules.d/99-pilnk-sdr.rules by the PiLNK bootstrap.
+#
+# Fires the recovery service the moment an SDR is added OR removed, so the node
+# re-grabs hardware without the operator re-running the installer.
+#
+# Matches:
+#   • RTL-SDR family   — Realtek vendor 0bda (2832 / 2838 / V3 / V4 all share it)
+#   • Airspy           — vendor 1d50, product 60a1
+#
+# We don't run the script directly from udev (udev kills long-lived children);
+# instead we poke a oneshot systemd service, which runs detached.
+# ─────────────────────────────────────────────────────────────────────────────
+
+ACTION=="add|remove", SUBSYSTEM=="usb", ATTR{idVendor}=="0bda", TAG+="systemd", RUN+="/bin/systemctl --no-block start pilnk-sdr-recover.service"
+ACTION=="add|remove", SUBSYSTEM=="usb", ATTR{idVendor}=="1d50", ATTR{idProduct}=="60a1", TAG+="systemd", RUN+="/bin/systemctl --no-block start pilnk-sdr-recover.service"

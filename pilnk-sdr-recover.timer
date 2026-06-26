@@ -1,0 +1,15 @@
+[Unit]
+Description=PiLNK SDR self-heal — periodic safety net
+# Catches what udev misses: wedged driver, decoder crash with dongle still
+# present, stale aircraft.json despite healthy hardware.
+
+[Timer]
+# First check 2 min after boot (let the decoder settle), then every 3 min.
+OnBootSec=2min
+OnUnitActiveSec=3min
+# If the box was asleep/off, don't fire a backlog burst.
+Persistent=false
+Unit=pilnk-sdr-recover.service
+
+[Install]
+WantedBy=timers.target
