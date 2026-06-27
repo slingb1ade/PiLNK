@@ -154,12 +154,27 @@ sudo apt-get install -y \
   2>/dev/null || true
 ok "System packages installed"
 
-# Blacklist DVB driver so it doesn't grab RTL-SDR dongles before readsb can.
-if [ ! -f /etc/modprobe.d/blacklist-rtlsdr.conf ]; then
-  echo "blacklist dvb_usb_rtl28xxu" | sudo tee /etc/modprobe.d/blacklist-rtlsdr.conf > /dev/null
-  sudo rmmod dvb_usb_rtl28xxu 2>/dev/null || true
-  ok "DVB driver blacklisted (prevents dongle conflicts)"
-fi
+# Blacklist the DVB driver stack so the kernel doesn't grab RTL-SDR dongles
+# before readsb can. We blacklist the WHOLE stack, not just the top module:
+# with two dongles enumerating (e.g. one ADS-B + one airband) the lower
+# modules (rtl2832 / dvb_usb_v2) can still race in and cause an intermittent
+# "usb_claim_interface error -6" — the dongle drops and re-enumerates, which
+# strobes the node. The full set is the community-recommended blacklist.
+# Written unconditionally (idempotent) so an EXISTING node that only had the
+# single-line blacklist gets upgraded to the full set on its next run/update.
+BLCONF=/etc/modprobe.d/blacklist-rtlsdr.conf
+sudo tee "$BLCONF" > /dev/null <<'BLEOF'
+blacklist dvb_usb_rtl28xxu
+blacklist rtl2832
+blacklist rtl2832_sdr
+blacklist rtl2830
+blacklist dvb_usb_v2
+BLEOF
+# Unload any that are currently loaded (ignore if not present / in use).
+for m in dvb_usb_rtl28xxu rtl2832_sdr rtl2832 rtl2830 dvb_usb_v2; do
+  sudo rmmod "$m" 2>/dev/null || true
+done
+ok "DVB driver stack blacklisted (prevents dongle conflicts, incl. dual-dongle nodes)"
 
 # ── EXISTING FEEDERS & DECODERS — look before we touch ────
 # CLAIM-SAFE RULE: before assigning any hardware or installing any decoder,

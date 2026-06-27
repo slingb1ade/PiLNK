@@ -47,6 +47,35 @@ if [ "$(id -u)" -ne 0 ] && ! sudo -n true 2>/dev/null; then
   exit 0
 fi
 
+# ── DVB blacklist (fleet-wide, every OTA) ────────────────────────────────────
+# Ensure the FULL RTL-SDR DVB blacklist is present on every node — not just new
+# installs. Older nodes were installed with only "blacklist dvb_usb_rtl28xxu";
+# with two dongles (e.g. ADS-B + airband) the lower modules (rtl2832 /
+# dvb_usb_v2) can still race the kernel for the device and cause an intermittent
+# "usb_claim_interface error -6" → the dongle drops, re-enumerates, and the node
+# strobes on the map. We write the complete community-recommended set. Idempotent:
+# only rewrites + unloads if the file content differs, so a healthy node is a
+# no-op. Runs independently of the self-heal unit files below.
+BLCONF="/etc/modprobe.d/blacklist-rtlsdr.conf"
+BLWANT="blacklist dvb_usb_rtl28xxu
+blacklist rtl2832
+blacklist rtl2832_sdr
+blacklist rtl2830
+blacklist dvb_usb_v2"
+if [ ! -f "$BLCONF" ] || [ "$BLWANT" != "$(cat "$BLCONF" 2>/dev/null)" ]; then
+  if printf '%s\n' "$BLWANT" | priv tee "$BLCONF" >/dev/null 2>&1; then
+    log "wrote full DVB blacklist ($BLCONF)"
+    for m in dvb_usb_rtl28xxu rtl2832_sdr rtl2832 rtl2830 dvb_usb_v2; do
+      priv rmmod "$m" 2>/dev/null || true
+    done
+    log "unloaded any live DVB modules"
+  else
+    log "FAILED to write DVB blacklist"
+  fi
+else
+  log "DVB blacklist already complete — no-op"
+fi
+
 # Source files must exist (they ship in the repo). If a partial checkout means
 # one is missing, bail quietly — next OTA with a complete tree will wire it.
 for f in "$SRC_SERVICE" "$SRC_TIMER" "$SRC_UDEV" "$SRC_SCRIPT"; do
