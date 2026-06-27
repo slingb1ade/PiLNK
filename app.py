@@ -120,12 +120,35 @@ def _adopt_server_location(new_lat, new_lon):
 DUMP1090_AIRCRAFT_JSON = _config.get('aircraft_json_path', '/run/dump1090-fa/aircraft.json')
 
 def read_aircraft_json():
-    """Return raw bytes from dump1090-fa's aircraft.json, or None on error."""
-    try:
-        with open(DUMP1090_AIRCRAFT_JSON, 'rb') as f:
-            return f.read()
-    except (IOError, OSError):
-        return None
+    """Return raw bytes from dump1090-fa's aircraft.json, or None on error.
+
+    readsb rewrites this file every ~1s (--write-json-every 1). On a BUSY node
+    (200+ aircraft) the file is large and the write takes longer, so a plain
+    read can catch it mid-write and get a truncated/empty buffer → json.loads
+    fails → the ping sends 0 aircraft → the node flickers full↔empty on the map.
+    Mode S (BDS) enrichment made each record bigger, widening that race window.
+
+    Fix: read, and if the result doesn't parse as JSON with an 'aircraft' key,
+    retry a couple of times with a short sleep (the next 1s write completes the
+    file). Only give up — returning None — if every attempt is bad. Callers then
+    keep behaving as before, but the common mid-write collision is absorbed here.
+    """
+    for attempt in range(3):
+        try:
+            with open(DUMP1090_AIRCRAFT_JSON, 'rb') as f:
+                raw = f.read()
+        except (IOError, OSError):
+            return None
+        # Validate it's a complete JSON doc with the aircraft array. A
+        # mid-write read typically fails here (truncated) — retry.
+        try:
+            if raw and 'aircraft' in json.loads(raw):
+                return raw
+        except (ValueError, KeyError):
+            pass
+        if attempt < 2:
+            time.sleep(0.4)   # let readsb finish the in-flight write
+    return None
 
 # ── Aircraft type/registration database (enrichment) ──────
 # dump1090-fa does NOT populate the `t` (type) or `r` (registration)
@@ -2086,7 +2109,7 @@ def history_summary():
     return jsonify({
         'total_unique': len(aircraft),
         'period_hours': hours,
-        'aircraft': aircraft[:200],
+        'aircraft': aircraft[:300],
         'hourly': hourly,
         'busiest_hour': busiest,
     })
