@@ -809,6 +809,49 @@ def get_stats_payload():
 NET_STALE_S = 90
 PING_LAST_OK_TS = 0.0
 
+# ── Spurious-empty suppression (v1.2.15.5) ───────────────────────────────────
+# On a busy node the decoder's aircraft.json is large and rewritten every ~1s.
+# We can still read it at a moment it reports zero/near-zero aircraft (a brief
+# decoder hiccup, or a read landing in a gap) even when traffic is steady. A
+# real node tracking 200+ aircraft does NOT genuinely drop to 0 for one cycle —
+# planes don't all vanish in a second — so broadcasting that 0 just makes the
+# node strobe on the map (full→empty→full). We hold the LAST GOOD aircraft list
+# and reuse it when a cycle collapses implausibly, rather than send the zero.
+# Guarded by a staleness timeout so a genuinely-dead decoder DOES eventually
+# report empty (we don't pretend a truly-offline receiver is still tracking).
+_LAST_GOOD_AIRCRAFT = []
+_LAST_GOOD_TS = 0.0
+EMPTY_HOLD_MAX_S = 120          # after this long with no fresh data, report the truth (empty)
+COLLAPSE_FRACTION = 0.25        # a drop to <25% of the last good count is treated as spurious
+
+def _suppress_spurious_empty(aircraft):
+    """Return the aircraft list to actually send. If this cycle collapsed
+    implausibly versus the last good cycle (and we're still within the hold
+    window), reuse the last good list to avoid strobing the map. Otherwise
+    accept the new list and remember it as the last good one."""
+    global _LAST_GOOD_AIRCRAFT, _LAST_GOOD_TS
+    now = time.time()
+    n = len(aircraft)
+    prev = len(_LAST_GOOD_AIRCRAFT)
+
+    # Healthy reading (or a plausible change): accept + remember it.
+    # "Plausible" = we have planes, OR we never had many to begin with.
+    if n > 0 and (prev == 0 or n >= prev * COLLAPSE_FRACTION):
+        _LAST_GOOD_AIRCRAFT = aircraft
+        _LAST_GOOD_TS = now
+        return aircraft
+
+    # Collapse (0, or a drastic drop) while we recently had a healthy list.
+    # Hold the last good list — UNLESS it's gone stale (decoder really is down),
+    # in which case report the truth so a dead node isn't shown as alive.
+    if prev > 0 and (now - _LAST_GOOD_TS) <= EMPTY_HOLD_MAX_S:
+        return _LAST_GOOD_AIRCRAFT
+
+    # Genuinely empty for too long — accept reality, reset.
+    _LAST_GOOD_AIRCRAFT = aircraft
+    _LAST_GOOD_TS = now
+    return aircraft
+
 def ping_server():
     global PING_LAST_OK_TS
     while True:
@@ -863,6 +906,11 @@ def ping_server():
 
             # Compute stats
             compute_node_stats(aircraft)
+
+            # Suppress a spurious collapse-to-zero so the node doesn't strobe on
+            # the map (v1.2.15.5). Stats above are computed from the REAL read;
+            # only the reported aircraft list is held-last-good when implausible.
+            aircraft = _suppress_spurious_empty(aircraft)
 
             # Send to pilnk.io
             ping_data = {
