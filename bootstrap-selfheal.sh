@@ -76,6 +76,45 @@ else
   log "DVB blacklist already complete — no-op"
 fi
 
+# ── Passwordless OTA restart sudoers rule (fleet-wide, every OTA) ─────────────
+# THE silent-drift fix: update.sh restarts via `sudo -n systemctl restart pilnk`.
+# Nodes installed before this rule existed have no NOPASSWD entry, so that
+# non-interactive sudo fails — the OTA pulls new code but never restarts, and
+# the node runs STALE code while reporting the new version. We install the rule
+# here so it reaches EXISTING nodes on their next OTA. (That same OTA still
+# can't restart — the rule isn't there yet when update.sh tries — so operators
+# need ONE manual restart after this lands; every OTA after restarts cleanly.)
+# The rule is scoped to the REAL service user (read from the unit's User=) and
+# to the pilnk unit only, and is validated with visudo -c before install.
+SUDOERS_FILE="/etc/sudoers.d/pilnk-ota"
+SYSTEMCTL_BIN="$(command -v systemctl || echo /usr/bin/systemctl)"
+# Resolve the user the service actually runs as (authoritative), with fallbacks.
+SVC_USER="$(systemctl show -p User --value pilnk 2>/dev/null)"
+[ -z "$SVC_USER" ] && SVC_USER="$(awk -F= '/^User=/{print $2; exit}' /etc/systemd/system/pilnk.service 2>/dev/null)"
+[ -z "$SVC_USER" ] && SVC_USER="$(id -un)"
+SUDOERS_WANT="# PiLNK OTA — passwordless pilnk restart for $SVC_USER (added by self-heal bootstrap).
+$SVC_USER ALL=(root) NOPASSWD: $SYSTEMCTL_BIN restart pilnk, $SYSTEMCTL_BIN start pilnk, $SYSTEMCTL_BIN stop pilnk, $SYSTEMCTL_BIN daemon-reload"
+if [ -n "$SVC_USER" ]; then
+  if [ ! -f "$SUDOERS_FILE" ] || [ "$SUDOERS_WANT" != "$(cat "$SUDOERS_FILE" 2>/dev/null)" ]; then
+    SU_TMP="$(mktemp)"
+    printf '%s\n' "$SUDOERS_WANT" > "$SU_TMP"
+    if priv visudo -c -f "$SU_TMP" >/dev/null 2>&1; then
+      if priv install -m 0440 -o root -g root "$SU_TMP" "$SUDOERS_FILE" 2>/dev/null; then
+        log "installed passwordless OTA restart rule for user $SVC_USER"
+      else
+        log "FAILED to install OTA sudoers rule (continuing)"
+      fi
+    else
+      log "OTA sudoers rule failed visudo validation — skipped"
+    fi
+    rm -f "$SU_TMP"
+  else
+    log "OTA sudoers rule already present for $SVC_USER — no-op"
+  fi
+else
+  log "could not resolve pilnk service user — OTA sudoers rule skipped"
+fi
+
 # Source files must exist (they ship in the repo). If a partial checkout means
 # one is missing, bail quietly — next OTA with a complete tree will wire it.
 for f in "$SRC_SERVICE" "$SRC_TIMER" "$SRC_UDEV" "$SRC_SCRIPT"; do

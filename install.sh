@@ -616,6 +616,31 @@ SVCEOF
 
 sudo systemctl daemon-reload
 sudo systemctl enable pilnk -q
+
+# ── Passwordless restart for unattended OTA ───────────────
+# update.sh restarts the service with `sudo -n systemctl restart pilnk` after
+# pulling new code. Without a NOPASSWD sudoers rule that non-interactive sudo
+# FAILS, so the OTA writes new files but never restarts — the node then runs
+# STALE code while reporting the new version (silent drift). We install a
+# tightly-scoped rule: this service user may run ONLY the pilnk restart/start/
+# stop with no password. Validated with `visudo -c` before install; a malformed
+# file is discarded so we can never break sudo on the operator's box.
+SUDOERS_FILE="/etc/sudoers.d/pilnk-ota"
+SUDOERS_TMP="$(mktemp)"
+SYSTEMCTL_BIN="$(command -v systemctl || echo /usr/bin/systemctl)"
+cat > "$SUDOERS_TMP" <<SUDOEOF
+# PiLNK OTA — allow $USER to restart the pilnk service without a password.
+# Created by install.sh. Scoped to the pilnk unit only.
+$USER ALL=(root) NOPASSWD: $SYSTEMCTL_BIN restart pilnk, $SYSTEMCTL_BIN start pilnk, $SYSTEMCTL_BIN stop pilnk, $SYSTEMCTL_BIN daemon-reload
+SUDOEOF
+if sudo visudo -c -f "$SUDOERS_TMP" >/dev/null 2>&1; then
+  sudo install -m 0440 -o root -g root "$SUDOERS_TMP" "$SUDOERS_FILE"
+  ok "Passwordless OTA restart enabled (sudoers.d/pilnk-ota)"
+else
+  warn "Could not validate sudoers rule — skipping (OTA will need a manual restart)"
+fi
+rm -f "$SUDOERS_TMP"
+
 sudo systemctl restart pilnk 2>/dev/null || sudo systemctl start pilnk 2>/dev/null || true
 sleep 3
 
