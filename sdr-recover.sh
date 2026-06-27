@@ -20,6 +20,13 @@
 #   • Idempotent + safe to run repeatedly. Healthy node → does nothing.
 #   • Hardware-agnostic: RTL-SDR *and* Airspy. No region assumptions (Rule #25).
 #   • Conservative re-pin: only when exactly ONE free dongle is unambiguous.
+#   • COOLDOWN (v1.2.15.2): after a restart, refuse to restart again for
+#     COOLDOWN_SECS. A flapping dongle (rapid udev add/remove) can otherwise
+#     make us restart the decoder every few seconds, and each restart briefly
+#     empties aircraft.json — which strobes the node on the network map. The
+#     cooldown gives the decoder room to actually come up and stabilise, so a
+#     marginal node degrades gracefully instead of strobing. Does NOT fix the
+#     underlying flap (that's hardware) — it stops us amplifying it.
 #
 # EXIT: always 0 (a watchdog must not fail its unit).
 # ─────────────────────────────────────────────────────────────────────────────
@@ -28,6 +35,8 @@ set -uo pipefail
 
 LOG="/var/log/pilnk-sdr-recover.log"
 FRESH_SECS="${PILNK_FRESH_SECS:-30}"     # aircraft.json older than this = stale
+COOLDOWN_SECS="${PILNK_COOLDOWN_SECS:-90}"  # min seconds between restarts
+STAMP="/run/pilnk-sdr-recover.stamp"     # last-restart timestamp (tmpfs; clears on reboot)
 READSB_DEFAULT="/etc/default/readsb"
 DUMP_JSON="/run/dump1090-fa/aircraft.json"
 READSB_JSON="/run/readsb/aircraft.json"
@@ -52,6 +61,19 @@ json_fresh() {
   [ "$age" -le "$FRESH_SECS" ]
 }
 
+# True if we restarted the decoder within the last COOLDOWN_SECS.
+in_cooldown() {
+  [ -f "$STAMP" ] || return 1
+  local now last age
+  now=$(date +%s)
+  last=$(cat "$STAMP" 2>/dev/null || echo 0)
+  case "$last" in (*[!0-9]*|'') last=0 ;; esac   # guard against junk in the file
+  age=$(( now - last ))
+  [ "$age" -lt "$COOLDOWN_SECS" ]
+}
+
+stamp_restart() { date +%s > "$STAMP" 2>/dev/null || true; }
+
 # Current RTL serials present on the USB bus (one per line).
 rtl_serials() {
   command -v rtl_test >/dev/null 2>&1 || return 0
@@ -72,6 +94,7 @@ readsb_pinned_serial() {
 restart_decoder() {
   local svc="$1"
   log "→ restarting $svc"
+  stamp_restart
   systemctl restart "$svc" 2>/dev/null || log "  (restart $svc returned non-zero)"
 }
 
@@ -106,6 +129,15 @@ fi
 
 if json_fresh "$JSON"; then
   # Quiet success — no log spam on the happy path (timer runs every few min).
+  exit 0
+fi
+
+# ── 2b. cooldown — don't restart-storm a flapping node ───────────────────────
+# We're stale. If we ALSO restarted very recently, the decoder may simply still
+# be coming up, OR a flapping dongle is firing udev repeatedly. Either way, hold
+# off — restarting again now would just re-empty the json and strobe the node.
+if in_cooldown; then
+  log "STALE but in cooldown (<${COOLDOWN_SECS}s since last restart) — holding, letting decoder settle"
   exit 0
 fi
 
@@ -195,7 +227,7 @@ sleep 4
 if json_fresh "$JSON"; then
   log "✓ recovered — $JSON is fresh again"
 else
-  log "… still not fresh after restart; will retry on next trigger"
+  log "… still not fresh after restart; will retry on next trigger (after cooldown)"
 fi
 
 exit 0
