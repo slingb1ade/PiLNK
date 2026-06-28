@@ -73,6 +73,19 @@
   .panel{border-bottom:1px solid var(--border);padding:14px;flex-shrink:0;}
   .panel-title{font-family:'Orbitron',sans-serif;font-size:0.55rem;letter-spacing:0.3em;color:var(--blue-mid);text-transform:uppercase;margin-bottom:10px;}
 
+  /* Remote Assist panel */
+  .ra-intro{font-size:0.68rem;line-height:1.5;color:var(--text-dim);margin-bottom:12px;}
+  .ra-btn{width:100%;padding:10px;font-family:'Orbitron',sans-serif;font-size:0.62rem;letter-spacing:0.1em;text-transform:uppercase;color:#04140f;background:var(--blue-mid);border:none;border-radius:8px;cursor:pointer;transition:opacity 0.18s;}
+  .ra-btn:hover{opacity:0.85;}
+  .ra-btn:disabled{opacity:0.5;cursor:default;}
+  .ra-btn-end{background:rgba(255,90,100,0.18);color:#ff8a92;border:1px solid rgba(255,90,100,0.4);margin-top:10px;}
+  .ra-active-row{display:flex;align-items:center;gap:8px;margin-bottom:10px;}
+  .ra-dot{width:8px;height:8px;border-radius:50%;background:#2fd98a;box-shadow:0 0 8px #2fd98a;animation:raPulse 1.6s ease-in-out infinite;}
+  @keyframes raPulse{0%,100%{opacity:1;}50%{opacity:0.4;}}
+  .ra-active-label{font-family:'Orbitron',sans-serif;font-size:0.58rem;letter-spacing:0.08em;text-transform:uppercase;color:#2fd98a;}
+  .ra-msg{font-size:0.66rem;color:var(--text-dim);margin-top:8px;min-height:1em;}
+  .ra-msg.err{color:#ff8a92;}
+
   /* Leaflet scale legend — 10px buffer from map left+bottom (and from LH navbar/sidebar by extension, since map starts at sidebar's right edge) */
   .leaflet-bottom.leaflet-left .leaflet-control-scale{ margin:0 0 10px 10px !important; }
 
@@ -1636,6 +1649,24 @@
             <div class="sys-line"><span class="sys-line-label">Current</span><span class="sys-line-val" id="ver-current">--</span></div>
             <div class="sys-line"><span class="sys-line-label">Latest</span><span class="sys-line-val" id="ver-latest">--</span></div>
             <div class="sys-line"><span class="sys-line-label">Update</span><span class="sys-pill" id="ver-status">--</span></div>
+          </div>
+
+          <div class="panel">
+            <div class="panel-title">Remote Assist</div>
+            <div class="ra-intro">Lets PiLNK support read diagnostics from your node to help fix an issue — only while you choose. Read-only, time-limited, and you can end it any time.</div>
+            <div id="ra-idle">
+              <button class="ra-btn" id="ra-open-btn" onclick="raOpen()">Request Assist</button>
+            </div>
+            <div id="ra-active" style="display:none;">
+              <div class="ra-active-row">
+                <span class="ra-dot"></span>
+                <span class="ra-active-label">Support session active</span>
+              </div>
+              <div class="sys-line"><span class="sys-line-label">Your code</span><span class="sys-line-val" id="ra-code">--</span></div>
+              <div class="sys-line"><span class="sys-line-label">Ends in</span><span class="sys-line-val" id="ra-countdown">--</span></div>
+              <button class="ra-btn ra-btn-end" id="ra-end-btn" onclick="raEnd()">End session</button>
+            </div>
+            <div id="ra-msg" class="ra-msg"></div>
           </div>
 
         </div>
@@ -6557,6 +6588,89 @@ var ota = (function () {
 function otaInstall()  { ota.install(); }
 function otaDismiss()  { ota.dismiss(); }
 function otaCheckNow() { ota.checkNow(); }
+
+// ── Remote Assist (owner panel) ──────────────────────────────────────────
+function raMsg(text, isErr){
+  var el = document.getElementById('ra-msg');
+  if(!el) return;
+  el.textContent = text || '';
+  el.className = 'ra-msg' + (isErr ? ' err' : '');
+}
+function raOpen(){
+  var btn = document.getElementById('ra-open-btn');
+  if(btn){ btn.disabled = true; }
+  raMsg('Opening session…');
+  fetch('/api/assist/request', {method:'POST'})
+    .then(function(r){ return r.json(); })
+    .then(function(j){
+      if(j && j.session_id){
+        raMsg('');
+        raRender(true, j.human_code, j.expires_minutes ? j.expires_minutes*60 : 1800);
+      } else {
+        raMsg((j && j.error) ? j.error : 'Could not open a session', true);
+        if(btn){ btn.disabled = false; }
+      }
+    })
+    .catch(function(){ raMsg('Network error — try again', true); if(btn){ btn.disabled=false; } });
+}
+function raEnd(){
+  var btn = document.getElementById('ra-end-btn');
+  if(btn){ btn.disabled = true; }
+  fetch('/api/assist/end', {method:'POST'})
+    .then(function(r){ return r.json(); })
+    .then(function(){ raRender(false); raMsg('Session ended.'); })
+    .catch(function(){ raMsg('Could not end session', true); if(btn){ btn.disabled=false; } });
+}
+function raRender(active, code, secs){
+  var idle = document.getElementById('ra-idle');
+  var act  = document.getElementById('ra-active');
+  if(!idle || !act) return;
+  if(active){
+    idle.style.display = 'none';
+    act.style.display = 'block';
+    if(code) document.getElementById('ra-code').textContent = code;
+    raCountdownSecs = (typeof secs === 'number') ? secs : raCountdownSecs;
+  } else {
+    idle.style.display = 'block';
+    act.style.display = 'none';
+    var ob = document.getElementById('ra-open-btn');
+    if(ob) ob.disabled = false;
+    raCountdownSecs = 0;
+  }
+}
+var raCountdownSecs = 0;
+function raFmt(s){
+  if(s <= 0) return '0:00';
+  var m = Math.floor(s/60), ss = s%60;
+  return m + ':' + (ss<10?'0':'') + ss;
+}
+// Poll the node's own assist status so the panel reflects reality (e.g. an
+// already-open session after a page refresh, or a server-side expiry).
+function raPoll(){
+  var sys = document.getElementById('tab-system');
+  // only poll while the System tab is visible (cheap)
+  if(!sys || !sys.classList.contains('active')) return;
+  fetch('/api/assist/status', {cache:'no-store'})
+    .then(function(r){ return r.json(); })
+    .then(function(j){
+      if(j && j.active){
+        raRender(true, j.human_code, j.expires_in_sec);
+      } else {
+        raRender(false);
+      }
+    })
+    .catch(function(){});
+}
+setInterval(function(){
+  // local countdown tick
+  if(raCountdownSecs > 0){
+    raCountdownSecs--;
+    var cd = document.getElementById('ra-countdown');
+    if(cd) cd.textContent = raFmt(raCountdownSecs);
+    if(raCountdownSecs === 0) raRender(false);
+  }
+}, 1000);
+setInterval(raPoll, 5000);
 
 </script>
 
