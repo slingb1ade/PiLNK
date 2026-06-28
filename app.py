@@ -2255,5 +2255,383 @@ def favicon():
 def remote():
     return render_template('remote.html')
 
+# ════════════════════════ REMOTE ASSIST (owner-initiated) ════════════════════
+# Phase 1 — the node side. A poller that, ONLY while the owner has opened a
+# session, fetches whitelisted READ-ONLY diagnostics from pilnk.io and posts the
+# results back. Owner-initiated, capability-not-shell, time-boxed, audited.
+# See pilnk-tasks/remote-assist.md.
+#
+# SAFETY: every capability here is read-only and fixed in code. Params can only
+# ever pick a capped N or an enum — never a path or command string. Nothing here
+# writes a file, restarts a service, or runs an arbitrary command.
+
+
+ASSIST_BASE = 'https://pilnk.io/api/assist.php'
+_assist_state = {
+    'session_id': None,
+    'human_code': None,
+    'expires_at': 0,        # epoch seconds
+    'active': False,
+}
+_assist_lock = threading.Lock()
+ASSIST_RESULT_CAP = 200000   # ~200KB, matches server cap
+
+
+def _assist_run(cmd, timeout=6):
+    """Run a FIXED read-only command (list form, no shell) and return capped
+    stdout. Never raises — returns an error string instead."""
+    try:
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+        out = (r.stdout or '') + (('\n[stderr] ' + r.stderr) if r.stderr else '')
+        return out[:ASSIST_RESULT_CAP]
+    except Exception as e:
+        return f'[error running {cmd[0] if cmd else "?"}]: {e}'
+
+
+def _assist_read_file(path, cap=ASSIST_RESULT_CAP):
+    try:
+        with open(path, 'r', errors='replace') as f:
+            return f.read()[:cap]
+    except Exception as e:
+        return f'[cannot read {path}]: {e}'
+
+
+# ── the capability functions (all read-only) ─────────────────────────────────
+
+def _cap_version(params):
+    out = {'version_file': _get_local_version()}
+    out['git_head'] = _assist_run(['git', '-C', PILNK_DIR, 'rev-parse', 'HEAD']).strip()
+    out['git_describe'] = _assist_run(['git', '-C', PILNK_DIR, 'log', '-1', '--oneline']).strip()
+    return out
+
+
+def _cap_config_read(params):
+    # config.json holds no secrets (verified). Return it as-is.
+    return {'config': _assist_read_file(CONFIG_PATH)}
+
+
+def _cap_pairing_status(params):
+    try:
+        with pairing_state_lock:
+            return dict(pairing_state)
+    except Exception as e:
+        return {'error': str(e)}
+
+
+def _cap_ota_status(params):
+    try:
+        return ota_get_status()
+    except Exception as e:
+        return {'error': str(e)}
+
+
+def _cap_net_status(params):
+    out = {}
+    out['last_ping_ok_ago_sec'] = (time.time() - PING_LAST_OK_TS) if 'PING_LAST_OK_TS' in globals() and PING_LAST_OK_TS else None
+    out['reachable'] = _assist_run(
+        ['curl', '-s', '-o', '/dev/null', '-w', '%{http_code}', '--max-time', '5',
+         'https://pilnk.io/api/version.php']).strip()
+    return out
+
+
+def _cap_git_status(params):
+    return {
+        'status': _assist_run(['git', '-C', PILNK_DIR, 'status', '--porcelain', '-b']),
+        'last_commit': _assist_run(['git', '-C', PILNK_DIR, 'log', '-1', '--oneline']).strip(),
+    }
+
+
+def _cap_aircraft_path(params):
+    path = DUMP1090_AIRCRAFT_JSON
+    out = {'configured_path': path, 'exists': os.path.exists(path)}
+    try:
+        if out['exists']:
+            st = os.stat(path)
+            out['size_bytes'] = st.st_size
+            out['age_sec'] = round(time.time() - st.st_mtime, 1)
+    except Exception as e:
+        out['stat_error'] = str(e)
+    return out
+
+
+def _cap_aircraft_sample(params):
+    # The actual field shape this node's decoder produces — first 3 records.
+    raw = read_aircraft_json()
+    if raw is None:
+        return {'error': 'read_aircraft_json returned None', 'path': DUMP1090_AIRCRAFT_JSON}
+    try:
+        data = json.loads(raw)
+        acs = data.get('aircraft', [])
+        return {
+            'total_in_file': len(acs),
+            'sample': acs[:3],
+            'top_keys': list(data.keys()),
+        }
+    except Exception as e:
+        return {'error': f'parse failed: {e}', 'raw_len': len(raw)}
+
+
+def _cap_ping_vs_flights(params):
+    # THE Thor diagnostic: total in file vs how many survive the ping's
+    # position filter (if a.get('lat')). Shows dashboard-vs-ping divergence.
+    raw = read_aircraft_json()
+    if raw is None:
+        return {'error': 'read_aircraft_json returned None'}
+    try:
+        data = json.loads(raw)
+        acs = data.get('aircraft', [])
+        with_pos = [a for a in acs if a.get('lat')]
+        return {
+            'total_in_file': len(acs),
+            'with_position': len(with_pos),
+            'without_position': len(acs) - len(with_pos),
+            'note': 'ping sends with_position; dashboard shows total_in_file',
+        }
+    except Exception as e:
+        return {'error': f'parse failed: {e}'}
+
+
+def _cap_decoder_status(params):
+    out = {}
+    for unit in ('readsb', 'dump1090-fa'):
+        r = _assist_run(['systemctl', 'show', unit, '-p', 'LoadState',
+                         '-p', 'ActiveState', '-p', 'SubState', '-p', 'ActiveEnterTimestamp'])
+        out[unit] = r.strip()
+    return out
+
+
+def _cap_decoder_log_tail(params):
+    n = _assist_cap_lines(params)
+    unit = 'readsb'
+    if params and params.get('unit') in ('readsb', 'dump1090-fa'):
+        unit = params['unit']
+    return {'unit': unit, 'log': _assist_run(
+        ['journalctl', '-u', unit, '-n', str(n), '--no-pager'], timeout=8)}
+
+
+def _cap_bds_status(params):
+    # Tests the Mode S enrichment thread health.
+    out = {}
+    try:
+        out['enrichment_cache_size'] = len(enrichment_cache)
+    except Exception as e:
+        out['enrichment_cache_size'] = f'err: {e}'
+    out['port_30002'] = _assist_run(
+        ['bash', '-c', 'ss -tn 2>/dev/null | grep :30002 | head -3 || echo "no 30002 sockets"'])
+    return out
+
+
+def _cap_log_tail(params):
+    n = _assist_cap_lines(params)
+    return {'log': _assist_run(['journalctl', '-u', 'pilnk', '-n', str(n), '--no-pager'], timeout=8)}
+
+
+def _cap_disk(params):
+    return {'df': _assist_run(['df', '-h'])}
+
+
+def _cap_mem(params):
+    return {'free': _assist_run(['free', '-m'])}
+
+
+def _cap_uptime(params):
+    return {'uptime': _assist_run(['uptime']).strip()}
+
+
+def _cap_usb(params):
+    return {'lsusb': _assist_run(['lsusb'])}
+
+
+def _cap_temp_throttle(params):
+    out = {}
+    out['temp'] = _assist_run(['vcgencmd', 'measure_temp']).strip()
+    out['throttled'] = _assist_run(['vcgencmd', 'get_throttled']).strip()
+    return out
+
+
+def _cap_time_sync(params):
+    return {'timedatectl': _assist_run(['timedatectl'])}
+
+
+def _cap_dmesg_usb(params):
+    # dmesg needs no root for USB lines on most Pis; fall back gracefully.
+    return {'dmesg_usb': _assist_run(
+        ['bash', '-c', 'dmesg 2>/dev/null | grep -i usb | tail -40 || echo "dmesg not readable without root"'])}
+
+
+def _cap_blacklist(params):
+    return {'blacklist': _assist_read_file('/etc/modprobe.d/blacklist-rtlsdr.conf')}
+
+
+def _cap_loaded_dvb(params):
+    return {'lsmod_dvb': _assist_run(
+        ['bash', '-c', "lsmod | grep -E 'dvb|rtl28|rtl2832|rtl2830' || echo 'no dvb/rtl modules loaded'"])}
+
+
+def _cap_network_info(params):
+    out = {}
+    out['ip'] = _assist_run(['bash', '-c', "ip -brief addr 2>/dev/null || ip addr"])
+    out['pilnk_reachable_http'] = _assist_run(
+        ['curl', '-s', '-o', '/dev/null', '-w', '%{http_code}', '--max-time', '5',
+         'https://pilnk.io/api/version.php']).strip()
+    return out
+
+
+def _assist_cap_lines(params, default=100, hard=500):
+    try:
+        n = int((params or {}).get('lines', default))
+    except (ValueError, TypeError):
+        n = default
+    return max(1, min(hard, n))
+
+
+# The whitelist dict — MUST match api/assist.php ASSIST_CAPABILITIES.
+ASSIST_CAPABILITIES = {
+    'version':          _cap_version,
+    'config_read':      _cap_config_read,
+    'pairing_status':   _cap_pairing_status,
+    'ota_status':       _cap_ota_status,
+    'net_status':       _cap_net_status,
+    'git_status':       _cap_git_status,
+    'aircraft_path':    _cap_aircraft_path,
+    'aircraft_sample':  _cap_aircraft_sample,
+    'ping_vs_flights':  _cap_ping_vs_flights,
+    'decoder_status':   _cap_decoder_status,
+    'decoder_log_tail': _cap_decoder_log_tail,
+    'bds_status':       _cap_bds_status,
+    'log_tail':         _cap_log_tail,
+    'disk':             _cap_disk,
+    'mem':              _cap_mem,
+    'uptime':           _cap_uptime,
+    'usb':              _cap_usb,
+    'temp_throttle':    _cap_temp_throttle,
+    'time_sync':        _cap_time_sync,
+    'dmesg_usb':        _cap_dmesg_usb,
+    'blacklist':        _cap_blacklist,
+    'loaded_dvb':       _cap_loaded_dvb,
+    'network_info':     _cap_network_info,
+}
+
+
+def _assist_post(action, payload):
+    payload['action'] = action
+    payload['verify_code'] = NODE_VERIFY_CODE
+    body = json.dumps(payload).encode()
+    req = urllib.request.Request(
+        ASSIST_BASE, data=body,
+        headers={'Content-Type': 'application/json', 'User-Agent': 'PiLNK/1.0'})
+    resp = urllib.request.urlopen(req, timeout=10)
+    return json.loads(resp.read().decode() or '{}')
+
+
+def assist_open_session():
+    """Called by the OWNER (via the local dashboard button) to open a session."""
+    try:
+        r = _assist_post('open_session', {})
+        if r.get('session_id'):
+            with _assist_lock:
+                _assist_state['session_id'] = r['session_id']
+                _assist_state['human_code'] = r.get('human_code')
+                _assist_state['active'] = True
+                # expires tracked loosely; server is authoritative
+                mins = r.get('expires_minutes', 30)
+                _assist_state['expires_at'] = time.time() + mins * 60
+        return r
+    except Exception as e:
+        return {'error': str(e)}
+
+
+def assist_close_session(reason='owner'):
+    with _assist_lock:
+        sid = _assist_state['session_id']
+        _assist_state['active'] = False
+    if sid:
+        try:
+            _assist_post('close_session', {'session_id': sid, 'reason': reason})
+        except Exception:
+            pass
+    with _assist_lock:
+        _assist_state['session_id'] = None
+        _assist_state['human_code'] = None
+
+
+def assist_poller():
+    """Background thread. Idle until the owner opens a session, then polls
+    pilnk.io for whitelisted requests, runs them locally, posts results back."""
+    while True:
+        with _assist_lock:
+            active = _assist_state['active']
+            sid = _assist_state['session_id']
+            exp = _assist_state['expires_at']
+        if not active or not sid:
+            time.sleep(5)
+            continue
+        if time.time() > exp:
+            assist_close_session('expired')
+            continue
+        try:
+            r = _assist_post('poll', {'session_id': sid})
+            if r.get('session_status') and r['session_status'] != 'open':
+                with _assist_lock:
+                    _assist_state['active'] = False
+                continue
+            req = r.get('request')
+            if req:
+                cap = req.get('capability')
+                fn = ASSIST_CAPABILITIES.get(cap)
+                if fn:
+                    try:
+                        result = fn(req.get('params') or {})
+                        is_err = isinstance(result, dict) and 'error' in result
+                    except Exception as e:
+                        result = {'error': f'capability {cap} failed: {e}'}
+                        is_err = True
+                else:
+                    result = {'error': f'unknown capability: {cap}'}
+                    is_err = True
+                _assist_post('result', {
+                    'request_id': req['request_id'],
+                    'result': result,
+                    'is_error': 1 if is_err else 0,
+                })
+        except Exception as e:
+            print(f'[PILNK] Assist poll error: {e}')
+        # Faster cadence while a session is open (snappy for Claude-driven debug)
+        time.sleep(5)
+
+
+# ── Owner-facing controls (local dashboard) ──────────────────────────────────
+@app.route('/api/assist/request', methods=['POST'])
+def api_assist_open():
+    """The OWNER presses 'Request Assist' on their local dashboard -> this opens
+    a session at pilnk.io. This is the ONLY way a session begins (owner-initiated)."""
+    r = assist_open_session()
+    return jsonify(r)
+
+
+@app.route('/api/assist/status', methods=['GET'])
+def api_assist_status():
+    with _assist_lock:
+        return jsonify({
+            'active': _assist_state['active'],
+            'human_code': _assist_state['human_code'],
+            'session_id': _assist_state['session_id'],
+            'expires_in_sec': max(0, int(_assist_state['expires_at'] - time.time())) if _assist_state['active'] else 0,
+        })
+
+
+@app.route('/api/assist/end', methods=['POST'])
+def api_assist_end():
+    assist_close_session('owner')
+    return jsonify({'ok': True})
+
+
+# Launch the assist poller (idle until the owner opens a session).
+if NODE_VERIFY_CODE != 'YOUR_VERIFY_CODE_HERE':
+    _assist_thread = threading.Thread(target=assist_poller, daemon=True)
+    _assist_thread.start()
+    print('[PILNK] Remote Assist poller ready (idle until owner opens a session)')
+
+
 if __name__ == '__main__':
     socketio.run(app, host='0.0.0.0', port=5000, debug=False, allow_unsafe_werkzeug=True)
