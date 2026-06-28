@@ -852,8 +852,24 @@ def _suppress_spurious_empty(aircraft):
     _LAST_GOOD_TS = now
     return aircraft
 
+# Singleton guard for the ping loop. ping_server can be launched from more than
+# one place (startup with a code, AND the pairing claim-poll on success, AND the
+# self-heal re-registration path). Without a guard, a node that bounces through
+# pairing/self-heal can end up with TWO ping threads in ONE process — both POST
+# every cycle, and if one catches aircraft.json mid-write it sends 0, which
+# overwrites the good ping (last-write-wins) and makes the node flicker empty on
+# the map. This guard ensures only the FIRST launch ever runs the loop; any
+# later launch is a no-op. (Fix shipped v1.2.16.1 — the "Thor flicker".)
+_ping_loop_running = False
+_ping_loop_lock = threading.Lock()
+
 def ping_server():
-    global PING_LAST_OK_TS
+    global PING_LAST_OK_TS, _ping_loop_running
+    with _ping_loop_lock:
+        if _ping_loop_running:
+            print('[PILNK] ping_server already running — duplicate launch ignored')
+            return
+        _ping_loop_running = True
     while True:
         try:
             # Grab current aircraft from dump1090
