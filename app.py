@@ -1673,6 +1673,94 @@ def _bds_bootstrap():
 threading.Thread(target=_bds_bootstrap, name='bds-bootstrap', daemon=True).start()
 
 
+# ── Military aircraft overlay ────────────────────────
+# Loaded once at startup from mil_catalog_seed.json (generated from the myHost
+# mil_hex_ranges + mil_aircraft_catalog tables). classify_icao() is called for
+# every aircraft on every /flights poll, so it stays pure in-memory — no DB or
+# network in the request cycle.
+MIL_HEX_RANGES = []        # [{'start': int, 'end': int, 'cc': str, 'branch': str}]
+MIL_AIRCRAFT_CATALOG = {}  # keyed by ICAO type designator (uppercase)
+
+def load_military_data():
+    """Load military hex ranges + aircraft catalog into memory from the seed file."""
+    global MIL_HEX_RANGES, MIL_AIRCRAFT_CATALOG
+    try:
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'mil_catalog_seed.json')
+        with open(path, 'r', encoding='utf-8') as f:
+            data = json.load(f)
+        ranges = []
+        for r in data.get('hex_ranges', []):
+            ranges.append({
+                'start': int(r['start'], 16),
+                'end': int(r['end'], 16),
+                'cc': r.get('cc', ''),
+                'branch': r.get('branch', ''),
+            })
+        MIL_HEX_RANGES = ranges
+        MIL_AIRCRAFT_CATALOG = {k.upper(): v for k, v in data.get('catalog', {}).items()}
+        logging.info('[MIL] loaded %d hex ranges, %d catalog types',
+                     len(MIL_HEX_RANGES), len(MIL_AIRCRAFT_CATALOG))
+    except Exception as e:
+        logging.warning('[MIL] could not load military catalog: %s', e)
+        MIL_HEX_RANGES = []
+        MIL_AIRCRAFT_CATALOG = {}
+
+def classify_icao(hex_code):
+    """Fast: does this hex fall inside a military range? Returns the matching
+    range dict (cc/branch) or None. Called per-aircraft, per-poll."""
+    if not hex_code or not MIL_HEX_RANGES:
+        return None
+    try:
+        h = int(hex_code, 16)
+    except ValueError:
+        return None
+    for r in MIL_HEX_RANGES:
+        if r['start'] <= h <= r['end']:
+            return r
+    return None
+
+def match_aircraft_type(icao_type):
+    """Look up an ICAO type designator in the in-memory catalog. Returns the
+    catalog entry dict or None."""
+    if not icao_type:
+        return None
+    return MIL_AIRCRAFT_CATALOG.get(icao_type.upper())
+
+load_military_data()
+
+
+# ── Gone-dark ghost tracking (military transponder suppression) ──
+# In-memory + ephemeral: a military aircraft seen airborne that stops
+# transmitting becomes a "ghost" marker at its last position, fading over
+# GHOST_TTL_S. NOTE: unrelated to the ghost_aircraft DB / ghost.php, which is
+# the community hex-identification game.
+GHOST_GRACE_S = 20      # ignore momentary gaps (still actively transmitting)
+GHOST_TTL_S = 300       # ghost lifetime (client fades opacity over this)
+GHOST_MIN_ALT = 500     # must have been airborne when last seen
+_mil_seen = {}          # hex -> {ts,lat,lon,alt,callsign,emoji,name,rarity}
+_mil_seen_lock = threading.Lock()
+
+def _track_mil(hex_code, ac):
+    """Record a currently-visible military aircraft's last-known state."""
+    lat = ac.get('lat'); lon = ac.get('lon')
+    if lat is None or lon is None:
+        return
+    alt = ac.get('alt_baro')
+    if alt == 'ground':
+        alt = 0
+    try:
+        alt = float(alt)
+    except (TypeError, ValueError):
+        alt = 0
+    with _mil_seen_lock:
+        _mil_seen[hex_code] = {
+            'ts': time.time(), 'lat': lat, 'lon': lon, 'alt': alt,
+            'callsign': (ac.get('flight') or '').strip(),
+            'emoji': ac.get('mil_emoji', ''), 'name': ac.get('mil_common_name', ''),
+            'rarity': ac.get('mil_rarity', ''),
+        }
+
+
 @app.route('/flights')
 def flights():
     """Return aircraft data with type/registration enrichment from AIRCRAFT_DB.
@@ -1686,7 +1774,7 @@ def flights():
 
     # Fast path: nothing to enrich at all → pass raw bytes through unchanged.
     # Engages only when there's neither a type/reg DB nor live Mode S data.
-    if not AIRCRAFT_DB and not enrichment_cache:
+    if not AIRCRAFT_DB and not enrichment_cache and not MIL_HEX_RANGES:
         return Response(raw, mimetype='application/json')
 
     # Slow path: parse, enrich, re-serialize. Adds ~5ms for typical
@@ -1708,6 +1796,27 @@ def flights():
                     ac['r'] = entry['r']
             # Mode S Comm-B enrichment — additive, no-op without fresh cache
             _merge_bds(ac, hex_code)
+            # Military overlay — fast in-memory hex-range + type classification
+            _mil = classify_icao(hex_code)
+            if _mil:
+                ac['is_military'] = True
+                _cat = match_aircraft_type(ac.get('t'))
+                if _cat:
+                    ac['mil_common_name'] = _cat['name']
+                    ac['mil_rarity'] = _cat['rarity']
+                    ac['mil_emoji'] = _cat['emoji']
+                    ac['mil_class'] = _cat['class']
+                    ac['mil_branch'] = _cat['branch']
+                    ac['mil_country'] = _cat.get('cc', '')
+                else:
+                    ac['mil_branch'] = _mil.get('branch', '')
+                    ac['mil_country'] = _mil.get('cc', '')
+                _track_mil(hex_code, ac)
+            # 7777 = military intercept squawk (in some regions). Flag it on ANY
+            # aircraft — an active intercept is notable whether or not the hex is
+            # in a military range. Salvaged from the original overlay spec.
+            if str(ac.get('squawk') or '').strip() == '7777':
+                ac['mil_intercept'] = True
         return jsonify(data)
     except (ValueError, TypeError) as e:
         # Parse failure: fall back to raw passthrough so we never 500
@@ -1715,6 +1824,33 @@ def flights():
         return Response(raw, mimetype='application/json')
 
 # ── OpenAIP proxy — avoids CORS issues in browser ─────────
+@app.route('/api/gone_dark')
+def gone_dark():
+    """Military aircraft that recently went dark (stopped transmitting while
+    airborne). Ephemeral / in-memory; client fades each over GHOST_TTL_S."""
+    now = time.time()
+    ghosts = []
+    with _mil_seen_lock:
+        stale = []
+        for hexc, info in _mil_seen.items():
+            age = now - info['ts']
+            if age > GHOST_TTL_S:
+                stale.append(hexc); continue
+            if age < GHOST_GRACE_S:
+                continue   # still actively transmitting
+            if info['alt'] < GHOST_MIN_ALT:
+                continue   # was on/near the ground
+            ghosts.append({
+                'hex': hexc, 'lat': info['lat'], 'lon': info['lon'],
+                'callsign': info['callsign'], 'last_ts': info['ts'],
+                'age_sec': round(age, 1), 'ttl': GHOST_TTL_S,
+                'emoji': info['emoji'], 'name': info['name'], 'rarity': info['rarity'],
+            })
+        for h in stale:
+            _mil_seen.pop(h, None)
+    return jsonify({'ghosts': ghosts})
+
+
 @app.route('/api/openaip/<path:endpoint>')
 def openaip_proxy(endpoint):
     OPENAIP_KEY = '7670c503a1c0929ee8e87ad581d9119e'
