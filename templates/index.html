@@ -196,6 +196,22 @@
   .av-toggles{display:flex;flex-direction:column;gap:6px;margin-top:8px;padding:8px;background:var(--bg-card);border-radius:6px;border:1px solid var(--border);}
   .av-toggle-row{display:flex;align-items:center;justify-content:space-between;font-size:0.62rem;color:var(--text-dim);}
   .av-dot{width:8px;height:8px;border-radius:50%;flex-shrink:0;margin-right:4px;}
+  /* ── Altitude Profile slide-up panel ─────────────────────────────── */
+  #altProfilePanel{position:absolute;left:0;right:0;bottom:0;height:38%;min-height:220px;
+    background:rgba(10,14,22,.96);border-top:1px solid var(--border);
+    transform:translateY(100%);transition:transform .32s cubic-bezier(.4,0,.2,1);
+    z-index:600;display:flex;flex-direction:column;backdrop-filter:blur(4px);}
+  #altProfilePanel.open{transform:translateY(0);}
+  #altProfileBar{display:flex;align-items:center;gap:10px;padding:6px 12px;
+    border-bottom:1px solid var(--border);flex-wrap:wrap;}
+  .alt-pp-title{font-size:0.62rem;letter-spacing:.18em;color:#36d3ff;text-transform:uppercase;}
+  .alt-pp-sub{font-size:0.58rem;color:var(--text-dim);}
+  .alt-pp-ctrls{margin-left:auto;display:flex;gap:6px;}
+  .alt-pp-btn{background:#10182a;border:1px solid var(--border);color:var(--text-dim);
+    font-family:inherit;font-size:0.55rem;letter-spacing:.08em;padding:4px 8px;border-radius:4px;
+    cursor:pointer;text-transform:uppercase;}
+  .alt-pp-btn.on{color:#36d3ff;border-color:#36d3ff;}
+  #altProfileCanvas{flex:1;width:100%;display:block;min-height:0;}
   .legend-row{display:flex;align-items:center;gap:8px;font-size:0.62rem;color:var(--text-dim);margin-bottom:5px;}
   .legend-dot{width:10px;height:10px;border-radius:50%;flex-shrink:0;}
   /* Weather sub-panel */
@@ -1480,6 +1496,9 @@
                 <button class="cov-btn" id="fpBtnHorizon" onclick="setFootprintMode('horizon')" style="flex:0 0 auto;padding:2px 10px;">Horizon</button>
               </div>
               <div class="av-toggle-row"><span style="display:flex;align-items:center;"><span class="av-dot" style="background:#7dd3fc;"></span>Airfields</span><label class="toggle-switch" style="transform:scale(0.85);"><input type="checkbox" id="avAirfields" onchange="toggleAirfields(this.checked)"/><span class="toggle-slider"></span></label></div>
+              <div class="av-toggle-row" title="Side-on altitude view — slides up from the bottom. Shows the vertical separation between aircraft that the top-down map can't.">​<span style="display:flex;align-items:center;"><span class="av-dot" style="background:#36d3ff;"></span>Altitude View</span><label class="toggle-switch" style="transform:scale(0.85);"><input type="checkbox" id="avAltProfile" onchange="toggleAltProfile(this.checked)"/><span class="toggle-slider"></span></label></div>
+              <div class="av-toggle-row" title="Extended runway centerlines with 1 km distance ticks — see whether an aircraft on approach is tracking the runway, and how far out it is."><span style="display:flex;align-items:center;"><span class="av-dot" style="background:#a3e635;"></span>Runway Centerlines</span><label class="toggle-switch" style="transform:scale(0.85);"><input type="checkbox" id="avRunways" onchange="toggleRunways(this.checked)"/><span class="toggle-slider"></span></label></div>
+              <div class="av-toggle-row" id="rwyPickRow" style="display:none;padding-left:18px;justify-content:flex-end;"><select id="rwyAirportSel" onchange="setRunwayAirport(this.value)" style="flex:1 1 auto;max-width:100%;background:#0f1a2e;color:#e8eef6;border:1px solid rgba(120,140,170,0.35);border-radius:5px;font-family:'Share Tech Mono',monospace;font-size:0.62rem;letter-spacing:0.02em;padding:4px 6px;cursor:pointer;"></select></div>
             </div>
             <div class="av-status" id="avStatus">Enable overlay then select an airport</div>
             <div style="border-top:1px solid rgba(120,140,170,0.18);margin:10px 0 8px;"></div>
@@ -1684,6 +1703,21 @@
 
     </div><!-- end sidebar -->
     <div id="map"></div>
+    <!-- ── Altitude Profile (side-on view) — slide-up panel. One self-contained
+         block; toggled from Aviation Overlay > Altitude View. Removable cleanly. -->
+    <div id="altProfilePanel" aria-hidden="true">
+      <div id="altProfileBar">
+        <span class="alt-pp-title">ALTITUDE VIEW</span>
+        <span class="alt-pp-sub">side-on · vertical separation the map can't show</span>
+        <div class="alt-pp-ctrls">
+          <button class="alt-pp-btn on" id="altEyeBtn" onclick="altProfileToggleEye()">EYE: APPROACH</button>
+          <button class="alt-pp-btn on" id="altTerrainBtn" onclick="altProfileToggleTerrain()">TERRAIN</button>
+          <button class="alt-pp-btn on" id="altConflictBtn" onclick="altProfileToggleConflict()">CONFLICTS</button>
+          <button class="alt-pp-btn" id="altCloseBtn" onclick="toggleAltProfile(false)">✕</button>
+        </div>
+      </div>
+      <canvas id="altProfileCanvas"></canvas>
+    </div>
   </div>
 </div>
 
@@ -3085,6 +3119,8 @@ function clearAvOverlay() {
   if (typeof clearAirfields === 'function') clearAirfields();
   // And the RangeScope footprint — same overlay, same lifecycle.
   if (typeof clearFootprint === 'function') clearFootprint();
+  // Runway centerlines — same overlay, same lifecycle.
+  if (typeof clearRunways === 'function') clearRunways();
 }
 
 function redrawAvOverlay() {
@@ -3148,6 +3184,13 @@ function redrawAvOverlay() {
   if (typeof footprintVisible !== 'undefined' && footprintVisible
       && typeof drawFootprint === 'function') {
     drawFootprint();
+  }
+
+  // Runway centerlines — same pattern: re-render if its sub-toggle is on
+  // so master/theme/sibling redraws keep them visible.
+  if (typeof runwaysVisible !== 'undefined' && runwaysVisible
+      && typeof drawRunways === 'function') {
+    drawRunways();
   }
 }
 
@@ -6097,6 +6140,202 @@ function setSortMode(mode){
 setSortMode(window.sortMode);
 updateFlights();
 setInterval(updateFlights,2000);
+
+// ═══════════════════════════════════════════════════════════════════════════
+// ALTITUDE PROFILE (side-on view) — self-contained block. Slide-up panel toggled
+// from Aviation Overlay > Altitude View. Reads live `lastAircraft` + `map` bounds;
+// the map viewport IS the selector. Terrain is PROCEDURAL here (Step 1) — Step 2
+// swaps in real elevation sampled under the viewport via a cached Flask proxy.
+// Entirely removable: delete this block + the panel HTML + the toggle row.
+// ═══════════════════════════════════════════════════════════════════════════
+var altProfileOn=false, altEyeMode='approach', altShowTerrain=true, altShowConflict=true, altTimer=null;
+// Approach-view bearing. HARDCODED to NZAA rwy 05 (053°) for now — MUST become
+// runway-derived per nearest airport before any fleet push (Rule #25: KICTPI/M0CRT/Thor
+// have different fields). Eye sits SW, looking NE up the 05 centreline: Waitākeres
+// left, Manukau Heads/harbour mouth right, NZAA centre.
+var ALT_APPROACH_BRG = 53;
+function toggleAltProfile(on){
+  altProfileOn = !!on;
+  var p=document.getElementById('altProfilePanel');
+  var chk=document.getElementById('avAltProfile');
+  if(chk) chk.checked = altProfileOn;
+  if(!p) return;
+  if(altProfileOn){
+    p.classList.add('open'); p.setAttribute('aria-hidden','false');
+    AltProfile.start();
+  } else {
+    p.classList.remove('open'); p.setAttribute('aria-hidden','true');
+    AltProfile.stop();
+  }
+}
+function altProfileToggleEye(){
+  altEyeMode = altEyeMode==='approach' ? 'north' : altEyeMode==='north' ? 'east' : 'approach';
+  var b=document.getElementById('altEyeBtn');
+  if(b){ b.classList.add('on');
+    b.textContent='EYE: '+(altEyeMode==='approach'?'APPROACH':altEyeMode==='north'?'N':'E'); }
+  AltProfile.rebuildTerrain(); }
+function altProfileToggleTerrain(){ altShowTerrain=!altShowTerrain;
+  var b=document.getElementById('altTerrainBtn'); if(b)b.classList.toggle('on',altShowTerrain); }
+function altProfileToggleConflict(){ altShowConflict=!altShowConflict;
+  var b=document.getElementById('altConflictBtn'); if(b)b.classList.toggle('on',altShowConflict); }
+
+var AltProfile=(function(){
+  var cv,ctx,W=0,H=0,DPR=Math.min(window.devicePixelRatio||1,2),raf=null,terrain=[];
+  var PADL=42,PADR=12,PADT=12,PADB=22, MAX_FT_FLOOR=12000, V_THRESH=1000, X_THRESH=0.05;
+
+  function fbm(x,seed){var t=0,a=1,f=1,n=0;for(var o=0;o<5;o++){t+=a*Math.sin(x*f*0.9+seed*1.7+o*2.1)*Math.cos(x*f*0.37-seed*0.6);n+=a;a*=0.5;f*=2.03;}return (t/n)*0.5+0.5;}
+  function rebuildTerrain(){
+    terrain=[];
+    var sA = altEyeMode==='approach'?0:altEyeMode==='north'?1:2;  // per-mode terrain seed offset
+    var defs=[
+      {seed:[3.1,2.0,5.3][sA],peak:2600,base:300,col:'#1a2233',jag:0.6},
+      {seed:[6.4,7.1,1.4][sA],peak:4200,base:500,col:'#222d44',jag:0.9},
+      {seed:[9.2,4.4,8.8][sA],peak:6800,base:800,col:'#2b3855',jag:1.25}
+    ];
+    var N=200;
+    defs.forEach(function(d){var pts=[];for(var i=0;i<=N;i++){var fx=i/N;
+      var h=d.base+d.peak*Math.pow(fbm(fx*d.jag*6.0,d.seed),1.7);
+      h+=d.peak*0.35*Math.max(0,fbm(fx*d.jag*13.0+9.0,d.seed)-0.62);
+      pts.push(h);} terrain.push({pts:pts,col:d.col});});
+  }
+  function resize(){ if(!cv)return; var r=cv.getBoundingClientRect(); W=r.width;H=r.height;
+    cv.width=W*DPR;cv.height=H*DPR;ctx.setTransform(DPR,0,0,DPR,0,0); }
+
+  // Map live aircraft -> profile coords.
+  //  approach: X = distance along the runway-approach bearing through the field
+  //            (Waitākeres left, Manukau Heads right, NZAA centre); depth = sideways.
+  //  north:    X = lon (looking N); east: X = lat (looking E).
+  function collect(){
+    var out=[]; if(typeof lastAircraft==='undefined'||typeof map==='undefined')return out;
+    var b; try{b=map.getBounds();}catch(e){return out;}
+    var w=b.getWest(),e=b.getEast(),s=b.getSouth(),n=b.getNorth();
+    var lonSpan=(e-w)||1, latSpan=(n-s)||1;
+    // approach-mode geometry: unit vectors for the bearing axis + its perpendicular,
+    // origin at the field (nearestAirport) or viewport centre as a fallback.
+    var brgRad=(ALT_APPROACH_BRG)*Math.PI/180;
+    // east/north components of the bearing (x=E, y=N). Aircraft NE of field -> +along.
+    var ax=Math.sin(brgRad), ay=Math.cos(brgRad);          // along-track unit (E,N)
+    var px=Math.cos(brgRad), py=-Math.sin(brgRad);         // cross-track unit (right of track)
+    var oLat=(typeof nearestAirport!=='undefined'&&nearestAirport&&nearestAirport.lat!=null)?nearestAirport.lat:(s+n)/2;
+    var oLon=(typeof nearestAirport!=='undefined'&&nearestAirport&&nearestAirport.lon!=null)?nearestAirport.lon:(w+e)/2;
+    var coslat=Math.cos(oLat*Math.PI/180)||1;
+    // scale: half-diagonal of the viewport in "deg-equivalent" so the field sits centre
+    var halfSpan=Math.max(lonSpan*coslat,latSpan)*0.75 || 1;
+    for(var cs in lastAircraft){ var a=lastAircraft[cs];
+      if(!a||a.lat==null||a.lon==null)continue;
+      var alt=(a.alt_baro==='ground')?0:(a.alt_baro||a.alt_geom||0);
+      if(a.lat<s||a.lat>n||a.lon<w||a.lon>e)continue;   // viewport = selector
+      var fx,depth;
+      if(altEyeMode==='approach'){
+        var dE=(a.lon-oLon)*coslat, dN=(a.lat-oLat);     // offset from field (deg, E/N)
+        var along=dE*ax+dN*ay;                            // distance along bearing
+        var cross=dE*px+dN*py;                            // sideways offset
+        fx=0.5 + (along/(2*halfSpan));                    // field at 0.5; NE→right, SW→left
+        depth=0.5 + (cross/(2*halfSpan));                 // near/far by side
+        fx=Math.max(0,Math.min(1,fx)); depth=Math.max(0,Math.min(1,depth));
+      } else if(altEyeMode==='north'){ fx=(a.lon-w)/lonSpan; depth=1-(a.lat-s)/latSpan; }
+      else { fx=(a.lat-s)/latSpan; depth=(a.lon-w)/lonSpan; }
+      out.push({cs:cs,fx:fx,depth:depth,alt:alt,
+        vs:(a.baro_rate||a.geom_rate||0),gs:(a.gs||0)});
+    }
+    return out;
+  }
+  function altCeil(list){var m=0;list.forEach(function(a){if(a.alt>m)m=a.alt;});
+    terrain.forEach(function(L){L.pts.forEach(function(h){if(h>m)m=h;});});
+    m=Math.max(m*1.12,MAX_FT_FLOOR);return Math.ceil(m/5000)*5000;}
+  function xPix(fx){return PADL+fx*(W-PADL-PADR);}
+  function yPix(ft,c){return PADT+(1-ft/c)*(H-PADT-PADB);}
+  function rr(x,y,w,h,r){ctx.beginPath();ctx.moveTo(x+r,y);ctx.arcTo(x+w,y,x+w,y+h,r);ctx.arcTo(x+w,y+h,x,y+h,r);ctx.arcTo(x,y+h,x,y,r);ctx.arcTo(x,y,x+w,y,r);ctx.closePath();}
+  function rgba(hex,al){var n=parseInt(hex.slice(1),16);return 'rgba('+((n>>16)&255)+','+((n>>8)&255)+','+(n&255)+','+al+')';}
+
+  function draw(){
+    if(!ctx)return;
+    var list=collect(), c=altCeil(list);
+    ctx.clearRect(0,0,W,H);
+    // grid 5k/10k/15k
+    ctx.lineWidth=1;ctx.font='10px ui-monospace,monospace';ctx.textBaseline='middle';
+    for(var ft=0;ft<=c;ft+=5000){var y=yPix(ft,c);
+      ctx.strokeStyle='rgba(28,39,64,.7)';ctx.beginPath();ctx.moveTo(PADL,y);ctx.lineTo(W-PADR,y);ctx.stroke();
+      ctx.fillStyle='#5b6b8a';ctx.textAlign='right';ctx.fillText(ft===0?'0':(ft/1000)+'k',PADL-6,y);}
+    // terrain (far->near)
+    if(altShowTerrain){ for(var li=0;li<terrain.length;li++){var L=terrain[li],p=L.pts,N=p.length-1;
+      ctx.beginPath();ctx.moveTo(xPix(0),H-PADB);
+      for(var i=0;i<=N;i++)ctx.lineTo(xPix(i/N),yPix(p[i],c));
+      ctx.lineTo(xPix(1),H-PADB);ctx.closePath();ctx.fillStyle=L.col;ctx.fill();
+      ctx.beginPath();for(var k=0;k<=N;k++){var X=xPix(k/N),Y=yPix(p[k],c);k?ctx.lineTo(X,Y):ctx.moveTo(X,Y);}
+      ctx.strokeStyle='rgba(120,150,200,'+(0.10+li*0.10)+')';ctx.lineWidth=1;ctx.stroke();}}
+    // conflicts
+    // airport anchor — drops a ground marker at the nearest field so the slice
+    // is orientated (the approach stack visibly lands AT the airport). Uses the
+    // dash's existing `nearestAirport` {icao,lat,lon}; only if it's in-viewport.
+    try{
+      if(typeof nearestAirport!=='undefined' && nearestAirport && nearestAirport.lat!=null){
+        var apb=map.getBounds();
+        var aw=apb.getWest(),ae=apb.getEast(),as=apb.getSouth(),an=apb.getNorth();
+        var aLat=nearestAirport.lat, aLon=nearestAirport.lon;
+        if(aLat>=as&&aLat<=an&&aLon>=aw&&aLon<=ae){
+          var afx = altEyeMode==='approach' ? 0.5
+                  : altEyeMode==='north' ? (aLon-aw)/((ae-aw)||1)
+                  : (aLat-as)/((an-as)||1);
+          var apX=xPix(afx), aby=H-PADB;
+          // vertical guide line up from the field
+          ctx.strokeStyle='rgba(54,211,255,.28)';ctx.lineWidth=1;ctx.setLineDash([2,4]);
+          ctx.beginPath();ctx.moveTo(apX,aby);ctx.lineTo(apX,PADT);ctx.stroke();ctx.setLineDash([]);
+          // field marker (triangle on the baseline)
+          ctx.fillStyle='#36d3ff';ctx.beginPath();
+          ctx.moveTo(apX,aby-9);ctx.lineTo(apX-5,aby);ctx.lineTo(apX+5,aby);ctx.closePath();ctx.fill();
+          // ICAO label
+          ctx.font='9px ui-monospace,monospace';ctx.textBaseline='bottom';
+          var icao=nearestAirport.icao||'FIELD';
+          var lw=ctx.measureText(icao).width+8;
+          var lx=Math.max(PADL,Math.min(W-PADR-lw,apX-lw/2));
+          ctx.fillStyle='rgba(54,211,255,.92)';rr(lx,aby-24,lw,13,3);ctx.fill();
+          ctx.fillStyle='#06121a';ctx.textAlign='center';ctx.fillText(icao,lx+lw/2,aby-12);
+        }
+      }
+    }catch(e){}
+
+    var inC={};
+    if(altShowConflict){ for(var x=0;x<list.length;x++)for(var j=x+1;j<list.length;j++){
+      var A=list[x],B=list[j];if(Math.abs(A.fx-B.fx)<X_THRESH&&Math.abs(A.alt-B.alt)<V_THRESH){
+        inC[A.cs]=1;inC[B.cs]=1;
+        var x1=xPix(A.fx),y1=yPix(A.alt,c),x2=xPix(B.fx),y2=yPix(B.alt,c);
+        ctx.strokeStyle='rgba(255,59,92,.9)';ctx.lineWidth=2;ctx.setLineDash([4,3]);
+        ctx.beginPath();ctx.moveTo(x1,y1);ctx.lineTo(x2,y2);ctx.stroke();ctx.setLineDash([]);
+        var mx=(x1+x2)/2,my=(y1+y2)/2,lab=Math.round(Math.abs(A.alt-B.alt)/100)*100+' ft';
+        ctx.font='11px ui-monospace,monospace';ctx.textAlign='center';
+        var w2=ctx.measureText(lab).width+10;ctx.fillStyle='rgba(255,59,92,.92)';rr(mx-w2/2,my-9,w2,18,4);ctx.fill();
+        ctx.fillStyle='#fff';ctx.fillText(lab,mx,my);}}}
+    // aircraft far->near
+    list.sort(function(a,b){return b.depth-a.depth;}).forEach(function(a){
+      var x=xPix(a.fx),y=yPix(a.alt,c),near=1-a.depth,r=3+near*3.0,al=0.45+near*0.55;
+      var col=inC[a.cs]?'#ff3b5c':(a.vs<-300?'#ffb020':'#00ff88');
+      ctx.strokeStyle=rgba(col,al*0.8);ctx.lineWidth=1.5;ctx.beginPath();ctx.moveTo(x,y);
+      ctx.lineTo(x,y+(a.vs<0?9:a.vs>0?-9:0));ctx.stroke();
+      ctx.fillStyle=rgba(col,al);ctx.beginPath();ctx.arc(x,y,r,0,7);ctx.fill();
+      if(inC[a.cs]){ctx.strokeStyle='rgba(255,59,92,.7)';ctx.lineWidth=1.5;ctx.beginPath();ctx.arc(x,y,r+4,0,7);ctx.stroke();}
+      if(near>0.35){ctx.font='9px ui-monospace,monospace';ctx.textAlign='left';ctx.textBaseline='bottom';
+        ctx.fillStyle=rgba(col,Math.min(1,al+0.15));ctx.fillText(a.cs+'  '+Math.round(a.alt/100)*100+'ft',x+r+3,y-2);}
+    });
+    // baseline + eye label
+    ctx.strokeStyle='rgba(28,39,64,1)';ctx.lineWidth=1;ctx.beginPath();ctx.moveTo(PADL,H-PADB);ctx.lineTo(W-PADR,H-PADB);ctx.stroke();
+    ctx.fillStyle='#5b6b8a';ctx.font='9px ui-monospace,monospace';ctx.textAlign='left';ctx.textBaseline='bottom';
+    var eyeLabel = altEyeMode==='approach' ? '◀ SW · Waitākeres        approach 05 → '+( (typeof nearestAirport!=='undefined'&&nearestAirport)?nearestAirport.icao:'field' )+'        Manukau Hds · NE ▶'
+                 : altEyeMode==='north' ? '◀ W      viewport (looking N)      E ▶'
+                 : '◀ S      viewport (looking E)      N ▶';
+    ctx.fillText(eyeLabel,PADL,H-5);
+    if(!list.length){ctx.fillStyle='#5b6b8a';ctx.textAlign='center';ctx.font='11px ui-monospace,monospace';
+      ctx.fillText('No aircraft in the current map view',W/2,H/2);}
+  }
+  function start(){ cv=document.getElementById('altProfileCanvas');
+    if(!cv)return; ctx=cv.getContext('2d'); if(!terrain.length)rebuildTerrain();
+    resize(); if(altTimer)clearInterval(altTimer); altTimer=setInterval(draw,1000); draw(); }
+  function stop(){ if(altTimer){clearInterval(altTimer);altTimer=null;} }
+  window.addEventListener('resize',function(){ if(altProfileOn){resize();draw();} });
+  return {start:start,stop:stop,rebuildTerrain:rebuildTerrain,draw:draw};
+})();
+// ═══════════════════════════════ end Altitude Profile ═══════════════════════
+
 function updateLocalClock(){
   var el=document.getElementById('local-clock');
   if(!el) return;
@@ -6335,6 +6574,173 @@ function drawFootprint() {
 
 function clearFootprint() {
   if (footprintPoly) { try { map.removeLayer(footprintPoly); } catch(e) {} footprintPoly = null; }
+}
+
+// ── RUNWAY CENTERLINES (July 2026) ─────────────────────────
+// Extended runway centerlines for the selected airport, with 1 km
+// distance ticks out to 20 km off each threshold — so you can eyeball
+// whether an aircraft on approach is tracking the runway centreline and
+// how far out it is. Data comes from pilnk.io/api/runways.php (the
+// airport_runways table, scoped to fleet coverage — global-by-default).
+// Home airport is pre-selected; a dropdown offers the 5 closest fields.
+// One airport at a time, matching the Footprint/Airfields sub-feature
+// pattern (self-contained state + toggle + draw + clear).
+var runwaysVisible = false;
+var runwayLayer = null;         // L.featureGroup of all runway geometry
+var runwayAirports = [];        // 5 closest airports (each with .runways[])
+var runwaySelectedIcao = null;
+
+// Project a point [lat,lon] along a true bearing (deg) for a distance (m).
+function rwyProject(lat, lon, brgDeg, distM) {
+  var R = 6371000, d = distM / R, brg = brgDeg * Math.PI / 180;
+  var la1 = lat * Math.PI / 180, lo1 = lon * Math.PI / 180;
+  var la2 = Math.asin(Math.sin(la1) * Math.cos(d) + Math.cos(la1) * Math.sin(d) * Math.cos(brg));
+  var lo2 = lo1 + Math.atan2(Math.sin(brg) * Math.sin(d) * Math.cos(la1),
+                             Math.cos(d) - Math.sin(la1) * Math.sin(la2));
+  return [la2 * 180 / Math.PI, lo2 * 180 / Math.PI];
+}
+
+function toggleRunways(show) {
+  runwaysVisible = show;
+  var row = document.getElementById('rwyPickRow');
+  if (row) row.style.display = show ? 'flex' : 'none';
+  // Master Aviation Overlay must be on — auto-enable it, matching siblings.
+  if (show && (typeof avOverlayOn !== 'undefined' && !avOverlayOn)) {
+    var master = document.getElementById('avToggle');
+    if (master && !master.checked) {
+      master.checked = true;
+      if (typeof toggleAvOverlay === 'function') toggleAvOverlay(true);
+    }
+  }
+  if (show) {
+    if (runwayAirports.length) { populateRunwayPicker(); drawRunways(); }
+    else { loadRunwayData(); }
+  } else {
+    clearRunways();
+  }
+}
+
+function loadRunwayData() {
+  // Runway data is static — fetch the 5 closest airports once and cache.
+  var url = 'https://pilnk.io/api/runways.php?lat=' + encodeURIComponent(RX_LAT) +
+            '&lon=' + encodeURIComponent(RX_LON) + '&limit=5';
+  fetch(url, {cache: 'no-store'})
+    .then(function(r) { return r.ok ? r.json() : null; })
+    .then(function(d) {
+      if (!d || !d.ok || !d.airports || !d.airports.length) {
+        var sel = document.getElementById('rwyAirportSel');
+        if (sel) sel.innerHTML = '<option>No airports in range</option>';
+        return;
+      }
+      runwayAirports = d.airports;
+      runwaySelectedIcao = runwayAirports[0].icao;   // nearest = home field
+      populateRunwayPicker();
+      if (runwaysVisible) drawRunways();
+    })
+    .catch(function() {
+      var sel = document.getElementById('rwyAirportSel');
+      if (sel) sel.innerHTML = '<option>Fetch failed</option>';
+    });
+}
+
+function populateRunwayPicker() {
+  var sel = document.getElementById('rwyAirportSel');
+  if (!sel) return;
+  sel.innerHTML = '';
+  runwayAirports.forEach(function(a) {
+    var opt = document.createElement('option');
+    opt.value = a.icao;
+    opt.textContent = a.icao + ' — ' + a.name + ' (' + a.dist_nm + ' nm)';
+    if (a.icao === runwaySelectedIcao) opt.selected = true;
+    sel.appendChild(opt);
+  });
+}
+
+function setRunwayAirport(icao) {
+  runwaySelectedIcao = icao;
+  drawRunways();
+}
+
+function drawRunways() {
+  clearRunways();
+  if (!runwaysVisible) return;
+  if (typeof avOverlayOn !== 'undefined' && !avOverlayOn) return;
+  if (!runwayAirports.length || !runwaySelectedIcao) return;
+
+  var apt = null;
+  for (var i = 0; i < runwayAirports.length; i++) {
+    if (runwayAirports[i].icao === runwaySelectedIcao) { apt = runwayAirports[i]; break; }
+  }
+  if (!apt || !apt.runways || !apt.runways.length) return;
+
+  var dark = document.documentElement.getAttribute('data-theme') === 'dark';
+  var col = dark ? '#a3e635' : '#4d7c0f';         // lime — distinct from other overlays
+  var shadow = dark ? '#060a14' : '#ffffff';
+  runwayLayer = L.featureGroup([]).addTo(map);
+
+  apt.runways.forEach(function(rw) {
+    if (rw.le_lat == null || rw.le_lon == null || rw.he_lat == null || rw.he_lon == null) return;
+    // Outward (approach-side) bearing = reciprocal of the runway heading.
+    var leOut = (rw.le_hdg + 180) % 360;
+    var heOut = (rw.he_hdg + 180) % 360;
+
+    // Runway body — solid, bright.
+    L.polyline([[rw.le_lat, rw.le_lon], [rw.he_lat, rw.he_lon]], {
+      color: col, weight: 4, opacity: 0.95, pane: 'avOverlay', interactive: false
+    }).addTo(runwayLayer);
+
+    // Extended approach centrelines off each threshold.
+    rwyCenterline(rw.le_lat, rw.le_lon, leOut, col, shadow);
+    rwyCenterline(rw.he_lat, rw.he_lon, heOut, col, shadow);
+
+    // Threshold idents (e.g. 05R / 23L).
+    rwyEndLabel(rw.le_lat, rw.le_lon, rw.le_ident, col, shadow);
+    rwyEndLabel(rw.he_lat, rw.he_lon, rw.he_ident, col, shadow);
+  });
+}
+
+function rwyCenterline(lat, lon, brg, col, shadow) {
+  var end = rwyProject(lat, lon, brg, 20000);
+  L.polyline([[lat, lon], end], {
+    color: col, weight: 1.5, opacity: 0.7, dashArray: '6 5', pane: 'avOverlay', interactive: false
+  }).addTo(runwayLayer);
+  // Distance ticks every 1 km; longer + labelled at 5/10/15/20 km.
+  for (var km = 1; km <= 20; km++) {
+    var p = rwyProject(lat, lon, brg, km * 1000);
+    var major = (km % 5 === 0);
+    var halfM = major ? 650 : 350;
+    var t1 = rwyProject(p[0], p[1], (brg + 90) % 360, halfM);
+    var t2 = rwyProject(p[0], p[1], (brg + 270) % 360, halfM);
+    L.polyline([t1, t2], {
+      color: col, weight: major ? 2 : 1, opacity: 0.7, pane: 'avOverlay', interactive: false
+    }).addTo(runwayLayer);
+    if (major) {
+      var lbl = L.divIcon({
+        className: '',
+        html: '<div style="font-family:monospace;font-size:9px;color:' + col +
+              ';font-weight:bold;white-space:nowrap;text-shadow:0 0 3px ' + shadow +
+              ',0 0 3px ' + shadow + ';">' + km + 'km</div>',
+        iconSize: [0, 0], iconAnchor: [-4, 6]
+      });
+      L.marker(p, {icon: lbl, pane: 'avOverlay', interactive: false}).addTo(runwayLayer);
+    }
+  }
+}
+
+function rwyEndLabel(lat, lon, ident, col, shadow) {
+  if (!ident) return;
+  var lbl = L.divIcon({
+    className: '',
+    html: '<div style="font-family:monospace;font-size:10px;color:' + col +
+          ';font-weight:bold;white-space:nowrap;text-shadow:0 0 3px ' + shadow +
+          ',0 0 3px ' + shadow + ';">' + ident + '</div>',
+    iconSize: [0, 0], iconAnchor: [8, 5]
+  });
+  L.marker([lat, lon], {icon: lbl, pane: 'avOverlay', interactive: false}).addTo(runwayLayer);
+}
+
+function clearRunways() {
+  if (runwayLayer) { try { map.removeLayer(runwayLayer); } catch(e) {} runwayLayer = null; }
 }
 
 // ── AIRFIELDS LAYER (May 2026) ─────────────────────────────
