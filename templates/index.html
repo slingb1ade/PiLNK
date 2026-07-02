@@ -6600,6 +6600,15 @@ function rwyProject(lat, lon, brgDeg, distM) {
   return [la2 * 180 / Math.PI, lo2 * 180 / Math.PI];
 }
 
+// True bearing (deg) from point 1 to point 2 — used to derive the exact
+// runway centreline direction from its two thresholds.
+function rwyBearing(lat1, lon1, lat2, lon2) {
+  var p1 = lat1 * Math.PI / 180, p2 = lat2 * Math.PI / 180, dl = (lon2 - lon1) * Math.PI / 180;
+  var y = Math.sin(dl) * Math.cos(p2);
+  var x = Math.cos(p1) * Math.sin(p2) - Math.sin(p1) * Math.cos(p2) * Math.cos(dl);
+  return (Math.atan2(y, x) * 180 / Math.PI + 360) % 360;
+}
+
 function toggleRunways(show) {
   runwaysVisible = show;
   var row = document.getElementById('rwyPickRow');
@@ -6680,9 +6689,13 @@ function drawRunways() {
 
   apt.runways.forEach(function(rw) {
     if (rw.le_lat == null || rw.le_lon == null || rw.he_lat == null || rw.he_lon == null) return;
-    // Outward (approach-side) bearing = reciprocal of the runway heading.
-    var leOut = (rw.le_hdg + 180) % 360;
-    var heOut = (rw.he_hdg + 180) % 360;
+    // Derive the centreline bearing from the two real thresholds so the
+    // extensions stay perfectly collinear with the runway body. The stored
+    // heading is rounded to whole degrees and drifts ~1° from the true track,
+    // which fans out to a few hundred metres by 20 km.
+    var brg = rwyBearing(rw.le_lat, rw.le_lon, rw.he_lat, rw.he_lon);
+    var leOut = (brg + 180) % 360;   // off the le threshold, away from the runway
+    var heOut = brg;                 // off the he threshold, away from the runway
 
     // Runway body — solid, bright.
     L.polyline([[rw.le_lat, rw.le_lon], [rw.he_lat, rw.he_lon]], {
