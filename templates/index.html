@@ -4061,8 +4061,10 @@ function updateMarker(a){
       if(Math.abs(pr.cross)>CORRIDOR_KM) continue;
       if(a.track!=null && angDiff(a.track,end.landB)>45) continue;
       var alt=(a.alt_geom!=null?+a.alt_geom:(+a.alt_baro||0));   // geom-first: immune to QNH/baro-datum offset
-      out.push({ hex:k, cs:((a.flight||k)+'').trim(), along:pr.along, hgt:Math.max(0,alt-end.elev),
-        vs:(a.baro_rate||a.geom_rate||0) });
+      var cs=((a.flight||k)+'').trim();
+      var pc=getPhase(a,cs).color; if(pc==='#ffffff') pc='#dc2626';   // same phase palette as the dash (white TX -> red for contrast)
+      out.push({ hex:k, cs:cs, along:pr.along, hgt:Math.max(0,alt-end.elev),
+        vs:(a.baro_rate||a.geom_rate||0), col:pc });
     }
     return out;
   }
@@ -4130,7 +4132,7 @@ function updateMarker(a){
     for(var hx in gsTrails){ if(!live[hx]) delete gsTrails[hx]; }   // drop trails once off-approach
     hits.forEach(function(h){
       var tr=gsTrails[h.hex]; if(!tr||tr.length<2) return;
-      var c2=(h.vs<-300?'#ffb020':'#00ff88');
+      var c2=h.col;
       for(var i=1;i<tr.length;i++){ ctx.strokeStyle=rgba(c2,(i/tr.length)*0.5); ctx.lineWidth=1.4;
         ctx.beginPath(); ctx.moveTo(xPix(tr[i-1].along),yPix(tr[i-1].hgt)); ctx.lineTo(xPix(tr[i].along),yPix(tr[i].hgt)); ctx.stroke(); }
       for(var j=0;j<tr.length-1;j++){ ctx.fillStyle=rgba(c2,(j/tr.length)*0.5);
@@ -4138,14 +4140,20 @@ function updateMarker(a){
     });
 
     hits.forEach(function(h){
-      var x=xPix(h.along), y=yPix(h.hgt), c2=(h.vs<-300?'#ffb020':'#00ff88');
+      var x=xPix(h.along), y=yPix(h.hgt), c2=h.col;
       ctx.strokeStyle=rgba(c2,0.55); ctx.lineWidth=1.4; ctx.setLineDash([5,4]);
       ctx.beginPath(); ctx.moveTo(x,y); ctx.lineTo(tx,ty); ctx.stroke(); ctx.setLineDash([]);
-      ctx.strokeStyle=c2; ctx.lineWidth=1.5; ctx.beginPath(); ctx.moveTo(x,y); ctx.lineTo(x,y+(h.vs<0?8:h.vs>0?-8:0)); ctx.stroke();
-      ctx.fillStyle=c2; ctx.beginPath(); ctx.arc(x,y,4,0,7); ctx.fill();
+      // aircraft marker — side-on airliner silhouette, nose-left (its direction of travel)
+      ctx.save(); ctx.translate(x,y); ctx.scale(0.34,0.34); ctx.translate(-24,-14); ctx.fillStyle=c2;
+      ctx.beginPath(); ctx.moveTo(4,15); ctx.bezierCurveTo(4,10.5,8,9,14,9); ctx.lineTo(33,9);
+        ctx.bezierCurveTo(41,9,45,11,47,14); ctx.bezierCurveTo(45,17,41,19,33,19); ctx.lineTo(14,19);
+        ctx.bezierCurveTo(8,19,4,18.5,4,15); ctx.closePath(); ctx.fill();
+      ctx.beginPath(); ctx.moveTo(34,9.5); ctx.lineTo(43,0); ctx.lineTo(47,1); ctx.lineTo(41,9.5); ctx.closePath(); ctx.fill();
+      ctx.beginPath(); ctx.moveTo(13,18.5); ctx.lineTo(23,27); ctx.lineTo(29,27); ctx.lineTo(25,18.5); ctx.closePath(); ctx.fill();
+      ctx.restore();
       var ang=Math.atan2(h.hgt*0.3048, h.along*1000)*180/Math.PI;
-      ctx.font='9px ui-monospace,monospace'; ctx.textAlign='left'; ctx.textBaseline='bottom';
-      ctx.fillText(h.cs+'  '+(Math.round(h.hgt/100)*100)+'ft · '+ang.toFixed(1)+'°', x+6, y-2);
+      ctx.fillStyle=c2; ctx.font='9px ui-monospace,monospace'; ctx.textAlign='left'; ctx.textBaseline='bottom';
+      ctx.fillText(h.cs+'  '+(Math.round(h.hgt/100)*100)+'ft · '+ang.toFixed(1)+'°', x+11, y-2);
     });
 
     updateHeader(end);
