@@ -4000,6 +4000,219 @@ function updateMarker(a){
   new AirportInset().addTo(map);
 })();
 
+// ── GLIDESLOPE VIEW (July 2026) ────────────────────────────
+// Side-on ILS glidepath profile — a sibling to the 🛬 Airport View (same
+// slide-out, same 480px size, stacked directly beneath it). Threshold at the
+// LEFT, approach traffic to the RIGHT; 0–20 km horizontal (jets intercept the
+// ILS within ~20 km), 0–5000 ft vertical, with the 3° reference glidepath.
+// Auto-detects the ACTIVE approach — the runway end inbound, aligned traffic is
+// actually using. Feeds off the same runways.php threshold+heading data as the
+// map centerlines (build the source once, feed both). Threshold elevation is
+// used when present (falls back to sea level until the runway DB carries it).
+(function(){
+  var open=false, cv=null, ctx=null, timer=null, DPR=window.devicePixelRatio||1, W=0, H=0;
+  var GS_MAX_KM=20, GS_CEIL_FT=5000, GS_ANGLE=3, CORRIDOR_KM=3;   // 20 km, 5000 ft, 3°
+  var PADL=40, PADR=12, PADT=12, PADB=24;
+  var gsAirports=[], selIcao=null, userPicked=false, lastActive=null, gsTrails={};
+
+  function toRad(d){ return d*Math.PI/180; }
+  function angDiff(a,b){ var d=Math.abs((a-b)%360); return d>180?360-d:d; }
+  function rgba(hex,al){ var n=parseInt(hex.slice(1),16); return 'rgba('+((n>>16)&255)+','+((n>>8)&255)+','+(n&255)+','+al+')'; }
+  function bearing(la1,lo1,la2,lo2){
+    var p1=toRad(la1),p2=toRad(la2),dl=toRad(lo2-lo1);
+    var y=Math.sin(dl)*Math.cos(p2), x=Math.cos(p1)*Math.sin(p2)-Math.sin(p1)*Math.cos(p2)*Math.cos(dl);
+    return (Math.atan2(y,x)*180/Math.PI+360)%360;
+  }
+
+  // Runway "ends" for an airport: threshold + outward (approach-side) bearing +
+  // landing heading, derived from the two real thresholds (matches the map).
+  function endsFor(apt){
+    var ends=[];
+    (apt.runways||[]).forEach(function(rw){
+      if(rw.le_lat==null||rw.le_lon==null||rw.he_lat==null||rw.he_lon==null) return;
+      var rb=bearing(rw.le_lat,rw.le_lon,rw.he_lat,rw.he_lon);   // le -> he
+      ends.push({ident:rw.le_ident,tLat:rw.le_lat,tLon:rw.le_lon,
+        elev:(rw.le_elev_ft!=null?+rw.le_elev_ft:0), landB:rb, outB:(rb+180)%360, len:+rw.length_ft||0});
+      ends.push({ident:rw.he_ident,tLat:rw.he_lat,tLon:rw.he_lon,
+        elev:(rw.he_elev_ft!=null?+rw.he_elev_ft:0), landB:(rb+180)%360, outB:rb, len:+rw.length_ft||0});
+    });
+    return ends;
+  }
+
+  // Aircraft position relative to an end: {along,cross} km (along>0 = ahead of
+  // the threshold, on the approach side).
+  function project(end,aLat,aLon){
+    var coslat=Math.cos(toRad(end.tLat));
+    var dE=(aLon-end.tLon)*coslat, dN=(aLat-end.tLat);
+    var oR=toRad(end.outB), ax=Math.sin(oR), ay=Math.cos(oR), px=Math.cos(oR), py=-Math.sin(oR);
+    return { along:(dE*ax+dN*ay)*111.32, cross:(dE*px+dN*py)*111.32 };
+  }
+
+  // Aircraft on approach to an end (ahead, in-corridor, inbound, aligned).
+  function approachTraffic(end){
+    var out=[];
+    if(typeof lastAircraft==='undefined') return out;
+    for(var k in lastAircraft){
+      var a=lastAircraft[k];
+      if(!a||a.lat==null||a.lon==null||a.alt_baro==='ground') continue;
+      var pr=project(end,a.lat,a.lon);
+      if(pr.along<=0.2||pr.along>GS_MAX_KM) continue;
+      if(Math.abs(pr.cross)>CORRIDOR_KM) continue;
+      if(a.track!=null && angDiff(a.track,end.landB)>45) continue;
+      var alt=(a.alt_geom!=null?+a.alt_geom:(+a.alt_baro||0));   // geom-first: immune to QNH/baro-datum offset
+      out.push({ hex:k, cs:((a.flight||k)+'').trim(), along:pr.along, hgt:Math.max(0,alt-end.elev),
+        vs:(a.baro_rate||a.geom_rate||0) });
+    }
+    return out;
+  }
+
+  // Active approach = the end with the most inbound aligned traffic. If nothing
+  // to judge by, reuse the last active end, else default to the longest runway.
+  function activeEnd(apt){
+    var ends=endsFor(apt); if(!ends.length) return null;
+    var best=null, bestN=-1;
+    ends.forEach(function(e){ var n=approachTraffic(e).length; if(n>bestN){ bestN=n; best=e; } });
+    if(bestN>0){ lastActive=best.ident; return best; }
+    if(lastActive){ for(var i=0;i<ends.length;i++) if(ends[i].ident===lastActive) return ends[i]; }
+    var lng=ends[0]; ends.forEach(function(e){ if(e.len>lng.len) lng=e; });
+    return lng;
+  }
+
+  function curApt(){
+    if(!gsAirports.length) return null;
+    for(var i=0;i<gsAirports.length;i++) if(gsAirports[i].icao===selIcao) return gsAirports[i];
+    return gsAirports[0];
+  }
+
+  function xPix(km){ return PADL+(km/GS_MAX_KM)*(W-PADL-PADR); }
+  function yPix(ft){ return PADT+(1-Math.min(ft,GS_CEIL_FT)/GS_CEIL_FT)*(H-PADT-PADB); }
+
+  function updateHeader(end){ var el=document.getElementById('gsRwy'); if(el) el.textContent=end?('RWY '+end.ident):'—'; }
+
+  function draw(){
+    if(!ctx||!cv) return;
+    ctx.clearRect(0,0,W,H);
+    // altitude gridlines (every 1000 ft)
+    ctx.font='9px ui-monospace,monospace'; ctx.textBaseline='middle'; ctx.lineWidth=1;
+    for(var ft=0; ft<=GS_CEIL_FT; ft+=1000){ var y=yPix(ft);
+      ctx.strokeStyle='rgba(28,39,64,.7)'; ctx.beginPath(); ctx.moveTo(PADL,y); ctx.lineTo(W-PADR,y); ctx.stroke();
+      ctx.fillStyle='#5b6b8a'; ctx.textAlign='right'; ctx.fillText(ft===0?'0':(ft/1000)+'k',PADL-5,y); }
+    // distance gridlines (every 5 km)
+    ctx.textBaseline='top';
+    for(var km=0; km<=GS_MAX_KM; km+=5){ var x=xPix(km);
+      ctx.strokeStyle='rgba(28,39,64,.5)'; ctx.beginPath(); ctx.moveTo(x,PADT); ctx.lineTo(x,H-PADB); ctx.stroke();
+      if(km>0){ ctx.fillStyle='#5b6b8a'; ctx.textAlign='center'; ctx.fillText(km+'km',x,H-PADB+4); } }
+
+    var apt=curApt();
+    if(!apt){ ctx.fillStyle='#5b6b8a'; ctx.textAlign='center'; ctx.textBaseline='middle';
+      ctx.font='11px ui-monospace,monospace'; ctx.fillText('Loading runway data…',W/2,H/2); updateHeader(null); return; }
+
+    var end=activeEnd(apt), col='#a3e635';
+    // ground baseline + threshold marker (left)
+    ctx.strokeStyle='rgba(28,39,64,1)'; ctx.beginPath(); ctx.moveTo(PADL,yPix(0)); ctx.lineTo(W-PADR,yPix(0)); ctx.stroke();
+    var tx=xPix(0), ty=yPix(0);
+    ctx.fillStyle=col; ctx.beginPath(); ctx.moveTo(tx,ty-8); ctx.lineTo(tx-5,ty); ctx.lineTo(tx+5,ty); ctx.closePath(); ctx.fill();
+
+    // Each aircraft draws its OWN descent line to the threshold — the slope is
+    // the real angle that aircraft is making to the runway (no fixed reference).
+    var hits=end?approachTraffic(end):[];
+
+    // Breadcrumb trails: keep each aircraft's recent (distance,height) samples and
+    // draw them behind the dot, so you watch it stair-step down the approach.
+    var live={};
+    hits.forEach(function(h){ live[h.hex]=1;
+      var tr=gsTrails[h.hex]||(gsTrails[h.hex]=[]);
+      var last=tr[tr.length-1];
+      if(!last || Math.abs(last.along-h.along)>0.03 || Math.abs(last.hgt-h.hgt)>5) tr.push({along:h.along,hgt:h.hgt});
+      if(tr.length>60) tr.shift();
+    });
+    for(var hx in gsTrails){ if(!live[hx]) delete gsTrails[hx]; }   // drop trails once off-approach
+    hits.forEach(function(h){
+      var tr=gsTrails[h.hex]; if(!tr||tr.length<2) return;
+      var c2=(h.vs<-300?'#ffb020':'#00ff88');
+      for(var i=1;i<tr.length;i++){ ctx.strokeStyle=rgba(c2,(i/tr.length)*0.5); ctx.lineWidth=1.4;
+        ctx.beginPath(); ctx.moveTo(xPix(tr[i-1].along),yPix(tr[i-1].hgt)); ctx.lineTo(xPix(tr[i].along),yPix(tr[i].hgt)); ctx.stroke(); }
+      for(var j=0;j<tr.length-1;j++){ ctx.fillStyle=rgba(c2,(j/tr.length)*0.5);
+        ctx.beginPath(); ctx.arc(xPix(tr[j].along),yPix(tr[j].hgt),1.5,0,7); ctx.fill(); }
+    });
+
+    hits.forEach(function(h){
+      var x=xPix(h.along), y=yPix(h.hgt), c2=(h.vs<-300?'#ffb020':'#00ff88');
+      ctx.strokeStyle=rgba(c2,0.55); ctx.lineWidth=1.4; ctx.setLineDash([5,4]);
+      ctx.beginPath(); ctx.moveTo(x,y); ctx.lineTo(tx,ty); ctx.stroke(); ctx.setLineDash([]);
+      ctx.strokeStyle=c2; ctx.lineWidth=1.5; ctx.beginPath(); ctx.moveTo(x,y); ctx.lineTo(x,y+(h.vs<0?8:h.vs>0?-8:0)); ctx.stroke();
+      ctx.fillStyle=c2; ctx.beginPath(); ctx.arc(x,y,4,0,7); ctx.fill();
+      var ang=Math.atan2(h.hgt*0.3048, h.along*1000)*180/Math.PI;
+      ctx.font='9px ui-monospace,monospace'; ctx.textAlign='left'; ctx.textBaseline='bottom';
+      ctx.fillText(h.cs+'  '+(Math.round(h.hgt/100)*100)+'ft · '+ang.toFixed(1)+'°', x+6, y-2);
+    });
+
+    updateHeader(end);
+    if(end && !hits.length){ ctx.fillStyle='#5b6b8a'; ctx.textAlign='center'; ctx.textBaseline='top';
+      ctx.font='10px ui-monospace,monospace'; ctx.fillText('No aircraft on approach to '+end.ident, W/2, PADT+4); }
+  }
+
+  function fillPicker(){
+    var sel=document.getElementById('gsSel'); if(!sel) return;
+    sel.innerHTML=gsAirports.map(function(a){ return '<option value="'+a.icao+'">'+a.icao+' — '+a.name+' ('+a.dist_nm+' nm)</option>'; }).join('');
+    if(!userPicked && gsAirports.length) selIcao=gsAirports[0].icao;
+    if(selIcao) sel.value=selIcao;
+  }
+
+  function loadData(cb){
+    var url='https://pilnk.io/api/runways.php?lat='+encodeURIComponent(RX_LAT)+'&lon='+encodeURIComponent(RX_LON)+'&limit=5';
+    fetch(url,{cache:'no-store'}).then(function(r){ return r.ok?r.json():null; }).then(function(d){
+      if(d&&d.ok&&d.airports&&d.airports.length){ gsAirports=d.airports; if(!selIcao) selIcao=gsAirports[0].icao; }
+      if(cb) cb();
+    }).catch(function(){ if(cb) cb(); });
+  }
+
+  function resize(){ if(!cv) return; var r=cv.getBoundingClientRect(); W=r.width; H=r.height;
+    cv.width=W*DPR; cv.height=H*DPR; ctx.setTransform(DPR,0,0,DPR,0,0); }
+  function start(){ cv=document.getElementById('gsCanvas'); if(!cv) return; ctx=cv.getContext('2d');
+    setTimeout(function(){ resize(); draw(); },30);
+    if(timer) clearInterval(timer); timer=setInterval(draw,1000); }
+  function stop(){ if(timer){ clearInterval(timer); timer=null; } }
+
+  function toggle(o){
+    open=(o===undefined)?!open:o;
+    var btn=document.getElementById('gsBtn'), pan=document.getElementById('gsPanel');
+    if(btn) btn.style.display=open?'none':'flex';
+    if(pan) pan.style.display=open?'block':'none';
+    if(!open){ stop(); return; }
+    if(gsAirports.length){ fillPicker(); start(); }
+    else { loadData(function(){ fillPicker(); start(); }); }
+  }
+
+  var GsCtl=L.Control.extend({
+    options:{position:'topright'},
+    onAdd:function(){
+      var wrap=L.DomUtil.create('div','pilnk-gsview'); wrap.style.cssText='margin-top:8px;';
+      wrap.innerHTML=
+        '<a href="#" id="gsBtn" role="button" title="Glideslope view" style="display:flex;align-items:center;justify-content:center;width:34px;height:34px;background:var(--bg-panel,#0b0f1a);border:1px solid var(--border,#1e293b);border-radius:4px;text-decoration:none;box-shadow:0 1px 5px rgba(0,0,0,0.4);">'+
+          '<svg width="18" height="18" viewBox="0 0 18 18"><path d="M2 15 L16 4.5" stroke="#a3e635" stroke-width="1.6" fill="none" stroke-dasharray="3 2"/><path d="M2 15 L16 15" stroke="#5b6b8a" stroke-width="1.2"/><circle cx="10.5" cy="7.9" r="1.7" fill="#00ff88"/></svg>'+
+        '</a>'+
+        '<div id="gsPanel" style="display:none;width:480px;background:var(--bg-panel,#0b0f1a);border:1px solid var(--border,#1e293b);border-radius:8px;box-shadow:0 10px 34px rgba(0,0,0,0.55);overflow:hidden;">'+
+          '<div style="display:flex;align-items:center;gap:8px;padding:8px 10px;border-bottom:1px solid var(--border,#1e293b);">'+
+            '<span style="font-size:0.85rem;">📐</span>'+
+            '<select id="gsSel" style="flex:1;min-width:0;background:var(--bg,#060c18);color:var(--text,#e2e8f0);border:1px solid var(--border,#1e293b);border-radius:4px;font-family:monospace;font-size:0.72rem;padding:3px 4px;"></select>'+
+            '<span id="gsRwy" style="font-family:monospace;font-size:0.7rem;color:#a3e635;white-space:nowrap;">—</span>'+
+            '<a href="#" id="gsClose" title="Close" style="color:var(--text-dim,#94a3b8);text-decoration:none;font-size:0.95rem;line-height:1;padding:0 2px;">&#10005;</a>'+
+          '</div>'+
+          '<canvas id="gsCanvas" style="display:block;width:480px;height:250px;"></canvas>'+
+        '</div>';
+      L.DomEvent.disableClickPropagation(wrap); L.DomEvent.disableScrollPropagation(wrap);
+      setTimeout(function(){
+        var sel=document.getElementById('gsSel'); if(sel) sel.onchange=function(){ selIcao=sel.value; userPicked=true; gsTrails={}; draw(); };
+        var b=document.getElementById('gsBtn'); if(b) b.onclick=function(e){ L.DomEvent.preventDefault(e); toggle(true); };
+        var c=document.getElementById('gsClose'); if(c) c.onclick=function(e){ L.DomEvent.preventDefault(e); toggle(false); };
+      },0);
+      return wrap;
+    }
+  });
+  new GsCtl().addTo(map);
+})();
+
 // ── MILITARY: gone-dark ghost markers + Hunter Mode ──────
 var ghostMarkers = {};
 var hunterMode = false;
