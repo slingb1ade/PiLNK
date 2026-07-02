@@ -1494,6 +1494,7 @@
               <div class="av-toggle-row" id="fpViewRow" style="display:none;padding-left:18px;justify-content:flex-end;gap:4px;">
                 <button class="cov-btn active" id="fpBtnRange" onclick="setFootprintMode('range')" style="flex:0 0 auto;padding:2px 10px;">Range</button>
                 <button class="cov-btn" id="fpBtnHorizon" onclick="setFootprintMode('horizon')" style="flex:0 0 auto;padding:2px 10px;">Horizon</button>
+                <button class="cov-btn" id="fpBtnRays" onclick="setFootprintMode('rays')" style="flex:0 0 auto;padding:2px 10px;">Rays</button>
               </div>
               <div class="av-toggle-row"><span style="display:flex;align-items:center;"><span class="av-dot" style="background:#7dd3fc;"></span>Airfields</span><label class="toggle-switch" style="transform:scale(0.85);"><input type="checkbox" id="avAirfields" onchange="toggleAirfields(this.checked)"/><span class="toggle-slider"></span></label></div>
               <div class="av-toggle-row" title="Side-on altitude view — slides up from the bottom. Shows the vertical separation between aircraft that the top-down map can't.">​<span style="display:flex;align-items:center;"><span class="av-dot" style="background:#36d3ff;"></span>Altitude View</span><label class="toggle-switch" style="transform:scale(0.85);"><input type="checkbox" id="avAltProfile" onchange="toggleAltProfile(this.checked)"/><span class="toggle-slider"></span></label></div>
@@ -6711,15 +6712,17 @@ function drawWaypoints() {
 // fleet footprint, so the two views always agree. Lives in the
 // Aviation Overlay between IFR Fixes and Airfields.
 var footprintPoly = null;
+var footprintRays = null;   // L.layerGroup of radial spokes (FancyFeet 'rays' view)
 var footprintVisible = false;
 var footprintData = null;   // cached /api/coverage payload
 var footprintMode = 'range'; // 'range' (max nm per bearing) | 'horizon' (elevation floor)
 
 function setFootprintMode(m) {
   footprintMode = m;
-  var br = document.getElementById('fpBtnRange'), bh = document.getElementById('fpBtnHorizon');
+  var br = document.getElementById('fpBtnRange'), bh = document.getElementById('fpBtnHorizon'), by = document.getElementById('fpBtnRays');
   if (br) br.classList.toggle('active', m === 'range');
   if (bh) bh.classList.toggle('active', m === 'horizon');
+  if (by) by.classList.toggle('active', m === 'rays');
   if (footprintVisible) drawFootprint();
 }
 
@@ -6748,12 +6751,53 @@ function toggleFootprint(show) {
   }
 }
 
+function raysColor(t, dark) {
+  t = Math.max(0, Math.min(1, t));
+  // short = pale/mid cyan, long = deep blue; light theme starts deeper so
+  // faint spokes stay legible over topo tiles.
+  var lo = dark ? [150, 235, 245] : [40, 150, 195];
+  var hi = dark ? [ 45, 110, 220] : [10,  55, 150];
+  return 'rgb(' + Math.round(lo[0] + (hi[0]-lo[0])*t) + ',' +
+                  Math.round(lo[1] + (hi[1]-lo[1])*t) + ',' +
+                  Math.round(lo[2] + (hi[2]-lo[2])*t) + ')';
+}
+
 function drawFootprint() {
   clearFootprint();
   if (!footprintVisible) return;
   var d = footprintData;
   if (!d || !d.max_nm || !d.max_nm.length) return;
   var n = d.max_nm.length, secDeg = 360 / n, any = false, pts = [];
+
+  // FancyFeet 'rays' view — individual radial spokes from the RX marker,
+  // one per sector, length = max range in that bearing, colour-graded by
+  // range. Same sector-centre bearing + great-circle dest-point as the
+  // polygon, drawn as separate polylines instead of joined — so long
+  // open-sky bearings and short terrain-shadowed ones read at a glance.
+  if (footprintMode === 'rays') {
+    var maxNm = 0;
+    for (var mi = 0; mi < n; mi++) { var mv = parseFloat(d.max_nm[mi]) || 0; if (mv > maxNm) maxNm = mv; }
+    if (maxNm <= 0) return;
+    var darkR = document.documentElement.getAttribute('data-theme') === 'dark';
+    var spokes = [];
+    for (var r = 0; r < n; r++) {
+      var rn = parseFloat(d.max_nm[r]) || 0;
+      if (rn <= 0) continue;
+      var brgR = (r * secDeg + secDeg / 2) * Math.PI / 180;
+      var dRr = (rn * 1852) / 6371000;
+      var la1r = RX_LAT * Math.PI / 180, lo1r = RX_LON * Math.PI / 180;
+      var la2r = Math.asin(Math.sin(la1r) * Math.cos(dRr) + Math.cos(la1r) * Math.sin(dRr) * Math.cos(brgR));
+      var lo2r = lo1r + Math.atan2(Math.sin(brgR) * Math.sin(dRr) * Math.cos(la1r), Math.cos(dRr) - Math.sin(la1r) * Math.sin(la2r));
+      spokes.push(L.polyline([[RX_LAT, RX_LON], [la2r * 180 / Math.PI, lo2r * 180 / Math.PI]], {
+        color: raysColor(rn / maxNm, darkR), weight: 3, opacity: 0.9,
+        lineCap: 'round', interactive: false
+      }));
+    }
+    if (!spokes.length) return;
+    footprintRays = L.layerGroup(spokes).addTo(map);
+    return;
+  }
+
   var horizon = (footprintMode === 'horizon');
   // Horizon view maps the elevation floor (an angle, not a distance)
   // onto the map for shape comparison: full display radius = 0° floor
@@ -6796,6 +6840,7 @@ function drawFootprint() {
 
 function clearFootprint() {
   if (footprintPoly) { try { map.removeLayer(footprintPoly); } catch(e) {} footprintPoly = null; }
+  if (footprintRays) { try { map.removeLayer(footprintRays); } catch(e) {} footprintRays = null; }
 }
 
 // ── RUNWAY CENTERLINES (July 2026) ─────────────────────────
