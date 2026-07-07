@@ -39,6 +39,7 @@
 #include <thread>
 #include <mutex>
 #include <atomic>
+#include <chrono>
 #include <deque>
 #include <vector>
 #include <string>
@@ -63,7 +64,7 @@ SDRPP_MOD_INFO{
     /* Name:         */ "pilnk_bridge",
     /* Description:  */ "PiLNK native bridge - FFT + audio + control export",
     /* Author:       */ "AJ McLachlan / PiLNK",
-    /* Version:      */ 0, 5, 0,
+    /* Version:      */ 0, 5, 1,
     /* Max instances */ 1
 };
 
@@ -224,8 +225,8 @@ public:
     bool isEnabled() override { return enabled; }
 
     // ---- WS broadcast (called by FFT/audio producers, added in later increments) ----
-    void broadcastFFT(const uint8_t* data, size_t len)   { broadcast(fftSubs, data, len); }
-    void broadcastAudio(const uint8_t* data, size_t len) { broadcast(audioSubs, data, len); }
+    void broadcastFFT(const uint8_t* data, size_t len)   { fftFrameAccum.fetch_add(1, std::memory_order_relaxed); broadcast(fftSubs, data, len); }
+    void broadcastAudio(const uint8_t* data, size_t len) { audioSampleAccum.fetch_add(len / sizeof(float), std::memory_order_relaxed); broadcast(audioSubs, data, len); }
 
 private:
     // -------- control command queue (drained on GUI thread) --------
@@ -248,6 +249,9 @@ private:
         std::vector<float> rfGainSteps;
         int rfGainIndex = 0;
         bool rfAgc = false;
+        // sample-flow rates (zero-flow watchdog)
+        int fftFps = 0;
+        int audioSps = 0;
     };
     std::mutex statusMtx;
     StatusSnapshot status;
@@ -355,6 +359,7 @@ private:
         }
         s.playing = gui::mainWindow.isPlaying();
         s.audioSampleRate = audioSampleRate.load();
+        sampleFlow(s);
         { std::lock_guard<std::mutex> lk(statusMtx); status = s; }
         // publish FFT framing params for the IQ reader thread
         curCenterHz.store(s.centerHz);
@@ -376,7 +381,53 @@ private:
         j["rfGainSteps"] = s.rfGainSteps;
         j["rfGainIndex"] = s.rfGainIndex;
         j["rfAgc"] = s.rfAgc;
+        j["fftFps"] = s.fftFps;
+        j["audioSps"] = s.audioSps;
         return j.dump();
+    }
+
+    // -------- zero-sample-flow watchdog --------
+    // Guards against the invisible failure where the RTL-SDR drops off USB:
+    // SDR++ keeps running, /sdr/status keeps saying playing:true, but zero
+    // FFT/audio bytes flow. Producers bump atomic counters; the GUI-thread
+    // status path samples them into per-second rates (fftFps / audioSps).
+    // Note: fftFps is 0 whenever no WS client is subscribed to /sdr/fft
+    // (frames aren't computed then), so the warn condition requires BOTH
+    // rates to be 0 — audio flows whenever playing, independent of clients.
+    std::atomic<uint64_t> fftFrameAccum{0};
+    std::atomic<uint64_t> audioSampleAccum{0};
+    std::atomic<int> fftFpsVal{0};
+    std::atomic<int> audioSpsVal{0};
+    std::chrono::steady_clock::time_point flowSampleTime = std::chrono::steady_clock::now();
+    double zeroFlowSecs = 0.0;   // GUI thread only
+    bool flowWarned = false;     // GUI thread only
+
+    void sampleFlow(StatusSnapshot& s) { // called from refreshStatus (GUI thread)
+        auto now = std::chrono::steady_clock::now();
+        double dt = std::chrono::duration<double>(now - flowSampleTime).count();
+        if (dt >= 1.0) {
+            uint64_t ff = fftFrameAccum.exchange(0, std::memory_order_relaxed);
+            uint64_t as = audioSampleAccum.exchange(0, std::memory_order_relaxed);
+            fftFpsVal.store((int)llround((double)ff / dt), std::memory_order_relaxed);
+            audioSpsVal.store((int)llround((double)as / dt), std::memory_order_relaxed);
+            flowSampleTime = now;
+            if (s.playing && ff == 0 && as == 0) {
+                zeroFlowSecs += dt;
+                if (zeroFlowSecs > 5.0 && !flowWarned) {
+                    flog::warn("pilnk_bridge: playing but zero FFT/audio flow for {}s - source stalled (USB dongle dropped?)", (int)zeroFlowSecs);
+                    flowWarned = true;
+                }
+            } else {
+                if (flowWarned && (ff || as)) {
+                    flog::info("pilnk_bridge: sample flow recovered ({} fft fps, {} audio sps)",
+                               fftFpsVal.load(std::memory_order_relaxed), audioSpsVal.load(std::memory_order_relaxed));
+                }
+                zeroFlowSecs = 0.0;
+                flowWarned = false; // rearm
+            }
+        }
+        s.fftFps = fftFpsVal.load(std::memory_order_relaxed);
+        s.audioSps = audioSpsVal.load(std::memory_order_relaxed);
     }
 
     // ============================ server ============================
