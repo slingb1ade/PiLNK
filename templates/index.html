@@ -1265,6 +1265,8 @@
         <div class="nav-menu" id="navMenu" role="menu">
           <button class="nav-item active" data-tab="traffic" role="menuitem" onclick="navPick('traffic','Traffic')">Traffic</button>
           <!-- rtl_fm Radio tab hidden 2026-07-07 — superseded by SDR Audio (pilnk_bridge); tab code retained below for the release-line merge -->
+          <!-- Pi5 2026-07-08: Radio button RESTORED — no SDR++ engine here yet; rtl_fm may still work. Re-hide at Phase 2/3. -->
+          <button class="nav-item" data-tab="radio" role="menuitem" onclick="navPick('radio','Radio')">Radio</button>
           <button class="nav-item" data-tab="sdr-audio" role="menuitem" onclick="navPick('sdr-audio','SDR Audio')">SDR Audio</button>
           <button class="nav-item" data-tab="history" role="menuitem" onclick="navPick('history','History')">History</button>
           <button class="nav-item" data-tab="options" role="menuitem" onclick="navPick('options','Options')">Options</button>
