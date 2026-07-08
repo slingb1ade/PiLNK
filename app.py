@@ -376,7 +376,8 @@ def record_trails():
 trail_thread = threading.Thread(target=record_trails, daemon=True)
 trail_thread.start()
 
-# ── PiLNK.io server ping — sends aircraft data + stats every 30s
+# ── PiLNK.io server ping — sends aircraft data + stats every 15s
+# (tightened from 30s 2026-07-01 — AJ observed 30s+ Network-page lag live at NZAA)
 # PiLNK Code is read from config.json (created by installer, gitignored).
 # Phase 2 web-pairing: if no code is stored, app.py self-bootstraps via
 # register_pending → pairing code shown at startup → operator claims on
@@ -977,7 +978,7 @@ def ping_server():
             print(f'[PILNK] Ping sent — {len(aircraft)} aircraft')
         except Exception as e:
             print(f'[PILNK] Ping failed: {e}')
-        time.sleep(30)
+        time.sleep(15)
 
 # Ping thread is started further down — AFTER _get_local_version() and the
 # rest of the module are defined (see "Start ping thread" beside the OTA
