@@ -1264,7 +1264,7 @@
         </button>
         <div class="nav-menu" id="navMenu" role="menu">
           <button class="nav-item active" data-tab="traffic" role="menuitem" onclick="navPick('traffic','Traffic')">Traffic</button>
-          <button class="nav-item" data-tab="radio" role="menuitem" onclick="navPick('radio','Radio')">Radio</button>
+          <!-- rtl_fm Radio tab hidden 2026-07-07 — superseded by SDR Audio (pilnk_bridge); tab code retained below for the release-line merge -->
           <button class="nav-item" data-tab="sdr-audio" role="menuitem" onclick="navPick('sdr-audio','SDR Audio')">SDR Audio</button>
           <button class="nav-item" data-tab="history" role="menuitem" onclick="navPick('history','History')">History</button>
           <button class="nav-item" data-tab="options" role="menuitem" onclick="navPick('options','Options')">Options</button>
@@ -1522,10 +1522,17 @@
                 <span style="font-size:0.6rem;color:var(--text-dim);width:64px;flex:0 0 auto;">Squelch</span>
                 <button class="sdr-tgl" id="sdrSqBtn" role="switch" aria-checked="false" title="squelch on/off" disabled><span class="knob"></span></button>
                 <span class="sdr-tglst" id="sdrSqState">OFF</span>
-                <input type="range" min="-100" max="0" value="-50" id="sdrSqLevel" disabled style="flex:1;min-width:80px;"/>
+                <input type="range" min="-45" max="0" value="-30" id="sdrSqLevel" disabled style="flex:1;min-width:80px;"/>
                 <span id="sdrSqLevelVal" style="font-size:0.55rem;color:var(--text-dim);font-family:'Share Tech Mono',monospace;width:58px;text-align:right;">-50 dBFS</span>
                 <span id="sdrSqDot" class="sdr-sqldot" title="green = audio passing"></span>
                 <span class="sdr-pending" id="sdrSqPending">bridge pending</span>
+              </div>
+              <div style="display:flex;align-items:center;gap:7px;margin-bottom:9px;">
+                <span style="font-size:0.6rem;color:var(--text-dim);width:64px;flex:0 0 auto;">AF NR</span>
+                <button class="sdr-tgl" id="sdrAfSq" role="switch" aria-checked="false" title="smart AF squelch — mutes inter-transmission static via carrier-quieting detection; keeps weak voices the RF squelch would kill"><span class="knob"></span></button>
+                <span class="sdr-tglst" id="sdrAfSqState">OFF</span>
+                <span id="sdrAfSqDot" class="sdr-sqldot" title="green = passing audio"></span>
+                <span style="font-size:0.5rem;color:var(--text-dim);">mutes static between transmissions</span>
               </div>
               <div style="display:flex;align-items:center;gap:7px;flex-wrap:wrap;">
                 <span style="font-size:0.6rem;color:var(--text-dim);width:64px;flex:0 0 auto;">RF Gain</span>
@@ -7796,6 +7803,7 @@ setInterval(raPoll, 5000);
   var audioCtx=null, masterGain=null, afGainNode=null, limiter=null, nextTime=0;
   var muted=false, volume=0.60, afGainDb=-6;
   var sqOn=false, sqLevel=-50;
+  var gateNode=null, afsqOn=(localStorage.getItem('pilnk-afsq')==='1'), afsqFloor=null, afsqSmooth=null, afsqSlow=null, afsqHold=0, afsqLast=1;
   var rfSteps=null, rfIndex=0, rfAgc=false;
   var caps={squelch:false, rfgain:false};
   var audioOpenUntil=0, sqLastOpen=null;
@@ -7864,6 +7872,8 @@ setInterval(raPoll, 5000);
     audioCtx=new (window.AudioContext||window.webkitAudioContext)();
     audioCtx.onstatechange=updateAudioBanner;
     afGainNode=audioCtx.createGain();
+    gateNode=audioCtx.createGain();          // AF smart squelch gate (pre-AF-gain)
+    gateNode.connect(afGainNode);
     masterGain=audioCtx.createGain();
     limiter=audioCtx.createDynamicsCompressor();
     limiter.threshold.value=-6; limiter.knee.value=6; limiter.ratio.value=12;
@@ -7887,14 +7897,40 @@ setInterval(raPoll, 5000);
     if(!audioCtx || audioCtx.state!=='running') return;
     var samples=new Float32Array(buf); var n=samples.length; if(!n) return;
     var sr=st.audioSampleRate||48000;
+    var p=0,i; for(i=0;i<n;i++) p+=samples[i]*samples[i];
+    var rms=Math.sqrt(p/n);
     var ab=audioCtx.createBuffer(1,n,sr); ab.copyToChannel(samples,0);
-    var src=audioCtx.createBufferSource(); src.buffer=ab; src.connect(afGainNode);
+    var src=audioCtx.createBufferSource(); src.buffer=ab; src.connect(gateNode||afGainNode);
     var now=audioCtx.currentTime;
     if(nextTime < now+0.02) nextTime=now+0.12;
     if(nextTime > now+0.5)  nextTime=now+0.12;
-    src.start(nextTime); nextTime+=n/sr;
-    var p=0,i; for(i=0;i<n;i++) p+=samples[i]*samples[i];
-    var rms=Math.sqrt(p/n);
+    var t0=nextTime;
+    // ---- AF smart squelch (carrier-quieting detector) ----
+    // On this channel static (no carrier) is the LOUDEST state; a carrier
+    // QUIETS the demod noise. Track the static floor and open the gate when
+    // the level DROPS below it — mutes inter-transmission static while
+    // keeping weak voices the RF squelch physically cannot separate.
+    if(rms>1e-6){
+        afsqSmooth=(afsqSmooth===null)?rms:afsqSmooth+0.15*(rms-afsqSmooth);   // fast ~70ms — catches deep pilot quieting
+        afsqSlow=(afsqSlow===null)?rms:afsqSlow+0.02*(rms-afsqSlow);           // slow ~0.5s — resolves the controller's ~1% dip
+        if(afsqFloor===null||afsqSlow>=afsqFloor) afsqFloor=afsqSlow;          // static is the loudest state: track up instantly
+        else if(afsqLast!==1) afsqFloor*=0.99997;                              // decay only while muted; frozen while open
+    }
+    // dual detector: deep fast dip (pilots, instant) OR shallow slow dip (the
+    // weak controller barely dents the static — slow smoothing shrinks the noise
+    // jitter enough that a 1%-below-floor threshold is statistically safe).
+    if(afsqFloor!==null){
+        if(afsqSmooth!==null && afsqSmooth<afsqFloor*0.96) afsqHold=Math.max(afsqHold,t0+(n/sr)+0.5);
+        if(afsqSlow!==null && afsqSlow<afsqFloor*0.99) afsqHold=Math.max(afsqHold,t0+(n/sr)+1.0);
+    }
+    var afsqPass=(!afsqOn)||afsqFloor===null||t0<afsqHold;
+    var afsqTgt=afsqPass?1:0.02;                                      // closed = -34 dB, not dead air
+    if(gateNode && afsqTgt!==afsqLast){
+        gateNode.gain.setTargetAtTime(afsqTgt,t0,0.012);              // clickless, aligned to chunk
+        afsqLast=afsqTgt;
+        var gd=$('sdrAfSqDot'); if(gd) gd.classList.toggle('open',afsqPass);
+    }
+    src.start(t0); nextTime=t0+n/sr;
     var open=rms>0.004;
     if(open) audioOpenUntil=now+0.25;
     var lit=open||now<audioOpenUntil;
@@ -8141,6 +8177,17 @@ setInterval(raPoll, 5000);
     var rg=$('sdrRfGain'); if(rg){ rg.oninput=function(e){ rfIndex=+e.target.value; if(rfSteps&&rfSteps[rfIndex]!=null){ var v=$('sdrRfGainVal'); if(v)v.textContent=rfSteps[rfIndex].toFixed(1)+' dB'; } }; rg.onchange=function(){ if(caps.rfgain) post('/sdr/gain',{index:rfIndex}); }; }
     var ra=$('sdrRfAgc'); if(ra) ra.onclick=function(){ if(!caps.rfgain) return; rfAgc=!rfAgc; refreshControls(); post('/sdr/agc',{on:rfAgc}); };
     var ssb=$('sdrSkipSil'); if(ssb) ssb.onclick=function(){ skipSilence=!skipSilence; ssb.classList.toggle('on',skipSilence); ssb.setAttribute('aria-checked',skipSilence); var v=$('sdrSkipSilState'); if(v)v.textContent=skipSilence?'ON':'OFF'; };
+    var afsq=$('sdrAfSq'); if(afsq){
+        afsq.classList.toggle('on',afsqOn); afsq.setAttribute('aria-checked',afsqOn);
+        var av0=$('sdrAfSqState'); if(av0)av0.textContent=afsqOn?'ON':'OFF';
+        afsq.onclick=function(){
+            afsqOn=!afsqOn;
+            afsq.classList.toggle('on',afsqOn); afsq.setAttribute('aria-checked',afsqOn);
+            var v=$('sdrAfSqState'); if(v)v.textContent=afsqOn?'ON':'OFF';
+            try{ localStorage.setItem('pilnk-afsq',afsqOn?'1':'0'); }catch(e){}
+            if(!afsqOn&&gateNode&&audioCtx){ gateNode.gain.setTargetAtTime(1,audioCtx.currentTime,0.01); afsqLast=1; var gd=$('sdrAfSqDot'); if(gd)gd.classList.add('open'); }
+        };
+    }
     var ban=$('sdrAudioBanner'); if(ban) ban.addEventListener('click', ensureAudio);
     renderRecent();
     refreshControls();
