@@ -1467,6 +1467,7 @@
                 <span id="sdrScLeft">&mdash;</span><span id="sdrScMid">&mdash;</span><span id="sdrScRight">&mdash;</span>
               </div>
               <div id="sdrAudioBanner" style="display:none;margin-top:6px;background:rgba(59,130,246,0.1);border:1px solid rgba(59,130,246,0.3);border-radius:6px;padding:6px 10px;font-size:0.58rem;color:var(--blue-mid);text-align:center;cursor:pointer;">&#128263; Tap to enable audio</div>
+              <div id="saStallBanner" style="display:none;margin-top:6px;background:rgba(239,68,68,0.12);border:1px solid rgba(239,68,68,0.4);border-radius:6px;padding:6px 10px;font-size:0.58rem;color:#f87171;text-align:center;">&#9888; Receiver stalled &mdash; auto-recovery in progress&hellip;</div>
             </div>
 
             <!-- Listen Button -->
@@ -7810,6 +7811,7 @@ setInterval(raPoll, 5000);
   var st={centerHz:0,vfoHz:118700000,mode:'AM',bandwidthHz:0,playing:false,audioSampleRate:48000};
   var recentFreqs = JSON.parse(localStorage.getItem('pilnk-recent-freqs') || '[]');
   var recording=false, recChunks=[], recSamples=0, skipSilence=true, recHold=0;
+  var stallN=0;   // consecutive status polls with playing && audioSps==0
   var REC_THRESH=0.005, REC_TAIL=0.3;
 
   // ---- HTTP control ----
@@ -8039,6 +8041,13 @@ setInterval(raPoll, 5000);
       var l=$('sdrScLeft'),m=$('sdrScMid'),rr=$('sdrScRight');
       if(l)l.textContent=fmtMHz(c-sp/2); if(rr)rr.textContent=fmtMHz(c+sp/2);
       if(m)m.textContent=fmtMHz(c)+' · '+(sp/1e6).toFixed(2)+' MHz';
+    }
+    // receiver-stall banner: bridge v0.5.1 reports audioSps; playing with
+    // zero flow for 3 polls (~6s) = dongle/driver stall. The watchdog
+    // service restarts sdrpp automatically; this just tells the operator.
+    if(typeof st.audioSps==='number'){
+        if(st.playing && st.audioSps===0) stallN++; else stallN=0;
+        var sb2=$('saStallBanner'); if(sb2) sb2.style.display=stallN>=3?'block':'none';
     }
     var tDot=$('trafficRadioDot'), tFreq=$('trafficRadioFreq');
     if(tDot&&tFreq){

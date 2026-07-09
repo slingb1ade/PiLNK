@@ -1,0 +1,11 @@
+[Unit]
+Description=PiLNK radio watchdog (auto-restarts sdrpp on stream stall)
+After=sdrpp.service
+
+[Service]
+ExecStart=/usr/local/bin/pilnk-radio-watchdog.sh
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
