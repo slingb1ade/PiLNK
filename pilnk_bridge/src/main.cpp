@@ -44,6 +44,7 @@
 #include <vector>
 #include <string>
 #include <cstring>
+#include <cerrno>
 #include <cstdint>
 #include <cstdio>
 #include <algorithm>
@@ -433,6 +434,11 @@ private:
 
     // ============================ server ============================
     std::atomic<bool> running{false};
+    // M1 (audit 2026-07-09): bound concurrent connections so a flood can't
+    // exhaust the thread-per-conn model. 64 is generous for a LAN node
+    // (dashboard uses 2 WS + short-lived status polls).
+    std::atomic<int> activeConns{0};
+    static const int MAX_CONNS = 64;
     int listenFd = -1;
     std::thread acceptThread;
 
@@ -476,6 +482,11 @@ private:
         while (running) {
             int fd = accept(listenFd, NULL, NULL);
             if (fd < 0) { if (running) continue; else break; }
+            if (activeConns.load(std::memory_order_relaxed) >= MAX_CONNS) {
+                close(fd);   // M1: too many connections — shed load
+                continue;
+            }
+            activeConns.fetch_add(1, std::memory_order_relaxed);
             std::thread(&PilnkBridgeModule::handleConn, this, fd).detach();
         }
     }
@@ -529,7 +540,16 @@ private:
     }
 
     void handleConn(int fd) {
+        // M1: RAII — decrement the active-connection count on EVERY exit path
+        // (early returns, WS lifetime, errors). acceptLoop already incremented.
+        struct ConnGuard { std::atomic<int>& c; ~ConnGuard() { c.fetch_sub(1, std::memory_order_relaxed); } } _cg{activeConns};
         int one = 1; setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &one, sizeof(one));
+        // M1: recv timeout bounds slowloris (client that connects and dribbles
+        // or never completes its request headers). 15s is ample for a real
+        // request; the WS keep-alive loop below tolerates this timeout so idle
+        // subscribers are NOT dropped.
+        struct timeval rcvto{15, 0};
+        setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &rcvto, sizeof(rcvto));
         // read request headers
         std::string req;
         char buf[2048];
@@ -559,6 +579,14 @@ private:
         body = req.substr(hdrEnd);
         int clen = 0;
         try { clen = std::stoi(header(req, "Content-Length")); } catch (...) { clen = 0; }
+        // M2 (audit 2026-07-09): cap the body. Control JSON is tiny; a request
+        // advertising a huge Content-Length would otherwise grow `body`
+        // unbounded (memory-exhaustion DoS). Reject anything over 64 KB.
+        if (clen < 0) clen = 0;
+        if (clen > 65536) {
+            httpResponse(fd, "413 Payload Too Large", "application/json", "{\"ok\":false,\"error\":\"body too large\"}");
+            close(fd); return;
+        }
         while ((int)body.size() < clen) {
             ssize_t n = recv(fd, buf, sizeof(buf), 0);
             if (n <= 0) break;
@@ -648,11 +676,16 @@ private:
         uint8_t f[1024];
         while (running) {
             ssize_t n = recv(fd, f, sizeof(f), 0);
-            if (n <= 0) break;
-            if (n >= 1) {
-                uint8_t op = f[0] & 0x0F;
-                if (op == 0x8) break; // close
+            // M1: SO_RCVTIMEO fires here for idle subscribers (normal — they
+            // just sit receiving broadcasts). A timeout is EAGAIN/EWOULDBLOCK;
+            // keep the connection alive. Only a real close/error ends it.
+            if (n < 0) {
+                if (errno == EAGAIN || errno == EWOULDBLOCK) continue;
+                break;
             }
+            if (n == 0) break; // peer closed
+            uint8_t op = f[0] & 0x0F;
+            if (op == 0x8) break; // close frame
         }
         { std::lock_guard<std::mutex> lk(subsMtx);
           auto it = std::find(subs->begin(), subs->end(), fd);
