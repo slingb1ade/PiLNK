@@ -1,0 +1,23 @@
+# pilnkradio — PiLNK v2 radio engine (standalone daemon, replaces the SDR++ train)
+#
+# Self-heal contract: the daemon EXITS NONZERO on any unrecoverable condition
+# (dongle absent, USB drop mid-stream, port taken). Restart=always brings it
+# back; 99-pilnk-v4.rules restarts it on V4 replug. "Up but deaf" cannot exist.
+[Unit]
+Description=PiLNK radio engine (pilnkradio)
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/pilnkradio --config /etc/pilnkradio/config.json
+Restart=always
+RestartSec=5
+# The binary carries an rpath to the rtl-sdr-blog librtlsdr fork, so no
+# LD_LIBRARY_PATH is needed here — but verify the journal line
+# "driver: loaded /usr/local/lib/librtlsdr.so..." after every install.
+User=root
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

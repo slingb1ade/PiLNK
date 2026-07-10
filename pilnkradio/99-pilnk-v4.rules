@@ -1,0 +1,5 @@
+# PiLNK: restart the radio engine when the RTL-SDR (Blog V4) is (re)plugged.
+# Kills the restart-after-replug seam of the v1 stack: the daemon exits when
+# the dongle vanishes (systemd relaunch loops until it's back), and this rule
+# kicks an immediate restart the moment USB sees the device again.
+ACTION=="add", SUBSYSTEM=="usb", ATTR{idVendor}=="0bda", ATTR{idProduct}=="2838", RUN+="/usr/bin/systemctl --no-block restart pilnkradio.service"

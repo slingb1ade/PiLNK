@@ -968,6 +968,24 @@ private:
         return "";
     }
 
+    // -------- Origin / token gate (audit M3, 2026-07-09) --------
+    // A no-cors POST from ANY website the operator visits (or DNS rebinding)
+    // could otherwise flip playing:true. Rules:
+    //  - no Origin header (curl, watchdog, scripts) => allowed
+    //  - localhost origins => allowed
+    //  - otherwise the origin must be in config allowedOrigins (the fleet
+    //    installer sets this to the node's dashboard origin)
+    // Token (optional, config "token"): required on POST via X-PiLNK-Token.
+    bool originAllowed(const std::string& req) {
+        std::string origin = header(req, "Origin");
+        if (origin.empty()) return true;
+        if (origin.rfind("http://localhost", 0) == 0 || origin.rfind("http://127.0.0.1", 0) == 0 ||
+            origin.rfind("https://localhost", 0) == 0 || origin.rfind("https://127.0.0.1", 0) == 0) return true;
+        for (auto& a : cfg.allowedOrigins) if (origin == a) return true;
+        logW("origin rejected: %s", origin.c_str());
+        return false;
+    }
+
     void handleConn(int fd) {
         // M1: RAII — decrement the active-connection count on EVERY exit path
         // (early returns, WS lifetime, errors). acceptLoop already incremented.
@@ -995,12 +1013,24 @@ private:
         std::string method = req.substr(0, sp1);
         std::string path = req.substr(sp1 + 1, sp2 - sp1 - 1);
 
+        // Origin gate (audit M3) — applies to WS upgrades and POSTs alike
+        if (!originAllowed(req)) {
+            httpResponse(fd, "403 Forbidden", "application/json", "{\"ok\":false,\"error\":\"origin not allowed\"}");
+            close(fd); return;
+        }
+
         // WebSocket upgrade?
         std::string upg = header(req, "Upgrade");
         for (auto& ch : upg) ch = tolower(ch);
         if (upg == "websocket") { handleWS(fd, req, path); return; }
 
         if (method == "OPTIONS") { httpResponse(fd, "204 No Content", "text/plain", ""); close(fd); return; }
+
+        // token gate (audit M3, optional) — control writes only
+        if (method == "POST" && !cfg.token.empty() && header(req, "X-PiLNK-Token") != cfg.token) {
+            httpResponse(fd, "401 Unauthorized", "application/json", "{\"ok\":false,\"error\":\"bad token\"}");
+            close(fd); return;
+        }
 
         // read body if present
         std::string body;
@@ -1103,21 +1133,51 @@ private:
         { std::lock_guard<std::mutex> lk(subsMtx); subs->push_back(fd); refreshSubCounts(); }
         logI("WS client subscribed to %s", path.c_str());
 
-        // keep alive: read client frames (close/ping) until disconnect
-        uint8_t f[1024];
-        while (running) {
-            ssize_t n = recv(fd, f, sizeof(f), 0);
-            // M1: SO_RCVTIMEO fires here for idle subscribers (normal — they
-            // just sit receiving broadcasts). A timeout is EAGAIN/EWOULDBLOCK;
-            // keep the connection alive. Only a real close/error ends it.
-            if (n < 0) {
-                if (errno == EAGAIN || errno == EWOULDBLOCK) continue;
-                break;
+        // keep alive: parse client frames properly (audit L2) — PONG the
+        // PINGs so protocol-correct non-browser clients don't drop us, unmask
+        // payloads, honor close. Idle timeouts (M1 SO_RCVTIMEO) at a frame
+        // boundary are normal; a client stalled MID-frame gets 3 strikes.
+        auto recvExact = [&](uint8_t* buf, size_t need, bool atFrameStart) -> int {
+            size_t got = 0; int idleStrikes = 0;
+            while (got < need && running) {
+                ssize_t n = recv(fd, buf + got, need - got, 0);
+                if (n > 0) { got += n; idleStrikes = 0; continue; }
+                if (n == 0) return -1; // peer closed
+                if (errno == EAGAIN || errno == EWOULDBLOCK) {
+                    if (atFrameStart && got == 0) continue;   // idle subscriber: fine forever
+                    if (++idleStrikes >= 3) return -1;        // stalled mid-frame: drop
+                    continue;
+                }
+                return -1;
             }
-            if (n == 0) break; // peer closed
-            uint8_t op = f[0] & 0x0F;
-            if (op == 0x8) break; // close frame
-            // milestone 5 (audit L2): reply PONG to PING, unmask + parse properly
+            return running ? (int)got : -1;
+        };
+        while (running) {
+            uint8_t h[2];
+            if (recvExact(h, 2, true) < 0) break;
+            uint8_t op = h[0] & 0x0F;
+            bool masked = h[1] & 0x80;
+            uint64_t plen = h[1] & 0x7F;
+            if (plen == 126) {
+                uint8_t ext[2]; if (recvExact(ext, 2, false) < 0) break;
+                plen = ((uint64_t)ext[0] << 8) | ext[1];
+            } else if (plen == 127) {
+                uint8_t ext[8]; if (recvExact(ext, 8, false) < 0) break;
+                plen = 0; for (int i = 0; i < 8; i++) plen = (plen << 8) | ext[i];
+            }
+            if (plen > 4096) break; // control/client frames are tiny; oversized = protocol abuse
+            uint8_t mask[4] = {0,0,0,0};
+            if (masked && recvExact(mask, 4, false) < 0) break;
+            std::vector<uint8_t> pay(plen);
+            if (plen && recvExact(pay.data(), plen, false) < 0) break;
+            if (masked) for (size_t i = 0; i < plen; i++) pay[i] ^= mask[i % 4];
+            if (op == 0x8) break;         // close
+            if (op == 0x9) {              // ping -> pong with same payload
+                uint8_t ph[2] = { 0x8A, (uint8_t)plen };
+                std::lock_guard<std::mutex> lk(subsMtx); // serialize with broadcast writes
+                if (!sendAll(fd, ph, 2) || (plen && !sendAll(fd, pay.data(), plen))) break;
+            }
+            // 0xA (pong), 0x1/0x2 (client data): ignored
         }
         { std::lock_guard<std::mutex> lk(subsMtx);
           auto it = std::find(subs->begin(), subs->end(), fd);
