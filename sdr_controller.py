@@ -43,6 +43,13 @@ logger = logging.getLogger(__name__)
 
 VHF_DEFAULT_SERIAL = '00000002'
 
+# H1 guard (audit 2026-07-09): on nodes where the native pilnk_bridge/SDR++
+# stack owns the V4 dongle, this legacy rtl_fm controller must NEVER open it —
+# a stray /audio/start would fight SDR++ for the device and kill native audio.
+# True on Pi5 (bridge is the shipping radio). Flip to False only on a box that
+# actually uses this rtl_fm path as its radio.
+BRIDGE_OWNS_DONGLE = True
+
 # Output format. Opus-in-Ogg, voice mode, 32 kbps.
 OPUS_BITRATE = '32k'
 CHUNK_SIZE = 4096
@@ -153,6 +160,12 @@ class SDRController:
     # ── pipeline lifecycle ────────────────────────────────────
     def start(self, freq_hz=None):
         """Start the rtl_fm → ffmpeg pipeline."""
+        if BRIDGE_OWNS_DONGLE:
+            logger.warning(
+                'rtl_fm start refused: native pilnk_bridge owns the V4 dongle '
+                '(BRIDGE_OWNS_DONGLE). Use the SDR Audio tab / :5656 bridge.'
+            )
+            return False
         with self.lock:
             if self.is_playing:
                 self._kill_pipeline()
@@ -161,7 +174,7 @@ class SDRController:
                 self.frequency = int(freq_hz)
 
             if not self.biast_enabled:
-                self.enable_biast()
+                pass  # bias-T auto-enable disabled — passive P1580
                 time.sleep(0.3)
 
             try:
