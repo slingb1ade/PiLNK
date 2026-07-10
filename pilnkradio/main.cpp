@@ -333,6 +333,65 @@ private:
     uint32_t rate = 2400000;
 };
 
+// ======================= DSP: decimating FIR =======================
+// Windowed-sinc (Hamming) lowpass FIR over interleaved complex float,
+// decimating by `factor` (factor 1 = plain filter). Block-based with carried
+// history so phase is continuous across librtlsdr callbacks.
+class FirDecimator {
+public:
+    void init(int factor, int nTaps, float cutoffNorm /* cycles/sample, <0.5 */) {
+        this->factor = factor;
+        taps.resize(nTaps);
+        double sum = 0.0;
+        for (int i = 0; i < nTaps; i++) {
+            double x = (double)i - (nTaps - 1) / 2.0;
+            double sinc = (x == 0.0) ? 2.0 * cutoffNorm
+                                     : sin(2.0 * M_PI * cutoffNorm * x) / (M_PI * x);
+            double hamm = 0.54 - 0.46 * cos(2.0 * M_PI * i / (nTaps - 1));
+            taps[i] = (float)(sinc * hamm);
+            sum += taps[i];
+        }
+        for (auto& t : taps) t = (float)(t / sum); // unity DC gain
+        hist.assign((size_t)(nTaps - 1) * 2, 0.0f);
+        phase = 0;
+    }
+
+    // in: nIn complex samples (2*nIn floats). out must hold nIn/factor+1 complex.
+    // returns number of complex samples produced.
+    size_t process(const float* in, size_t nIn, float* out) {
+        size_t histC = hist.size() / 2;
+        work.resize((histC + nIn) * 2);
+        memcpy(work.data(), hist.data(), hist.size() * sizeof(float));
+        memcpy(work.data() + hist.size(), in, nIn * 2 * sizeof(float));
+        const int nT = (int)taps.size();
+        size_t total = histC + nIn;
+        size_t nOut = 0;
+        // output at input positions p = (nT-1) + phase, stepping by factor
+        size_t p = (size_t)(nT - 1) + phase;
+        while (p < total) {
+            float re = 0.0f, im = 0.0f;
+            const float* w = work.data() + (p - (nT - 1)) * 2;
+            for (int k = 0; k < nT; k++) {
+                float h = taps[nT - 1 - k];
+                re += h * w[2*k];
+                im += h * w[2*k + 1];
+            }
+            out[2*nOut] = re; out[2*nOut + 1] = im;
+            nOut++;
+            p += factor;
+        }
+        phase = p - total; // carry sub-factor position into the next block
+        // carry last nT-1 samples as history
+        memcpy(hist.data(), work.data() + (total - histC) * 2, hist.size() * sizeof(float));
+        return nOut;
+    }
+
+private:
+    int factor = 1;
+    size_t phase = 0;
+    std::vector<float> taps, hist, work;
+};
+
 // ======================= daemon =======================
 class PilnkRadioDaemon {
 public:
@@ -354,6 +413,7 @@ public:
         };
         rtl.onIq = [this](const uint8_t* d, size_t n) { iqHandler(d, n); };
         initFFT();
+        initDsp();
         applyTuning();
         rtl.setGainIndex(cfg.gainIndex);
         rtl.setAgc(cfg.agc);
@@ -429,7 +489,9 @@ private:
 
     // called on the librtlsdr async thread with raw u8 IQ (I,Q interleaved)
     void iqHandler(const uint8_t* data, size_t len) {
-        // milestone 3: DDC/demod tap goes here (always runs while streaming)
+        // demod always runs while streaming — audio flows whenever playing,
+        // independent of clients (v1 semantics; audioSps is the watchdog key)
+        demodBlock(data, len);
         if (nFftSubs.load() == 0) { fillPos = 0; skipRemaining = 0; return; }
         size_t nSamp = len / 2;
         for (size_t i = 0; i < nSamp; i++) {
@@ -474,6 +536,161 @@ private:
         nFftSubs.store((int)fftSubs.size());
         nAudioSubs.store((int)audioSubs.size());
     }
+
+    // -------- AM demod chain (milestone 3) --------
+    //   2.4 MS/s complex ── NCO (-950 kHz, exact 19/48 of fs => 48-entry
+    //   phasor table, zero drift, no per-sample trig) ── FIR ÷10 → 240 kS/s
+    //   ── FIR ÷5 → 48 kS/s ── channel LPF (bw/2) ── squelch ── AM envelope
+    //   ── DC block ── AGC ── float32 mono 48 kHz → broadcastAudio
+    // Runs entirely on the librtlsdr async thread (light: ~50 MMAC/s total).
+    static constexpr int AUDIO_RATE = 48000;
+    static constexpr int AUDIO_CHUNK = 512;   // samples per WS frame (matches v1 packer)
+    std::vector<float> ncoTab;                // 48 phasors (re,im interleaved)
+    size_t ncoIdx = 0;
+    FirDecimator dec1, dec2, chanFir;
+    std::mutex chanMtx;                       // guards chanFir rebuild vs DSP use
+    std::atomic<bool> sqEnabled{false};
+    std::atomic<float> sqLevel{-50.0f};
+    float sqPowSmooth = 0.0f;                 // DSP thread only
+    float dcState = 0.0f, dcPrev = 0.0f;      // DC blocker (one-pole HPF)
+    float agcGain = 20.0f;                    // DSP thread only
+    std::vector<float> audioAcc;              // pending output samples
+    std::vector<float> dspBufA, dspBufB, dspBufC; // reused work buffers
+
+    void initDsp() {
+        // NCO: shift +950 kHz (VFO sits above hw center) down to DC.
+        // step = -2π·(950000/2400000) = -2π·19/48 → exactly periodic in 48.
+        ncoTab.resize(48 * 2);
+        for (int i = 0; i < 48; i++) {
+            double ph = -2.0 * M_PI * 19.0 * i / 48.0;
+            ncoTab[2*i]   = (float)cos(ph);
+            ncoTab[2*i+1] = (float)sin(ph);
+        }
+        ncoIdx = 0;
+        dec1.init(10, 64, 100000.0f / 2400000.0f);  // 2.4M -> 240k, cutoff 100 kHz
+        dec2.init(5,  64, 20000.0f  / 240000.0f);   // 240k -> 48k,  cutoff 20 kHz
+        rebuildChannelFilter(cfg.bandwidthHz);
+        sqEnabled.store(cfg.squelchEnabled);
+        sqLevel.store((float)cfg.squelchLevel);
+    }
+
+    void rebuildChannelFilter(double bwHz) {
+        double cutoff = std::clamp(bwHz / 2.0, 1500.0, 20000.0);
+        std::lock_guard<std::mutex> lk(chanMtx);
+        chanFir.init(1, 101, (float)(cutoff / AUDIO_RATE));
+        logI("dsp: channel LPF rebuilt (bw %.0f Hz, cutoff %.0f Hz)", bwHz, cutoff);
+    }
+
+    std::vector<float>* testCapture = nullptr; // --selftest audio tap
+
+    // demod tap — called from iqHandler with the raw u8 block
+    void demodBlock(const uint8_t* data, size_t len) {
+        size_t nSamp = len / 2;
+        dspBufA.resize(nSamp * 2);
+        // u8 -> float with NCO rotation fused in one pass
+        for (size_t i = 0; i < nSamp; i++) {
+            float re = ((float)data[2*i]   - 127.4f) * (1.0f / 128.0f);
+            float im = ((float)data[2*i+1] - 127.4f) * (1.0f / 128.0f);
+            float cr = ncoTab[2*ncoIdx], ci = ncoTab[2*ncoIdx + 1];
+            dspBufA[2*i]   = re * cr - im * ci;
+            dspBufA[2*i+1] = re * ci + im * cr;
+            ncoIdx = (ncoIdx + 1) % 48;
+        }
+        dspBufB.resize(nSamp / 10 * 2 + 4);
+        size_t n1 = dec1.process(dspBufA.data(), nSamp, dspBufB.data());
+        dspBufC.resize(n1 / 5 * 2 + 4);
+        size_t n2 = dec2.process(dspBufB.data(), n1, dspBufC.data());
+        dspBufA.resize(n2 * 2 + 4);
+        size_t n3;
+        { std::lock_guard<std::mutex> lk(chanMtx);
+          n3 = chanFir.process(dspBufC.data(), n2, dspBufA.data()); }
+
+        // squelch: smoothed channel power in dBFS (post channel filter)
+        float pow = 0.0f;
+        for (size_t i = 0; i < n3; i++)
+            pow += dspBufA[2*i]*dspBufA[2*i] + dspBufA[2*i+1]*dspBufA[2*i+1];
+        if (n3) pow /= (float)n3;
+        sqPowSmooth += 0.2f * (pow - sqPowSmooth);
+        bool muted = false;
+        if (sqEnabled.load(std::memory_order_relaxed)) {
+            float db = 10.0f * log10f(sqPowSmooth + 1e-12f);
+            muted = db < sqLevel.load(std::memory_order_relaxed);
+        }
+
+        // AM envelope -> DC block -> AGC
+        for (size_t i = 0; i < n3; i++) {
+            float mag = sqrtf(dspBufA[2*i]*dspBufA[2*i] + dspBufA[2*i+1]*dspBufA[2*i+1]);
+            // one-pole DC blocker (~8 Hz at 48k): strips the AM carrier level
+            float y = mag - dcPrev + 0.999f * dcState;
+            dcPrev = mag; dcState = y;
+            float s = y * agcGain;
+            // AGC: fast attack on overshoot, slow decay toward target
+            float a = fabsf(s);
+            if (a > 0.85f)      agcGain *= 0.98f;
+            else if (a < 0.15f) agcGain *= 1.0002f;
+            agcGain = std::clamp(agcGain, 0.5f, 200.0f);
+            audioAcc.push_back(muted ? 0.0f : std::clamp(s, -1.0f, 1.0f));
+        }
+
+        // emit fixed 512-sample chunks (same cadence the v1 packer produced)
+        size_t off = 0;
+        while (audioAcc.size() - off >= AUDIO_CHUNK) {
+            if (testCapture) testCapture->insert(testCapture->end(),
+                                                 audioAcc.begin() + off, audioAcc.begin() + off + AUDIO_CHUNK);
+            else broadcastAudio((const uint8_t*)(audioAcc.data() + off), AUDIO_CHUNK * sizeof(float));
+            off += AUDIO_CHUNK;
+        }
+        if (off) audioAcc.erase(audioAcc.begin(), audioAcc.begin() + off);
+    }
+
+public:
+    // ---- DSP self-test (no hardware): synthesize a textbook AM signal at the
+    // VFO offset and demodulate it through the real chain. Fleet installers
+    // run `pilnkradio --selftest` to validate DSP on any node, no antenna.
+    // Returns 0 on PASS.
+    int selfTest() {
+        initDsp();
+        std::vector<float> out;
+        testCapture = &out;
+        // 2 s of u8 IQ at 2.4 MS/s: carrier at +950 kHz (the VFO slot),
+        // 30% AM by a 1 kHz tone, amplitude 0.5 FS + light noise floor
+        const size_t N = 2 * SAMPLE_RATE;
+        std::vector<uint8_t> iq(N * 2);
+        double ph = 0.0, phStep = 2.0 * M_PI * (VFO_OFFSET / (double)SAMPLE_RATE);
+        uint32_t rng = 0x12345678;
+        for (size_t i = 0; i < N; i++) {
+            double t = (double)i / SAMPLE_RATE;
+            double env = 0.5 * (1.0 + 0.3 * sin(2.0 * M_PI * 1000.0 * t));
+            rng = rng * 1664525u + 1013904223u;
+            double nz = ((int)(rng >> 16 & 0xFF) - 128) / 128.0 * 0.01;
+            iq[2*i]   = (uint8_t)std::clamp(127.4 + 128.0 * (env * cos(ph) + nz), 0.0, 255.0);
+            iq[2*i+1] = (uint8_t)std::clamp(127.4 + 128.0 * (env * sin(ph) + nz), 0.0, 255.0);
+            ph += phStep;
+        }
+        for (size_t off = 0; off < N * 2; off += 65536)
+            demodBlock(iq.data() + off, std::min((size_t)65536, N * 2 - off));
+        testCapture = nullptr;
+        if (out.size() < AUDIO_RATE) { logE("selftest: only %zu audio samples out", out.size()); return 1; }
+        // analyze the last second (AGC/DC settled): Goertzel at 1 kHz vs total
+        const float* x = out.data() + (out.size() - AUDIO_RATE);
+        const int n = AUDIO_RATE;
+        double total = 0.0;
+        for (int i = 0; i < n; i++) total += (double)x[i] * x[i];
+        double w = 2.0 * M_PI * 1000.0 / AUDIO_RATE, c = 2.0 * cos(w);
+        double s0 = 0, s1 = 0, s2 = 0;
+        for (int i = 0; i < n; i++) { s0 = x[i] + c * s1 - s2; s2 = s1; s1 = s0; }
+        // |X(1kHz)|² = s1²+s2²−c·s1·s2; a real tone of amplitude A gives
+        // |X| = A·n/2, so per-sample tone power A²/2 = 2·|X|²/n²
+        double tonePow = (s1*s1 + s2*s2 - c*s1*s2) * 2.0 / ((double)n * n);
+        double toneFrac = tonePow / (total / n + 1e-12);
+        double rate = out.size() / 2.0;
+        logI("selftest: %zu samples (%.0f sps), 1 kHz tone fraction %.3f", out.size(), rate, toneFrac);
+        bool pass = toneFrac > 0.90 && rate > 47000 && rate < 49000;
+        logLine(pass ? "INF" : "ERR", "selftest: %s", pass ? "PASS — demod chain produces a clean 1 kHz tone" : "FAIL");
+        return pass ? 0 : 1;
+    }
+
+private:
 
     // -------- control command queue (drained on the control thread) --------
     // Same queue shape as the bridge; the drain no longer needs a GUI thread —
@@ -541,13 +758,15 @@ private:
                     break;
                 case Command::BANDWIDTH:
                     cfg.bandwidthHz = c.dval;
-                    // milestone 3: swap channel LPF
+                    rebuildChannelFilter(c.dval);
                     break;
                 case Command::SQUELCH_MODE:
                     cfg.squelchEnabled = c.bval;
+                    sqEnabled.store(c.bval);
                     break;
                 case Command::SQUELCH_LEVEL:
                     cfg.squelchLevel = std::clamp(c.dval, -100.0, 0.0);
+                    sqLevel.store((float)cfg.squelchLevel);
                     break;
                 case Command::GAIN_INDEX:
                     cfg.gainIndex = std::clamp(c.ival, 0, std::max(0, (int)rtl.gains().size() - 1));
@@ -936,7 +1155,12 @@ int main(int argc, char** argv) {
         std::string a = argv[i];
         if (a == "--config" && i + 1 < argc) cfgPath = argv[++i];
         else if (a == "--version") { printf("pilnkradio %s\n", PILNKRADIO_VERSION); return 0; }
-        else { fprintf(stderr, "usage: pilnkradio [--config <path>] [--version]\n"); return 2; }
+        else if (a == "--selftest") {
+            Config tcfg; tcfg.path = "/dev/null";
+            PilnkRadioDaemon d(tcfg);
+            return d.selfTest();
+        }
+        else { fprintf(stderr, "usage: pilnkradio [--config <path>] [--version] [--selftest]\n"); return 2; }
     }
 
     logI("pilnkradio %s starting (config: %s)", PILNKRADIO_VERSION, cfgPath.c_str());
