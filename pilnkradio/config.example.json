@@ -1,0 +1,15 @@
+{
+    "serial": "00000002",
+    "ppm": -7,
+    "vfoHz": 124300000.0,
+    "mode": "AM",
+    "bandwidthHz": 8000.0,
+    "gainIndex": 21,
+    "agc": false,
+    "squelchEnabled": false,
+    "squelchLevel": -50.0,
+    "playing": false,
+    "port": 5656,
+    "allowedOrigins": [],
+    "token": ""
+}
