@@ -22,6 +22,8 @@
  * pilnk_bridge/src/main.cpp @ 5aefe59 — audit fixes H2/M1/M2 carried over.
  */
 #include "json.hpp"
+#include <rtl-sdr.h>
+#include <fftw3.h>
 
 #include <cmath>
 #include <cstdio>
@@ -201,24 +203,174 @@ struct Config {
     }
 };
 
+// ======================= driver sanity =======================
+// Fleet lesson (2026-07-09, the V4-deaf hunt): SDR++ silently loaded the
+// stock Debian librtlsdr instead of the rtl-sdr-blog fork and the V4 ran
+// ~10 dB desensitized with bogus gain/ppm behavior. The daemon logs which
+// librtlsdr the loader actually mapped so a wrong-driver node is visible
+// in one journal line instead of a day of RF archaeology.
+static void logLoadedRtlsdr() {
+    std::ifstream maps("/proc/self/maps");
+    std::string line, found;
+    while (std::getline(maps, line)) {
+        if (line.find("librtlsdr") != std::string::npos) {
+            size_t sl = line.find('/');
+            if (sl != std::string::npos) { found = line.substr(sl); break; }
+        }
+    }
+    if (found.empty()) logW("driver: no librtlsdr mapped yet (static link?)");
+    else logI("driver: loaded %s", found.c_str());
+}
+
+// ======================= RTL-SDR source =======================
+// Direct librtlsdr ownership — replaces SDR++'s rtl_sdr_source module.
+// Serial-pinned open (never grab the ADS-B stick), tenths-dB gain list
+// exposed as the same dB steps the bridge published.
+class RtlSource {
+public:
+    // Self-heal contract: fatal device conditions call onFatal, which the
+    // daemon wires to "log + exit nonzero" so systemd owns recovery.
+    std::function<void(const char*)> onFatal;
+    std::function<void(const uint8_t*, size_t)> onIq; // raw u8 IQ from the async loop
+
+    bool open(const std::string& serial, int ppm, uint32_t sampleRate) {
+        int count = rtlsdr_get_device_count();
+        if (count <= 0) { logE("rtl: no devices on USB"); return false; }
+        int index = -1;
+        for (int i = 0; i < count; i++) {
+            char mfg[256] = {0}, prod[256] = {0}, ser[256] = {0};
+            rtlsdr_get_device_usb_strings(i, mfg, prod, ser);
+            logI("rtl: device %d: %s %s serial=%s", i, mfg, prod, ser);
+            if (serial == ser) index = i;
+        }
+        if (index < 0) {
+            logE("rtl: serial %s not found among %d device(s) — refusing to guess (ADS-B stick protection)", serial.c_str(), count);
+            return false;
+        }
+        if (rtlsdr_open(&dev, index) != 0) { dev = nullptr; logE("rtl: open(index %d) failed — device busy?", index); return false; }
+        if (rtlsdr_set_sample_rate(dev, sampleRate) != 0) { logE("rtl: set_sample_rate(%u) failed", sampleRate); return false; }
+        this->rate = sampleRate;
+        // librtlsdr rejects ppm 0 with -2 ("same value") on some versions; ignore that
+        if (ppm != 0) rtlsdr_set_freq_correction(dev, ppm);
+        // gain list: librtlsdr gives tenths of dB; publish dB (matches the
+        // 29-step list the bridge exposed, so saved gainIndex carries over)
+        int n = rtlsdr_get_tuner_gains(dev, nullptr);
+        if (n > 0) {
+            std::vector<int> tenths(n);
+            rtlsdr_get_tuner_gains(dev, tenths.data());
+            gainStepsDb.clear();
+            for (int t : tenths) gainStepsDb.push_back(t / 10.0f);
+        }
+        rtlsdr_set_tuner_gain_mode(dev, 1); // manual
+        logI("rtl: opened serial=%s rate=%u ppm=%d gains=%d", serial.c_str(), sampleRate, ppm, (int)gainStepsDb.size());
+        return true;
+    }
+
+    void closeDev() {
+        stopStream();
+        if (dev) { rtlsdr_close(dev); dev = nullptr; }
+    }
+
+    bool setCenterHz(double hz) {
+        if (!dev) return false;
+        return rtlsdr_set_center_freq(dev, (uint32_t)llround(hz)) == 0;
+    }
+    void setGainIndex(int idx) {
+        if (!dev || gainStepsDb.empty()) return;
+        idx = std::clamp(idx, 0, (int)gainStepsDb.size() - 1);
+        rtlsdr_set_tuner_gain_mode(dev, 1);
+        rtlsdr_set_tuner_gain(dev, (int)llround(gainStepsDb[idx] * 10.0f));
+    }
+    void setAgc(bool on) {
+        if (!dev) return;
+        rtlsdr_set_tuner_gain_mode(dev, on ? 0 : 1);
+        rtlsdr_set_agc_mode(dev, on ? 1 : 0);
+    }
+
+    bool startStream() {
+        if (!dev || streaming) return false;
+        rtlsdr_reset_buffer(dev);
+        stopRequested = false;
+        streaming = true;
+        readThread = std::thread([this]() {
+            // 16 buffers × 64 KB ≈ 218 ms of IQ at 2.4 MS/s — smooth on a Pi
+            int r = rtlsdr_read_async(dev, &RtlSource::asyncTrampoline, this, 16, 65536);
+            streaming = false;
+            if (!stopRequested) {
+                // async loop ended on its own = device lost (USB drop / driver
+                // hang). This is THE invisible failure of the v1 stack.
+                if (onFatal) onFatal("rtlsdr_read_async ended unexpectedly (device lost?)");
+                (void)r;
+            }
+        });
+        logI("rtl: streaming started");
+        return true;
+    }
+
+    void stopStream() {
+        if (!streaming && !readThread.joinable()) return;
+        stopRequested = true;
+        if (dev) rtlsdr_cancel_async(dev);
+        if (readThread.joinable()) readThread.join();
+        streaming = false;
+        logI("rtl: streaming stopped");
+    }
+
+    bool isStreaming() const { return streaming; }
+    const std::vector<float>& gains() const { return gainStepsDb; }
+    uint32_t sampleRate() const { return rate; }
+
+private:
+    static void asyncTrampoline(unsigned char* buf, uint32_t len, void* ctx) {
+        RtlSource* self = (RtlSource*)ctx;
+        if (self->onIq && !self->stopRequested) self->onIq(buf, len);
+    }
+    rtlsdr_dev_t* dev = nullptr;
+    std::thread readThread;
+    std::atomic<bool> streaming{false};
+    std::atomic<bool> stopRequested{false};
+    std::vector<float> gainStepsDb;
+    uint32_t rate = 2400000;
+};
+
 // ======================= daemon =======================
 class PilnkRadioDaemon {
 public:
     PilnkRadioDaemon(Config& cfg) : cfg(cfg) {}
 
     // returns false if the server could not bind (port taken => refuse to
-    // start, prevents an accidental sdrpp+pilnkradio double-run on :5656)
+    // start, prevents an accidental sdrpp+pilnk_bridge double-run on :5656)
+    // or if the configured dongle is absent (exit => systemd/udev retries).
     bool start() {
         if (!startServer()) return false;
+        logLoadedRtlsdr();
+        if (!rtl.open(cfg.serial, cfg.ppm, SAMPLE_RATE)) {
+            stopServer(); // leave no joinable threads behind: exit clean, not abort
+            return false;
+        }
+        rtl.onFatal = [](const char* why) {
+            logE("FATAL: %s — exiting so systemd restarts us", why);
+            exit(2);
+        };
+        rtl.onIq = [this](const uint8_t* d, size_t n) { iqHandler(d, n); };
+        initFFT();
+        applyTuning();
+        rtl.setGainIndex(cfg.gainIndex);
+        rtl.setAgc(cfg.agc);
         controlThread = std::thread(&PilnkRadioDaemon::controlLoop, this);
-        // milestone 2+: openDevice(); startRadio() if cfg.playing
+        if (cfg.playing) {
+            logI("consent was on (persisted) — resuming playback");
+            rtl.startStream();
+        }
         return true;
     }
 
     void stop() {
         stopping = true;
         if (controlThread.joinable()) controlThread.join();
+        rtl.closeDev();
         stopServer();
+        freeFFT();
     }
 
     // ---- WS broadcast (called by FFT/audio producers; producers arrive in M2/M3) ----
@@ -228,6 +380,100 @@ public:
 private:
     Config& cfg;
     std::atomic<bool> stopping{false};
+
+    // -------- radio hardware + tuning layout --------
+    // Hardware center sits below the VFO so the listening frequency is clear
+    // of the RTL DC spike — same layout the SDR++ chain used (~950 kHz).
+    static constexpr uint32_t SAMPLE_RATE = 2400000;
+    static constexpr double   VFO_OFFSET  = 950000.0;
+    RtlSource rtl;
+
+    double hwCenterHz() const { return cfg.vfoHz - VFO_OFFSET; }
+
+    void applyTuning() {
+        double c = hwCenterHz();
+        if (!rtl.setCenterHz(c)) logW("rtl: set_center_freq(%.0f) failed", c);
+        curCenterHz.store(c);
+        curSpanHz.store((double)SAMPLE_RATE);
+    }
+
+    // -------- FFT producer (ported from pilnk_bridge, adapted to u8 IQ) --------
+    fftwf_complex* fftIn = nullptr;
+    fftwf_complex* fftOut = nullptr;
+    fftwf_plan fftPlan = nullptr;
+    std::vector<float> window;
+    int fillPos = 0;
+    int skipRemaining = 0;
+    std::atomic<double> curCenterHz{0};
+    std::atomic<double> curSpanHz{0};
+    std::atomic<int> nFftSubs{0};
+    std::atomic<int> nAudioSubs{0};
+
+    void initFFT() {
+        window.resize(PILNK_FFT_SIZE);
+        for (int i = 0; i < PILNK_FFT_SIZE; i++) {
+            window[i] = (float)(0.42 - 0.5 * cos(2.0 * M_PI * i / (PILNK_FFT_SIZE - 1))
+                                     + 0.08 * cos(4.0 * M_PI * i / (PILNK_FFT_SIZE - 1)));
+        }
+        fftIn  = fftwf_alloc_complex(PILNK_FFT_SIZE);
+        fftOut = fftwf_alloc_complex(PILNK_FFT_SIZE);
+        fftPlan = fftwf_plan_dft_1d(PILNK_FFT_SIZE, fftIn, fftOut, FFTW_FORWARD, FFTW_ESTIMATE);
+        logI("fft: %d-point Blackman @ ~%d fps", PILNK_FFT_SIZE, (int)PILNK_FFT_RATE);
+    }
+
+    void freeFFT() {
+        if (fftPlan) { fftwf_destroy_plan(fftPlan); fftPlan = nullptr; }
+        if (fftIn)  { fftwf_free(fftIn);  fftIn = nullptr; }
+        if (fftOut) { fftwf_free(fftOut); fftOut = nullptr; }
+    }
+
+    // called on the librtlsdr async thread with raw u8 IQ (I,Q interleaved)
+    void iqHandler(const uint8_t* data, size_t len) {
+        // milestone 3: DDC/demod tap goes here (always runs while streaming)
+        if (nFftSubs.load() == 0) { fillPos = 0; skipRemaining = 0; return; }
+        size_t nSamp = len / 2;
+        for (size_t i = 0; i < nSamp; i++) {
+            if (skipRemaining > 0) { skipRemaining--; continue; }
+            // u8 -> centered float; 127.4 matches the rtl-sdr DC convention
+            float re = ((float)data[2*i]   - 127.4f) * (1.0f / 128.0f);
+            float im = ((float)data[2*i+1] - 127.4f) * (1.0f / 128.0f);
+            fftIn[fillPos][0] = re * window[fillPos];
+            fftIn[fillPos][1] = im * window[fillPos];
+            fillPos++;
+            if (fillPos >= PILNK_FFT_SIZE) {
+                computeAndBroadcastFFT();
+                fillPos = 0;
+                double span = curSpanHz.load();
+                int skip = (int)(span / PILNK_FFT_RATE) - PILNK_FFT_SIZE;
+                skipRemaining = skip > 0 ? skip : 0;
+            }
+        }
+    }
+
+    void computeAndBroadcastFFT() {
+        fftwf_execute(fftPlan);
+        const int N = PILNK_FFT_SIZE;
+        std::vector<uint8_t> frame(8 + 8 + 4 + (size_t)N * 4);
+        double center = curCenterHz.load();
+        double span = curSpanHz.load();
+        std::memcpy(frame.data(), &center, 8);
+        std::memcpy(frame.data() + 8, &span, 8);
+        uint32_t nb = (uint32_t)N;
+        std::memcpy(frame.data() + 16, &nb, 4);
+        float* outdb = (float*)(frame.data() + 20);
+        for (int p = 0; p < N; p++) {
+            int src = (p + N / 2) % N; // fftshift -> ascending -span/2 .. +span/2
+            float re = fftOut[src][0], im = fftOut[src][1];
+            float mag = sqrtf(re * re + im * im) / (float)N;
+            outdb[p] = 20.0f * log10f(mag + 1e-12f);
+        }
+        broadcastFFT(frame.data(), frame.size());
+    }
+
+    void refreshSubCounts() { // call under subsMtx
+        nFftSubs.store((int)fftSubs.size());
+        nAudioSubs.store((int)audioSubs.size());
+    }
 
     // -------- control command queue (drained on the control thread) --------
     // Same queue shape as the bridge; the drain no longer needs a GUI thread —
@@ -281,12 +527,13 @@ private:
             switch (c.type) {
                 case Command::PLAYING:
                     cfg.playing = c.bval;
-                    // milestone 2+: start/stop rtlsdr_read_async here
+                    if (c.bval) rtl.startStream(); else rtl.stopStream();
                     logI("control: playing -> %s", c.bval ? "true" : "false");
                     break;
                 case Command::FREQ:
                     cfg.vfoHz = c.dval;
-                    // milestone 2+: retune hardware + NCO
+                    applyTuning();
+                    // milestone 3: retune the NCO with the hardware
                     logI("control: vfo -> %.0f Hz", c.dval);
                     break;
                 case Command::MODE:
@@ -303,12 +550,12 @@ private:
                     cfg.squelchLevel = std::clamp(c.dval, -100.0, 0.0);
                     break;
                 case Command::GAIN_INDEX:
-                    cfg.gainIndex = c.ival;
-                    // milestone 2+: rtlsdr_set_tuner_gain
+                    cfg.gainIndex = std::clamp(c.ival, 0, std::max(0, (int)rtl.gains().size() - 1));
+                    rtl.setGainIndex(cfg.gainIndex);
                     break;
                 case Command::AGC:
                     cfg.agc = c.bval;
-                    // milestone 2+: rtlsdr_set_agc_mode
+                    rtl.setAgc(c.bval);
                     break;
             }
         }
@@ -317,10 +564,8 @@ private:
 
     void refreshStatus() {
         StatusSnapshot s;
-        // Hardware center sits ~950 kHz below the VFO to keep the VFO clear of
-        // the DC spike — same layout the SDR++ chain used. Real tuning in M2.
         s.vfoHz = cfg.vfoHz;
-        s.centerHz = cfg.vfoHz - 950000.0;
+        s.centerHz = hwCenterHz();
         s.bandwidthHz = cfg.bandwidthHz;
         s.mode = modeFromString(cfg.mode);
         s.playing = cfg.playing;
@@ -328,7 +573,8 @@ private:
         s.squelchLevel = (float)cfg.squelchLevel;
         s.rfGainIndex = cfg.gainIndex;
         s.rfAgc = cfg.agc;
-        // s.rfGainSteps: stays empty until M2 populates it from the tuner
+        s.rfGainSteps = rtl.gains(); // empty list = no device: the tell the
+                                     // tab/watchdog key on stays truthful
         sampleFlow(s);
         { std::lock_guard<std::mutex> lk(statusMtx); status = s; }
     }
@@ -635,7 +881,7 @@ private:
         // bad client before eviction.
         struct timeval sndto{0, 250000};
         setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &sndto, sizeof(sndto));
-        { std::lock_guard<std::mutex> lk(subsMtx); subs->push_back(fd); }
+        { std::lock_guard<std::mutex> lk(subsMtx); subs->push_back(fd); refreshSubCounts(); }
         logI("WS client subscribed to %s", path.c_str());
 
         // keep alive: read client frames (close/ping) until disconnect
@@ -656,7 +902,8 @@ private:
         }
         { std::lock_guard<std::mutex> lk(subsMtx);
           auto it = std::find(subs->begin(), subs->end(), fd);
-          if (it != subs->end()) subs->erase(it); }
+          if (it != subs->end()) subs->erase(it);
+          refreshSubCounts(); }
         close(fd);
         logI("WS client left %s", path.c_str());
     }
@@ -675,6 +922,7 @@ private:
                 close(fd); subs.erase(subs.begin() + i);
             } else { i++; }
         }
+        refreshSubCounts();
     }
 };
 
