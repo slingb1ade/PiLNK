@@ -27,6 +27,17 @@ loader actually mapped:
 Check that line after **every** install. If it shows
 `/lib/.../librtlsdr.so.0`, the node is deaf — rebuild against the fork.
 
+## Install (fleet nodes — the easy way)
+
+One command on any PiLNK node (v1.3.0+). Builds everything, self-tests the
+DSP with no antenna, and walks you through dongle + frequency:
+
+```bash
+curl -s https://raw.githubusercontent.com/slingb1ade/PiLNK/main/pilnkradio-install.sh | bash
+```
+
+The manual steps below are what the script automates.
+
 ## Build
 
 ```bash

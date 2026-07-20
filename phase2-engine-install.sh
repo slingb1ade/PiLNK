@@ -1,4 +1,12 @@
 #!/usr/bin/env bash
+# ⚠ SUPERSEDED (2026-07-20): this installs the RETIRED v1 engine (SDR++ +
+# pilnk_bridge, 30-60 min build). Fleet nodes should use pilnkradio-install.sh
+# in the repo root instead — it installs the v2 pilnkradio daemon in minutes.
+# Kept only as a reference for dev-bench SDR++ builds.
+echo "⚠ SUPERSEDED: use pilnkradio-install.sh (v2 engine) instead." >&2
+echo "  Run this v1 SDR++ script only if you know you want the dev-bench build." >&2
+read -r -p "Continue with the OLD v1 install anyway? [y/N] " _a </dev/tty || _a=n
+[ "${_a,,}" = "y" ] || exit 1
 # phase2-engine-install.sh — SDR++ + pilnk_bridge engine onto Pi5 (EpsomPi)
 # Mirrors the proven Pi4 build exactly (SDR++ 36ea9a1 + bridge v0.5.1).
 # Run:  bash ~/pilnk/phase2-engine-install.sh 2>&1 | tee ~/phase2.log
