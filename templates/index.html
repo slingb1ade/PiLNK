@@ -1487,6 +1487,13 @@
                 </div>
                 <span id="saSignalVal" style="font-size:0.6rem;color:var(--text-dim);width:24px;text-align:right;font-family:'Share Tech Mono',monospace;">0</span>
               </div>
+              <div style="display:flex;align-items:center;gap:8px;margin-top:5px;">
+                <span style="font-size:0.55rem;color:var(--text-dim);letter-spacing:0.08em;width:32px;">VOICE</span>
+                <div style="flex:1;height:6px;background:var(--bg-card);border:1px solid var(--border);border-radius:3px;overflow:hidden;">
+                  <div id="saVoiceBar" style="height:100%;width:0%;background:linear-gradient(90deg,#10b981 0%,#34d399 60%,#f59e0b 85%,#ef4444 100%);transition:width 80ms linear;"></div>
+                </div>
+                <span id="saVoiceVal" style="font-size:0.6rem;color:var(--text-dim);width:24px;text-align:right;font-family:'Share Tech Mono',monospace;">0</span>
+              </div>
             </div>
 
             <!-- Record Button -->
@@ -1526,8 +1533,8 @@
                 <span style="font-size:0.6rem;color:var(--text-dim);width:64px;flex:0 0 auto;">Squelch</span>
                 <button class="sdr-tgl" id="sdrSqBtn" role="switch" aria-checked="false" title="squelch on/off" disabled><span class="knob"></span></button>
                 <span class="sdr-tglst" id="sdrSqState">OFF</span>
-                <input type="range" min="-45" max="0" value="-30" id="sdrSqLevel" disabled style="flex:1;min-width:80px;"/>
-                <span id="sdrSqLevelVal" style="font-size:0.55rem;color:var(--text-dim);font-family:'Share Tech Mono',monospace;width:58px;text-align:right;">-50 dBFS</span>
+                <input type="range" min="-75" max="-50" value="-65" id="sdrSqLevel" disabled style="flex:1;min-width:80px;"/>
+                <span id="sdrSqLevelVal" style="font-size:0.55rem;color:var(--text-dim);font-family:'Share Tech Mono',monospace;width:58px;text-align:right;">-65 dBFS</span>
                 <span id="sdrSqDot" class="sdr-sqldot" title="green = audio passing"></span>
                 <span class="sdr-pending" id="sdrSqPending">bridge pending</span>
               </div>
@@ -7805,8 +7812,9 @@ setInterval(raPoll, 5000);
   var fftWs=null, audioWs=null, wantConn=false, connected=false, retryT=null, statusT=null;
   var latestFFT=null, fftDirty=false, rendering=false, didFirst=false;
   var audioCtx=null, masterGain=null, afGainNode=null, limiter=null, nextTime=0;
+  var afMeterRms=0, afMeterT=0, afMeterDisp=0;   // voice (AF) meter state
   var muted=false, volume=0.60, afGainDb=-6;
-  var sqOn=false, sqLevel=-50;
+  var sqOn=false, sqLevel=-65;
   var gateNode=null, afsqOn=(localStorage.getItem('pilnk-afsq')==='1'), afsqFloor=null, afsqSmooth=null, afsqSlow=null, afsqHold=0, afsqLast=1;
   var rfSteps=null, rfIndex=0, rfAgc=false;
   var caps={squelch:false, rfgain:false};
@@ -7904,6 +7912,8 @@ setInterval(raPoll, 5000);
     var sr=st.audioSampleRate||48000;
     var p=0,i; for(i=0;i<n;i++) p+=samples[i]*samples[i];
     var rms=Math.sqrt(p/n);
+    afMeterRms=rms*(gateNode?gateNode.gain.value:1);   // post-squelch × AF-NR gate = audible voice level
+    afMeterT=(window.performance?performance.now():Date.now());
     var ab=audioCtx.createBuffer(1,n,sr); ab.copyToChannel(samples,0);
     var src=audioCtx.createBufferSource(); src.buffer=ab; src.connect(gateNode||afGainNode);
     var now=audioCtx.currentTime;
@@ -8007,9 +8017,21 @@ setInterval(raPoll, 5000);
     if(fill) fill.style.width=(t*100).toFixed(1)+'%';
     if(val) val.textContent=Math.round(t*100);
   }
+  function updateVoiceMeter(){
+    var fill=$('saVoiceBar'), val=$('saVoiceVal');
+    if(!fill&&!val) return;
+    var now=(window.performance?performance.now():Date.now());
+    var lvl=(now-afMeterT<400)?afMeterRms:0;         // no chunks -> silence
+    var db=20*Math.log10(lvl+1e-6);
+    var t=(db+40)/40; if(t<0)t=0; if(t>1)t=1;        // -40..0 dBFS -> 0..100
+    afMeterDisp=Math.max(t, afMeterDisp*0.92);        // fast attack, smooth decay
+    if(afMeterDisp<0.005)afMeterDisp=0;
+    if(fill) fill.style.width=(afMeterDisp*100).toFixed(1)+'%';
+    if(val) val.textContent=Math.round(afMeterDisp*100);
+  }
   function render(){
     requestAnimationFrame(render);
-    drawSpectrum(); updateMeter();
+    drawSpectrum(); updateMeter(); updateVoiceMeter();
     if(fftDirty){ pushWaterfall(); fftDirty=false; }
   }
 
