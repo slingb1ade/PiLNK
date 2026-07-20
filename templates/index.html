@@ -1268,7 +1268,8 @@
           <!-- Pi5 2026-07-08: Radio button RESTORED — no SDR++ engine here yet; rtl_fm may still work. Re-hide at Phase 2/3. -->
 <!-- rtl_fm Radio tab retired 2026-07-10: pilnkradio (v2 engine) + SDR Audio tab
      replace it (AJ decision; tab content kept below for the Phase-3 cleanup) -->
-          <button class="nav-item" data-tab="sdr-audio" role="menuitem" onclick="navPick('sdr-audio','SDR Audio')">SDR Audio</button>
+          <!-- hidden until an engine answers on :5656 (fleet nodes without radio hardware never see it) -->
+          <button class="nav-item" id="navSdrAudio" data-tab="sdr-audio" role="menuitem" onclick="navPick('sdr-audio','SDR Audio')" style="display:none">SDR Audio</button>
           <button class="nav-item" data-tab="history" role="menuitem" onclick="navPick('history','History')">History</button>
           <button class="nav-item" data-tab="options" role="menuitem" onclick="navPick('options','Options')">Options</button>
           <button class="nav-item" data-tab="stats" role="menuitem" onclick="navPick('stats','Stats')">Stats</button>
@@ -8233,6 +8234,21 @@ setInterval(raPoll, 5000);
 
   if(document.readyState==='loading') document.addEventListener('DOMContentLoaded', wireControls);
   else wireControls();
+
+  // ---- engine-presence gate: the SDR Audio nav button stays hidden until a
+  // pilnkradio/bridge answers on :5656. Re-probe every 5 min while absent, so
+  // installing the engine reveals the tab without a dashboard update.
+  function probeEngine(){
+    var btn=$('navSdrAudio');
+    if(!btn || btn.style.display!=='none') return;
+    var ctl=('AbortController' in window)?new AbortController():null;
+    var t=ctl&&setTimeout(function(){ ctl.abort(); },3000);
+    fetch(base()+'/sdr/status', ctl?{signal:ctl.signal}:{})
+      .then(function(r){ if(t)clearTimeout(t); if(r.ok) btn.style.display=''; },
+            function(){ if(t)clearTimeout(t); });
+  }
+  probeEngine();
+  setInterval(probeEngine, 300000);
 })();
 </script>
 </body>
