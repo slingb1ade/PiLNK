@@ -50,31 +50,33 @@ ok "source: $SRC/pilnkradio"
 
 # ── [2/8] build dependencies ───────────────────────────────
 step "2/8 build dependencies"
+info "updating package lists (can take a minute or two on a fresh node)…"
 sudo apt-get update -qq
-sudo apt-get install -y -qq build-essential cmake git pkg-config \
-    libusb-1.0-0-dev libfftw3-dev curl >/dev/null
+info "installing build tools…"
+sudo apt-get install -y build-essential cmake git pkg-config \
+    libusb-1.0-0-dev libfftw3-dev curl
 ok "deps installed"
 
 # ── [3/8] rtl-sdr-blog driver fork (THE deaf-V4 lesson) ────
 # The RTL-SDR Blog V4 REQUIRES this fork. With stock librtlsdr the node
 # "works" but is ~10 dB deaf with no error anywhere. Never skip this.
-step "3/8 rtl-sdr-blog driver fork"
+step "3/8 rtl-sdr-blog driver fork (~3-5 min on a Pi 4 — compile output below)"
 if [ ! -d "$HOME/rtl-sdr-blog" ]; then
     git clone --depth 1 https://github.com/rtlsdrblog/rtl-sdr-blog "$HOME/rtl-sdr-blog"
 fi
 cmake -B "$HOME/rtl-sdr-blog/build" "$HOME/rtl-sdr-blog" \
-    -DINSTALL_UDEV_RULES=ON -DDETACH_KERNEL_DRIVER=ON >/dev/null
-make -C "$HOME/rtl-sdr-blog/build" -j"$J" >/dev/null
-sudo make -C "$HOME/rtl-sdr-blog/build" install >/dev/null
+    -DINSTALL_UDEV_RULES=ON -DDETACH_KERNEL_DRIVER=ON
+make -C "$HOME/rtl-sdr-blog/build" -j"$J"
+sudo make -C "$HOME/rtl-sdr-blog/build" install
 sudo ldconfig
 echo 'blacklist dvb_usb_rtl28xxu' | sudo tee /etc/modprobe.d/blacklist-rtl.conf >/dev/null
 [ -f /usr/local/lib/librtlsdr.so ] || die "fork install missing /usr/local/lib/librtlsdr.so"
 ok "driver fork installed to /usr/local"
 
 # ── [4/8] build pilnkradio ─────────────────────────────────
-step "4/8 build pilnkradio"
-cmake -B "$SRC/pilnkradio/build" "$SRC/pilnkradio" -DRTLSDR_PREFIX=/usr/local >/dev/null
-make -C "$SRC/pilnkradio/build" -j"$J" >/dev/null
+step "4/8 build pilnkradio (~1-2 min)"
+cmake -B "$SRC/pilnkradio/build" "$SRC/pilnkradio" -DRTLSDR_PREFIX=/usr/local
+make -C "$SRC/pilnkradio/build" -j"$J"
 # hard gate: the binary must link the fork, not stock librtlsdr
 if ! ldd "$SRC/pilnkradio/build/pilnkradio" | grep -q '/usr/local/lib/librtlsdr'; then
     ldd "$SRC/pilnkradio/build/pilnkradio" | grep rtlsdr || true
