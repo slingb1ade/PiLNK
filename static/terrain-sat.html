@@ -1,0 +1,122 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>PiLNK · 3D Terrain (satellite)</title>
+<style>
+  :root{--purple:#7c3aed;--ink:#0b0f1a;--panel:rgba(10,14,26,.85);--line:#1f2a44;--txt:#dfe7f5;--dim:#8ea2c7;}
+  *{box-sizing:border-box;margin:0;padding:0}
+  html,body{height:100%;background:var(--ink);color:var(--txt);font-family:ui-monospace,Menlo,Consolas,monospace;overflow:hidden}
+  #scene{position:fixed;inset:0}
+  .card{position:fixed;background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:10px 12px;backdrop-filter:blur(6px);font-size:12px;z-index:10}
+  #tl{top:12px;left:12px;max-width:340px}
+  #tl .t{color:var(--purple);font-weight:700;letter-spacing:.06em}
+  #tl .s{color:var(--dim);font-size:11px;margin-top:3px;line-height:1.5}
+  #status{margin-top:6px;color:var(--dim)}
+  #help{bottom:12px;right:12px;color:var(--dim);font-size:10px;text-align:right}
+  #banner{position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);color:var(--dim);font-size:13px;text-align:center;z-index:20}
+  #attrib{bottom:6px;left:8px;color:var(--dim);font-size:9px;z-index:10;opacity:.7}
+</style>
+</head>
+<body>
+<div id="scene"></div>
+<div id="banner">Loading terrain + imagery…</div>
+<div class="card" id="tl">
+  <div class="t">PiLNK · 3D TERRAIN <span style="color:var(--dim);font-weight:400">satellite</span></div>
+  <div class="s">AWS elevation mesh + Esri World Imagery drape · NZAA / Auckland</div>
+  <div id="status">fetching…</div>
+</div>
+<div class="card" id="help">drag = orbit · scroll = zoom · right-drag = pan &nbsp;|&nbsp; purple pin = NZAA</div>
+<div id="attrib">Imagery © Esri, Maxar, Earthstar Geographics · Elevation: AWS Terrain Tiles</div>
+
+<script crossorigin="anonymous" src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script crossorigin="anonymous" src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
+<script>
+/* PiLNK 3D terrain — elevation mesh from AWS Terrain Tiles, draped with real
+   Esri World Imagery. 1 unit = 1 metre. */
+const CFG={ ref:{lat:-37.008,lon:174.792}, zElev:12, tr:2, zImg:13, ve:2.0, seg:420 };
+const D2R=Math.PI/180,R2D=180/Math.PI;
+const mPerLat=111320, mPerLon=111320*Math.cos(CFG.ref.lat*D2R);
+const P=(z)=>Math.pow(2,z);
+const lon2t=(lon,z)=>(lon+180)/360*P(z), lat2t=(lat,z)=>(1-Math.asinh(Math.tan(lat*D2R))/Math.PI)/2*P(z);
+const t2lon=(x,z)=>x/P(z)*360-180, t2lat=(y,z)=>{const n=Math.PI-2*Math.PI*y/P(z);return R2D*Math.atan(0.5*(Math.exp(n)-Math.exp(-n)));};
+const enuE=(lon)=>(lon-CFG.ref.lon)*mPerLon, enuN=(lat)=>(lat-CFG.ref.lat)*mPerLat;
+
+const host=document.getElementById('scene');
+let renderer;
+try{ renderer=new THREE.WebGLRenderer({antialias:true, logarithmicDepthBuffer:true}); }
+catch(e){ document.getElementById('banner').textContent='WebGL unavailable: '+(e.message||e); throw e; }
+renderer.setSize(innerWidth,innerHeight); renderer.setPixelRatio(Math.min(devicePixelRatio,2));
+renderer.outputEncoding=THREE.sRGBEncoding;
+host.appendChild(renderer.domElement);
+const scene=new THREE.Scene(); scene.background=new THREE.Color(0x0a0f1a);
+scene.fog=new THREE.Fog(0x0a0f1a, 34000, 95000);
+const camera=new THREE.PerspectiveCamera(55, innerWidth/innerHeight, 1, 400000);
+camera.position.set(0, 8000, 21000);
+const controls=new THREE.OrbitControls(camera, renderer.domElement);
+controls.enableDamping=true; controls.dampingFactor=0.08; controls.minDistance=500; controls.maxDistance=120000;
+scene.add(new THREE.HemisphereLight(0xbcd4ff,0x24303f,0.7));
+const sun=new THREE.DirectionalLight(0xffffff,0.9); sun.position.set(-14000,22000,12000); scene.add(sun);
+
+const ecx=Math.floor(lon2t(CFG.ref.lon,CFG.zElev)), ecy=Math.floor(lat2t(CFG.ref.lat,CFG.zElev));
+const ex0=ecx-CFG.tr, ey0=ecy-CFG.tr, etW=2*CFG.tr+1, EW=etW*256;
+const lonW=t2lon(ex0,CFG.zElev), lonE=t2lon(ex0+etW,CFG.zElev), latN=t2lat(ey0,CFG.zElev), latS=t2lat(ey0+etW,CFG.zElev);
+
+const ix0=Math.floor(lon2t(lonW,CFG.zImg)), ix1=Math.floor(lon2t(lonE,CFG.zImg));
+const iy0=Math.floor(lat2t(latN,CFG.zImg)), iy1=Math.floor(lat2t(latS,CFG.zImg));
+const itWx=ix1-ix0+1, itWy=iy1-iy0+1, IW=itWx*256, IH=itWy*256;
+const imgLonW=t2lon(ix0,CFG.zImg), imgLonE=t2lon(ix1+1,CFG.zImg);
+const imgLatN=t2lat(iy0,CFG.zImg), imgLatS=t2lat(iy1+1,CFG.zImg);
+
+const eCanvas=document.createElement('canvas'); eCanvas.width=EW; eCanvas.height=EW;
+const ectx=eCanvas.getContext('2d',{willReadFrequently:true});
+const iCanvas=document.createElement('canvas'); iCanvas.width=IW; iCanvas.height=IH;
+const ictx=iCanvas.getContext('2d');
+
+function loadImg(url,ctx,dx,dy){return new Promise(res=>{const im=new Image();im.crossOrigin='anonymous';im.onload=()=>{ctx.drawImage(im,dx,dy);res(true);};im.onerror=()=>res(false);im.src=url;});}
+
+async function build(){
+  const ej=[]; for(let dy=0;dy<etW;dy++)for(let dx=0;dx<etW;dx++)
+    ej.push(loadImg('https://s3.amazonaws.com/elevation-tiles-prod/terrarium/'+CFG.zElev+'/'+(ex0+dx)+'/'+(ey0+dy)+'.png', ectx, dx*256, dy*256));
+  const ij=[]; for(let ty=iy0;ty<=iy1;ty++)for(let tx=ix0;tx<=ix1;tx++)
+    ij.push(loadImg('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/'+CFG.zImg+'/'+ty+'/'+tx, ictx, (tx-ix0)*256, (ty-iy0)*256));
+  const [eok,iok]=await Promise.all([Promise.all(ej),Promise.all(ij)]);
+  document.getElementById('status').textContent='elev '+eok.filter(Boolean).length+'/'+ej.length+' · imagery '+iok.filter(Boolean).length+'/'+ij.length+' · building…';
+
+  const ed=ectx.getImageData(0,0,EW,EW).data, H=new Float32Array(EW*EW);
+  for(let p=0;p<EW*EW;p++){const i=p*4;H[p]=(ed[i]*256+ed[i+1]+ed[i+2]/256)-32768;}
+  const hAt=(u,v)=>{const fx=u*(EW-1),fy=v*(EW-1);const X1=Math.min(EW-1,Math.floor(fx)),Y1=Math.min(EW-1,Math.floor(fy)),X2=Math.min(EW-1,X1+1),Y2=Math.min(EW-1,Y1+1);const tx=fx-X1,ty=fy-Y1;const a=H[Y1*EW+X1],b=H[Y1*EW+X2],c=H[Y2*EW+X1],d=H[Y2*EW+X2];return (a*(1-tx)+b*tx)*(1-ty)+(c*(1-tx)+d*tx)*ty;};
+
+  const tex=new THREE.CanvasTexture(iCanvas); tex.encoding=THREE.sRGBEncoding; tex.flipY=true; tex.anisotropy=renderer.capabilities.getMaxAnisotropy();
+
+  const seg=CFG.seg,N=seg+1,pos=new Float32Array(N*N*3),uv=new Float32Array(N*N*2);
+  for(let j=0;j<N;j++)for(let i=0;i<N;i++){
+    const u=i/seg,v=j/seg,lon=lonW+(lonE-lonW)*u,lat=latN+(latS-latN)*v;
+    let h=hAt(u,v); if(h<-60)h=-60;
+    const k=(j*N+i)*3; pos[k]=enuE(lon); pos[k+1]=h*CFG.ve; pos[k+2]=-enuN(lat);
+    const k2=(j*N+i)*2;
+    uv[k2]=(lon-imgLonW)/(imgLonE-imgLonW);
+    uv[k2+1]=1-(imgLatN-lat)/(imgLatN-imgLatS);
+  }
+  const idx=[]; for(let j=0;j<seg;j++)for(let i=0;i<seg;i++){const a=j*N+i,b=j*N+i+1,c=(j+1)*N+i,d=(j+1)*N+i+1;idx.push(a,c,b,b,c,d);}
+  const geo=new THREE.BufferGeometry();
+  geo.setAttribute('position',new THREE.BufferAttribute(pos,3));
+  geo.setAttribute('uv',new THREE.BufferAttribute(uv,2));
+  geo.setIndex(idx); geo.computeVertexNormals();
+  scene.add(new THREE.Mesh(geo,new THREE.MeshStandardMaterial({map:tex,roughness:1.0,metalness:0})));
+
+  const pin=new THREE.Mesh(new THREE.CylinderGeometry(45,45,1400,12),new THREE.MeshBasicMaterial({color:0x7c3aed}));
+  pin.position.set(0,700,0); scene.add(pin);
+
+  document.getElementById('banner').style.display='none';
+  document.getElementById('status').textContent='built · elev z'+CFG.zElev+' · imagery z'+CFG.zImg+' ('+ij.length+' tiles) · ~'+Math.round((lonE-lonW)*mPerLon/1000)+' km · VE '+CFG.ve+'×';
+}
+build().catch(e=>{document.getElementById('banner').textContent='Build failed: '+(e.message||e);});
+
+function animate(){requestAnimationFrame(animate);controls.update();renderer.render(scene,camera);}
+animate();
+addEventListener('resize',()=>{camera.aspect=innerWidth/innerHeight;camera.updateProjectionMatrix();renderer.setSize(innerWidth,innerHeight);});
+</script>
+</body>
+</html>

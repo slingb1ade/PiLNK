@@ -1,0 +1,169 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>PiLNK · 3D Terrain test</title>
+<style>
+  :root{ --purple:#7c3aed; --ink:#0b0f1a; --panel:rgba(10,14,26,.85); --line:#1f2a44; --txt:#dfe7f5; --dim:#8ea2c7; }
+  *{box-sizing:border-box;margin:0;padding:0}
+  html,body{height:100%;background:var(--ink);color:var(--txt);font-family:ui-monospace,Menlo,Consolas,monospace;overflow:hidden}
+  #scene{position:fixed;inset:0}
+  .card{position:fixed;background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:10px 12px;backdrop-filter:blur(6px);font-size:12px;z-index:10}
+  #tl{top:12px;left:12px;max-width:320px}
+  #tl .t{color:var(--purple);font-weight:700;letter-spacing:.06em}
+  #tl .s{color:var(--dim);font-size:11px;margin-top:3px;line-height:1.5}
+  #status{margin-top:6px;color:var(--dim)}
+  #help{bottom:12px;right:12px;color:var(--dim);font-size:10px;text-align:right}
+  #banner{position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);color:var(--dim);font-size:13px;text-align:center;z-index:20}
+</style>
+</head>
+<body>
+<div id="scene"></div>
+<div id="banner">Loading terrain…</div>
+<div class="card" id="tl">
+  <div class="t">PiLNK · 3D TERRAIN <span style="color:var(--dim);font-weight:400">test</span></div>
+  <div class="s">Free AWS Terrain Tiles → Three.js mesh · NZAA / Auckland · elevation-tinted + hillshaded</div>
+  <div id="status">fetching tiles…</div>
+</div>
+<div class="card" id="help">drag = orbit · scroll = zoom · right-drag = pan &nbsp;|&nbsp; purple pin = NZAA</div>
+
+<script crossorigin="anonymous" src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script crossorigin="anonymous" src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
+<script>
+/* PiLNK 3D terrain proof — builds a real elevation mesh around NZAA from the
+   free AWS Terrain Tiles (Terrarium PNG). 1 scene unit = 1 metre. */
+const CFG = {
+  ref:{ lat:-37.008, lon:174.792, fieldElevM:7 },  // NZAA airport reference
+  z: 12,          // tile zoom
+  tr: 2,          // tile radius → (2*tr+1)² tiles (5×5 ≈ 39 km square)
+  ve: 2.0,        // vertical exaggeration (Auckland relief is gentle)
+  seg: 420        // mesh grid resolution per side
+};
+const D2R=Math.PI/180, R2D=180/Math.PI;
+const mPerLat = 111320, mPerLon = 111320*Math.cos(CFG.ref.lat*D2R);
+
+/* web-mercator tile helpers */
+const P=(z)=>Math.pow(2,z);
+const lon2t=(lon,z)=>(lon+180)/360*P(z);
+const lat2t=(lat,z)=>(1-Math.asinh(Math.tan(lat*D2R))/Math.PI)/2*P(z);
+const t2lon=(x,z)=>x/P(z)*360-180;
+const t2lat=(y,z)=>{const n=Math.PI-2*Math.PI*y/P(z);return R2D*Math.atan(0.5*(Math.exp(n)-Math.exp(-n)));};
+
+/* ---- scene ---- */
+const host=document.getElementById('scene');
+let renderer;
+try{ renderer=new THREE.WebGLRenderer({antialias:true, logarithmicDepthBuffer:true}); }
+catch(e){ document.getElementById('banner').textContent='WebGL unavailable: '+(e.message||e); throw e; }
+renderer.setSize(innerWidth,innerHeight); renderer.setPixelRatio(Math.min(devicePixelRatio,2));
+host.appendChild(renderer.domElement);
+
+const scene=new THREE.Scene();
+scene.background=new THREE.Color(0x0a0f1a);
+scene.fog=new THREE.Fog(0x0a0f1a, 30000, 90000);
+
+const camera=new THREE.PerspectiveCamera(55, innerWidth/innerHeight, 1, 400000);
+camera.position.set(0, 9000, 22000);
+const controls=new THREE.OrbitControls(camera, renderer.domElement);
+controls.enableDamping=true; controls.dampingFactor=0.08;
+controls.target.set(0,0,0); controls.minDistance=800; controls.maxDistance=120000;
+
+scene.add(new THREE.HemisphereLight(0xbcd4ff, 0x24303f, 0.9));
+const sun=new THREE.DirectionalLight(0xfff2e0, 1.15); sun.position.set(-14000, 22000, 12000); scene.add(sun);
+
+/* elevation → colour */
+function lerp3(a,b,t){ return [a[0]+(b[0]-a[0])*t, a[1]+(b[1]-a[1])*t, a[2]+(b[2]-a[2])*t]; }
+function colorFor(h){
+  if(h<=0){ const t=Math.max(0,Math.min(1,-h/600)); return lerp3([0.16,0.34,0.44],[0.03,0.08,0.20],t); }
+  if(h<80)  return lerp3([0.28,0.40,0.23],[0.33,0.47,0.26], h/80);
+  if(h<250) return lerp3([0.33,0.47,0.26],[0.46,0.45,0.25], (h-80)/170);
+  if(h<500) return lerp3([0.46,0.45,0.25],[0.42,0.32,0.21], (h-250)/250);
+  return lerp3([0.42,0.32,0.21],[0.62,0.62,0.64], Math.min(1,(h-500)/700));
+}
+
+/* ---- fetch tiles, stitch heights, build mesh ---- */
+const cx=Math.floor(lon2t(CFG.ref.lon,CFG.z)), cy=Math.floor(lat2t(CFG.ref.lat,CFG.z));
+const x0=cx-CFG.tr, y0=cy-CFG.tr, tilesW=2*CFG.tr+1, W=tilesW*256;
+const lonW=t2lon(x0,CFG.z), lonE=t2lon(x0+tilesW,CFG.z);
+const latN=t2lat(y0,CFG.z), latS=t2lat(y0+tilesW,CFG.z);
+
+const cvs=document.createElement('canvas'); cvs.width=W; cvs.height=W;
+const ctx=cvs.getContext('2d', {willReadFrequently:true});
+
+function loadTile(tx,ty,dx,dy){
+  return new Promise((res)=>{
+    const im=new Image(); im.crossOrigin='anonymous';
+    im.onload=()=>{ ctx.drawImage(im, dx*256, dy*256); res(true); };
+    im.onerror=()=>{ res(false); };  // edge/missing tile → leave blank (sea)
+    im.src='https://s3.amazonaws.com/elevation-tiles-prod/terrarium/'+CFG.z+'/'+tx+'/'+ty+'.png';
+  });
+}
+
+async function build(){
+  const jobs=[];
+  for(let dy=0; dy<tilesW; dy++) for(let dx=0; dx<tilesW; dx++) jobs.push(loadTile(x0+dx, y0+dy, dx, dy));
+  const ok=await Promise.all(jobs);
+  document.getElementById('status').textContent = 'tiles '+ok.filter(Boolean).length+'/'+jobs.length+' · building mesh…';
+
+  const img=ctx.getImageData(0,0,W,W).data;
+  const H=new Float32Array(W*W);
+  for(let p=0;p<W*W;p++){ const i=p*4; H[p]=(img[i]*256 + img[i+1] + img[i+2]/256) - 32768; }
+  const hAt=(u,v)=>{                       // bilinear sample, u,v in [0,1]
+    const fx=u*(W-1), fy=v*(W-1);
+    const x1=Math.min(W-1,Math.floor(fx)), y1=Math.min(W-1,Math.floor(fy));
+    const x2=Math.min(W-1,x1+1), y2=Math.min(W-1,y1+1);
+    const tx=fx-x1, ty=fy-y1;
+    const a=H[y1*W+x1], b=H[y1*W+x2], c=H[y2*W+x1], d=H[y2*W+x2];
+    return (a*(1-tx)+b*tx)*(1-ty) + (c*(1-tx)+d*tx)*ty;
+  };
+
+  const seg=CFG.seg, N=seg+1;
+  const pos=new Float32Array(N*N*3), col=new Float32Array(N*N*3);
+  for(let j=0;j<N;j++){
+    for(let i=0;i<N;i++){
+      const u=i/seg, v=j/seg;
+      const lon=lonW+(lonE-lonW)*u, lat=latN+(latS-latN)*v;
+      let h=hAt(u,v); if(h<-60) h=-60;
+      const east=(lon-CFG.ref.lon)*mPerLon, north=(lat-CFG.ref.lat)*mPerLat;
+      const k=(j*N+i)*3;
+      pos[k]=east; pos[k+1]=h*CFG.ve; pos[k+2]=-north;    // North = -Z (matches viewer compass)
+      const c=colorFor(h); col[k]=c[0]; col[k+1]=c[1]; col[k+2]=c[2];
+    }
+  }
+  const idx=[];
+  for(let j=0;j<seg;j++) for(let i=0;i<seg;i++){
+    const a=j*N+i, b=j*N+i+1, c=(j+1)*N+i, d=(j+1)*N+i+1;
+    idx.push(a,c,b, b,c,d);
+  }
+  const geo=new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.BufferAttribute(pos,3));
+  geo.setAttribute('color', new THREE.BufferAttribute(col,3));
+  geo.setIndex(idx);
+  geo.computeVertexNormals();
+  const mat=new THREE.MeshStandardMaterial({ vertexColors:true, roughness:0.95, metalness:0.0, flatShading:false });
+  const mesh=new THREE.Mesh(geo, mat); scene.add(mesh);
+
+  // sea sheen — flat translucent plane at y=0 across the extent
+  const extent=Math.max((lonE-lonW)*mPerLon, (latN-latS)*mPerLat);
+  const sea=new THREE.Mesh(new THREE.PlaneGeometry(extent*1.2, extent*1.2),
+    new THREE.MeshStandardMaterial({color:0x0a2740, transparent:true, opacity:0.45, roughness:0.4}));
+  sea.rotation.x=-Math.PI/2; sea.position.y=0.0; scene.add(sea);
+
+  // NZAA marker
+  const pin=new THREE.Mesh(new THREE.CylinderGeometry(60,60,1600,12),
+    new THREE.MeshBasicMaterial({color:0x7c3aed}));
+  pin.position.set(0, 800, 0); scene.add(pin);
+
+  document.getElementById('banner').style.display='none';
+  const refH=hAt(0.5,0.5);
+  document.getElementById('status').textContent =
+    'built · '+tilesW+'×'+tilesW+' tiles @ z'+CFG.z+' · ~'+Math.round((lonE-lonW)*mPerLon/1000)+' km · VE '+CFG.ve+'× · airport elev '+refH.toFixed(0)+' m';
+}
+build().catch(e=>{ document.getElementById('banner').textContent='Terrain build failed: '+(e.message||e); });
+
+function animate(){ requestAnimationFrame(animate); controls.update(); renderer.render(scene,camera); }
+animate();
+addEventListener('resize',()=>{ camera.aspect=innerWidth/innerHeight; camera.updateProjectionMatrix(); renderer.setSize(innerWidth,innerHeight); });
+</script>
+</body>
+</html>
