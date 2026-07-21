@@ -1,0 +1,16 @@
+[Unit]
+Description=PiLNK controller watch (124.300 burst logger + ntfy alerts)
+# Not Requires= — the script has its own reconnect loops and must keep
+# logging "reconnect" lines even while pilnkradio restarts.
+After=network-online.target pilnkradio.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=aj
+ExecStart=/usr/bin/python3 /usr/local/bin/controller_watch.py
+Restart=always
+RestartSec=15
+
+[Install]
+WantedBy=multi-user.target
