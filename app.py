@@ -1762,6 +1762,32 @@ def _track_mil(hex_code, ac):
         }
 
 
+# --- ATC STT transcript (fed by the node-local atc_service daemon) -----------
+ATC_TRANSCRIPT_PATH = '/home/aj/atc-stt/atc_transcript.json'
+ATC_TRANSCRIPT_STALE_SECS = 120   # no update in this long => treat the daemon as down
+
+
+@app.route('/atc/transcript')
+def atc_transcript():
+    """Serve the latest reconciled ATC transmissions for the dashboard slide.
+
+    Read-only pass-through of the daemon's atomic JSON. Fails safe: if the file is
+    missing/corrupt or hasn't updated recently, return an empty, not-running result
+    so the slide simply shows nothing (fully decoupled from the STT daemon).
+    """
+    try:
+        with open(ATC_TRANSCRIPT_PATH) as f:
+            doc = json.load(f)
+    except (OSError, ValueError):
+        return jsonify({'running': False, 'stale': True, 'freq_mhz': None,
+                        'updated': 0, 'lines': []})
+    age = time.time() - doc.get('updated', 0)
+    doc['stale'] = age > ATC_TRANSCRIPT_STALE_SECS
+    if doc['stale']:
+        doc['running'] = False
+    return jsonify(doc)
+
+
 @app.route('/flights')
 def flights():
     """Return aircraft data with type/registration enrichment from AIRCRAFT_DB.

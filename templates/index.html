@@ -6528,6 +6528,24 @@ function setSortMode(mode){
 }
 setSortMode(window.sortMode);
 updateFlights();
+// --- ATC STT -> cinematic-card transcript bridge (feeds the existing updateCCTranscript hook) ---
+function pollAtcTranscript(){
+  if(!ccVisible||!ccCurrentCS)return;                 // only when a card is open
+  fetch('/atc/transcript').then(function(r){return r.json();}).then(function(d){
+    if(!d||!d.lines||!d.lines.length||!ccVisible||!ccCurrentCS)return;
+    var cs=String(ccCurrentCS).trim().toUpperCase();
+    var mine=d.lines.filter(function(l){return String(l.callsign||'').toUpperCase()===cs;});
+    if(!mine.length)return;
+    function p(n){return('0'+n).slice(-2);}
+    var lines=mine.slice().reverse().map(function(l){   // hook wants newest-first
+      var dt=new Date(l.t*1000);
+      return {time:p(dt.getHours())+':'+p(dt.getMinutes())+':'+p(dt.getSeconds()),text:l.text};
+    });
+    updateCCTranscript(lines, d.freq_mhz?d.freq_mhz.toFixed(3)+' MHz':'');
+  }).catch(function(){});
+}
+setInterval(pollAtcTranscript,5000);
+
 setInterval(updateFlights,2000);
 
 // ═══════════════════════════════════════════════════════════════════════════
