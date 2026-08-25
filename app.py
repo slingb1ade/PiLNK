@@ -1,7 +1,6 @@
 from flask import Flask, render_template, Response, jsonify, request, make_response
 from flask_cors import CORS
 from flask_socketio import SocketIO
-from sdr_controller import SDRController
 # from whisper_atc  # disabled until v2.0 import ATCWhisper
 import subprocess
 import queue
@@ -1267,11 +1266,6 @@ current_frequency = 118.7e6
 current_gain      = 35
 current_squelch   = 50
 
-# ── SDR Controller — manages VHF audio via rtl_fm ─────────
-# Identifies VHF dongle by USB serial. Installer (v2.11+) auto-detects
-# the serial and writes it to config.json's "vhf_serial" field. Falls
-# back to '00000002' (PiLNK legacy default) so older configs still work.
-sdr = SDRController(device_serial=_config.get('vhf_serial', '00000002'))
 
 @app.route('/')
 def index():
@@ -1405,143 +1399,6 @@ def system_health():
 
     return jsonify(info)
 
-# ── Audio API — controls VHF radio via SDR controller ─────
-@app.route('/audio/start', methods=['POST'])
-def audio_start():
-    data = request.get_json() or {}
-    freq = data.get('freq', sdr.frequency)
-    squelch = data.get('squelch', sdr.squelch)
-    gain = data.get('gain', sdr.gain)
-    sdr.squelch = int(squelch)
-    sdr.gain = int(gain)
-    ok = sdr.start(freq_hz=int(freq))
-    return jsonify({'success': ok, 'status': sdr.get_status()})
-
-@app.route('/audio/stop', methods=['POST'])
-def audio_stop():
-    sdr.stop()
-    return jsonify({'success': True, 'status': sdr.get_status()})
-
-@app.route('/audio/freq', methods=['POST'])
-def audio_freq():
-    data = request.get_json() or {}
-    freq = data.get('freq')
-    if not freq:
-        return jsonify({'error': 'freq required'}), 400
-    sdr.set_frequency(int(freq))
-    return jsonify({'success': True, 'status': sdr.get_status()})
-
-@app.route('/audio/squelch', methods=['POST'])
-def audio_squelch():
-    data = request.get_json() or {}
-    level = data.get('level', 50)
-    sdr.set_squelch(int(level))
-    return jsonify({'success': True, 'status': sdr.get_status()})
-
-@app.route('/audio/gain', methods=['POST'])
-def audio_gain():
-    data = request.get_json() or {}
-    gain = data.get('gain', 35)
-    sdr.set_gain(int(gain))
-    return jsonify({'success': True, 'status': sdr.get_status()})
-
-@app.route('/audio/stream')
-def audio_stream():
-    """Stream live VHF audio as Ogg/Opus to a browser <audio> element.
-    Multiple clients can connect concurrently; each gets its own
-    bounded queue. The ffmpeg pipeline is shared, so additional
-    listeners cost only the queue + HTTP overhead.
-    """
-    if not sdr.is_playing:
-        return jsonify({'error': 'audio pipeline not started — POST /audio/start first'}), 503
-
-    import queue as _q  # local import to avoid polluting module globals
-    sub = sdr.subscribe()
-
-    def generate():
-        try:
-            while True:
-                try:
-                    chunk = sub.get(timeout=2.0)
-                except _q.Empty:
-                    if not sdr.is_playing:
-                        break
-                    continue
-                if not chunk:
-                    continue
-                yield chunk
-        finally:
-            sdr.unsubscribe(sub)
-
-    return Response(
-        generate(),
-        mimetype='audio/ogg',
-        headers={
-            'Cache-Control': 'no-cache, no-store, must-revalidate',
-            'Pragma': 'no-cache',
-            'X-Accel-Buffering': 'no'
-        }
-    )
-
-@app.route('/audio/level')
-def audio_level():
-    """Lightweight signal-level poll (UI meter). Cheap enough to
-    poll at 5–10 Hz from the browser."""
-    return jsonify({
-        'level': sdr.get_signal_level(),
-        'playing': sdr.is_playing
-    })
-
-@app.route('/audio/record/start', methods=['POST'])
-def audio_record_start():
-    ok, info = sdr.start_recording()
-    return jsonify({'success': ok, **info})
-
-@app.route('/audio/record/stop', methods=['POST'])
-def audio_record_stop():
-    info = sdr.stop_recording()
-    if info is None:
-        return jsonify({'success': False, 'error': 'no recording active'}), 400
-    return jsonify({'success': True, **info})
-
-@app.route('/audio/recordings')
-def audio_recordings_list():
-    """List recording files in the recordings/ directory, newest first."""
-    rec_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'recordings')
-    if not os.path.isdir(rec_dir):
-        return jsonify({'recordings': []})
-    items = []
-    for name in os.listdir(rec_dir):
-        if not name.endswith('.ogg'):
-            continue
-        path = os.path.join(rec_dir, name)
-        try:
-            st = os.stat(path)
-            items.append({
-                'filename': name,
-                'size_bytes': st.st_size,
-                'mtime': st.st_mtime
-            })
-        except OSError:
-            continue
-    items.sort(key=lambda x: x['mtime'], reverse=True)
-    return jsonify({'recordings': items})
-
-@app.route('/audio/recordings/<path:filename>')
-def audio_recording_serve(filename):
-    """Serve a recording file. Streams via send_from_directory; safe
-    against path traversal because send_from_directory rejects '..'.
-    """
-    # Defense in depth: only allow .ogg with a recording-shaped name
-    if not filename.endswith('.ogg') or '/' in filename or '\\' in filename:
-        return jsonify({'error': 'invalid filename'}), 400
-    rec_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'recordings')
-    from flask import send_from_directory
-    return send_from_directory(rec_dir, filename, mimetype='audio/ogg')
-
-@app.route('/audio/status')
-def audio_status():
-    return jsonify(sdr.get_status())
 
 # ── Mode S Comm-B enrichment ("Hidden Sky Data") ───────────────────────────
 # Passive consumer of dump1090-fa's raw AVR stream on :30002. Decodes Comm-B
