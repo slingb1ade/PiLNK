@@ -70,15 +70,27 @@ make -C "$HOME/rtl-sdr-blog/build" -j"$J"
 sudo make -C "$HOME/rtl-sdr-blog/build" install
 sudo ldconfig
 echo 'blacklist dvb_usb_rtl28xxu' | sudo tee /etc/modprobe.d/blacklist-rtl.conf >/dev/null
-[ -f /usr/local/lib/librtlsdr.so ] || die "fork install missing /usr/local/lib/librtlsdr.so"
-ok "driver fork installed to /usr/local"
+# WHERE under /usr/local the fork lands depends on the distro's multiarch
+# layout, not on whether the install worked. 64-bit Raspberry Pi OS puts it in
+# /usr/local/lib/. A 32-bit (armhf) image — which is what the PiAware SD-card
+# image is — has cmake install to /usr/local/lib/arm-linux-gnueabihf/ instead.
+# Hardcoding the flat path aborted a perfectly good install with
+# "fork install missing /usr/local/lib/librtlsdr.so" while the library sat one
+# directory deeper. What matters is the /usr/local PREFIX (fork) versus
+# /lib or /usr/lib (stock, ~10 dB deaf) — never the exact subdirectory.
+FORK_LIB=$(ls /usr/local/lib/librtlsdr.so /usr/local/lib/*/librtlsdr.so 2>/dev/null | head -n1)
+[ -n "$FORK_LIB" ] || die "fork install missing — no librtlsdr.so found under /usr/local/lib"
+ok "driver fork installed to $(dirname "$FORK_LIB")"
 
 # ── [4/8] build pilnkradio ─────────────────────────────────
 step "4/8 build pilnkradio (~1-2 min)"
 cmake -B "$SRC/pilnkradio/build" "$SRC/pilnkradio" -DRTLSDR_PREFIX=/usr/local
 make -C "$SRC/pilnkradio/build" -j"$J"
-# hard gate: the binary must link the fork, not stock librtlsdr
-if ! ldd "$SRC/pilnkradio/build/pilnkradio" | grep -q '/usr/local/lib/librtlsdr'; then
+# hard gate: the binary must link the fork, not stock librtlsdr.
+# Matches an optional multiarch subdirectory (see the note at [3/8]). The
+# /usr/local prefix is what distinguishes fork from stock — stock lives at
+# /lib/... or /usr/lib/..., neither of which can match this pattern.
+if ! ldd "$SRC/pilnkradio/build/pilnkradio" | grep -qE '/usr/local/lib(/[^/]+)?/librtlsdr'; then
     ldd "$SRC/pilnkradio/build/pilnkradio" | grep rtlsdr || true
     die "binary linked STOCK librtlsdr — node would be ~10 dB deaf. Aborting."
 fi
@@ -202,11 +214,11 @@ done
 if [ -n "$UP" ]; then
     ok "engine answering on :5656"
     DRV=$(sudo journalctl -u pilnkradio -n 50 --no-pager 2>/dev/null | grep -F 'driver: loaded' | tail -1 || true)
-    if echo "$DRV" | grep -q '/usr/local/lib/librtlsdr'; then
+    if echo "$DRV" | grep -qE '/usr/local/lib(/[^/]+)?/librtlsdr'; then
         ok "driver check: fork confirmed (${DRV##*driver: })"
     else
         warn "could not confirm the driver journal line — check: journalctl -u pilnkradio | grep 'driver: loaded'"
-        warn "it MUST show /usr/local/lib/librtlsdr… (a /lib/... path = deaf node)"
+        warn "it MUST show a /usr/local/lib/… path (a /lib/... or /usr/lib/... path = deaf node)"
     fi
 else
     if sudo journalctl -u pilnkradio -n 10 --no-pager 2>/dev/null | grep -qiE 'no device|not found|absent'; then
