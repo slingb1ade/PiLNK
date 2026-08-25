@@ -23,9 +23,14 @@ __pycache__/
 # in the repo, but ignoring them prevents future accidents)
 *.bak
 *.bak.*
+*.bak-*
 
 # Dev artifacts / scratch / runtime data (never belong in the repo)
 _airspy_syntax_check.sh
 aircraft.csv.gz
 aircraft-overlay.csv.gz
 recordings/
+
+# Aircraft photo cache — locally fetched Planespotters images, pruned at
+# 200 MB. Per-node runtime data: never the same twice, never worth committing.
+cache/
