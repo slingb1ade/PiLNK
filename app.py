@@ -45,6 +45,27 @@ def _load_config():
 
 _config = _load_config()
 
+# ── Dashboard port (v1.3.2) ────────────────────────────────────────────────
+# Read from config.json, NOT hardcoded, because config.json is gitignored and
+# update.sh does `git reset --hard origin/main` — which deliberately discards
+# local edits to tracked files. A node that needs a different port therefore
+# CANNOT keep that setting in app.py; every OTA would revert it.
+#
+# This is not hypothetical. A PiAware SD-card image ships piaware-configurator,
+# a Flask app bound to 127.0.0.1:5000. PiLNK binds 0.0.0.0:5000, and on Linux a
+# wildcard bind collides with an existing loopback bind on the same port — so
+# PiLNK died with EADDRINUSE, 606 restarts. The operator edited app.py to use
+# 5001, which worked until the next release reset it and took the node down a
+# second time. Hence: the port lives in config, where the updater leaves it.
+def _dashboard_port():
+    try:
+        p = int(_config.get('dashboard_port') or 5000)
+        return p if 1 <= p <= 65535 else 5000
+    except (TypeError, ValueError):
+        return 5000
+
+DASHBOARD_PORT = _dashboard_port()
+
 def read_receiver_location():
     # 1. config.json (authoritative, written by installer)
     try:
@@ -598,6 +619,114 @@ STATS_MIN_SPEED_KTS = 30      # filter taxi / decode noise floor
 STATS_MAX_SPEED_KTS = 750     # SR-71 retired; F-22 supercruise ~600 kts; 750 = generous ceiling
 STATS_MAX_ALT_FT    = 60000   # FL600 — above any commercial traffic; rejects Gillham code decode glitches (e.g. C150 at FL960)
 
+# ── Type-aware plausibility (v1.3.1) ────────────────────────────────────
+# The absolute gates above only catch the extremes. A corrupted frame that
+# decodes to a plausible-looking hex will sail straight through them: a
+# Solomon Airlines DHC-6 Twin Otter (H4-SIC, hex 897004) was reported at
+# FL360 and 400+ kts — inside both limits, and impossible for the airframe.
+# It is unpressurised, tops out near FL250, and cruises around 170 kts. The
+# real aircraft has been grounded at Honiara since 2024, so the frame was a
+# garbled decode whose bits happened to form a valid hex.
+#
+# Since AIRCRAFT_DB already gives us hex -> type on every node, we can ask a
+# better question than "is this number huge?": "could THIS airframe do this?"
+#
+# Two deliberate design choices:
+#
+#   1. ALTITUDE IS THE RELIABLE TEST. An unpressurised aeroplane cannot
+#      cruise at FL360 regardless of conditions. Ground speed is much weaker
+#      evidence — it is NOT airspeed, and a Twin Otter with a 100 kt tailwind
+#      genuinely shows ~270 kts over the ground. Speed limits below therefore
+#      carry generous headroom; altitude limits are closer to the book figure.
+#
+#   2. ONLY REJECT WHEN CONFIDENT. Unknown or absent types fall through to
+#      the absolute gates above. A missing lookup must never silently drop
+#      real traffic — the cost of a false negative (one bad row) is far lower
+#      than a false positive (a real aircraft vanishing from the map).
+#
+# Limits are (max_alt_ft, max_ground_speed_kts), already padded.
+AIRFRAME_LIMITS = {
+    # Piston singles
+    'C150': (18000, 170), 'C152': (18000, 170), 'C162': (18000, 170),
+    'C172': (20000, 190), 'C177': (20000, 190), 'C182': (22000, 210),
+    'C185': (22000, 210), 'C206': (22000, 220), 'C207': (22000, 220),
+    'C210': (26000, 240), 'P210': (28000, 250),
+    'PA18': (18000, 160), 'PA22': (18000, 170), 'PA24': (22000, 210),
+    'PA28': (20000, 200), 'P28A': (20000, 200), 'P28B': (20000, 200),
+    'P28R': (22000, 210), 'PA32': (22000, 210), 'P32R': (22000, 220),
+    'PA38': (18000, 170), 'PA46': (30000, 280), 'P46T': (32000, 300),
+    'BE33': (22000, 220), 'BE35': (22000, 220), 'BE36': (22000, 230),
+    'SR20': (20000, 220), 'SR22': (22000, 250),
+    'DA40': (20000, 190), 'DA20': (18000, 170),
+    'RV7' : (20000, 220), 'RV8' : (20000, 220), 'RV10': (20000, 230),
+    'GLID': (32000, 180),   # wave soaring reaches surprising altitudes
+    'ULAC': (14000, 150), 'GYRO': (14000, 140),
+
+    # Piston twins
+    'BE55': (24000, 250), 'BE58': (24000, 260), 'BE76': (22000, 220),
+    'PA31': (28000, 280), 'PA34': (26000, 250), 'PA44': (22000, 220),
+    'C310': (26000, 260), 'C337': (22000, 220), 'C402': (28000, 270),
+    'C404': (28000, 270), 'C421': (30000, 280),
+    'DA42': (22000, 220), 'DA62': (22000, 230),
+    'BN2P': (18000, 190),
+
+    # Turboprops — unpressurised
+    'DHC6': (28000, 270),   # Twin Otter: ceiling ~FL250, cruise ~170 kts
+    'DHC2': (20000, 190), 'DHC3': (20000, 200), 'DHC7': (26000, 300),
+    'C208': (28000, 260), 'AC90': (30000, 290),
+
+    # Turboprops — pressurised
+    'PC12': (32000, 330), 'TBM7': (33000, 380), 'TBM8': (33000, 390),
+    'TBM9': (33000, 400), 'BE20': (37000, 350), 'B350': (37000, 360),
+    'BE9L': (32000, 300), 'SW4' : (28000, 310), 'D228': (28000, 260),
+    'C441': (35000, 320), 'P180': (41000, 420),
+
+    # Regional turboprops
+    'AT43': (28000, 330), 'AT45': (28000, 330), 'AT72': (28000, 340),
+    'AT75': (28000, 340), 'AT76': (28000, 340),
+    'DH8A': (28000, 320), 'DH8B': (28000, 320), 'DH8C': (28000, 330),
+    'DH8D': (30000, 400), 'JS31': (28000, 300), 'JS32': (28000, 300),
+    'JS41': (28000, 320), 'SF34': (28000, 310), 'SB20': (28000, 380),
+    'E110': (24000, 260), 'E120': (32000, 330), 'F27' : (28000, 300),
+
+    # Helicopters
+    'R22' : (14000, 150), 'R44' : (14000, 160), 'R66' : (14000, 160),
+    'B06' : (20000, 180), 'B407': (20000, 190), 'B412': (20000, 180),
+    'B429': (20000, 190), 'B505': (18000, 170),
+    'AS50': (20000, 180), 'AS55': (20000, 180), 'AS65': (20000, 190),
+    'EC20': (20000, 180), 'EC30': (20000, 180), 'EC35': (20000, 190),
+    'EC45': (20000, 190), 'EC55': (20000, 200), 'EC75': (20000, 200),
+    'H125': (20000, 180), 'H130': (20000, 180), 'H135': (20000, 190),
+    'H145': (20000, 190), 'H160': (20000, 200), 'H175': (20000, 200),
+    'A139': (20000, 200), 'A169': (20000, 190), 'A189': (20000, 200),
+    'S76' : (20000, 200), 'S92' : (20000, 200), 'MD90': (18000, 170),
+}
+
+
+def _airframe_implausible(hex_up, alt, gs):
+    """Is this altitude/speed impossible for the airframe behind this hex?
+
+    Returns a short reason string when the frame should be rejected, or None
+    to accept. Absent hex, absent type, or a type we have no figures for all
+    return None — unknown means "let it through and rely on the absolute
+    gates", never "drop it".
+    """
+    if not hex_up:
+        return None
+    entry = AIRCRAFT_DB.get(hex_up)
+    if not entry:
+        return None
+    limits = AIRFRAME_LIMITS.get((entry.get('t') or '').upper())
+    if not limits:
+        return None
+    max_alt, max_gs = limits
+    if alt and alt > max_alt:
+        return f"{entry['t']} at {int(alt)}ft (max {max_alt})"
+    if gs and gs > max_gs:
+        return f"{entry['t']} at {int(gs)}kt (max {max_gs})"
+    return None
+
+
 # Stats tracker (computed server-side for profile display)
 node_stats = {
     'today': time.strftime('%Y-%m-%d'),
@@ -626,6 +755,36 @@ node_stats_lock = threading.Lock()
 COVERAGE_SECTORS     = 36
 COVERAGE_MAX_NM      = 400   # radio horizon @ FL600 ≈ 300 nm; past 400 = decode glitch
 COVERAGE_ELEV_MIN_NM = 20    # horizon floor ignores close-in low traffic (in FRONT of, not behind, obstructions)
+
+# The all-time "furthest" record was the one stat with NO upper gate — the
+# coverage map above is capped at COVERAGE_MAX_NM, but a single corrupt
+# position frame could set a permanent distance record nobody can beat.
+#
+# A flat cap is crude, because what's plausible depends on how high the
+# aircraft is. Radio horizon ≈ 1.23 × √(altitude in ft):
+#     FL400 → ~246 nm     FL100 → ~123 nm     5,000 ft → ~87 nm
+# so 200 nm from an aircraft at 5,000 ft is impossible, while the same figure
+# at FL400 is unremarkable. Gating on altitude catches far more bad frames
+# than one number ever could.
+#
+# Two allowances keep real contacts safe:
+#   HORIZON_RX_ALLOWANCE_NM — the receiver's own horizon; 30 nm covers a site
+#     around 600 ft, comfortably above any normal home installation.
+#   HORIZON_DUCT_FACTOR — tropospheric ducting genuinely bends signals past
+#     line of sight, so allow 25% beyond the geometric figure.
+# With no usable altitude we fall back to the flat COVERAGE_MAX_NM cap.
+HORIZON_RX_ALLOWANCE_NM = 30
+HORIZON_DUCT_FACTOR     = 1.25
+
+
+def _beyond_radio_horizon(dist_nm, alt_ft):
+    """True when a contact is further away than physics reasonably allows."""
+    import math   # module-level `math` isn't imported in app.py — it's brought
+                  # in locally where needed (see compute_node_stats). Keep this.
+    if not alt_ft or alt_ft <= 0:
+        return dist_nm > COVERAGE_MAX_NM
+    horizon = (1.23 * math.sqrt(alt_ft)) + HORIZON_RX_ALLOWANCE_NM
+    return dist_nm > horizon * HORIZON_DUCT_FACTOR
 COVERAGE_SAVE_S      = 300   # flush to disk at most every 5 min
 COVERAGE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'coverage.json')
 
@@ -713,12 +872,20 @@ def compute_node_stats(aircraft):
                 node_stats['seen_hexes'].add(hex_code)
                 node_stats['total_today'] += 1
 
+            # Type-aware plausibility (v1.3.1). The absolute gates below catch
+            # extremes; this catches a corrupt frame that looks reasonable in
+            # isolation but is impossible for the airframe it claims to be —
+            # e.g. a DHC-6 Twin Otter at FL360 and 400 kts.
+            bad_frame = _airframe_implausible(hex_code.upper() if hex_code else '', alt, speed)
+            if bad_frame:
+                logging.debug('[sanity] rejected record from implausible frame: %s', bad_frame)
+
             # Fastest (gated — see STATS_MAX_SPEED_KTS above; rejects decode glitches)
-            if STATS_MIN_SPEED_KTS <= speed <= STATS_MAX_SPEED_KTS and (not node_stats['fastest'] or speed > node_stats['fastest']['val']):
+            if not bad_frame and STATS_MIN_SPEED_KTS <= speed <= STATS_MAX_SPEED_KTS and (not node_stats['fastest'] or speed > node_stats['fastest']['val']):
                 node_stats['fastest'] = {'cs': cs, 'val': speed}
 
             # Highest (gated — see STATS_MAX_ALT_FT above; rejects decode glitches)
-            if 0 < alt <= STATS_MAX_ALT_FT and (not node_stats['highest'] or alt > node_stats['highest']['val']):
+            if not bad_frame and 0 < alt <= STATS_MAX_ALT_FT and (not node_stats['highest'] or alt > node_stats['highest']['val']):
                 node_stats['highest'] = {'cs': cs, 'val': alt}
 
             # Furthest (haversine in nm) — requires receiver location
@@ -727,7 +894,11 @@ def compute_node_stats(aircraft):
                 dLon = math.radians(lon - RX_LON)
                 a = math.sin(dLat/2)**2 + math.cos(math.radians(RX_LAT)) * math.cos(math.radians(lat)) * math.sin(dLon/2)**2
                 dist = round(3440.065 * 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a)))
-                if dist > 0 and (not node_stats['furthest'] or dist > node_stats['furthest']['val']):
+                # Gated on the radio horizon for the reported altitude — see
+                # _beyond_radio_horizon. Previously ungated, which let a single
+                # corrupt frame set an unbeatable all-time record.
+                if dist > 0 and not bad_frame and not _beyond_radio_horizon(dist, alt) \
+                   and (not node_stats['furthest'] or dist > node_stats['furthest']['val']):
                     node_stats['furthest'] = {'cs': cs, 'val': dist}
 
                 # Coverage map — per-bearing range + horizon floor (all-time, persisted)
@@ -1144,22 +1315,16 @@ def _perform_ota_check(auto_install_on_available=True):
                     print(f'[PILNK-OTA] Required update — installing immediately (overrides user preference)')
                     _run_update()
                 elif _is_auto_update_enabled():
-                    # Defer the silent auto-install while VHF audio is active.
-                    # Restarting the pilnk service would kill rtl_fm (a child
-                    # process) mid-stream and audio doesn't auto-resume — so a
-                    # user listening to ATC would suddenly lose audio with no
-                    # warning. The OTA checker runs every 5 min, so as soon as
-                    # the user stops audio the update installs on the next cycle.
-                    # The dashboard banner still shows (ota_status['available']
-                    # was set above) and the user can click Install Now to
-                    # override the defer if they want.
-                    # Required updates (handled above) still install immediately
-                    # because they may be security-critical.
-                    if getattr(sdr, 'is_playing', False):
-                        print(f'[PILNK-OTA] auto_update=true but VHF audio is active — deferring until audio stops')
-                    else:
-                        print(f'[PILNK-OTA] auto_update=true in config — installing silently')
-                        _run_update()
+                    # The audio-active deferral that used to guard this call is gone
+                    # along with the rtl_fm stack it protected (v1.3.1). rtl_fm ran as
+                    # a CHILD of this service, so restarting pilnk cut audio mid-stream
+                    # and it never resumed. pilnkradio is its own systemd unit and
+                    # survives a pilnk restart untouched, so there is nothing left to
+                    # defer for. Leaving the old check in place was worse than useless:
+                    # it referenced a deleted global, and the NameError was swallowed by
+                    # the except below, silently skipping every auto-install.
+                    print(f'[PILNK-OTA] auto_update=true in config - installing silently')
+                    _run_update()
                 else:
                     print(f'[PILNK-OTA] Update available — waiting for user to click Install on dashboard')
             else:
@@ -1449,7 +1614,15 @@ def _bds_enrichment_loop():
                         if (int(msg[0:2], 16) >> 3) not in (20, 21):
                             continue
                         res = _pms.decode(msg)
-                        if not res or not res.get('icao') or not res.get('crc_valid'):
+                        # pyModeS 3.6+ returns crc_valid=None for DF20/21 Comm-B —
+                        # an address-overlaid CRC can't be validated standalone (it
+                        # also sets icao_verified=False). The original gate tested
+                        # `not res.get('crc_valid')`, and `not None` is True, so every
+                        # frame was rejected and the enrichment cache never filled.
+                        # Reject ONLY an explicit False: this accepts True (pyModeS
+                        # <=3.3, e.g. Pi5) and None (3.6+, e.g. a fresh install), so
+                        # it is correct on every node whatever pip pulled in.
+                        if not res or not res.get('icao') or res.get('crc_valid') is False:
                             continue
                         icao = res['icao'].upper()
                         now = time.time()
@@ -1950,6 +2123,123 @@ def planespotters_proxy(hex):
     except Exception as e:
         logging.error(f'[planespotters] exception: {e}')
         return jsonify({'photos': []}), 500
+
+# ── Aircraft photo image cache ─────────────────────────────
+# Planespotters images live on BunnyCDN with origin storage in Germany. From
+# New Zealand — or anywhere without a warm edge — a cold fetch can take many
+# seconds, which is long enough for the click-card's auto-dismiss to fire
+# before the photo lands. That is indistinguishable from a broken image.
+# So: fetch each photo ONCE, keep it on local disk, and serve every later
+# request over the LAN. Every device in the house then shares one warm cache.
+PHOTO_CACHE_DIR       = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'cache', 'photos')
+PHOTO_CACHE_MAX_BYTES = 200 * 1024 * 1024      # prune once we exceed this
+PHOTO_CACHE_PRUNE_TO  = 150 * 1024 * 1024      # ...back down to this
+# SSRF guard: this endpoint takes a URL from the client, so the host is
+# strictly allowlisted. NEVER widen this to a wildcard — that would turn
+# every node in the fleet into an open proxy.
+PHOTO_CACHE_HOSTS = {
+    't.plnspttrs.net',
+    'www.airport-data.com',
+    'airport-data.com',
+}
+PHOTO_CACHE_TYPES = {'.jpg': 'image/jpeg', '.jpeg': 'image/jpeg',
+                     '.png': 'image/png', '.webp': 'image/webp', '.gif': 'image/gif'}
+
+
+def _photo_cache_prune():
+    """Keep the cache under its ceiling, evicting least-recently-used first."""
+    try:
+        files, total = [], 0
+        for name in os.listdir(PHOTO_CACHE_DIR):
+            p = os.path.join(PHOTO_CACHE_DIR, name)
+            try:
+                st = os.stat(p)
+            except OSError:
+                continue
+            files.append((st.st_mtime, st.st_size, p))
+            total += st.st_size
+        if total <= PHOTO_CACHE_MAX_BYTES:
+            return
+        files.sort()                                  # oldest touch first
+        for _mtime, size, p in files:
+            if total <= PHOTO_CACHE_PRUNE_TO:
+                break
+            try:
+                os.remove(p)
+                total -= size
+            except OSError:
+                pass
+        logging.info(f'[photo-cache] pruned to {total} bytes')
+    except Exception as e:
+        logging.error(f'[photo-cache] prune failed: {e}')
+
+
+@app.route('/api/photo-img')
+def photo_img_proxy():
+    """Disk-cached image proxy for aircraft photos.
+
+    Query: ?url=<absolute https URL on an allowlisted host>
+
+    First hit fetches from the CDN and writes to disk; every later hit is
+    served from local disk. A cold international fetch therefore happens
+    once per photo, not once per viewer per browser cache eviction.
+    """
+    import hashlib
+    import urllib.parse
+
+    raw = request.args.get('url', '').strip()
+    if not raw:
+        return jsonify({'error': 'missing url'}), 400
+    try:
+        u = urllib.parse.urlparse(raw)
+    except Exception:
+        return jsonify({'error': 'bad url'}), 400
+    if u.scheme != 'https' or u.hostname not in PHOTO_CACHE_HOSTS:
+        logging.warning(f'[photo-cache] refused host: {u.hostname}')
+        return jsonify({'error': 'host not allowed'}), 403
+
+    ext = os.path.splitext(u.path)[1].lower()
+    if ext not in PHOTO_CACHE_TYPES:
+        ext = '.jpg'
+    key  = hashlib.sha256(raw.encode('utf-8')).hexdigest() + ext
+    path = os.path.join(PHOTO_CACHE_DIR, key)
+
+    # Warm: straight off the disk.
+    if os.path.exists(path):
+        try:
+            with open(path, 'rb') as fh:
+                data = fh.read()
+            os.utime(path, None)                      # touch = recently used
+            resp = make_response(data)
+            resp.headers['Content-Type']  = PHOTO_CACHE_TYPES[ext]
+            resp.headers['Cache-Control'] = 'public, max-age=31536000'
+            resp.headers['X-PiLNK-Photo-Cache'] = 'hit'
+            return resp
+        except OSError as e:
+            logging.error(f'[photo-cache] read failed {key}: {e}')   # fall through and refetch
+
+    # Cold: fetch once, store, serve.
+    try:
+        os.makedirs(PHOTO_CACHE_DIR, exist_ok=True)
+        r = requests.get(raw, timeout=20, headers={
+            'User-Agent': 'Mozilla/5.0 (PiLNK community ADS-B tracker; https://pilnk.io)'})
+        if r.status_code != 200 or not r.content:
+            logging.info(f'[photo-cache] upstream {r.status_code} for {raw}')
+            return jsonify({'error': 'upstream'}), 502
+        tmp = path + '.part'
+        with open(tmp, 'wb') as fh:
+            fh.write(r.content)
+        os.replace(tmp, path)                         # atomic: no half-written entries
+        _photo_cache_prune()
+        resp = make_response(r.content)
+        resp.headers['Content-Type']  = r.headers.get('Content-Type', PHOTO_CACHE_TYPES[ext])
+        resp.headers['Cache-Control'] = 'public, max-age=31536000'
+        resp.headers['X-PiLNK-Photo-Cache'] = 'miss'
+        return resp
+    except Exception as e:
+        logging.error(f'[photo-cache] fetch failed {raw}: {e}')
+        return jsonify({'error': 'fetch failed'}), 502
+
 
 # ── airport-data.com proxy — secondary aircraft photos ─────
 @app.route('/api/acphoto/<path:hex>')
@@ -2670,4 +2960,16 @@ if NODE_VERIFY_CODE != 'YOUR_VERIFY_CODE_HERE':
 
 
 if __name__ == '__main__':
-    socketio.run(app, host='0.0.0.0', port=5000, debug=False, allow_unsafe_werkzeug=True)
+    # `allow_unsafe_werkzeug` is a WERKZEUG-only argument. When eventlet is
+    # installed, flask-socketio takes the eventlet path instead and forwards
+    # this kwarg to eventlet.wsgi.server(), which rejects it:
+    #     TypeError: server() got an unexpected keyword argument
+    # That killed every start on a PiAware image (eventlet present) while
+    # being invisible on our own nodes (eventlet absent). Try the Werkzeug
+    # form, fall back to the portable one — works on either backend.
+    print(f'[PILNK] Dashboard starting on port {DASHBOARD_PORT}')
+    try:
+        socketio.run(app, host='0.0.0.0', port=DASHBOARD_PORT, debug=False,
+                     allow_unsafe_werkzeug=True)
+    except TypeError:
+        socketio.run(app, host='0.0.0.0', port=DASHBOARD_PORT, debug=False)

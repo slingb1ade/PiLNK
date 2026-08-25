@@ -1290,7 +1290,7 @@
             <div id="trafficRadioDot" style="width:6px;height:6px;border-radius:50%;background:#64748b;"></div>
             <span id="trafficRadioFreq" style="font-family:'Orbitron',sans-serif;font-size:0.6rem;color:var(--text-dim);">Radio Off</span>
           </div>
-          <button onclick="showTab('radio',event)" style="background:none;border:1px solid var(--border);border-radius:4px;color:var(--text-dim);font-family:'Share Tech Mono',monospace;font-size:0.5rem;padding:3px 8px;cursor:pointer;"><svg class="icn" viewBox="0 0 24 24"><circle cx="12" cy="12" r="2"/><path d="M4.9 4.9a16 16 0 0 0 0 14.2M19.1 4.9a16 16 0 0 1 0 14.2M7.8 7.8a10 10 0 0 0 0 8.4M16.2 7.8a10 10 0 0 1 0 8.4"/></svg> Radio</button>
+          <button id="trafficSdrBtn" onclick="showTab('sdr-audio',event)" style="display:none;background:none;border:1px solid var(--border);border-radius:4px;color:var(--text-dim);font-family:'Share Tech Mono',monospace;font-size:0.5rem;padding:3px 8px;cursor:pointer;"><svg class="icn" viewBox="0 0 24 24"><circle cx="12" cy="12" r="2"/><path d="M4.9 4.9a16 16 0 0 0 0 14.2M19.1 4.9a16 16 0 0 1 0 14.2M7.8 7.8a10 10 0 0 0 0 8.4M16.2 7.8a10 10 0 0 1 0 8.4"/></svg> Radio</button>
         </div>
         <div id="flight-panel">
           <div class="sort-row">
@@ -1838,7 +1838,7 @@
       <div class="cc-photo" id="ccPhoto">
         <!-- Photo layer -->
         <div class="cc-photo-no-img" id="ccNoImg"></div>
-        <img id="ccImg" src="" alt="" style="display:none;position:absolute;inset:0;width:100%;height:100%;object-fit:contain;" onload="ccImgLoaded()"/>
+        <img id="ccImg" src="" alt="" style="display:none;position:absolute;inset:0;width:100%;height:100%;object-fit:contain;" onload="ccImgLoaded()" onerror="ccImgError()"/>
         <div class="cc-photo-credit" id="ccPhotoCredit"></div>
       </div>
     </div>
@@ -4951,6 +4951,7 @@ function openCinematicCard(cs, auto) {
   // Set placeholder icon to match this aircraft's category (heavy/medium/light/heli).
   // CSS gives it 15% opacity — subtle, but visually correct for the actual aircraft.
   document.getElementById('ccNoImg').innerHTML = inlineIcon(cat, 96, 'currentColor');
+  ccResetPhoto();
   document.getElementById('ccPhotoCredit').textContent = '';
   document.getElementById('ccPhotoSource').textContent = '📷 Loading...';
 
@@ -4976,11 +4977,12 @@ function openCinematicCard(cs, auto) {
         fetchPlanePhoto(a.hex, a.r, a.t, function(photo) {
           if (photo && photo.url) {
             var img = document.getElementById('ccImg');
-            img.src = photo.url;
+            img.src = ccCachedPhotoUrl(photo.url);
             if (photo.photographer) {
               document.getElementById('ccPhotoCredit').textContent = '📷 ' + photo.photographer;
             }
-            document.getElementById('ccPhotoSource').textContent = '📷 Planespotters.net';
+            ccPendingSource = '📷 Planespotters.net';
+            document.getElementById('ccPhotoSource').textContent = '📷 Loading photo…';
             if (photo.model && !document.getElementById('ccModel').textContent) {
               document.getElementById('ccModel').textContent = photo.model;
             }
@@ -4991,10 +4993,11 @@ function openCinematicCard(cs, auto) {
             fetchAirportDataPhoto(a.hex, function(apd) {
               if (ccCurrentHex !== a.hex) return; // user opened another card
               if (apd && apd.url) {
-                document.getElementById('ccImg').src = apd.url;
+                document.getElementById('ccImg').src = ccCachedPhotoUrl(apd.url);
                 document.getElementById('ccPhotoCredit').textContent =
                   apd.photographer ? ('📷 ' + apd.photographer) : '';
-                document.getElementById('ccPhotoSource').textContent = '📷 airport-data.com';
+                ccPendingSource = '📷 airport-data.com';
+                document.getElementById('ccPhotoSource').textContent = '📷 Loading photo…';
               } else {
                 document.getElementById('ccPhotoSource').textContent = '';
               }
@@ -5067,9 +5070,51 @@ function openCinematicCard(cs, auto) {
   }
 }
 
+// Source label is held back until the image actually decodes, so the card
+// can't claim "Planespotters.net" while the photo is still crossing the
+// planet. ccImgLoaded/ccImgError apply the final state.
+var ccPendingSource = '';
+
+// Route external CDN photos through the node's disk cache (/api/photo-img).
+// First viewer pays the cold-fetch cost once; everyone after gets it at LAN
+// speed. Community photos from pilnk.io are left alone — they're already
+// close and the Add-Photo flow expects the original URL.
+function ccCachedPhotoUrl(u) {
+  if (!u) return u;
+  if (u.indexOf('plnspttrs.net') === -1 && u.indexOf('airport-data.com') === -1) return u;
+  return '/api/photo-img?url=' + encodeURIComponent(u);
+}
+
 function ccImgLoaded() {
   document.getElementById('ccImg').style.display = 'block';
   document.getElementById('ccNoImg').style.display = 'none';
+  if (ccPendingSource) {
+    document.getElementById('ccPhotoSource').textContent = ccPendingSource;
+    ccPendingSource = '';
+  }
+}
+
+// Photo failed (CDN down, DNS blocked, upstream 404). Previously this was
+// silent: the <img> simply stayed display:none and you got an empty card
+// with no clue why. Now it says so.
+function ccImgError() {
+  var img = document.getElementById('ccImg');
+  img.style.display = 'none';
+  img.removeAttribute('src');
+  document.getElementById('ccNoImg').style.display = '';
+  document.getElementById('ccPhotoCredit').textContent = '';
+  document.getElementById('ccPhotoSource').textContent = '📷 Photo unavailable';
+  ccPendingSource = '';
+}
+
+// Reset the photo slot between aircraft. Without this the previous
+// aircraft's photo stays on screen until the next one finishes loading.
+function ccResetPhoto() {
+  var img = document.getElementById('ccImg');
+  img.style.display = 'none';
+  img.removeAttribute('src');
+  document.getElementById('ccNoImg').style.display = '';
+  ccPendingSource = '';
 }
 
 function closeCinematicCard() {
@@ -7781,11 +7826,15 @@ setInterval(raPoll, 5000);
   // installing the engine reveals the tab without a dashboard update.
   function probeEngine(){
     var btn=$('navSdrAudio');
+    // The quick shortcut beside the frequency readout in the Traffic panel is
+    // gated the same way — it replaced a leftover button that opened the old
+    // (retired) radio tab, which is why MME1 could still reach that panel.
+    var qbtn=$('trafficSdrBtn');
     if(!btn || btn.style.display!=='none') return;
     var ctl=('AbortController' in window)?new AbortController():null;
     var t=ctl&&setTimeout(function(){ ctl.abort(); },3000);
     fetch(base()+'/sdr/status', ctl?{signal:ctl.signal}:{})
-      .then(function(r){ if(t)clearTimeout(t); if(r.ok) btn.style.display=''; },
+      .then(function(r){ if(t)clearTimeout(t); if(r.ok){ btn.style.display=''; if(qbtn) qbtn.style.display=''; } },
             function(){ if(t)clearTimeout(t); });
   }
   probeEngine();

@@ -561,9 +561,55 @@ if ! grep -q "aircraft_json_path" "$APP_PY"; then
   warn "This app.py predates the aircraft_json_path key (1.2.10.1)."
   warn "The node may read the dump1090-fa path instead of the configured one. Update PiLNK."
 fi
-printf '{\n  "auto_update": true,\n  "aircraft_json_path": "%s",\n  "vhf_serial": "%s"\n}\n' "$AIRCRAFT_JSON_PATH" "$VHF_SERIAL" \
+# ── Dashboard port (claim-safe) ────────────────────────────
+# PiLNK serves its dashboard on 5000. That is NOT always free: a PiAware
+# SD-card image ships piaware-configurator, a Flask app bound to
+# 127.0.0.1:5000. Because a wildcard bind (0.0.0.0) collides with an existing
+# loopback bind on the same port, PiLNK dies with EADDRINUSE and systemd
+# restart-loops it — silently, behind a misleading "check your connection".
+#
+# So: probe, and if 5000 is taken pick the next free port and write it to
+# config.json. It MUST live in config (gitignored) rather than app.py, because
+# update.sh does `git reset --hard` and would revert an app.py edit on the
+# next release — which is exactly how one node went down twice.
+DASHBOARD_PORT=""
+# Definitive test: actually TRY the bind Flask will make. Not a proxy for the
+# question — it IS the question. Parsing `ss` output would miss the subtlety
+# here (something holds 127.0.0.1:5000, and it's the WILDCARD bind that fails),
+# and `ss`/`netstat` aren't guaranteed present on a minimal image — a missing
+# tool would silently report "free" and we'd ship the collision. python3 is
+# guaranteed: it runs app.py.
+port_free() {
+  python3 - "$1" <<'PYEOF' 2>/dev/null
+import socket, sys
+s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+try:
+    s.bind(('0.0.0.0', int(sys.argv[1])))
+    sys.exit(0)          # free
+except OSError:
+    sys.exit(1)          # in use
+finally:
+    s.close()
+PYEOF
+}
+for CAND in 5000 5001 5002 5003 5004 5005; do
+  if port_free "$CAND"; then DASHBOARD_PORT="$CAND"; break; fi
+done
+
+if [ -z "$DASHBOARD_PORT" ]; then
+  DASHBOARD_PORT=5000
+  err "Ports 5000-5005 are all in use. Free one, or set dashboard_port in"
+  err "~/pilnk/config.json by hand, then: sudo systemctl restart pilnk"
+elif [ "$DASHBOARD_PORT" != "5000" ]; then
+  # Name the occupant if we can — "port 5000 is in use by piaware-configurator"
+  # is actionable; "port 5000 is in use" sends someone hunting.
+  PORT_OWNER=$(ss -tlnpH "sport = :5000" 2>/dev/null | grep -oE 'users:\(\("[^"]+' | head -n1 | sed 's/.*(("//')
+  warn "Port 5000 is already in use${PORT_OWNER:+ by ${PORT_OWNER}} — using ${DASHBOARD_PORT} instead."
+fi
+
+printf '{\n  "auto_update": true,\n  "aircraft_json_path": "%s",\n  "vhf_serial": "%s",\n  "dashboard_port": %s\n}\n' "$AIRCRAFT_JSON_PATH" "$VHF_SERIAL" "$DASHBOARD_PORT" \
   > "$CONFIG_JSON"
-ok "config.json written — pairing code will show on first boot (aircraft_json_path → ${AIRCRAFT_JSON_PATH}; vhf_serial → ${VHF_SERIAL:-none}; auto_update ON)"
+ok "config.json written — pairing code will show on first boot (aircraft_json_path → ${AIRCRAFT_JSON_PATH}; vhf_serial → ${VHF_SERIAL:-none}; dashboard_port → ${DASHBOARD_PORT}; auto_update ON)"
 
 # Keep config.json + secret out of git (survives any future pull)
 GITIGNORE="$PILNK_DIR/.gitignore"
@@ -641,6 +687,12 @@ else
 fi
 rm -f "$SUDOERS_TMP"
 
+# Clear any prior failed state FIRST. If a previous install crash-looped, systemd
+# hits its start limit and marks the unit failed — after which `restart` silently
+# does nothing and a perfectly correct fix still looks broken. That cost a real
+# node an extra debugging round: 606 restarts, then reset-failed was the only
+# thing standing between it and working. Harmless when there's nothing to reset.
+sudo systemctl reset-failed pilnk 2>/dev/null || true
 sudo systemctl restart pilnk 2>/dev/null || sudo systemctl start pilnk 2>/dev/null || true
 sleep 3
 
@@ -658,7 +710,7 @@ PI_IP=$(hostname -I | awk '{print $1}')
 echo ""
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 printf "\n  ${GREEN}${BOLD}🎉 PiLNK installed!${RESET}\n\n"
-printf "  ${BOLD}Dashboard:${RESET}    http://$PI_IP:5000\n"
+printf "  ${BOLD}Dashboard:${RESET}    http://$PI_IP:${DASHBOARD_PORT}\n"
 if [ "$DECODER_MODE" = "airspy" ] || [ "$DECODER_MODE" = "rtlsdr" ]; then
 printf "  ${BOLD}Decoder map:${RESET}  http://$PI_IP/tar1090   ${CYAN}(readsb's own view)${RESET}\n"
 fi
@@ -671,9 +723,12 @@ case "$DECODER_MODE" in
   consume) printf "  ${BOLD}Decoder:${RESET}      existing feed → ${AIRCRAFT_JSON_PATH} ${GREEN}(nothing touched)${RESET}\n" ;;
   *)       printf "  ${BOLD}Decoder:${RESET}      ${YELLOW}none configured — plug in a receiver and re-run${RESET}\n" ;;
 esac
-[ -n "$VHF_SERIAL" ] && printf "  ${BOLD}VHF audio:${RESET}    RTL-SDR SN ${VHF_SERIAL} → PiLNK rtl_fm\n"
+if [ -n "$VHF_SERIAL" ]; then
+  printf "  ${BOLD}ATC audio:${RESET}    spare RTL-SDR SN ${VHF_SERIAL} reserved ${YELLOW}(engine not installed)${RESET}\n"
+  printf "  ${BOLD}          ${RESET}    to enable it:  ${CYAN}bash ~/pilnk/pilnkradio-install.sh${RESET}\n"
+fi
 echo ""
-printf "  ${CYAN}Open Chrome → http://$PI_IP:5000 — aircraft appear within ~30s.${RESET}\n"
+printf "  ${CYAN}Open Chrome → http://$PI_IP:${DASHBOARD_PORT} — aircraft appear within ~30s.${RESET}\n"
 echo ""
 printf "  ${YELLOW}Notes:${RESET}\n"
 case "$DECODER_MODE" in
@@ -700,3 +755,31 @@ printf "  ${BLUE}pilnk.io${RESET}\n"
 echo ""
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 echo ""
+
+# ── Optional: ATC audio engine ─────────────────────────────
+# Offered, never assumed. pilnkradio builds from source (engine + the
+# rtl-sdr-blog driver fork) and blacklists the DVB kernel module — several
+# minutes, and a system-level change. That is far too intrusive to do
+# unasked on someone's working feeder, so it defaults to NO and the node is
+# already fully installed and running by the time we ask.
+#
+# Only offered when a spare dongle was actually found: ATC audio needs a
+# SECOND receiver, because the first one is busy decoding ADS-B.
+if [ -n "$VHF_SERIAL" ] && [ -f "$PILNK_DIR/pilnkradio-install.sh" ]; then
+  TTY_IN=/dev/tty
+  [ -r "$TTY_IN" ] || TTY_IN=/dev/stdin
+  printf "  ${BOLD}Optional:${RESET} a spare dongle (SN ${VHF_SERIAL}) is free, so this node can also\n"
+  printf "  stream live ATC audio. Installing the engine takes a few minutes, builds\n"
+  printf "  from source and installs an SDR driver. You'll also need a VHF airband\n"
+  printf "  antenna — but it can be installed now and will wait for one.\n\n"
+  read -r -p "  Install the ATC audio engine now? [y/N] " _atc < "$TTY_IN" || _atc=n
+  if [ "$(printf '%s' "${_atc:-n}" | tr '[:upper:]' '[:lower:]')" = "y" ]; then
+    echo ""
+    bash "$PILNK_DIR/pilnkradio-install.sh" || \
+      warn "ATC audio engine install did not complete — PiLNK itself is unaffected."
+  else
+    echo ""
+    info "Skipped. Run it any time:  bash ~/pilnk/pilnkradio-install.sh"
+  fi
+  echo ""
+fi
