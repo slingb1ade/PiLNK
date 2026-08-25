@@ -756,30 +756,27 @@ echo ""
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 echo ""
 
-# ── Optional: ATC audio engine ─────────────────────────────
-# Offered, never assumed. pilnkradio builds from source (engine + the
-# rtl-sdr-blog driver fork) and blacklists the DVB kernel module — several
-# minutes, and a system-level change. That is far too intrusive to do
-# unasked on someone's working feeder, so it defaults to NO and the node is
-# already fully installed and running by the time we ask.
+# ── ATC audio engine ───────────────────────────────────────
+# Installed on EVERY node, not offered. pilnkradio is C++ and must be compiled;
+# unlike the rest of PiLNK a git pull doesn't make it work. Leaving it opt-in
+# meant the dashboard tab (which self-hides until the engine answers on :5656)
+# stayed invisible on every node but the developer's — a shipped feature nobody
+# could see, and no bug reports because there was nothing to report.
 #
-# Only offered when a spare dongle was actually found: ATC audio needs a
-# SECOND receiver, because the first one is busy decoding ADS-B.
-if [ -n "$VHF_SERIAL" ] && [ -f "$PILNK_DIR/pilnkradio-install.sh" ]; then
-  TTY_IN=/dev/tty
-  [ -r "$TTY_IN" ] || TTY_IN=/dev/stdin
-  printf "  ${BOLD}Optional:${RESET} a spare dongle (SN ${VHF_SERIAL}) is free, so this node can also\n"
-  printf "  stream live ATC audio. Installing the engine takes a few minutes, builds\n"
-  printf "  from source and installs an SDR driver. You'll also need a VHF airband\n"
-  printf "  antenna — but it can be installed now and will wait for one.\n\n"
-  read -r -p "  Install the ATC audio engine now? [y/N] " _atc < "$TTY_IN" || _atc=n
-  if [ "$(printf '%s' "${_atc:-n}" | tr '[:upper:]' '[:lower:]')" = "y" ]; then
-    echo ""
-    bash "$PILNK_DIR/pilnkradio-install.sh" || \
-      warn "ATC audio engine install did not complete — PiLNK itself is unaffected."
-  else
-    echo ""
-    info "Skipped. Run it any time:  bash ~/pilnk/pilnkradio-install.sh"
-  fi
+# So: build it here, whether or not a radio dongle is present. A node with no
+# spare dongle still gets a working engine that waits, and the udev rule starts
+# it the moment one is plugged in. No SSH, no second visit.
+#
+# Runs in the FOREGROUND here (unlike the OTA path, which detaches): the
+# operator is watching a terminal, the compile output is informative, and the
+# node is already installed and running by this point. Non-fatal either way.
+if [ -f "$PILNK_DIR/pilnkradio-install.sh" ]; then
+  step "ATC AUDIO ENGINE"
+  info "Building the live ATC audio engine (~3-5 min). PiLNK itself is already"
+  info "installed and running — nothing below can affect your ADS-B feed."
+  echo ""
+  PILNKRADIO_NONINTERACTIVE=1 PILNKRADIO_SERIAL="$VHF_SERIAL" \
+    bash "$PILNK_DIR/pilnkradio-install.sh" \
+    || warn "ATC audio engine did not finish — PiLNK is unaffected. Re-run later: bash ~/pilnk/pilnkradio-install.sh"
   echo ""
 fi

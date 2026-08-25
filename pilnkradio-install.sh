@@ -137,10 +137,23 @@ fi
 # decoder's own stick published via --device-index instead of a serial.
 DECODER_ACTIVE=$(systemctl is-active dump1090-fa readsb 2>/dev/null | grep -cx active || true)
 SERIAL=""
-if [ ${#CANDIDATES[@]} -eq 1 ] && [ -z "$DUPES" ] \
+# PILNKRADIO_SERIAL / PILNKRADIO_NONINTERACTIVE let this run unattended, which
+# is how the OTA and install.sh now call it. A human running it by hand gets
+# exactly the prompts they always did.
+if [ -n "${PILNKRADIO_SERIAL:-}" ]; then
+    SERIAL="$PILNKRADIO_SERIAL"
+    ok "radio dongle: $SERIAL (from environment)"
+elif [ ${#CANDIDATES[@]} -eq 1 ] && [ -z "$DUPES" ] \
    && { [ "$DECODER_ACTIVE" -eq 0 ] || [ -n "$CLAIMED" ]; }; then
     SERIAL="${CANDIDATES[0]}"
     ok "radio dongle: $SERIAL"
+elif [ -n "${PILNKRADIO_NONINTERACTIVE:-}" ]; then
+    # Unattended with nothing to go on. Install anyway and let the engine wait:
+    # it exits and retries every 5s until a matching dongle appears, and the
+    # udev rule wakes it the moment one is plugged in. A node with no radio
+    # dongle today should still be ready the day its owner buys one.
+    SERIAL="${CANDIDATES[0]:-00000002}"
+    info "unattended: engine will wait for serial $SERIAL (retries every 5s until it appears)"
 else
     if [ ${#CANDIDATES[@]} -ge 1 ] && [ "$DECODER_ACTIVE" -gt 0 ] && [ -z "$CLAIMED" ]; then
         warn "an ADS-B decoder is running but its dongle couldn't be identified —"
@@ -160,6 +173,19 @@ if [ -f "$CFG" ]; then
     ok "existing $CFG kept (delete it and re-run to regenerate)"
 else
     FREQ=""
+    # PILNKRADIO_FREQ for unattended installs. The default here is deliberately
+    # 121.500 — the international VHF emergency frequency, which is valid in
+    # every country. The interactive default (124.300) is an Auckland tower
+    # frequency: correct for the person who wrote this, wrong for a node in
+    # France or Kansas. An unattended fleet-wide install must not tune twelve
+    # countries to one city's tower. Owners retune in the SDR Audio tab.
+    if [ -n "${PILNKRADIO_FREQ:-}" ]; then
+        FREQ="$PILNKRADIO_FREQ"
+        ok "frequency: ${FREQ} MHz (from environment)"
+    elif [ -n "${PILNKRADIO_NONINTERACTIVE:-}" ]; then
+        FREQ="121.500"
+        info "unattended: defaulting to ${FREQ} MHz (international emergency) — retune in the dashboard"
+    fi
     while [ -z "$FREQ" ]; do
         printf "Local airband frequency to monitor, MHz [default 124.300]: " > "$TTY"
         read -r FREQ < "$TTY" || true

@@ -86,6 +86,62 @@ if [ -f "$PILNK_DIR/bootstrap-selfheal.sh" ]; then
         log "self-heal bootstrap returned non-zero (continuing — non-fatal)"
 fi
 
+# Step 3.6: Build the ATC audio engine if this node hasn't got it yet.
+#
+# WHY THIS EXISTS. pilnkradio is C++ and has to be COMPILED. Everything else in
+# PiLNK is Python or HTML, so a git pull is enough — this is the one component
+# where "pushed to the fleet" and "working on the fleet" are different things.
+# The source, the systemd unit, the udev rules and the dashboard tab have been
+# on every node since July, but the tab is hidden until something answers on
+# :5656, and nothing does until the binary exists. Net effect: no node except
+# the developer's had working ATC audio, and because the tab self-hides there
+# were no bug reports to reveal it.
+#
+# THREE RULES, all load-bearing:
+#   DETACHED — a 3-5 minute compile must not sit between the git pull and the
+#     service restart below. systemd-run hands it to systemd and returns at once,
+#     so the OTA finishes at its normal speed and the build outlives this script.
+#   FAIL-SOFT — every failure path here is non-fatal. A node that can't build the
+#     audio engine is a node without ATC audio; it is NOT a node without ADS-B.
+#     Nothing in this block may ever stop pilnk.service starting.
+#   IDEMPOTENT — skipped entirely once the binary exists, so this costs nothing
+#     on every subsequent update.
+if [ ! -x /usr/local/bin/pilnkradio ] && [ -f "$PILNK_DIR/pilnkradio-install.sh" ]; then
+    if command -v systemd-run >/dev/null 2>&1; then
+        # Serial comes from the node's own config.json (install.sh records a free
+        # dongle there as vhf_serial). Absent that, the engine waits and udev
+        # wakes it when a dongle appears — so a node with no radio hardware today
+        # is still ready the day its owner buys one.
+        VHF_SN=$(python3 -c "import json,sys;print(json.load(open('$PILNK_DIR/config.json')).get('vhf_serial') or '')" 2>/dev/null || true)
+        # The build must run as ROOT: the node's sudoers rule only grants
+        # `systemctl {restart,start,stop} pilnk` and `daemon-reload`, so the
+        # installer's `sudo make install` / `sudo ldconfig` / `sudo tee` would
+        # all fail non-interactively as the service user.
+        #
+        # Root, however, leaves its build trees owned by root inside the user's
+        # home — which would block a later manual re-run of the installer if
+        # this build fails partway. So hand ownership back afterwards, whatever
+        # the outcome, and preserve the real exit code.
+        RUN_USER=$(id -un); RUN_GROUP=$(id -gn)
+        log "ATC audio engine not present — scheduling detached build (takes several minutes)"
+        sudo -n systemd-run \
+            --unit=pilnk-audio-build \
+            --description="PiLNK ATC audio engine build" \
+            --property=Type=oneshot \
+            --property=TimeoutStartSec=2700 \
+            --setenv=PILNKRADIO_NONINTERACTIVE=1 \
+            --setenv=PILNKRADIO_SERIAL="$VHF_SN" \
+            --setenv=HOME="$HOME" \
+            /bin/bash -c 'bash "$1"; rc=$?; chown -R "$2":"$3" "$HOME/rtl-sdr-blog" "$4/pilnkradio/build" 2>/dev/null || true; exit $rc' \
+            _ "$PILNK_DIR/pilnkradio-install.sh" "$RUN_USER" "$RUN_GROUP" "$PILNK_DIR" \
+            >> "$LOG_FILE" 2>&1 \
+            && log "ATC audio build scheduled (journalctl -u pilnk-audio-build to follow)" \
+            || log "could not schedule ATC audio build (continuing — non-fatal)"
+    else
+        log "systemd-run unavailable — skipping ATC audio build (non-fatal)"
+    fi
+fi
+
 # Step 4: Restart the PiLNK service to load the new code.
 log "Restarting PiLNK service..."
 
