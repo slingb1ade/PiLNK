@@ -652,6 +652,16 @@ Type=simple
 User=$USER
 WorkingDirectory=$PILNK_DIR
 Environment=PYTHONUNBUFFERED=1
+# app.py logs non-ASCII (✓ → — etc). If the node's locale is C/POSIX rather
+# than UTF-8, Python picks ASCII for stdout and dies with UnicodeEncodeError
+# at startup. One node hit this twice: the operator fixed it with
+# `systemctl set-environment PYTHONIOENCODING=utf-8`, which sets a RUNTIME
+# variable on the systemd manager and is lost on reboot — so the node came
+# back broken months later with no obvious cause. Setting it in the unit
+# makes it persistent. Belt and braces with an explicit UTF-8 locale.
+Environment=PYTHONIOENCODING=utf-8
+Environment=LC_ALL=C.UTF-8
+Environment=LANG=C.UTF-8
 ExecStart=/usr/bin/python3 $PILNK_DIR/app.py
 Restart=always
 RestartSec=10

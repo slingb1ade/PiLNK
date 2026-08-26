@@ -115,6 +115,27 @@ else
   log "could not resolve pilnk service user — OTA sudoers rule skipped"
 fi
 
+# ── Persistent UTF-8 for pilnk.service (fleet-wide, every OTA) ────────────────
+# app.py logs non-ASCII (✓ → — etc). On a node whose locale is C/POSIX rather
+# than UTF-8, Python selects ASCII for stdout and dies with UnicodeEncodeError
+# before it can start. One node hit this twice: the operator worked around it
+# with `systemctl set-environment PYTHONIOENCODING=utf-8`, which sets a RUNTIME
+# variable on the systemd manager and does NOT survive a reboot — so the node
+# came back dead weeks later with no obvious cause and no changed code.
+#
+# New installs get this in the unit template (install.sh). Existing nodes have
+# their unit already written, and a git pull doesn't touch /etc/systemd, so
+# patch it here. Idempotent: does nothing once the line is present.
+PILNK_UNIT="/etc/systemd/system/pilnk.service"
+if [ -f "$PILNK_UNIT" ] && ! grep -q '^Environment=PYTHONIOENCODING=' "$PILNK_UNIT"; then
+  if sudo -n sed -i '/^Environment=PYTHONUNBUFFERED=1/a Environment=PYTHONIOENCODING=utf-8\nEnvironment=LC_ALL=C.UTF-8\nEnvironment=LANG=C.UTF-8' "$PILNK_UNIT" 2>/dev/null; then
+    sudo -n systemctl daemon-reload 2>/dev/null || true
+    log "added persistent PYTHONIOENCODING/UTF-8 locale to pilnk.service (takes effect next restart)"
+  else
+    log "could not patch pilnk.service for UTF-8 (continuing — non-fatal)"
+  fi
+fi
+
 # Source files must exist (they ship in the repo). If a partial checkout means
 # one is missing, bail quietly — next OTA with a complete tree will wire it.
 for f in "$SRC_SERVICE" "$SRC_TIMER" "$SRC_UDEV" "$SRC_SCRIPT"; do
