@@ -2442,13 +2442,28 @@ var AircraftCanvasLayer = L.Layer.extend({
       var cat = getCat(a.t, a.category), col = getPhase(a, cs).color;
       var sp = getPlaneSprite(cat, col);
       ctx.save();
+      // Hunter Mode — fade civil traffic so military stands out.
+      //
+      // This lives HERE, in the canvas draw loop, because that is what actually
+      // renders aircraft. Hunter was written when planes were Leaflet DOM
+      // markers and still fades markers{} — but SHOW_DOM_PLANES has been false
+      // since the canvas renderer landed, so markers{} is permanently empty and
+      // the mode has silently done nothing since. The button lit up, saved its
+      // state, and faded a collection with nothing in it.
+      //
+      // Applied BEFORE the cloud-cover alpha below so the two multiply: a faded
+      // civil aircraft under cloud stays faded rather than one overwriting the
+      // other.
+      var _hAlpha = 1;
+      if (window.hunterMode && !(a && a.is_military)) _hAlpha = 0.12;
+      ctx.globalAlpha = _hAlpha;
       if(window.CLOUD_COVER_ON && window.wxSampler){
         var _st = _cloudState[cs] || (_cloudState[cs]={occ:1,hidden:false});   // keyed by callsign — survives the per-tick object swap
         var _ct = 1 - cloudCurve(wxSampler.intensityAt(a.lat, a.lon));
         var _pv = _st.occ;
         _st.occ = _st.occ + (_ct - _st.occ)*0.25;   // ease the fade
         if(Math.abs(_st.occ-_ct)>0.004 || Math.abs(_st.occ-_pv)>0.004){ window._cloudAnimating=true; if(window.kickCloud) window.kickCloud(); }
-        ctx.globalAlpha = Math.max(window.CLOUD_GHOST_FLOOR, _st.occ);
+        ctx.globalAlpha = _hAlpha * Math.max(window.CLOUD_GHOST_FLOOR, _st.occ);
       }
       ctx.translate(p.x, p.y);
       ctx.rotate((a.track||0) * Math.PI/180);
@@ -4286,6 +4301,7 @@ function updateMarker(a){
 var ghostMarkers = {};
 var hunterMode = false;
 try { hunterMode = localStorage.getItem('pilnkHunter') === '1'; } catch (e) {}
+window.hunterMode = hunterMode;   // canvas draw loop reads window.hunterMode
 
 // Fading "signal lost" marker at an aircraft's last known position. Not clickable.
 function milGhostIcon(g){
@@ -4318,6 +4334,10 @@ function updateGhosts(){
 }
 
 // Hunter Mode: fade civil aircraft + labels, keep military (and ghosts) prominent.
+// The AIRCRAFT themselves are faded in the canvas draw loop (see the _hAlpha
+// block there) — that is the live renderer. The markers{} pass below only
+// matters when SHOW_DOM_PLANES is switched on for A/B comparison, where it is
+// harmless and correct. Labels are still DOM, so they are handled here.
 function applyHunter(){
   Object.keys(markers).forEach(function(cs){
     var a = lastAircraft[cs]; var mil = !!(a && a.is_military);
@@ -4327,9 +4347,11 @@ function applyHunter(){
     var a = lastAircraft[cs]; var mil = !!(a && a.is_military);
     if (labelMarkers[cs].setOpacity) labelMarkers[cs].setOpacity(hunterMode && !mil ? 0.1 : 1);
   });
+  if (window.aircraftLayer) aircraftLayer.redraw();   // canvas is what users actually see
 }
 function setHunter(on){
   hunterMode = on;
+  window.hunterMode = on;            // the canvas draw loop reads it from window
   try { localStorage.setItem('pilnkHunter', on ? '1' : '0'); } catch (e) {}
   var b = document.getElementById('hunterBtn');
   if (b) {
@@ -4343,11 +4365,23 @@ function setHunter(on){
 var HunterCtl = L.control({ position:'topright' });
 HunterCtl.onAdd = function(){
   var d = L.DomUtil.create('div', 'leaflet-bar');
-  d.style.border = 'none'; d.style.background = 'transparent';
+  d.style.border = 'none'; d.style.background = 'transparent'; d.style.marginTop = '8px';
+  // Sized to match the sibling topright controls exactly: 34x34, 4px radius,
+  // same shadow. It was a wide text pill, which broke the column's alignment.
+  //
+  // The icon uses currentColor, NOT a hardcoded purple. setHunter() flips
+  // `color` to #fff when active — with a fixed purple stroke the icon went
+  // purple-on-purple and vanished the moment the mode turned on. Now the icon
+  // IS the state indicator, which matters more since the "HUNTER" label is gone
+  // (the title attribute carries the name on hover, as the other controls do).
   d.innerHTML = '<button id="hunterBtn" title="Military Hunter Mode" '
-    + 'style="font-family:\'Orbitron\',sans-serif;font-size:10px;font-weight:700;letter-spacing:1px;'
-    + 'padding:6px 9px;border:1px solid #a855f7;border-radius:6px;background:rgba(13,21,38,0.92);'
-    + 'color:#a855f7;cursor:pointer;box-shadow:0 2px 8px rgba(0,0,0,0.45);display:inline-flex;align-items:center;gap:5px;"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#a855f7" stroke-width="2.2" style="flex:none;"><circle cx="12" cy="12" r="7.5"/><line x1="12" y1="1.5" x2="12" y2="5"/><line x1="12" y1="19" x2="12" y2="22.5"/><line x1="1.5" y1="12" x2="5" y2="12"/><line x1="19" y1="12" x2="22.5" y2="12"/><circle cx="12" cy="12" r="1.6" fill="#a855f7" stroke="none"/></svg>HUNTER</button>';
+    + 'style="display:flex;align-items:center;justify-content:center;width:34px;height:34px;'
+    + 'border:1px solid #a855f7;border-radius:4px;background:rgba(13,21,38,0.92);'
+    + 'color:#a855f7;cursor:pointer;padding:0;box-shadow:0 1px 5px rgba(0,0,0,0.4);">'
+    + '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" style="flex:none;display:block;">'
+    + '<circle cx="12" cy="12" r="7.5"/><line x1="12" y1="1.5" x2="12" y2="5"/><line x1="12" y1="19" x2="12" y2="22.5"/>'
+    + '<line x1="1.5" y1="12" x2="5" y2="12"/><line x1="19" y1="12" x2="22.5" y2="12"/>'
+    + '<circle cx="12" cy="12" r="1.6" fill="currentColor" stroke="none"/></svg></button>';
   L.DomEvent.disableClickPropagation(d);
   d.querySelector('button').onclick = function(){ setHunter(!hunterMode); };
   return d;
@@ -4856,6 +4890,19 @@ function openCinematicCard(cs, auto) {
   var a = lastAircraft[cs];
   if (!a) return;
   if (ccVisible && ccCurrentCS === cs) return; // already showing this one
+  // Mark as shown for this session on EVERY open, manual included.
+  //
+  // checkAutoCard() skips anything already in ccShownCS, but only auto-opens
+  // used to record themselves. So: user clicks an aircraft, reads the card,
+  // dismisses it — and seconds later the poll auto-opens the very same card,
+  // because as far as ccShownCS was concerned it had never been seen.
+  //
+  // Manually opening it actively CAUSED this: the card fetches the route, which
+  // fills routeCache[cs], which is the condition checkAutoCard requires before
+  // it will fire. Looking at an aircraft was what made it eligible to chase you.
+  //
+  // Someone who has just closed a card has, unambiguously, already seen it.
+  ccShownCS[cs] = true;
   ccCurrentCS = cs;
   ccVisible = true;
   hideTooltip(); // always kill tooltip when card opens
@@ -5121,6 +5168,11 @@ function closeCinematicCard() {
   ccVisible = false;
   ccCurrentCS = null;
   ccCurrentHex = '';
+  // Dismissing the card also drops the map selection. Without this the aircraft
+  // stayed "selected" after the card closed, so the tooltip-positioning path in
+  // updateMarker kept treating it as the focused aircraft with nothing on screen
+  // to justify it.
+  selectedFlight = null;
   if (ccDismissTimer) { clearTimeout(ccDismissTimer); ccDismissTimer = null; }
   stopCCWaveform();
   document.getElementById('cinematicOverlay').classList.remove('active');
