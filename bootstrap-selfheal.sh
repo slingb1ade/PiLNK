@@ -93,7 +93,11 @@ SVC_USER="$(systemctl show -p User --value pilnk 2>/dev/null)"
 [ -z "$SVC_USER" ] && SVC_USER="$(awk -F= '/^User=/{print $2; exit}' /etc/systemd/system/pilnk.service 2>/dev/null)"
 [ -z "$SVC_USER" ] && SVC_USER="$(id -un)"
 SUDOERS_WANT="# PiLNK OTA — passwordless pilnk restart for $SVC_USER (added by self-heal bootstrap).
-$SVC_USER ALL=(root) NOPASSWD: $SYSTEMCTL_BIN restart pilnk, $SYSTEMCTL_BIN start pilnk, $SYSTEMCTL_BIN stop pilnk, $SYSTEMCTL_BIN daemon-reload"
+# pilnk-audio-build is a ONE-SHOT unit that runs pilnkradio-install.sh and nothing
+# else. Granting 'start' on that specific unit is what lets the OTA build the ATC
+# audio engine detached and with root, WITHOUT granting passwordless systemd-run
+# (which would be full root, since it can launch anything).
+$SVC_USER ALL=(root) NOPASSWD: $SYSTEMCTL_BIN restart pilnk, $SYSTEMCTL_BIN start pilnk, $SYSTEMCTL_BIN stop pilnk, $SYSTEMCTL_BIN daemon-reload, $SYSTEMCTL_BIN start pilnk-audio-build"
 if [ -n "$SVC_USER" ]; then
   if [ ! -f "$SUDOERS_FILE" ] || [ "$SUDOERS_WANT" != "$(cat "$SUDOERS_FILE" 2>/dev/null)" ]; then
     SU_TMP="$(mktemp)"
@@ -113,6 +117,38 @@ if [ -n "$SVC_USER" ]; then
   fi
 else
   log "could not resolve pilnk service user — OTA sudoers rule skipped"
+fi
+
+# ── ATC audio build unit (fleet-wide, every OTA) ──────────────────────────────
+# A fixed one-shot unit rather than `systemd-run`, so the sudoers grant above can
+# be "start THIS unit" instead of "run anything as root". Templated per node
+# because the service user and home differ (aj here, pi on most nodes).
+# Idempotent: rewritten only when the resolved content actually differs.
+AUDIO_UNIT_SRC="$PILNK_DIR/pilnk-audio-build.service"
+AUDIO_UNIT_DST="/etc/systemd/system/pilnk-audio-build.service"
+if [ -f "$AUDIO_UNIT_SRC" ] && [ -n "$SVC_USER" ]; then
+  SVC_HOME="$(getent passwd "$SVC_USER" | cut -d: -f6)"
+  SVC_GROUP="$(id -gn "$SVC_USER" 2>/dev/null || echo "$SVC_USER")"
+  if [ -n "$SVC_HOME" ]; then
+    AU_TMP="$(mktemp)"
+    sed -e "s|__PILNK_HOME__|$SVC_HOME|g" \
+        -e "s|__PILNK_DIR__|$PILNK_DIR|g" \
+        -e "s|__PILNK_USER__|$SVC_USER|g" \
+        -e "s|__PILNK_GROUP__|$SVC_GROUP|g" \
+        "$AUDIO_UNIT_SRC" > "$AU_TMP"
+    if [ ! -f "$AUDIO_UNIT_DST" ] || ! cmp -s "$AU_TMP" "$AUDIO_UNIT_DST"; then
+      if sudo -n cp "$AU_TMP" "$AUDIO_UNIT_DST" 2>/dev/null \
+         || sudo cp "$AU_TMP" "$AUDIO_UNIT_DST" 2>/dev/null; then
+        sudo -n systemctl daemon-reload 2>/dev/null || true
+        log "[selfheal-bootstrap] installed pilnk-audio-build.service"
+      else
+        log "[selfheal-bootstrap] could not install pilnk-audio-build.service (non-fatal)"
+      fi
+    else
+      log "[selfheal-bootstrap] pilnk-audio-build.service already current — no-op"
+    fi
+    rm -f "$AU_TMP"
+  fi
 fi
 
 # ── Persistent UTF-8 for pilnk.service (fleet-wide, every OTA) ────────────────

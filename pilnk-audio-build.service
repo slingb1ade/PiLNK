@@ -1,0 +1,53 @@
+[Unit]
+# PiLNK — one-shot ATC audio engine build.
+#
+# WHY A DEDICATED UNIT RATHER THAN `systemd-run`:
+# The OTA needs to launch this build detached and with root privilege (the
+# installer runs apt-get, make install, ldconfig and writes to /etc). The node's
+# sudoers rule is deliberately narrow — it grants only systemctl start/stop/
+# restart of named PiLNK units. Granting passwordless `systemd-run` instead
+# would effectively grant full root, since systemd-run can launch anything.
+#
+# A fixed unit is the tight version of the same capability: the sudoers rule
+# permits starting THIS unit, which runs exactly ONE script and nothing else.
+# The unit is version-controlled, so what it does is auditable in the repo.
+Description=PiLNK ATC audio engine build (one-shot)
+Documentation=https://pilnk.io
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=no
+
+# Runs as root: pilnkradio-install.sh needs it for apt, make install and
+# /etc writes. Its internal `sudo` calls become no-ops under root.
+User=root
+
+# HOME must be set explicitly. The installer clones the rtl-sdr-blog driver
+# fork into $HOME, and without this it would land in /root instead of the
+# service user's home — where a later manual re-run could not touch it.
+Environment=HOME=__PILNK_HOME__
+Environment=PILNKRADIO_NONINTERACTIVE=1
+Environment=PYTHONIOENCODING=utf-8
+
+# A source build on a Pi 4 takes several minutes; allow generous headroom
+# before systemd considers it hung.
+TimeoutStartSec=2700
+
+# Build, then hand ownership of the build trees back to the service user so a
+# later manual re-run isn't blocked by root-owned files. Runs whatever the
+# outcome, and preserves the installer's real exit code.
+ExecStart=/bin/bash -c '\
+  bash __PILNK_DIR__/pilnkradio-install.sh; rc=$$?; \
+  chown -R __PILNK_USER__:__PILNK_GROUP__ "$$HOME/rtl-sdr-blog" __PILNK_DIR__/pilnkradio/build 2>/dev/null || true; \
+  exit $$rc'
+
+# This build must never be able to affect flight tracking. It is entirely
+# separate from pilnk.service: a failure here means a node without ATC audio,
+# never a node without ADS-B.
+Nice=10
+IOSchedulingClass=idle
+
+[Install]
+WantedBy=multi-user.target

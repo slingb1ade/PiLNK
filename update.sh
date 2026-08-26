@@ -107,38 +107,20 @@ fi
 #   IDEMPOTENT — skipped entirely once the binary exists, so this costs nothing
 #     on every subsequent update.
 if [ ! -x /usr/local/bin/pilnkradio ] && [ -f "$PILNK_DIR/pilnkradio-install.sh" ]; then
-    if command -v systemd-run >/dev/null 2>&1; then
-        # Serial comes from the node's own config.json (install.sh records a free
-        # dongle there as vhf_serial). Absent that, the engine waits and udev
-        # wakes it when a dongle appears — so a node with no radio hardware today
-        # is still ready the day its owner buys one.
-        VHF_SN=$(python3 -c "import json,sys;print(json.load(open('$PILNK_DIR/config.json')).get('vhf_serial') or '')" 2>/dev/null || true)
-        # The build must run as ROOT: the node's sudoers rule only grants
-        # `systemctl {restart,start,stop} pilnk` and `daemon-reload`, so the
-        # installer's `sudo make install` / `sudo ldconfig` / `sudo tee` would
-        # all fail non-interactively as the service user.
+    if systemctl list-unit-files pilnk-audio-build.service >/dev/null 2>&1; then
+        # `systemctl start` on a Type=oneshot unit BLOCKS until it finishes, which
+        # would park the OTA behind a 5-minute compile. --no-block returns at once
+        # and lets systemd own the job — the build outlives this script.
         #
-        # Root, however, leaves its build trees owned by root inside the user's
-        # home — which would block a later manual re-run of the installer if
-        # this build fails partway. So hand ownership back afterwards, whatever
-        # the outcome, and preserve the real exit code.
-        RUN_USER=$(id -un); RUN_GROUP=$(id -gn)
-        log "ATC audio engine not present — scheduling detached build (takes several minutes)"
-        sudo -n systemd-run \
-            --unit=pilnk-audio-build \
-            --description="PiLNK ATC audio engine build" \
-            --property=Type=oneshot \
-            --property=TimeoutStartSec=2700 \
-            --setenv=PILNKRADIO_NONINTERACTIVE=1 \
-            --setenv=PILNKRADIO_SERIAL="$VHF_SN" \
-            --setenv=HOME="$HOME" \
-            /bin/bash -c 'bash "$1"; rc=$?; chown -R "$2":"$3" "$HOME/rtl-sdr-blog" "$4/pilnkradio/build" 2>/dev/null || true; exit $rc' \
-            _ "$PILNK_DIR/pilnkradio-install.sh" "$RUN_USER" "$RUN_GROUP" "$PILNK_DIR" \
-            >> "$LOG_FILE" 2>&1 \
-            && log "ATC audio build scheduled (journalctl -u pilnk-audio-build to follow)" \
-            || log "could not schedule ATC audio build (continuing — non-fatal)"
+        # Uses the dedicated unit, NOT systemd-run: the node's sudoers rule grants
+        # `systemctl start pilnk-audio-build` specifically. Granting systemd-run
+        # would be granting full root, since it can launch anything.
+        log "ATC audio engine not present — starting detached build"
+        sudo -n systemctl start --no-block pilnk-audio-build 2>> "$LOG_FILE" \
+            && log "ATC audio build started (journalctl -u pilnk-audio-build to follow)" \
+            || log "could not start ATC audio build (continuing — non-fatal)"
     else
-        log "systemd-run unavailable — skipping ATC audio build (non-fatal)"
+        log "pilnk-audio-build.service not installed yet — audio build deferred to next OTA (non-fatal)"
     fi
 fi
 
