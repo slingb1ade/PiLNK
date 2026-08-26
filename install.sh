@@ -532,14 +532,28 @@ APP_PY="$PILNK_DIR/app.py"
 CONFIG_JSON="$PILNK_DIR/config.json"
 
 # ── Python packages ────────────────────────────────────────
+# Loose upper bounds, not exact pins. Unversioned installs silently partitioned
+# the fleet by install DATE: pyModeS 3.6 changed crc_valid from a bool to None
+# for Comm-B frames and killed Mode S enrichment on every node installed after
+# the change, while older nodes carried on fine with identical code. eventlet's
+# presence likewise decides which server flask-socketio uses.
+#
+# Exact pins would freeze the fleet on 2026 libraries forever and rot. The
+# better defence is code that tolerates either version — which is what the
+# crc_valid gate and the socketio.run fallback now do — with bounds here only
+# to exclude the NEXT major, which is where breaking changes actually live.
+#
+# update.sh never runs pip, so this affects new installs only and can never
+# downgrade a node that is already working.
 step "PYTHON PACKAGES"
 info "Installing Python packages..."
-sudo pip3 install \
-  flask flask-socketio flask-cors requests numpy python-dotenv pyModeS \
-  --break-system-packages -q 2>/dev/null || \
-sudo pip install \
-  flask flask-socketio flask-cors requests numpy python-dotenv pyModeS \
-  --break-system-packages -q 2>/dev/null || true
+PY_PKGS="flask>=2,<4 flask-socketio>=5,<6 flask-cors>=4,<7 requests>=2,<3 numpy>=1.24,<3 python-dotenv>=1,<2 pyModeS>=2.13,<4"
+# shellcheck disable=SC2086
+sudo pip3 install $PY_PKGS --break-system-packages -q 2>/dev/null || \
+sudo pip install $PY_PKGS --break-system-packages -q 2>/dev/null || \
+{ warn "bounded install failed — falling back to unversioned"; \
+  sudo pip3 install flask flask-socketio flask-cors requests numpy python-dotenv pyModeS \
+    --break-system-packages -q 2>/dev/null || true; }
 ok "Python packages installed"
 
 # ── Write config.json ─────────────────────────────────────

@@ -66,6 +66,57 @@ def _dashboard_port():
 
 DASHBOARD_PORT = _dashboard_port()
 
+
+# ── Node environment fingerprint (v1.3.6) ──────────────────────────────────
+# Six failures in one week were all "PiLNK assumed the environment it was built
+# on" — port 5000 free, no eventlet, pyModeS returning a bool, libraries in a
+# flat lib dir, a UTF-8 locale, and a compiled audio engine. Five were found by
+# users rather than by us, because nothing here can see what a node actually IS.
+# Diagnosing one of them took eight rounds of asking an operator to run commands
+# and paste output back.
+#
+# So the node now reports its own environment on every ping. This is not
+# telemetry for its own sake: it is the difference between "what's different
+# about your node?" costing eight round-trips or one query. Computed ONCE at
+# startup — none of it changes while the process runs, and a ping is not the
+# place to be shelling out.
+def _describe_environment():
+    import platform
+    env = {}
+    try:
+        env['arch']    = platform.machine()                       # aarch64 / armv7l
+        env['python']  = platform.python_version()
+        env['libc']    = (platform.libc_ver() or ('', ''))[1] or None
+    except Exception:
+        pass
+    try:
+        import sys, locale
+        env['stdout_encoding'] = (sys.stdout.encoding or '').lower() or None
+        env['locale'] = (locale.getlocale()[1] or locale.getpreferredencoding(False) or '').lower() or None
+    except Exception:
+        pass
+    # Library versions — the pyModeS 3.3-vs-3.6 split silently partitioned the
+    # fleet by install date, and nothing recorded which side a node was on.
+    for mod, key in (('pyModeS', 'pymodes'), ('flask_socketio', 'flask_socketio'),
+                     ('eventlet', 'eventlet'), ('numpy', 'numpy')):
+        try:
+            m = __import__(mod)
+            env[key] = getattr(m, '__version__', 'present')
+        except Exception:
+            env[key] = None          # explicitly absent — as informative as present
+    try:
+        with open('/proc/device-tree/model', 'r') as f:
+            env['pi_model'] = f.read().strip().rstrip('\x00')
+    except Exception:
+        env['pi_model'] = None
+    env['dashboard_port'] = DASHBOARD_PORT
+    return env
+
+NODE_ENV = _describe_environment()
+print('[PILNK] env: arch=%s python=%s pyModeS=%s eventlet=%s enc=%s port=%s' % (
+    NODE_ENV.get('arch'), NODE_ENV.get('python'), NODE_ENV.get('pymodes'),
+    NODE_ENV.get('eventlet'), NODE_ENV.get('stdout_encoding'), NODE_ENV.get('dashboard_port')))
+
 def read_receiver_location():
     # 1. config.json (authoritative, written by installer)
     try:
@@ -1107,6 +1158,17 @@ def ping_server():
                 'aircraft': aircraft,
                 'node_stats': get_stats_payload(),
                 'version': _get_local_version(),
+                # Environment fingerprint + why self-hiding features are hidden.
+                # A feature that hides itself when its backend is missing looks
+                # identical to one nobody opened — that's how the audio engine
+                # appeared shipped for six weeks while running nowhere. Reporting
+                # the reason makes "who actually has working ATC audio?" a query
+                # instead of a survey.
+                'env': NODE_ENV,
+                'features': {
+                    'sdr_audio': 'ready' if os.path.exists('/usr/local/bin/pilnkradio') else 'engine_absent',
+                    'atc_stt':   'ready' if os.path.exists(ATC_TRANSCRIPT_PATH) else 'absent',
+                },
             }
             if emergency_aircraft:
                 ping_data['emergency_aircraft'] = emergency_aircraft
@@ -1793,7 +1855,13 @@ def _track_mil(hex_code, ac):
 
 
 # --- ATC STT transcript (fed by the node-local atc_service daemon) -----------
-ATC_TRANSCRIPT_PATH = '/home/aj/atc-stt/atc_transcript.json'
+# Resolved from the SERVICE USER's home, never a hardcoded username. This read
+# '/home/aj/...' — correct on the development node and wrong on every other one
+# in the fleet, where the service runs as 'pi'. It fails safe (see the route
+# below), so nothing broke — but when STT ships fleet-wide it would have been
+# silently dead everywhere except here, which is exactly how the audio engine
+# managed to look shipped for six weeks without ever running on another node.
+ATC_TRANSCRIPT_PATH = os.path.join(os.path.expanduser('~'), 'atc-stt', 'atc_transcript.json')
 ATC_TRANSCRIPT_STALE_SECS = 120   # no update in this long => treat the daemon as down
 
 
