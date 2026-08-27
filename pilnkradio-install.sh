@@ -74,6 +74,18 @@ step "3/8 rtl-sdr-blog driver fork (~3-5 min on a Pi 4 — compile output below)
 if [ ! -d "$HOME/rtl-sdr-blog" ]; then
     git clone --depth 1 https://github.com/rtlsdrblog/rtl-sdr-blog "$HOME/rtl-sdr-blog"
 fi
+# When the OTA build (root) meets a checkout owned by the node's user, git
+# 2.30.3+ refuses: "detected dubious ownership". The fork's CMakeLists runs
+# `git describe` for its version, the refusal empties it, and cmake dies with
+# the misleading "No VERSION specified for WRITE_BASIC_CONFIG_VERSION_FILE".
+# That was the SECOND silent killer of the fleet audio build (the root guard
+# above was the first — v1.3.9). Normalise ownership to the builder; the
+# systemd unit chowns the tree back to the user afterwards whatever happens.
+# chown (not `git config --global safe.directory`) because HOME here is the
+# USER'S home — a global write as root would root-own their ~/.gitconfig.
+if [ "$(id -u)" -eq 0 ]; then
+    chown -R root:root "$HOME/rtl-sdr-blog"
+fi
 cmake -B "$HOME/rtl-sdr-blog/build" "$HOME/rtl-sdr-blog" \
     -DINSTALL_UDEV_RULES=ON -DDETACH_KERNEL_DRIVER=ON
 make -C "$HOME/rtl-sdr-blog/build" -j"$J"
