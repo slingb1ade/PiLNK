@@ -100,7 +100,18 @@ echo 'blacklist dvb_usb_rtl28xxu' | sudo tee /etc/modprobe.d/blacklist-rtl.conf 
 # "fork install missing /usr/local/lib/librtlsdr.so" while the library sat one
 # directory deeper. What matters is the /usr/local PREFIX (fork) versus
 # /lib or /usr/lib (stock, ~10 dB deaf) — never the exact subdirectory.
-FORK_LIB=$(ls /usr/local/lib/librtlsdr.so /usr/local/lib/*/librtlsdr.so 2>/dev/null | head -n1)
+# NOT `ls pattern1 pattern2 | head`: when either glob has no match (64-bit has
+# no multiarch subdir; 32-bit has no flat file — i.e. ALWAYS), ls exits 2 even
+# while listing the one it found. Under set -euo pipefail that status survives
+# head, becomes the assignment's status, and set -e kills the script right here
+# — silently, before die() can even print. That was the THIRD killer of the
+# fleet audio build (v1.3.13), introduced by the v1.3.3 rewrite of this very
+# check. A [ -e ] test per candidate asks the real question with no exit-status
+# side channel.
+FORK_LIB=""
+for _cand in /usr/local/lib/librtlsdr.so /usr/local/lib/*/librtlsdr.so; do
+    if [ -e "$_cand" ]; then FORK_LIB="$_cand"; break; fi
+done
 [ -n "$FORK_LIB" ] || die "fork install missing — no librtlsdr.so found under /usr/local/lib"
 ok "driver fork installed to $(dirname "$FORK_LIB")"
 
