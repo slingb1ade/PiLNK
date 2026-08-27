@@ -30,7 +30,17 @@ die()  { err "$1"; exit 1; }
 TTY=/dev/tty
 [ -r "$TTY" ] || TTY=/dev/stdin
 
-[ "$(id -u)" -eq 0 ] && die "Run as a normal user, not root (sudo is used where needed)."
+# Root guard — but NOT for the OTA path. pilnk-audio-build.service runs this
+# script as root (deliberately: apt, make install, /etc writes) with
+# PILNKRADIO_NONINTERACTIVE=1 set. From 1.3.4 to 1.3.8 this guard killed every
+# OTA build in under a second, before step 1 — nine nodes reported
+# engine_absent and the only "ready" nodes were hand-installed. The guard is
+# for a HUMAN typing `sudo bash pilnkradio-install.sh`, where $HOME would be
+# /root and the source lookup breaks; the service sets HOME explicitly, so
+# root is safe there.
+if [ "$(id -u)" -eq 0 ] && [ -z "${PILNKRADIO_NONINTERACTIVE:-}" ]; then
+    die "Run as a normal user, not root (sudo is used where needed)."
+fi
 command -v sudo >/dev/null || die "sudo is required."
 
 J=$(nproc 2>/dev/null || echo 2)
