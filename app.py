@@ -1165,10 +1165,10 @@ def ping_server():
                 # the reason makes "who actually has working ATC audio?" a query
                 # instead of a survey.
                 'env': NODE_ENV,
-                'features': {
+                'features': dict({
                     'sdr_audio': 'ready' if os.path.exists('/usr/local/bin/pilnkradio') else 'engine_absent',
                     'atc_stt':   'ready' if os.path.exists(ATC_TRANSCRIPT_PATH) else 'absent',
-                },
+                }, **_ota_ping_features()),
             }
             if emergency_aircraft:
                 ping_data['emergency_aircraft'] = emergency_aircraft
@@ -1235,19 +1235,82 @@ OTA_STATE_FILE = os.path.join(PILNK_DIR, 'ota_state.json')
 # restart, there'd be no rate limit. Persisting to disk means the
 # cooldown survives restarts, capping retry attempts at 1 per hour
 # even in worst-case loop scenarios.
-def _load_ota_last_update():
+def _load_ota_state():
+    """Full persisted OTA state. Backward compatible: an old-format file
+    holding only {'last_update': ts} still loads fine."""
     try:
         with open(OTA_STATE_FILE, 'r') as f:
-            return float(json.load(f).get('last_update', 0))
+            d = json.load(f)
+            return d if isinstance(d, dict) else {}
+    except Exception:
+        return {}
+
+def _save_ota_state(**updates):
+    """Merge-write OTA state. Merging (not overwrite) so the cooldown write
+    in _run_update can't erase the result written moments earlier."""
+    try:
+        state = _load_ota_state()
+        state.update(updates)
+        with open(OTA_STATE_FILE, 'w') as f:
+            json.dump(state, f)
+    except Exception as e:
+        print(f'[PILNK-OTA] Warning: could not persist OTA state: {e}')
+
+def _load_ota_last_update():
+    try:
+        return float(_load_ota_state().get('last_update', 0))
     except Exception:
         return 0.0
 
 def _save_ota_last_update(ts):
-    try:
-        with open(OTA_STATE_FILE, 'w') as f:
-            json.dump({'last_update': ts}, f)
-    except Exception as e:
-        print(f'[PILNK-OTA] Warning: could not persist cooldown state: {e}')
+    _save_ota_state(last_update=ts)
+
+# ── OTA health in the ping (v1.3.10 "Vital-Signs") ──
+# M0CRT sat on 1.3.0 for weeks while pinging healthily every minute, and
+# nothing server-side could say WHY: the ping carried no OTA state at all. A
+# node whose updater is dead is indistinguishable from one whose owner opted
+# out. Same class of gap as pi_model — the node knew, nobody asked.
+#
+# 'started@<ver>' reconciliation: a SUCCESSFUL update restarts this service
+# from inside update.sh, so the success path can never record its own result —
+# the process is dead before it gets the chance. Instead _run_update records
+# 'started@<old-ver>' beforehand; on the next boot, if the version moved on,
+# that pending marker becomes the success record. If the version did NOT move,
+# the update ran and went nowhere — recorded as 'interrupted' rather than
+# left dangling.
+_OTA_START_TS = time.time()
+
+def _reconcile_pending_ota_result():
+    """Called at startup, AFTER _get_local_version is defined (calling it from
+    module scope up here would NameError into a silent skip — the exact
+    py_compile-passes-names-don't bug from the 26 Aug postmortem)."""
+    _pend = _load_ota_state().get('last_result', '')
+    if isinstance(_pend, str) and _pend.startswith('started@'):
+        _save_ota_state(last_result=(
+            'success' if _pend.split('@', 1)[1] != _get_local_version()
+            else 'interrupted'))
+
+def _ota_ping_features():
+    """Three LOW-CARDINALITY strings for the ping's features dict — states,
+    not timestamps, so fleet_query's grouping stays useful (a raw timestamp
+    would make every node an 'outlier' every ping).
+      ota:            auto | manual   (how updates are configured)
+      ota_check:      ok | stale | starting | never   (is the checker ALIVE)
+      ota_last_result:success | interrupted | started@v | exit_N | error:X | none
+    """
+    now = time.time()
+    checked = ota_status.get('last_check', 0)
+    if checked:
+        check = 'ok' if (now - checked) < 3 * OTA_CHECK_INTERVAL else 'stale'
+    elif (now - _OTA_START_TS) < 2 * OTA_CHECK_INTERVAL:
+        check = 'starting'   # too soon after boot to judge
+    else:
+        check = 'never'      # process is old and the checker has never succeeded
+    return {
+        'ota':             'auto' if _is_auto_update_enabled() else 'manual',
+        'ota_check':       check,
+        'ota_last_result': str(_load_ota_state().get('last_result', 'none'))[:40],
+    }
 
 ota_last_update = _load_ota_last_update()
 ota_status = {'available': False, 'current': '', 'latest': '', 'last_check': 0, 'updating': False}
@@ -1258,6 +1321,8 @@ def _get_local_version():
             return f.read().strip()
     except:
         return '0.0.0'
+
+_reconcile_pending_ota_result()
 
 def _semver_gt(a, b):
     """Return True if version string `a` is semantically greater than `b`.
@@ -1310,6 +1375,12 @@ def _run_update():
     global ota_last_update
     ota_status['updating'] = True
     print('[PILNK-OTA] Starting update...')
+    # Recorded BEFORE the attempt: a successful update.sh restarts this
+    # process, so there is no "after" from which to record success. The next
+    # boot's _reconcile_pending_ota_result() turns this marker into
+    # 'success' or 'interrupted' by whether VERSION actually moved.
+    _save_ota_state(last_result='started@' + _get_local_version(),
+                    last_result_ts=time.time())
     try:
         result = subprocess.run(
             ['bash', UPDATE_SCRIPT],
@@ -1322,13 +1393,20 @@ def _run_update():
         ota_last_update = time.time()
         _save_ota_last_update(ota_last_update)   # GUARDRAIL #2: persist
         ota_status['updating'] = False
-        # Note: if update.sh restarts the service, this code won't reach here
-        # That's fine — the new instance will start fresh, but it loads
-        # ota_last_update from disk so the cooldown still applies.
+        # Reaching HERE means update.sh exited without restarting us —
+        # an abort (exit 3 = Rule #28 mismatch, 4 = restart blocked, ...)
+        # or a failure. Record which: this is the number that would have
+        # named M0CRT's fault in one fleet query.
+        _save_ota_state(
+            last_result=('success' if result.returncode == 0
+                         else 'exit_%d' % result.returncode),
+            last_result_ts=time.time())
         return result.returncode == 0
     except Exception as e:
         print(f'[PILNK-OTA] Update failed: {e}')
         ota_status['updating'] = False
+        _save_ota_state(last_result='error:' + type(e).__name__,
+                        last_result_ts=time.time())
         return False
 
 def _perform_ota_check(auto_install_on_available=True):
