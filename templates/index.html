@@ -3666,7 +3666,10 @@ var LIGHT={C150:1,C152:1,C162:1,C172:1,C175:1,C177:1,C180:1,C182:1,C185:1,C188:1
            DA20:1,DA40:1,DA50:1,SR20:1,SR22:1,SR2T:1,
            BE19:1,BE23:1,BE24:1,BE33:1,BE35:1,BE36:1,
            M20J:1,M20P:1,M20T:1,M20R:1,
-           TBM7:1,TBM8:1,TBM9:1,PC6:1,PC6T:1,PC12:1,PC24:1};
+           TBM7:1,TBM8:1,TBM9:1,PC6:1,PC6T:1,PC12:1,PC24:1,
+           // NZ trainer fleet — ZK-SWZ (Alpha R2160, Ardmore) rendered as a
+           // narrowbody because nothing local was in this dict (v1.3.11).
+           R200:1,R2100:1,CT4:1};
 // Type → icon-category map. The high-confidence lookup.
 // Categories: narrowbody, widebody, superheavy, heavytwin, lighttwin, lightsingle, heli.
 // Aircraft NOT in this dict resolve via the HEAVY_TWIN/LIGHT_TWIN/LIGHT/HEAVY/HELI
@@ -3700,9 +3703,14 @@ function getCat(t,cat){
     if(LIGHT_TWIN[u])return'lighttwin';
     if(LIGHT[u])return'lightsingle';
     if(HEAVY[u])return'widebody';
-    return'narrowbody';
+    // Type code known but in NO dict: fall THROUGH to the emitter-category
+    // checks below rather than defaulting to narrowbody here. The dicts are
+    // an airliner/US-GA roster; the rest of the world's light aircraft (the
+    // Ardmore trainer fleet, for one) used to land on this early return and
+    // render as airliners even while their transponders declared A1-light.
+    // The aircraft's own declaration beats our dictionary's ignorance.
   }
-  // Fallback by ADS-B emitter category when type unknown.
+  // Fallback by ADS-B emitter category when type unknown (or unrecognised).
   // A1=light single, A2=small (regional turboprop class), A3=large
   // narrow-body class, A4/A5=heavy, A6=high-performance, A7=heli.
   if(cat==='A1')return'lightsingle';
