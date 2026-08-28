@@ -413,6 +413,7 @@ _ensure_aircraft_db_async()
 TRAIL_HISTORY = collections.defaultdict(lambda: collections.deque(maxlen=500))
 TRAIL_LOCK = threading.Lock()
 MAX_TRAIL_AGE = 24 * 3600  # 24 hours in seconds
+_TRAIL_ERR = {'last': 0.0}   # throttle for the recorder's error line (Pass 2)
 
 def record_trails():
     while True:
@@ -439,8 +440,14 @@ def record_trails():
                             TRAIL_HISTORY[hex].popleft()
                         if not TRAIL_HISTORY[hex]:
                             del TRAIL_HISTORY[hex]
-        except:
-            pass
+        except Exception as e:
+            # Fail-soft is right — one bad iteration must never kill the
+            # recorder. Eternal silence wasn't: a persistent failure here
+            # degrades trails/History invisibly, the "looks like nobody used
+            # it" shape (Pass 2, 28 Aug). At most one journal line per hour.
+            if time.time() - _TRAIL_ERR['last'] > 3600:
+                _TRAIL_ERR['last'] = time.time()
+                print(f'[PILNK] Trail recorder error (continuing, throttled 1/hr): {e}')
         time.sleep(10)  # Record every 10 seconds
 
 # Start trail recorder thread

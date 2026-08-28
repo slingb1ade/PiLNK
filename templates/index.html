@@ -2527,18 +2527,21 @@ function rebuildRainMosaic(){
   var x0=nw.x,y0=nw.y,x1=se.x,y1=se.y, cols=x1-x0+1, rows=y1-y0+1;
   if(cols<1||rows<1||cols*rows>36){ _rvData=null; return; }
   var w=cols*256,h=rows*256; _rvCanvas.width=w; _rvCanvas.height=h; _rvCtx.clearRect(0,0,w,h);
-  var ox=x0*256, oy=y0*256, pending=0, done=false, nxBucket=Math.floor(Date.now()/300000);
-  function finalize(){ try{ _rvData={data:_rvCtx.getImageData(0,0,w,h).data,w:w,h:h,z:z,ox:ox,oy:oy,nexrad:isNexrad}; }catch(e){ _rvData=null; } _rvBuilding=false; }
+  var ox=x0*256, oy=y0*256, pending=0, done=false, failed=0, nxBucket=Math.floor(Date.now()/300000);
+  // Pass 2 (28 Aug): a failed tile used to vanish silently — with enough of
+  // them the sampler finalizes a blank canvas and rain occlusion quietly
+  // reads "clear skies". Still fail-soft, but now it says so once per build.
+  function finalize(){ try{ _rvData={data:_rvCtx.getImageData(0,0,w,h).data,w:w,h:h,z:z,ox:ox,oy:oy,nexrad:isNexrad}; }catch(e){ _rvData=null; } if(failed>0) console.warn('[PiLNK] weather sampler: '+failed+' tile(s) failed to load/draw — rain occlusion may under-report this frame'); _rvBuilding=false; }
   _rvBuilding=true;
   for(var ty=y0;ty<=y1;ty++){ for(var tx=x0;tx<=x1;tx++){ (function(tx,ty){
     var key, url;
     if(isNexrad){ key='nx/'+nxBucket+'/'+z+'/'+tx+'/'+ty; url='/api/nexrad-tile/'+z+'/'+tx+'/'+ty; }
     else { key=(wxSource?wxSource.tileProxy:'')+frame.path+'/'+z+'/'+tx+'/'+ty; url=_rvTileUrl(frame.path,z,tx,ty); }
     var dx=(tx-x0)*256, dy=(ty-y0)*256, im=_rvTileCache[key];
-    if(im&&im.complete&&im.naturalWidth){ try{_rvCtx.drawImage(im,dx,dy);}catch(e){} return; }
+    if(im&&im.complete&&im.naturalWidth){ try{_rvCtx.drawImage(im,dx,dy);}catch(e){failed++;} return; }
     pending++; im=new Image(); im.crossOrigin='anonymous';
-    im.onload=function(){ try{_rvCtx.drawImage(im,dx,dy);}catch(e){} _rvTileCache[key]=im; if(--pending===0&&done) finalize(); };
-    im.onerror=function(){ if(--pending===0&&done) finalize(); };
+    im.onload=function(){ try{_rvCtx.drawImage(im,dx,dy);}catch(e){failed++;} _rvTileCache[key]=im; if(--pending===0&&done) finalize(); };
+    im.onerror=function(){ failed++; if(--pending===0&&done) finalize(); };
     im.src=url;
   })(tx,ty); } }
   done=true; if(pending===0) finalize();
