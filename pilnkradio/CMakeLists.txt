@@ -28,6 +28,17 @@ find_library(FFTW3F_LIB fftw3f REQUIRED)
 
 target_include_directories(pilnkradio PRIVATE ${RTLSDR_INCLUDE})
 target_link_libraries(pilnkradio PRIVATE Threads::Threads ${RTLSDR_LIB} ${FFTW3F_LIB})
+
+# 8-byte atomics: native instructions on aarch64/x86_64, but 32-bit ARM
+# (armv7l — the PiAware SD-card image) has none, so GCC lowers
+# std::atomic<uint64_t> to __atomic_*_8 library calls that live in libatomic.
+# Without -latomic the link dies with "undefined reference to
+# __atomic_exchange_8" — layer FOUR of the fleet audio build, found by MME1's
+# node, the fleet's only 32-bit member (28 Aug 2026). Guarded by pointer size
+# so every 64-bit build stays byte-for-byte as before.
+if(CMAKE_SIZEOF_VOID_P EQUAL 4)
+    target_link_libraries(pilnkradio PRIVATE atomic)
+endif()
 set_target_properties(pilnkradio PROPERTIES
     BUILD_RPATH  ${RTLSDR_PREFIX}/lib
     INSTALL_RPATH ${RTLSDR_PREFIX}/lib)
