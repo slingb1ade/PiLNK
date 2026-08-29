@@ -1,0 +1,93 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>PiLNK badge preview — Phase 2 art review</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@700;900&family=Share+Tech+Mono&display=swap" rel="stylesheet">
+<style>
+  body { background:#06090d; color:#e6e8ea; font-family:'Share Tech Mono',monospace; margin:0; padding:28px; }
+  h1 { font-family:'Orbitron',sans-serif; font-size:1.05rem; letter-spacing:0.1em; color:#39e58c; }
+  p.note { color:#7d8590; font-size:0.72rem; max-width:640px; line-height:1.5; }
+  #wall { max-width:1100px; }
+  .ramp { display:flex; gap:16px; margin:18px 0 30px; flex-wrap:wrap; }
+  .ramp figure { margin:0; text-align:center; }
+  .ramp figcaption { font-size:0.6rem; color:#7d8590; margin-top:4px; }
+</style>
+</head>
+<body>
+<h1>PiLNK badges — Phase 2 preview</h1>
+<p class="note">Art review page. Not linked from anywhere; mock data below covers
+every state: the five airframe tiers, a locked family, mid-progress arcs, a maxed
+family, serial-capped commendations, and the military amber treatment. The wall
+below is rendered by the same pilnk-badges.js that the profile page and the node
+dashboard Badges tab will use.</p>
+
+<div class="ramp" id="ramp"></div>
+<div id="wall"></div>
+
+<script src="/static/pilnk-badges.js"></script>
+<script>
+  var rampEl = document.getElementById('ramp');
+  [1,2,3,4,5].forEach(function (t) {
+    var f = document.createElement('figure');
+    f.innerHTML = PilnkBadges.scopeSVG({ glyph:'tracker', tier:t, progressFrac:0, sweep:t===5, size:96 })
+      + '<figcaption>' + PilnkBadges.TIERS[t].name + '</figcaption>';
+    rampEl.appendChild(f);
+  });
+
+  var mockDefs = [];
+  var fams = [
+    ['fam_tracker','tracker','total_tracked',[100,2500,25000,100000,250000],['Spotter','Controller','Radar King','Air Boss','Sentry']],
+    ['fam_collector','collector','unique_types',[25,100,250,500,750],['Trainee','Enthusiast','Encyclopaedia','Curator','The Registry']],
+    ['fam_fastmover','fastmover','max_speed',[500,600,700,900,1323],['Fast Tracker','Mach Watcher','Supersonic','Afterburner','Blackbird']],
+    ['fam_longeyes','longeyes','max_distance',[100,150,200,230,250],['Line of Sight','Horizon Breaker','Over the Horizon','Anomalous Propagation','Deep Field']],
+    ['fam_highflyer','highflyer','max_altitude',[40000,45000,50000,55000,80000],['Upper Air','Bizjet Country','Concorde Class','Dragon Lady','Edge of Space']],
+    ['fam_tower','tower','uptime_streak',[7,30,90,365,730],['Standing Watch','Reliable Tower','Iron Tower','Beacon','Lighthouse']],
+    ['fam_interceptor','interceptor','military_count',[1,10,50,250,1000],['First Bogey','Military Spotter','Scrambled','Top Cover','Aggressor']],
+    ['fam_ghosthunter','ghosthunter','ghosts_identified',[1,5,25,100,500],['Ghost Whisperer','Phantom Hunter','Spectre Tracker','Ghost Master','The Exorcist']],
+    ['fam_photographer','photographer','photos_uploaded',[1,5,25,100,250],['First Shot','Shutterbug','Plane Photographer','PiSnap Pro','Cover Shot']],
+    ['fam_crowdfav','crowdfav','photos_top_voted',[1,5,10,25,50],['Crowd Favourite','Acclaimed','Beloved','Gallery Star','Legend of the Lens']],
+    ['fam_watchstander','watchstander','watchlist_alerts_fired',[10,100,1000,10000,50000],['First Alert','On Watch','Sentinel','Hawkeye','Eagle Eye']],
+    ['fam_firstresponder','firstresponder','emergencies_witnessed',[1,3,10,25,50],['First Response','On Scene','Guard Frequency','Search and Rescue','Guardian']]
+  ];
+  fams.forEach(function (f) {
+    f[3].forEach(function (thr, i) {
+      mockDefs.push({ slug:f[0].replace('fam_','')+'_t'+(i+1), name:f[4][i], description:'', icon:f[1], category:f[0], tier:i+1, stat_key:f[2], threshold:thr });
+    });
+  });
+  mockDefs.push({ slug:'af1_spotter', name:'AF1 Spotter', description:'Air Force One pinged your node. You witnessed history.', icon:'crowdfav', category:'special', tier:1 });
+  mockDefs.push({ slug:'mach_2_club', name:'Mach 2 Club', description:'Caught an aircraft over Mach 2. The rarest of the rare.', icon:'fastmover', category:'special', tier:1 });
+  mockDefs.push({ slug:'founder', name:'Founder', description:'PiLNK creator', icon:'tower', category:'special', tier:1 });
+  mockDefs.push({ slug:'mil_pioneer', name:'Mil Pioneer', description:'First 25 on the network to catch a military aircraft.', icon:'interceptor', category:'military', tier:1 });
+  mockDefs.push({ slug:'mil_legendary_catch', name:'Gold Star', description:'Caught a legendary-tier military aircraft.', icon:'crowdfav', category:'military', tier:1 });
+
+  /* Mock user ≈ a strong UK node: mixed tiers, one maxed family, arcs everywhere. */
+  var mockData = {
+    defs: mockDefs,
+    stats: { total_tracked:19711, unique_types:580, max_speed:648, max_distance:248,
+             max_altitude:47950, uptime_streak:79, military_count:325, ghosts_identified:500,
+             photos_uploaded:2, photos_top_voted:0, watchlist_alerts_fired:11404, emergencies_witnessed:4 },
+    earned: {
+      tracker_t1:{awarded_at:'2026-04-25'}, tracker_t2:{awarded_at:'2026-05-14'},
+      collector_t1:{awarded_at:'2026-04-25'}, collector_t2:{awarded_at:'2026-05-02'}, collector_t3:{awarded_at:'2026-06-11'}, collector_t4:{awarded_at:'2026-08-01'},
+      fastmover_t1:{awarded_at:'2026-04-28'}, fastmover_t2:{awarded_at:'2026-06-19'},
+      longeyes_t1:{awarded_at:'2026-04-26'}, longeyes_t2:{awarded_at:'2026-05-03'}, longeyes_t3:{awarded_at:'2026-06-30'}, longeyes_t4:{awarded_at:'2026-08-12'},
+      highflyer_t1:{awarded_at:'2026-05-05'}, highflyer_t2:{awarded_at:'2026-07-22'},
+      tower_t1:{awarded_at:'2026-05-01'}, tower_t2:{awarded_at:'2026-05-24'},
+      interceptor_t1:{awarded_at:'2026-04-27'}, interceptor_t2:{awarded_at:'2026-05-09'}, interceptor_t3:{awarded_at:'2026-06-15'}, interceptor_t4:{awarded_at:'2026-08-20'},
+      ghosthunter_t1:{awarded_at:'2026-05-02'}, ghosthunter_t2:{awarded_at:'2026-05-08'}, ghosthunter_t3:{awarded_at:'2026-05-30'}, ghosthunter_t4:{awarded_at:'2026-06-28'}, ghosthunter_t5:{awarded_at:'2026-08-14'},
+      photographer_t1:{awarded_at:'2026-08-28'},
+      watchstander_t1:{awarded_at:'2026-05-01'}, watchstander_t2:{awarded_at:'2026-05-20'}, watchstander_t3:{awarded_at:'2026-06-24'}, watchstander_t4:{awarded_at:'2026-08-18'},
+      firstresponder_t1:{awarded_at:'2026-06-02'}, firstresponder_t2:{awarded_at:'2026-07-29'},
+      af1_spotter:{ serial: 7, awarded_at:'2026-07-10' },
+      mil_pioneer:{ serial: 3, awarded_at:'2026-05-18' },
+      mil_legendary_catch:{ awarded_at:'2026-07-04' }
+    },
+    serial_caps: { af1_spotter:25, mach_2_club:10, mil_pioneer:25 },
+    remaining: { mach_2_club:10 }
+  };
+  PilnkBadges.renderBadgeWall(document.getElementById('wall'), mockData);
+</script>
+</body>
+</html>

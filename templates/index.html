@@ -1271,6 +1271,7 @@
           <!-- hidden until an engine answers on :5656 (fleet nodes without radio hardware never see it) -->
           <button class="nav-item" id="navSdrAudio" data-tab="sdr-audio" role="menuitem" onclick="navPick('sdr-audio','SDR Audio')" style="display:none">SDR Audio</button>
           <button class="nav-item" data-tab="history" role="menuitem" onclick="navPick('history','History')">History</button>
+          <button class="nav-item" data-tab="badges" role="menuitem" onclick="navPick('badges','Badges')">Badges</button>
           <button class="nav-item" data-tab="options" role="menuitem" onclick="navPick('options','Options')">Options</button>
           <button class="nav-item" data-tab="stats" role="menuitem" onclick="navPick('stats','Stats')">Stats</button>
           <button class="nav-item" data-tab="system" role="menuitem" onclick="navPick('system','System')">System</button>
@@ -1507,6 +1508,13 @@
       </div>
 
       <!-- OPTIONS TAB -->
+      <div class="tab-content" id="tab-badges">
+        <div style="padding:14px 16px;overflow-y:auto;max-height:calc(100vh - 200px);">
+          <div style="font-family:'Orbitron',sans-serif;font-size:0.72rem;letter-spacing:0.1em;color:var(--blue-light);margin-bottom:4px;">SERVICE RECORD</div>
+          <div id="badgeSyncNote" style="font-family:'Share Tech Mono',monospace;font-size:0.55rem;color:var(--text-dim);margin-bottom:10px;"></div>
+          <div id="badgeWall"></div>
+        </div>
+      </div>
       <div class="tab-content" id="tab-options">
         <div class="scroll-area">
           <div class="panel">
@@ -2028,7 +2036,82 @@ function showTab(name, e) {
   if (e && e.target) e.target.classList.add('active');
   if (name === 'history') loadHistory();
   if (name === 'sdr-audio') saCheckVHF();
+  if (name === 'badges') loadBadges();
 }
+
+// ── Badges tab (badges Phase 4) ──────────────────────────────
+// Lazy path: the renderer script loads on first open, data comes from the
+// node's own /api/badges proxy (verify_code stays server-side). The proxy
+// caches 5 min and serves stale on outage — we surface both states in the
+// sync note instead of pretending.
+var _badgesLoaded = false;
+function ensureBadgesLib(cb) {
+  if (_badgesLoaded) { cb(); return; }
+  var s = document.createElement('script');
+  s.src = '/static/pilnk-badges.js';
+  s.onload = function () { _badgesLoaded = true; cb(); };
+  s.onerror = function () { var n = document.getElementById('badgeSyncNote'); if (n) n.textContent = 'Could not load the badge renderer.'; };
+  document.head.appendChild(s);
+}
+function loadBadges() {
+  var note = document.getElementById('badgeSyncNote');
+  ensureBadgesLib(function () {
+    fetch('/api/badges').then(function (r) { return r.json(); }).then(function (d) {
+      if (d.error) { note.textContent = 'Badge sync unavailable — pilnk.io unreachable and no cached copy yet.'; return; }
+      note.textContent = d.stale ? 'Offline — showing last synced copy.' : (d.cached ? 'Synced (cached).' : 'Synced with pilnk.io.');
+      d.badgeSize = 64;
+      d.columns = 3;
+      PilnkBadges.renderBadgeWall(document.getElementById('badgeWall'), d);
+      if (d.new_awards && d.new_awards.length) toastAwards(d.new_awards);
+    }).catch(function () { note.textContent = 'Badge sync failed — is the node online?'; });
+  });
+}
+
+// ── Award toasts (badges Phase 4b) — every badge announces HERE, over the
+// map, not just on pilnk.io. The proxy's new_awards list is
+// announce-once (node-local record), so a toast can never replay.
+var _toastShown = {};
+function toastAwards(awards) {
+  awards = awards.filter(function (a) { return !_toastShown[a.slug]; });
+  if (!awards.length) return;
+  awards.forEach(function (a) { _toastShown[a.slug] = true; });
+  fetch('/api/badges/ack', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ slugs: awards.map(function (a) { return a.slug; }) }) }).catch(function () {});
+  ensureBadgesLib(function () {
+    var host = document.getElementById('badgeToasts');
+    if (!host) {
+      host = document.createElement('div');
+      host.id = 'badgeToasts';
+      host.style.cssText = 'position:fixed;right:16px;bottom:16px;z-index:9500;display:flex;flex-direction:column;gap:10px;align-items:flex-end;';
+      document.body.appendChild(host);
+    }
+    awards.forEach(function (a, i) {
+      setTimeout(function () {
+        var mil = a.category === 'military';
+        var t = document.createElement('div');
+        t.style.cssText = 'display:flex;align-items:center;gap:12px;background:#0d1117;border:1px solid ' + (mil ? '#6b7245' : '#1d4232') + ';border-radius:14px;padding:10px 16px 10px 10px;cursor:pointer;box-shadow:0 6px 24px rgba(0,0,0,0.55);max-width:320px;';
+        t.innerHTML = PilnkBadges.scopeSVG({ glyph: (a.icon in PilnkBadges.GLYPHS) ? a.icon : 'crowdfav', tier: a.tier || (mil ? 3 : 2), military: mil, sweep: true, size: 56 })
+          + '<div><div style="font-family:\'Share Tech Mono\',monospace;font-size:0.55rem;letter-spacing:0.18em;color:' + (mil ? '#f0a832' : '#39e58c') + ';">' + (mil ? 'HONOUR AWARDED' : 'BADGE EARNED') + '</div>'
+          + '<div style="font-family:\'Orbitron\',sans-serif;font-size:0.78rem;font-weight:700;color:#e6e8ea;">' + (a.name || a.slug) + '</div>'
+          + (a.serial ? '<div style="font-family:\'Orbitron\',sans-serif;font-size:0.6rem;font-weight:900;letter-spacing:0.14em;color:#f0a832;">#' + ('0000' + a.serial).slice(-4) + '</div>' : '')
+          + '</div>';
+        t.addEventListener('click', function () { navPick('badges', 'Badges'); t.remove(); });
+        host.appendChild(t);
+        setTimeout(function () { if (t.parentNode) t.remove(); }, 9000);
+      }, i * 1400);
+    });
+  });
+}
+
+// Background award poll: light touch — every 60s, page-visible only. The
+// proxy answers from its 5-min cache most of the time, so this costs the
+// Pi almost nothing and pilnk.io exactly one request per five minutes.
+setInterval(function () {
+  if (document.hidden) return;
+  fetch('/api/badges').then(function (r) { return r.json(); }).then(function (d) {
+    if (d && d.new_awards && d.new_awards.length) toastAwards(d.new_awards);
+  }).catch(function () {});
+}, 60000);
 
 // ── Sidebar view dropdown ── wraps showTab() (untouched) and keeps the
 // trigger label + active item in sync. Scales to any number of views.

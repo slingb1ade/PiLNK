@@ -1523,6 +1523,123 @@ def api_pairing_status():
             'error':        pairing_state['error'],
         })
 
+# ── Badges tab proxy (badges Phase 4, 28 Aug 2026) ───────────
+# The dashboard's Badges tab shows the OWNER's achievements without a
+# pilnk.io login: the node's verify_code is the credential, and this proxy
+# keeps it server-side (the browser never sees the code — the tab just
+# calls /api/badges). 5-minute cache; if pilnk.io is unreachable we serve
+# the last good copy marked stale rather than an empty wall.
+_BADGE_CACHE = {'ts': 0.0, 'data': None}
+
+# ── Award toasts (badges Phase 4b, 29 Aug 2026) ──────────────
+# Every badge must announce ON THE DASHBOARD, not just the site (AJ).
+# The node keeps its own record of which awards it has already announced
+# (badge_announced.json). Each /api/badges response carries new_awards =
+# earned-but-never-announced, then marks them announced. NODE-LOCAL by
+# design: no schema change, works offline, independent of the site's
+# `seen` flag so both surfaces can celebrate in their own way.
+# First run (no file yet) SEEDS silently — a node's first sync announces
+# nothing, so fleet rollout doesn't toast months of history; the launch
+# cascade belongs to the site. new_awards is computed FRESH on every
+# request and never stored in _BADGE_CACHE — a cached copy must not
+# replay yesterday's celebration.
+BADGE_ANNOUNCED_FILE = os.path.join(PILNK_DIR, 'badge_announced.json')
+
+def _load_announced():
+    try:
+        with open(BADGE_ANNOUNCED_FILE, 'r') as f:
+            d = json.load(f)
+            return set(d.get('announced', [])), True
+    except Exception:
+        return set(), False
+
+def _save_announced(slugs):
+    try:
+        with open(BADGE_ANNOUNCED_FILE, 'w') as f:
+            json.dump({'announced': sorted(slugs)}, f)
+    except Exception as e:
+        print(f'[PILNK] Warning: could not persist announced badges: {e}')
+
+def _diff_new_awards(data):
+    """Return renderable new-award dicts. DOES NOT mark them announced —
+    the first live test caught the flaw: marking on GET means the first
+    screen to poll (AJ's kiosk) eats the toast and every other dashboard
+    stays silent. Marking now happens via POST /api/badges/ack AFTER a
+    client has actually shown the toast, so every open dashboard gets to
+    celebrate and each keeps its own session dedupe."""
+    try:
+        earned = set((data.get('earned') or {}).keys())
+        announced, existed = _load_announced()
+        if not existed:
+            _save_announced(earned)          # silent seed on first sync
+            return []
+        new = earned - announced
+        if not new:
+            return []
+        defs_by_slug = {d.get('slug'): d for d in (data.get('defs') or [])}
+        out = []
+        for slug in sorted(new):
+            d = defs_by_slug.get(slug) or {}
+            out.append({
+                'slug': slug,
+                'name': d.get('name', slug),
+                'category': d.get('category', ''),
+                'tier': d.get('tier', 0),
+                'icon': d.get('icon', ''),
+                'serial': (data['earned'].get(slug) or {}).get('serial'),
+            })
+        return out
+    except Exception as e:
+        print(f'[PILNK] Award diff failed (continuing): {e}')
+        return []
+
+@app.route('/api/badges/ack', methods=['POST'])
+def api_badges_ack():
+    """A dashboard confirms it has shown toasts for these slugs."""
+    try:
+        body = request.get_json(silent=True) or {}
+        slugs = body.get('slugs') or []
+        if not isinstance(slugs, list):
+            return jsonify({'ok': False}), 400
+        announced, _ = _load_announced()
+        _save_announced(announced | set(str(s)[:64] for s in slugs[:200]))
+        return jsonify({'ok': True})
+    except Exception as e:
+        print(f'[PILNK] Badge ack failed: {e}')
+        return jsonify({'ok': False}), 500
+
+@app.route('/api/badges', methods=['GET'])
+def api_badges():
+    now = time.time()
+    if _BADGE_CACHE['data'] is not None and (now - _BADGE_CACHE['ts']) < 300:
+        out = dict(_BADGE_CACHE['data'])
+        out['cached'] = True
+        out['new_awards'] = _diff_new_awards(out)
+        return jsonify(out)
+    try:
+        req = urllib.request.Request(
+            'https://pilnk.io/api/achievements.php?action=node_showcase&verify_code=' + NODE_VERIFY_CODE,
+            headers={'User-Agent': 'PiLNK/1.0'}
+        )
+        with urllib.request.urlopen(req, timeout=10) as r:
+            data = json.loads(r.read())
+        if not isinstance(data, dict) or 'defs' not in data:
+            raise ValueError('unexpected payload')
+        data['fetched_at'] = int(now)
+        _BADGE_CACHE['ts'] = now
+        _BADGE_CACHE['data'] = data
+        out = dict(data)
+        out['new_awards'] = _diff_new_awards(out)
+        return jsonify(out)
+    except Exception as e:
+        print(f'[PILNK] Badge sync failed (serving cache if any): {e}')
+        if _BADGE_CACHE['data'] is not None:
+            out = dict(_BADGE_CACHE['data'])
+            out['stale'] = True
+            out['new_awards'] = []
+            return jsonify(out)
+        return jsonify({'error': 'badge sync unavailable', 'detail': type(e).__name__}), 503
+
 # Start OTA checker thread
 ota_thread = threading.Thread(target=ota_checker, daemon=True)
 ota_thread.start()
