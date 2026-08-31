@@ -136,7 +136,21 @@ def read_receiver_location():
             return float(lat_m.group(1)), float(lon_m.group(1))
     except Exception:
         pass
-    # 3. Unknown — caller must handle None
+    # 3. PiAware images keep the receiver location in /etc/piaware.conf, not in
+    #    dump1090-fa's defaults — so on a PiAware install we found NOTHING and
+    #    returned None, and the dashboard then fell back to a hardcoded Auckland
+    #    default (i.e. the developer's own house). MME1 reported his UK map
+    #    opening in New Zealand; this is why. Format is `receiver-lat 54.5211`.
+    try:
+        with open('/etc/piaware.conf', 'r') as f:
+            content = f.read()
+        lat_m = re.search(r'^\s*receiver-lat\s+(-?[\d.]+)', content, re.M)
+        lon_m = re.search(r'^\s*receiver-lon\s+(-?[\d.]+)', content, re.M)
+        if lat_m and lon_m:
+            return float(lat_m.group(1)), float(lon_m.group(1))
+    except Exception:
+        pass
+    # 4. Unknown — caller must handle None
     return None, None
 
 RX_LAT, RX_LON = read_receiver_location()

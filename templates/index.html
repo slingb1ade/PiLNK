@@ -1908,23 +1908,54 @@
 <script>
 'use strict';
 // ── CONFIG ────────────────────────────────────────────────
-var RX_LAT = -36.90490;
-var RX_LON = 174.76788;
+// ── Receiver location ─────────────────────────────────────
+// These used to default to the developer's own coordinates in Auckland, so
+// ANY node that couldn't determine its location silently opened its map in
+// New Zealand. MME1 (Darlington, UK) reported exactly that on 30 Aug 2026.
+// A wrong default is worse than no default: it looks like a working feature.
+// RX_UNSET is the honest state — the map opens on a wide world view and the
+// dashboard says so, rather than confidently pointing at the wrong hemisphere.
+var RX_LAT = null;
+var RX_LON = null;
+var RX_UNSET = true;
 
-// Fetch actual receiver location from dump1090-fa config
-fetch('/api/location').then(function(r){return r.json();}).then(function(d){
-  if(d.lat && d.lon){
-    RX_LAT = d.lat; RX_LON = d.lon;
-    if(typeof map !== 'undefined') map.setView([RX_LAT, RX_LON], 9);
-    // Update nearest airport for METAR, aviation data, etc.
-    if(typeof updateNearestAirport === 'function') updateNearestAirport(RX_LAT, RX_LON);
-    // Redraw distance rings at new location
-    if(typeof drawRxMarker === 'function') drawRxMarker();
-    if(typeof drawRings === 'function' && typeof ringsOn !== 'undefined' && ringsOn) drawRings();
-    // Compute the active weather source from this node's own location (step 2)
-    if(typeof updateWxSource === 'function') updateWxSource();
-  }
-}).catch(function(){});
+// Fetch the real receiver location from the node itself. This used to end in
+// `.catch(function(){})` — a swallowed failure that left the Auckland default
+// standing with no clue anywhere that anything had gone wrong.
+function loadRxLocation(attempt) {
+  attempt = attempt || 1;
+  fetch('/api/location').then(function(r){return r.json();}).then(function(d){
+    if(d && typeof d.lat === 'number' && typeof d.lon === 'number'){
+      RX_LAT = d.lat; RX_LON = d.lon; RX_UNSET = false;
+      var banner = document.getElementById('rxLocBanner');
+      if(banner) banner.style.display = 'none';
+      if(typeof map !== 'undefined') map.setView([RX_LAT, RX_LON], 9);
+      if(typeof updateNearestAirport === 'function') updateNearestAirport(RX_LAT, RX_LON);
+      if(typeof drawRxMarker === 'function') drawRxMarker();
+      if(typeof drawRings === 'function' && typeof ringsOn !== 'undefined' && ringsOn) drawRings();
+      if(typeof updateWxSource === 'function') updateWxSource();
+      return;
+    }
+    // Endpoint answered but the node genuinely has no location on file.
+    console.warn('[PiLNK] Receiver location is not set on this node. Set it at pilnk.io > Profile > Node and it will sync down automatically.');
+    showRxLocBanner();
+  }).catch(function(e){
+    console.warn('[PiLNK] Could not read receiver location (attempt ' + attempt + '): ' + e);
+    if(attempt < 3){ setTimeout(function(){ loadRxLocation(attempt + 1); }, attempt * 3000); }
+    else { showRxLocBanner(); }
+  });
+}
+
+function showRxLocBanner(){
+  if(document.getElementById('rxLocBanner')) return;
+  var b = document.createElement('div');
+  b.id = 'rxLocBanner';
+  b.style.cssText = 'position:fixed;top:0;left:0;right:0;z-index:9600;background:#3a2c10;color:#f0a832;font-family:\'Share Tech Mono\',monospace;font-size:0.62rem;letter-spacing:0.06em;padding:7px 12px;text-align:center;';
+  b.textContent = 'Receiver location not set — map is not centred on your node. Set it at pilnk.io > Profile > Node and it will sync down automatically.';
+  document.body.appendChild(b);
+}
+
+loadRxLocation();
 
 var NZAA_LAT = -37.0082;
 var NZAA_LON = 174.7917;
@@ -2423,7 +2454,11 @@ function renderHistoryList() {
 }
 
 // ── MAP ────────────────────────────────────────────────────
-var map = L.map('map',{zoomControl:false, scrollWheelZoom:true, zoomSnap:0, zoomDelta:0.5, wheelPxPerZoomLevel:80, wheelDebounceTime:20}).setView([RX_LAT,RX_LON],9);
+// Location may not be known yet (see RX_UNSET above): open on a wide world
+// view rather than asserting a location we don't have. loadRxLocation()
+// re-centres the moment the node answers.
+var map = L.map('map',{zoomControl:false, scrollWheelZoom:true, zoomSnap:0, zoomDelta:0.5, wheelPxPerZoomLevel:80, wheelDebounceTime:20})
+  .setView(RX_UNSET ? [20, 0] : [RX_LAT, RX_LON], RX_UNSET ? 2 : 9);
 map.createPane('rings');    map.getPane('rings').style.zIndex    = 420;
 map.createPane('trails');   map.getPane('trails').style.zIndex   = 450;
 map.createPane('avOverlay');map.getPane('avOverlay').style.zIndex = 440;
@@ -2755,6 +2790,8 @@ var RecenterControl = L.Control.extend({
     L.DomEvent.disableClickPropagation(div);
     L.DomEvent.on(div, 'click', function(e) {
       L.DomEvent.preventDefault(e);
+      // Centre-on-receiver is a no-op until we know where the receiver is.
+      if(RX_UNSET || typeof RX_LAT !== 'number' || typeof RX_LON !== 'number') return;
       map.flyTo([RX_LAT, RX_LON], 9, {duration: 0.6});
     });
     return div;
@@ -3578,6 +3615,10 @@ function toggleRings(on){ringsOn=on;document.getElementById('ringSettings').styl
 function drawRxMarker(){
   // Node receiver marker — ALWAYS drawn, independent of the rings toggle.
   if(rxMarker){map.removeLayer(rxMarker);rxMarker=null;}
+  // No location yet: draw nothing rather than throwing on L.latLng(null,null),
+  // which would abort whatever call chain we're in. loadRxLocation() calls us
+  // again the moment the node reports its position.
+  if(RX_UNSET || typeof RX_LAT !== 'number' || typeof RX_LON !== 'number') return;
   var dark=document.documentElement.getAttribute('data-theme')==='dark';
   var lc2=dark?'#60a5fa':'#2563eb';
   var ri=L.divIcon({className:'',html:'<div title="PiLNK Receiver"><svg width="28" height="28" viewBox="0 0 28 28"><circle cx="14" cy="14" r="12" fill="none" stroke="'+lc2+'" stroke-width="1" opacity="0.3" style="animation:rx-pulse 2s ease-in-out infinite;transform-origin:14px 14px;"/><circle cx="14" cy="14" r="8" fill="none" stroke="'+lc2+'" stroke-width="1" opacity="0.5" style="animation:rx-pulse 2s ease-in-out infinite 0.5s;transform-origin:14px 14px;"/><line x1="14" y1="14" x2="14" y2="4" stroke="'+lc2+'" stroke-width="2" stroke-linecap="round"/><line x1="10" y1="7" x2="14" y2="4" stroke="'+lc2+'" stroke-width="1.5" stroke-linecap="round"/><line x1="18" y1="7" x2="14" y2="4" stroke="'+lc2+'" stroke-width="1.5" stroke-linecap="round"/><circle cx="14" cy="14" r="4" fill="'+lc2+'"/><circle cx="14" cy="14" r="2" fill="white"/></svg></div>',iconSize:[28,28],iconAnchor:[14,14]});
@@ -3587,6 +3628,9 @@ function drawRxMarker(){
 function drawRings(){
   Object.values(ringLayers).forEach(function(l){map.removeLayer(l);});Object.keys(ringLayers).forEach(function(k){delete ringLayers[k];});
   if(!ringsOn)return;
+  // Rings are drawn around the receiver — meaningless, and fatal to Leaflet,
+  // without a known position. See drawRxMarker().
+  if(RX_UNSET || typeof RX_LAT !== 'number' || typeof RX_LON !== 'number') return;
   var dark=document.documentElement.getAttribute('data-theme')==='dark';
   var lc=dark?'#60a5fa':'#0f172a', tc=dark?'#93c5fd':'#0f172a';
   Object.keys(activeRings).forEach(function(nm){
