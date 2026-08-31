@@ -7,6 +7,11 @@
 <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+<!-- Type-specific aircraft silhouettes (RexKramer1/AircraftShapesSVG). Sets
+     window.AIRCRAFT_SHAPES; makeIcon() uses it when a type shape exists and
+     falls back to category silhouettes when it doesn't, so a missing/late file
+     is harmless. Served locally so the dashboard needs no network for it. -->
+<script src="/static/aircraft-shapes.js"></script>
 <style>
   @import url('https://fonts.googleapis.com/css2?family=Orbitron:wght@400;600;700&family=Share+Tech+Mono&family=Noto+Color+Emoji&display=swap');
   :root{--bg-deep:#f0f4ff;--bg-panel:#ffffff;--bg-card:#f5f8ff;--border:#dbeafe;--blue-dim:#2563eb;--blue-mid:#3b82f6;--blue-light:#1d4ed8;--text:#1e3a6e;--text-dim:#5c7aa3;--green:#16a34a;--success:#16a34a;--warn:#d97706;--danger:#dc2626;--info:#2563eb;--shadow:0 1px 2px rgba(30,58,110,.06),0 4px 12px rgba(30,58,110,.09);--shadow-2:0 8px 24px rgba(30,58,110,.13);--edge:inset 0 1px 0 rgba(255,255,255,.65);--r-1:6px;--r-2:10px;--r-3:14px;--sp-1:4px;--sp-2:8px;--sp-3:12px;--sp-4:16px;--sp-5:24px;}
@@ -3892,7 +3897,29 @@ function narrowbodyIcon(cs,h,col,tx){return mkIcon('<svg width="38" height="38" 
 function widebodyIcon(cs,h,col,tx){return mkIcon('<svg width="46" height="46" viewBox="0 0 532.000000 532.000000" style="transform:rotate('+h+'deg);display:block;"><g transform="translate(0.000000,532.000000) scale(0.100000,-0.100000)" fill="'+col+'"><path d="M2496 5278 l-36 -41 -30 -79 c-34 -87 -72 -231 -95 -358 l-16 -85 -6 -565 -6 -565 -9 -12 c-9 -11 -52 -37 -168 -101 -25 -14 -49 -28 -55 -32 -5 -4 -35 -21 -65 -38 l-55 -31 -1 92 c0 89 -15 187 -33 215 l-8 14 -128 1 -127 2 -14 -19 -14 -20 0 -75 c0 -66 15 -224 36 -372 l6 -45 -343 -239 c-296 -205 -530 -368 -1082 -753 l-107 -75 0 -78 c0 -44 3 -79 8 -79 4 0 95 32 202 71 107 39 294 106 415 149 121 43 396 141 612 219 l391 141 265 0 265 0 6 -82 c3 -46 8 -288 11 -538 5 -474 15 -658 42 -774 l15 -69 -5 -39 -5 -39 -25 -38 -26 -39 -173 -144 c-95 -79 -209 -171 -253 -205 -175 -134 -226 -223 -179 -314 l15 -31 12 5 c65 24 744 269 751 270 5 1 25 -47 44 -106 20 -59 38 -104 42 -100 3 4 19 50 35 102 16 51 34 95 40 98 7 2 119 -39 251 -91 323 -127 492 -188 517 -184 l21 3 9 40 c10 49 2 99 -25 145 l-19 35 -72 55 c-73 56 -547 447 -580 479 l-18 17 21 98 c12 53 33 165 47 249 l26 152 4 517 4 518 107 -1 c59 0 193 -4 297 -8 l190 -7 640 -233 c352 -128 699 -254 770 -280 72 -26 133 -46 138 -44 4 2 7 41 6 86 l0 82 -197 135 c-108 74 -318 220 -467 324 -148 104 -306 214 -350 244 -134 93 -345 242 -437 310 l-88 63 23 31 22 30 0 166 c0 92 -4 193 -8 225 l-8 57 -139 0 -139 0 -7 -47 -7 -48 11 -130 c6 -71 9 -131 8 -133 -2 -2 -84 56 -182 128 l-179 130 -5 568 -6 567 -46 175 c-79 304 -140 420 -219 420 l-27 0 -36 -42z"/></g></svg>',46,tx);}
 // Super-heavy 4-engine — A380/747. Biggest icon, 4 engines, upper-deck hint.
 function superheavyIcon(cs,h,col,tx){return mkIcon('<svg width="54" height="54" viewBox="0 0 224.000000 224.000000" style="transform:rotate('+h+'deg);display:block;"><g transform="translate(0.000000,224.000000) scale(0.100000,-0.100000)" fill="'+col+'"><path d="M976 2127 l-25 -25 -17 -53 -17 -54 -5 -165 -5 -165 -56 -47 c-31 -25 -80 -65 -109 -88 l-53 -41 7 26 c3 14 3 36 0 50 l-6 25 -49 0 -49 0 -6 -16 c-3 -9 -6 -37 -6 -62 l0 -47 14 -27 15 -28 -86 -60 c-48 -33 -90 -60 -95 -60 l-9 0 3 53 3 52 -47 3 -47 3 -7 -25 c-7 -28 -1 -113 9 -136 l7 -15 -51 -35 c-27 -19 -60 -43 -72 -53 -12 -11 -57 -44 -100 -74 l-79 -56 -19 -31 -19 -31 0 -42 0 -43 9 0 c5 0 11 6 14 13 6 15 24 23 442 191 154 62 311 121 348 131 l68 18 10 -10 10 -10 6 -204 6 -204 12 -46 c6 -25 9 -51 7 -58 -2 -6 -38 -34 -79 -62 -41 -28 -103 -78 -138 -113 l-63 -62 -16 -38 c-19 -46 -20 -66 -3 -66 6 0 81 25 164 55 84 30 157 55 162 55 9 0 28 -42 33 -75 l3 -20 10 5 c6 2 9 10 7 16 -1 6 5 27 13 47 l15 36 28 -10 c49 -20 303 -109 309 -109 3 0 3 18 0 40 l-5 41 -26 33 c-13 18 -82 75 -151 127 l-127 94 7 55 c19 165 24 227 24 349 l1 134 43 -6 c102 -14 523 -174 727 -275 l114 -57 7 -25 7 -25 1 66 1 66 -47 47 c-27 26 -103 88 -171 138 l-122 92 11 7 12 7 4 48 5 49 -11 27 -10 27 -26 7 -26 7 -11 -11 c-6 -6 -13 -35 -17 -65 l-6 -55 -93 71 -93 70 12 7 11 8 -1 62 -1 62 -11 15 -12 14 -36 -3 -36 -3 -3 -47 c-2 -27 -5 -48 -8 -48 -2 0 -38 25 -79 56 l-75 56 7 11 6 10 -10 -6 -10 -7 -27 23 -26 23 0 131 0 131 -14 75 c-17 86 -37 132 -66 147 l-20 11 -24 -24z"/></g></svg>',54,tx);}
-function makeIcon(cs,cat,h,col,tx){
+// ── Type-specific silhouettes (RexKramer1/AircraftShapesSVG) ──────────────
+// When window.AIRCRAFT_SHAPES has an exact top-view shape for this aircraft's
+// ICAO type, use it — a real A320 instead of a generic "narrowbody" blob. The
+// shape is sized by the aircraft's CATEGORY (so a C172 stays small, an A388
+// stays huge) and filled with the phase colour via currentColor, matching the
+// existing icons. Falls through to the category silhouette when no shape
+// exists (~18% of traffic) — the fallback chain we already trust.
+var CAT_SIZE={heli:41,lightsingle:30,lighttwin:34,heavytwin:36,narrowbody:38,widebody:46,superheavy:54};
+// Rex's shapes are drawn nose-up. If they ever render pointing sideways, this
+// is the one number to change (90 or -90) — everything else stays put.
+var SHAPE_ROT_OFFSET=0;
+function typeShapeIcon(type,cat,h,col,tx){
+  var s=(window.AIRCRAFT_SHAPES||{})[type];
+  if(!s)return null;
+  var size=CAT_SIZE[cat]||38;
+  // color:col on the <svg> resolves the paths' fill=currentColor to the phase
+  // colour, AND keeps the ground-colour string present so mkIcon's ground-scale
+  // check still fires.
+  var svg='<svg width="'+size+'" height="'+size+'" viewBox="'+s.vb+'" style="transform:rotate('+((h||0)+SHAPE_ROT_OFFSET)+'deg);display:block;color:'+col+';">'+s.p+'</svg>';
+  return mkIcon(svg,size,tx);
+}
+function makeIcon(cs,cat,h,col,tx,type){
+  if(type){ var ti=typeShapeIcon(String(type).toUpperCase().trim(),cat,h,col,tx); if(ti)return ti; }
   switch(cat){
     case'heli':return heliIcon(cs,h||0,col,tx);
     case'lightsingle':return lightsingleIcon(cs,h||0,col,tx);
@@ -4069,7 +4096,7 @@ function updateMarker(a){
   updateTrail(a);
   if(window.SHOW_DOM_PLANES!==false){
     var sig=(isMil?'M'+(a.t||'')+rar:cat)+'|'+Math.round((a.track||0)/3)+'|'+col+'|'+(tx?1:0);
-    var icon=isMil?milIcon(a.t,a.mil_class,rar,a.track,tx):makeIcon(cs,cat,a.track,col,tx);
+    var icon=isMil?milIcon(a.t,a.mil_class,rar,a.track,tx):makeIcon(cs,cat,a.track,col,tx,a.t);
     if(markers[cs]){
       markers[cs].setLatLng([a.lat,a.lon]);
       if(markerSig[cs]!==sig){markers[cs].setIcon(icon);markerSig[cs]=sig;}
@@ -4159,7 +4186,7 @@ function updateMarker(a){
       if(haversineNm(insetAirport.lat,insetAirport.lon,a.lat,a.lon)>INSET_RANGE_NM) return;
       var cs=a.flight.trim(); seen[cs]=true;
       var cat=getCat(a.t,a.category), ph=getPhase(a,cs);
-      var icon=makeIcon(cs,cat,a.track,ph.color,!!transmitting[cs]);
+      var icon=makeIcon(cs,cat,a.track,ph.color,!!transmitting[cs],a.t);
       if(insetMarkers[cs]) insetMarkers[cs].setLatLng([a.lat,a.lon]).setIcon(icon);
       else insetMarkers[cs]=L.marker([a.lat,a.lon],{icon:icon}).addTo(insetMap).bindTooltip(cs,{direction:'top'});
     });
