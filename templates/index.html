@@ -1893,6 +1893,7 @@
         <div style="display:flex;align-items:center;gap:10px;">
           <div class="cc-planespotters" id="ccPhotoSource">📷 Planespotters.net</div>
           <button id="ccAddPhotoBtn" onclick="ccAddPhoto()" style="display:none;background:none;border:1px solid rgba(167,139,250,0.3);border-radius:4px;color:#a78bfa;font-family:'Share Tech Mono',monospace;font-size:0.58rem;padding:2px 8px;cursor:pointer;letter-spacing:0.05em;">📸 Add Photo</button>
+          <button id="cc3dBtn" onclick="cc3DView()" title="Watch this aircraft in the 3D approach view" style="background:rgba(124,58,237,0.12);border:1px solid rgba(167,139,250,0.45);border-radius:4px;color:#a78bfa;font-family:'Share Tech Mono',monospace;font-size:0.58rem;padding:2px 8px;cursor:pointer;letter-spacing:0.05em;">🛬 3D View</button>
         </div>
       </div>
     </div>
@@ -5287,12 +5288,14 @@ function openCinematicCard(cs, auto) {
       }
     });
     ccCurrentHex = a.hex;
+    document.getElementById('cc3dBtn').style.display = 'inline-block';
   } else {
     // Hex-less target (rare — e.g. some MLAT/TIS-B contacts): no photo lookup
     // is possible, so clear the "📷 Loading…" placeholder instead of leaving it
     // spinning, and hide Add-Photo (nothing to key a community photo on).
     document.getElementById('ccPhotoSource').textContent = '';
     document.getElementById('ccAddPhotoBtn').style.display = 'none';
+    document.getElementById('cc3dBtn').style.display = 'none';
   }
 
   // ── MILITARY LOOKUP (Phase 3) ─────────────────────────────
@@ -5444,6 +5447,23 @@ function updateCCTranscript(lines, freq) {
       '<span class="cc-tx-text">' + l.text + '</span>' +
     '</div>';
   }).join('');
+}
+
+// v2.0 3D Approach — opens the Three.js approach view locked to this aircraft
+// (terrain + satellite imagery + gear-down fleet, Director camera). Same-origin
+// static page, so a plain window.open is fine; named target reuses one tab.
+function cc3DView() {
+  if (!ccCurrentHex) return;
+  var u = '/static/approach.html?hex=' + encodeURIComponent(ccCurrentHex);
+  // Pass the dash's nearest airport so the 3D scene centres on the right field
+  // anywhere in the world (global-by-default); the page falls back to /api/location.
+  var ap = (typeof nearestAirport !== 'undefined') ? nearestAirport : null;
+  if (ap && typeof ap.lat === 'number' && typeof ap.lon === 'number') {
+    u += '&ap=' + encodeURIComponent(ap.icao || '') + '&lat=' + ap.lat + '&lon=' + ap.lon +
+         (typeof ap.hdg === 'number' ? '&hdg=' + ap.hdg : '') +
+         '&name=' + encodeURIComponent(ap.name || ap.icao || '');
+  }
+  window.open(u, 'pilnk3d');
 }
 
 function ccAddPhoto() {

@@ -27,7 +27,7 @@
   #rollval{font-size:32px;font-weight:700;font-variant-numeric:tabular-nums}
   #rollcard .lbl{color:var(--purple);font-size:10px;letter-spacing:.14em}
   #rollcard .src{color:var(--dim);font-size:10px;margin-top:2px}
-  #cams{bottom:12px;left:50%;transform:translateX(-50%);display:flex;gap:6px}
+  #cams{bottom:12px;left:50%;transform:translateX(-50%);display:flex;gap:6px;pointer-events:auto}
   .cambtn{font-family:inherit;font-size:11px;background:#0e1526;color:var(--dim);border:1px solid var(--line);border-radius:6px;padding:6px 10px;cursor:pointer}
   .cambtn.on{color:var(--txt);border-color:var(--purple)}
   #help{bottom:12px;right:12px;color:var(--dim);font-size:10px;text-align:right;max-width:260px}
@@ -42,9 +42,10 @@
 
 <div class="hud card" id="tl">
   <div class="t">PiLNK · 3D APPROACH</div>
-  <div class="s">Live aircraft over real Auckland terrain</div>
+  <div class="s" id="subtitle">Live aircraft over real terrain</div>
   <div id="modelname">model: —</div>
   <div id="terr">terrain: loading…</div>
+  <div id="mv" style="color:var(--dim);font-size:10px;margin-top:2px">mag var: calibrating from traffic…</div>
   <div id="picker"><select id="acsel"><option value="__auto__">AUTO · lock to roll</option></select><span id="feed" class="pill none">feed…</span></div>
 </div>
 
@@ -55,7 +56,7 @@
     <div class="row"><span class="k">Alt baro</span><span class="v" id="d_alt">—</span></div>
     <div class="row"><span class="k">Gnd speed</span><span class="v" id="d_gs">—</span></div>
     <div class="row"><span class="k">GPS track</span><span class="v" id="d_trk">—</span></div>
-    <div class="row"><span class="k">Dist NZAA</span><span class="v" id="d_dist">—</span></div>
+    <div class="row"><span class="k" id="d_distk">Dist field</span><span class="v" id="d_dist">—</span></div>
   </div>
   <div class="sect"><div class="h">HIDDEN SKY DATA · BDS</div>
     <div class="row"><span class="k">Heading</span><span class="v" id="d_hdg">—</span></div>
@@ -72,11 +73,13 @@
 </div>
 
 <div class="hud" id="cams">
-  <button class="cambtn on" data-cam="orbit">Orbit</button>
+  <button class="cambtn on" data-cam="director" id="dirbtn">Director</button>
   <button class="cambtn" data-cam="chase">Chase</button>
   <button class="cambtn" data-cam="tower">Tower</button>
+  <button class="cambtn" data-cam="orbit">Orbit</button>
 </div>
-<div class="hud" id="help">drag = orbit · scroll = zoom &nbsp;|&nbsp; <b>T</b> test-bank</div>
+<div class="hud" id="help">Director: chase on final → tower cam for landing &nbsp;|&nbsp; Orbit: drag / scroll &nbsp;|&nbsp; <b>T</b> test-bank</div>
+<div style="position:fixed;bottom:4px;left:8px;color:var(--dim);font-size:9px;opacity:.6;z-index:10">Models: 747-100 by Marine, 737-800 by hikami3150, A320 by Dlourine, 777 by zairiqzairiq, ATR 72 by AF267 · Sketchfab · CC-BY-4.0 · Imagery © Esri, Maxar, Earthstar Geographics</div>
 
 <script crossorigin="anonymous" src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
 <script crossorigin="anonymous" src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
@@ -86,16 +89,43 @@
 const CFG={
   flightsUrl:'/flights', pollMs:2000,
   modelBase:'/static/', defaultModel:'b738_v2.glb', targetSpan:40,
-  ref:{lat:-37.008,lon:174.792,fieldElevM:7}, z:12, tr:2, ve:2.0, seg:420,
-  magVar:20, base:{yaw:0,pitch:0,roll:0}, sign:{heading:1,roll:-1,pitch:1},  // roll flipped: FR24 models face opposite to the Cesium calib
+  z:12, tr:3, zImg:13, ve:2.0, seg:560,
+  magVar:null,   // null = self-calibrate from traffic (median of GPS track − BDS magnetic heading); ?magvar= overrides
+  base:{yaw:0,pitch:0,roll:0}, sign:{heading:1,roll:-1,pitch:1},  // roll flipped: FR24 models face opposite to the Cesium calib
   attSmooth:0.18, posSmooth:0.08, staleMs:60000, test:false
 };
+const _q=new URLSearchParams(location.search); if(_q.get('force'))CFG.force=_q.get('force');
 const D2R=Math.PI/180,R2D=180/Math.PI;
-const mPerLat=111320, mPerLon=111320*Math.cos(CFG.ref.lat*D2R);
+const mPerLat=111320; let mPerLon=111320;   // mPerLon set once the site latitude is known
 const P=(z)=>Math.pow(2,z);
 const lon2t=(lon,z)=>(lon+180)/360*P(z), lat2t=(lat,z)=>(1-Math.asinh(Math.tan(lat*D2R))/Math.PI)/2*P(z);
 const t2lon=(x,z)=>x/P(z)*360-180, t2lat=(y,z)=>{const n=Math.PI-2*Math.PI*y/P(z);return R2D*Math.atan(0.5*(Math.exp(n)-Math.exp(-n)));};
-const enuE=(lon)=>(lon-CFG.ref.lon)*mPerLon, enuN=(lat)=>(lat-CFG.ref.lat)*mPerLat;
+/* ---- SITE: where in the world this node is. Global-by-default.
+   Priority: ?lat=&lon=&ap=&hdg=&name= (the dashboard passes its nearest airport)
+   → /api/location (the receiver itself) → known-airport refinements (real tower /
+   threshold where we have them). Field elevation is sampled from the terrain. ---- */
+const SITE={lat:null,lon:null,elev:0,icao:null,name:'field',hdg:null,tower:null,look:null,flat:null};
+const KNOWN={   // optional refinements only — nothing here is required for a site to work
+  NZAA:{ tower:{lat:-37.006428,lon:174.7837,h:105}, look:{lat:-37.001886,lon:174.809601}, flat:{lat:-37.008156,lon:174.790579} }
+};
+async function resolveSite(){
+  if(_q.get('lat')&&_q.get('lon')){
+    SITE.lat=+_q.get('lat'); SITE.lon=+_q.get('lon');
+    SITE.icao=(_q.get('ap')||'').toUpperCase()||null; SITE.name=_q.get('name')||SITE.icao||'field';
+    if(_q.get('hdg')!=null&&_q.get('hdg')!=='')SITE.hdg=+_q.get('hdg');
+  } else {
+    try{ const r=await fetch('/api/location',{cache:'no-store'}); const d=await r.json();
+      if(d&&typeof d.lat==='number'&&typeof d.lon==='number'){SITE.lat=d.lat;SITE.lon=d.lon;SITE.name='your receiver';}
+    }catch(e){}
+  }
+  if(SITE.lat==null||isNaN(SITE.lat)||SITE.lon==null||isNaN(SITE.lon)) throw new Error('No location: set the receiver location in PiLNK, or open this view from the dashboard');
+  if(SITE.icao&&KNOWN[SITE.icao]) Object.assign(SITE,KNOWN[SITE.icao]);
+  mPerLon=111320*Math.cos(SITE.lat*D2R);
+  if(_q.get('magvar')!=null&&_q.get('magvar')!=='')CFG.magVar=+_q.get('magvar');
+  document.getElementById('subtitle').textContent=SITE.icao?('Live aircraft over real '+SITE.name+' terrain'):'Live aircraft over real terrain · centred on your receiver';
+  if(SITE.icao) document.getElementById('d_distk').textContent='Dist '+SITE.icao;
+}
+const enuE=(lon)=>(lon-SITE.lon)*mPerLon, enuN=(lat)=>(lat-SITE.lat)*mPerLat;
 
 /* ---- scene ---- */
 const host=document.getElementById('scene');
@@ -103,9 +133,10 @@ let renderer;
 try{ renderer=new THREE.WebGLRenderer({antialias:true, logarithmicDepthBuffer:true}); }
 catch(e){ document.getElementById('banner').innerHTML='WebGL unavailable.<br><span style="font-size:11px">'+(e.message||e)+'</span>'; throw e; }
 renderer.setSize(innerWidth,innerHeight); renderer.setPixelRatio(Math.min(devicePixelRatio,2));
+renderer.outputEncoding=THREE.sRGBEncoding;
 host.appendChild(renderer.domElement);
 const scene=new THREE.Scene(); scene.background=new THREE.Color(0x0a0f1a);
-scene.fog=new THREE.Fog(0x0a0f1a, 26000, 90000);
+scene.fog=new THREE.Fog(0x0a0f1a, 48000, 170000);
 const camera=new THREE.PerspectiveCamera(55, innerWidth/innerHeight, 1, 400000);
 camera.position.set(300,220,420);
 const controls=new THREE.OrbitControls(camera, renderer.domElement);
@@ -122,38 +153,114 @@ function colorFor(h){
   if(h<500)return lerp3([0.46,0.45,0.25],[0.42,0.32,0.21],(h-250)/250);
   return lerp3([0.42,0.32,0.21],[0.62,0.62,0.64],Math.min(1,(h-500)/700));
 }
-const cx=Math.floor(lon2t(CFG.ref.lon,CFG.z)),cy=Math.floor(lat2t(CFG.ref.lat,CFG.z));
-const x0=cx-CFG.tr,y0=cy-CFG.tr,tilesW=2*CFG.tr+1,TW=tilesW*256;
-const lonW=t2lon(x0,CFG.z),lonE=t2lon(x0+tilesW,CFG.z),latN=t2lat(y0,CFG.z),latS=t2lat(y0+tilesW,CFG.z);
-const cvs=document.createElement('canvas'); cvs.width=TW; cvs.height=TW;
-const tctx=cvs.getContext('2d',{willReadFrequently:true});
+/* tile geometry — computed once the site is known (initTiles) */
+let x0,y0,tilesW,TW,lonW,lonE,latN,latS,cvs,tctx,ix0,ix1,iy0,iy1,IW,IH,imgLonW,imgLonE,imgLatN,imgLatS,iCanvas,ictx;
+function initTiles(){
+  const cx=Math.floor(lon2t(SITE.lon,CFG.z)),cy=Math.floor(lat2t(SITE.lat,CFG.z));
+  x0=cx-CFG.tr; y0=cy-CFG.tr; tilesW=2*CFG.tr+1; TW=tilesW*256;
+  lonW=t2lon(x0,CFG.z); lonE=t2lon(x0+tilesW,CFG.z); latN=t2lat(y0,CFG.z); latS=t2lat(y0+tilesW,CFG.z);
+  cvs=document.createElement('canvas'); cvs.width=TW; cvs.height=TW;
+  tctx=cvs.getContext('2d',{willReadFrequently:true});
+  /* satellite imagery region (Esri World Imagery) covering the same bounds */
+  ix0=Math.floor(lon2t(lonW,CFG.zImg)); ix1=Math.floor(lon2t(lonE,CFG.zImg));
+  iy0=Math.floor(lat2t(latN,CFG.zImg)); iy1=Math.floor(lat2t(latS,CFG.zImg));
+  IW=(ix1-ix0+1)*256; IH=(iy1-iy0+1)*256;
+  imgLonW=t2lon(ix0,CFG.zImg); imgLonE=t2lon(ix1+1,CFG.zImg);
+  imgLatN=t2lat(iy0,CFG.zImg); imgLatS=t2lat(iy1+1,CFG.zImg);
+  iCanvas=document.createElement('canvas'); iCanvas.width=IW; iCanvas.height=IH;
+  ictx=iCanvas.getContext('2d');
+}
+function loadImg(url,ctx,dx,dy){return new Promise(res=>{const im=new Image();im.crossOrigin='anonymous';im.onload=()=>{ctx.drawImage(im,dx,dy);res(true);};im.onerror=()=>res(false);im.src=url;});}
 function loadTile(tx,ty,dx,dy){return new Promise(res=>{const im=new Image();im.crossOrigin='anonymous';im.onload=()=>{tctx.drawImage(im,dx*256,dy*256);res(true);};im.onerror=()=>res(false);im.src='https://s3.amazonaws.com/elevation-tiles-prod/terrarium/'+CFG.z+'/'+tx+'/'+ty+'.png';});}
 async function buildTerrain(){
+  await resolveSite(); initTiles();
   const jobs=[]; for(let dy=0;dy<tilesW;dy++)for(let dx=0;dx<tilesW;dx++)jobs.push(loadTile(x0+dx,y0+dy,dx,dy));
-  const ok=await Promise.all(jobs);
+  const ijobs=[]; for(let ty=iy0;ty<=iy1;ty++)for(let tx=ix0;tx<=ix1;tx++)
+    ijobs.push(loadImg('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/'+CFG.zImg+'/'+ty+'/'+tx, ictx, (tx-ix0)*256, (ty-iy0)*256));
+  const [ok,iok]=await Promise.all([Promise.all(jobs),Promise.all(ijobs)]);
   const img=tctx.getImageData(0,0,TW,TW).data, H=new Float32Array(TW*TW);
   for(let p=0;p<TW*TW;p++){const i=p*4;H[p]=(img[i]*256+img[i+1]+img[i+2]/256)-32768;}
   const hAt=(u,v)=>{const fx=u*(TW-1),fy=v*(TW-1);const X1=Math.min(TW-1,Math.floor(fx)),Y1=Math.min(TW-1,Math.floor(fy)),X2=Math.min(TW-1,X1+1),Y2=Math.min(TW-1,Y1+1);const tx=fx-X1,ty=fy-Y1;const a=H[Y1*TW+X1],b=H[Y1*TW+X2],c=H[Y2*TW+X1],d=H[Y2*TW+X2];return (a*(1-tx)+b*tx)*(1-ty)+(c*(1-tx)+d*tx)*ty;};
-  const seg=CFG.seg,N=seg+1,pos=new Float32Array(N*N*3),col=new Float32Array(N*N*3);
+  // field elevation: sampled from the terrain at the site (no table needed)
+  const su=(SITE.lon-lonW)/(lonE-lonW), sv=(latN-SITE.lat)/(latN-latS);
+  SITE.elev=Math.max(0, hAt(Math.min(1,Math.max(0,su)), Math.min(1,Math.max(0,sv))));
+  // airport flatten: level the field, feather out to real terrain
+  const fl=SITE.flat||SITE;
+  const apE=enuE(fl.lon), apN=enuN(fl.lat), FLAT_R=2600, FEATHER=2200;
+  const seg=CFG.seg,N=seg+1,pos=new Float32Array(N*N*3),uv=new Float32Array(N*N*2),col=new Float32Array(N*N*3);
   for(let j=0;j<N;j++)for(let i=0;i<N;i++){
     const u=i/seg,v=j/seg,lon=lonW+(lonE-lonW)*u,lat=latN+(latS-latN)*v;
-    let h=hAt(u,v); if(h<-60)h=-60;
+    const hRaw=hAt(u,v); let h=hRaw<0?0:hRaw;   // sea flattened to exactly 0 (imagery paints it)
+    const de=enuE(lon)-apE, dn=enuN(lat)-apN, dr=Math.hypot(de,dn);
+    if(dr<FLAT_R+FEATHER && h>0){ const w=dr<FLAT_R?1:1-(dr-FLAT_R)/FEATHER; h=h*(1-w)+SITE.elev*w; }
     const k=(j*N+i)*3; pos[k]=enuE(lon); pos[k+1]=h*CFG.ve; pos[k+2]=-enuN(lat);
-    const c=colorFor(h); col[k]=c[0]; col[k+1]=c[1]; col[k+2]=c[2];
+    const k2=(j*N+i)*2;
+    uv[k2]=(lon-imgLonW)/(imgLonE-imgLonW);
+    uv[k2+1]=1-(imgLatN-lat)/(imgLatN-imgLatS);
+    const c=colorFor(hRaw); col[k]=c[0]; col[k+1]=c[1]; col[k+2]=c[2];
   }
   const idx=[]; for(let j=0;j<seg;j++)for(let i=0;i<seg;i++){const a=j*N+i,b=j*N+i+1,c=(j+1)*N+i,d=(j+1)*N+i+1;idx.push(a,c,b,b,c,d);}
   const geo=new THREE.BufferGeometry();
   geo.setAttribute('position',new THREE.BufferAttribute(pos,3));
+  geo.setAttribute('uv',new THREE.BufferAttribute(uv,2));
   geo.setAttribute('color',new THREE.BufferAttribute(col,3));
   geo.setIndex(idx); geo.computeVertexNormals();
-  scene.add(new THREE.Mesh(geo,new THREE.MeshStandardMaterial({vertexColors:true,roughness:0.95,metalness:0})));
+  // fail-soft: satellite drape when imagery arrives, hillshade tint when it doesn't
+  const imgOK=iok.filter(Boolean).length > ijobs.length*0.5;
+  let mat;
+  if(imgOK){
+    const tex=new THREE.CanvasTexture(iCanvas); tex.encoding=THREE.sRGBEncoding; tex.flipY=true;
+    tex.anisotropy=renderer.capabilities.getMaxAnisotropy();
+    mat=new THREE.MeshStandardMaterial({map:tex,roughness:1.0,metalness:0});
+  } else {
+    mat=new THREE.MeshStandardMaterial({vertexColors:true,roughness:0.95,metalness:0});
+  }
+  scene.add(new THREE.Mesh(geo,mat));
   const extent=(lonE-lonW)*mPerLon;
-  const sea=new THREE.Mesh(new THREE.PlaneGeometry(extent*1.3,extent*1.3),new THREE.MeshStandardMaterial({color:0x0a2740,transparent:true,opacity:0.45,roughness:0.4}));
-  sea.rotation.x=-Math.PI/2; scene.add(sea);
-  // airport marker
-  const apMark=new THREE.Mesh(new THREE.CylinderGeometry(40,40,900,10),new THREE.MeshBasicMaterial({color:0x7c3aed}));
-  apMark.position.set(0,450,0); scene.add(apMark);
-  document.getElementById('terr').textContent='terrain: '+ok.filter(Boolean).length+'/'+jobs.length+' tiles · '+Math.round(extent/1000)+' km · VE '+CFG.ve+'×';
+  const sea=new THREE.Mesh(new THREE.PlaneGeometry(600000,600000),new THREE.MeshStandardMaterial({color:0x0a2740,transparent:true,opacity:0.45,roughness:0.4}));
+  sea.rotation.x=-Math.PI/2; sea.position.y=-6; scene.add(sea);   // just under the flattened sea: horizon-fill only, no z-fight
+  /* ---- airfield detail patch: z16 imagery (~2.4 m/px) on the flattened field,
+     so the tower/landing shot has crisp runway + taxiways instead of z13 mush ---- */
+  (async()=>{
+    const Zd=16, cLon=fl.lon, cLat=fl.lat, dLon=2300/mPerLon, dLat=1500/mPerLat;
+    const dx0=Math.floor(lon2t(cLon-dLon,Zd)), dx1=Math.floor(lon2t(cLon+dLon,Zd));
+    const dy0=Math.floor(lat2t(cLat+dLat,Zd)), dy1=Math.floor(lat2t(cLat-dLat,Zd));
+    const dc=document.createElement('canvas'); dc.width=(dx1-dx0+1)*256; dc.height=(dy1-dy0+1)*256;
+    const dctx=dc.getContext('2d'); const dj=[];
+    for(let ty=dy0;ty<=dy1;ty++)for(let tx=dx0;tx<=dx1;tx++)
+      dj.push(loadImg('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/'+Zd+'/'+ty+'/'+tx, dctx, (tx-dx0)*256, (ty-dy0)*256));
+    const dok=await Promise.all(dj); if(dok.filter(Boolean).length<dj.length*0.8)return;   // partial → skip, base imagery stays
+    const pLonW=t2lon(dx0,Zd), pLonE=t2lon(dx1+1,Zd), pLatN=t2lat(dy0,Zd), pLatS=t2lat(dy1+1,Zd);
+    const w=(pLonE-pLonW)*mPerLon, hgt=(pLatN-pLatS)*mPerLat;
+    const dt=new THREE.CanvasTexture(dc); dt.encoding=THREE.sRGBEncoding; dt.anisotropy=renderer.capabilities.getMaxAnisotropy();
+    const patch=new THREE.Mesh(new THREE.PlaneGeometry(w,hgt), new THREE.MeshStandardMaterial({map:dt,roughness:1,metalness:0}));
+    patch.rotation.x=-Math.PI/2;
+    patch.position.set(enuE((pLonW+pLonE)/2), SITE.elev*CFG.ve+1.5, -enuN((pLatN+pLatS)/2));
+    scene.add(patch);
+  })().catch(()=>{});
+  /* ---- control tower at the real NZAA tower site (runway/taxiways come
+     from the imagery itself — crisp at z13, no overlay needed) ---- */
+  // tower: the real one where we know it; otherwise 600 m off the field's side (or your rooftop, standalone)
+  if(!SITE.tower){
+    const side=(SITE.hdg!=null)?(SITE.hdg+90)*D2R:Math.PI;   // perpendicular-right of the runway, else due south
+    const off=SITE.icao?600:0;
+    SITE.tower={lat:SITE.lat+Math.cos(side)*off/mPerLat, lon:SITE.lon+Math.sin(side)*off/mPerLon, h:SITE.icao?105:40};
+  }
+  if(!SITE.look) SITE.look={lat:SITE.lat,lon:SITE.lon};
+  const twE=enuE(SITE.tower.lon), twN=enuN(SITE.tower.lat), twY=SITE.elev*CFG.ve;
+  placeCams();
+  if(SITE.icao){   // tower prop only makes sense at an airport
+  const shaft=new THREE.Mesh(new THREE.CylinderGeometry(7,9,90,10),
+    new THREE.MeshStandardMaterial({color:0xb9c2cf,roughness:0.6}));
+  shaft.position.set(twE, twY+45, -twN); scene.add(shaft);
+  const cab=new THREE.Mesh(new THREE.CylinderGeometry(16,13,22,10),
+    new THREE.MeshStandardMaterial({color:0x27313f,roughness:0.3,metalness:0.4}));
+  cab.position.set(twE, twY+101, -twN); scene.add(cab);
+  const cap=new THREE.Mesh(new THREE.CylinderGeometry(16.5,16.5,3,10),
+    new THREE.MeshBasicMaterial({color:0x7c3aed}));
+  cap.position.set(twE, twY+113, -twN); scene.add(cap);
+  }
+  document.getElementById('terr').textContent='terrain '+ok.filter(Boolean).length+'/'+jobs.length+' · imagery '+iok.filter(Boolean).length+'/'+ijobs.length+' · '+Math.round(extent/1000)+' km · VE '+CFG.ve+'×';
 }
 buildTerrain().catch(e=>{document.getElementById('terr').textContent='terrain failed: '+(e.message||e);});
 
@@ -171,12 +278,16 @@ function modelFor(t){
   const NB_B=['B731','B732','B733','B734','B735','B736','B737','B738','B739','B37M','B38M','B39M','B712','B717','B721','B722','B727','B752','B753'];
   const WB_B=['B762','B763','B764','B772','B773','B77L','B77W','B778','B779','B788','B789','B78X'];
   const JU_B=['B741','B742','B743','B744','B748','B74S','B74R','BLCF'];
-  if(SU_A.includes(t))return'a380_v2.glb'; if(WB_A.includes(t))return'a333_v2.glb'; if(NB_A.includes(t))return'a320_v2.glb';
-  if(JU_B.includes(t))return'b744_v2.glb'; if(WB_B.includes(t))return'b773_v2.glb'; if(NB_B.includes(t))return'b738_v2.glb';
+  const TP=['AT72','AT73','AT75','AT76','AT43','AT45','AT46','DH8A','DH8B','DH8C','DH8D','SF34','SB20','JS31','JS32','JS41','B350','BE20','BE9L','C208','PC12','E120','D228','DHC6','F50','ATP'];
+  if(TP.includes(t))return'atr72.glb';
+  if(SU_A.includes(t))return'a380_v2.glb'; if(WB_A.includes(t))return'a333_v2.glb'; if(NB_A.includes(t))return'a320_200.glb';
+  if(JU_B.includes(t))return'b747_100.glb'; if(WB_B.includes(t))return'b777_klm.glb'; if(NB_B.includes(t))return'b737_800.glb';
   if(t[0]==='A')return'a320_v2.glb'; if(t[0]==='B')return'b738_v2.glb'; return'b738_v2.glb';
 }
+/* per-model rest-orientation corrections (deg) — applied on load */
+const MODEL_ORIENT={ 'a320_200.glb':{yaw:-90}, 'atr72.glb':{yaw:90} };
 function ensureModel(t){
-  const key=modelFor(t); if(key===currentModelKey||loadingModel)return;
+  const key=CFG.force||modelFor(t); if(key===currentModelKey||loadingModel)return;
   loadingModel=true;
   gltf.load(CFG.modelBase+key,(g)=>{
     while(modelHolder.children.length)modelHolder.remove(modelHolder.children[0]);
@@ -185,6 +296,8 @@ function ensureModel(t){
     const span=Math.max(size.x,size.z); m.scale.setScalar(CFG.targetSpan/(span||1));
     m.traverse(o=>{if(o.isMesh&&o.material){o.material.metalness=0.25;o.material.roughness=0.6;}});
     modelHolder.add(m); modelReady=true; loadingModel=false; currentModelKey=key;
+    const _or=MODEL_ORIENT[key]||{};
+    CFG.base.yaw=(_or.yaw||0)*D2R; CFG.base.pitch=(_or.pitch||0)*D2R; CFG.base.roll=(_or.roll||0)*D2R;
     document.getElementById('banner').style.display='none';
     document.getElementById('modelname').textContent='model: '+key;
   },undefined,(err)=>{loadingModel=false;document.getElementById('modelname').textContent='model failed: '+key;});
@@ -192,36 +305,78 @@ function ensureModel(t){
 ensureModel(null);
 
 /* ---- live data ---- */
-let target='__auto__',lockedHex=null,lastGood=0,haveFix=false;
+let target=(_q.get('hex')||'__auto__').toLowerCase(),lockedHex=null,lastGood=0,haveFix=false;   // ?hex= deep-link locks to one aircraft
 const attWant={yaw:0,pitch:0,roll:0},attCur={yaw:0,pitch:0,roll:0};
 const posFix=new THREE.Vector3(),posCur=new THREE.Vector3(),_delta=new THREE.Vector3();
-document.getElementById('acsel').addEventListener('change',e=>{target=e.target.value;lockedHex=null;});
+document.getElementById('acsel').addEventListener('change',e=>{target=e.target.value.toLowerCase();lockedHex=null;});
 function hasRoll(a){return typeof a.bds50_roll==='number';}
 function posOf(a){return a.lat!=null&&a.lon!=null;}
+/* AUTO = approach-aware: prefer aircraft actually inbound to the field
+   (inside 30 nm, below 12,000 ft, descending), nearest first; stay locked on it
+   until it lands or leaves the area. Falls back to the nearest positioned aircraft. */
+function distNm(a){return Math.hypot(enuE(a.lon),enuN(a.lat))/1852;}
+function altFt(a){return a.alt_baro==='ground'?0:(typeof a.alt_baro==='number'?a.alt_baro:99999);}
+function vsOf(a){return (typeof a.bds60_baro_vertical_rate==='number')?a.bds60_baro_vertical_rate:(a.baro_rate||0);}
+function onApproach(a){return posOf(a)&&distNm(a)<30&&altFt(a)<12000&&a.alt_baro!=='ground'&&vsOf(a)<=100;}
+function stillWatchable(a){return posOf(a)&&distNm(a)<35&&(a.alt_baro==='ground'?(a.seen||0)<20:altFt(a)<14000);}
 function choose(list){
-  if(target!=='__auto__')return list.find(a=>(a.hex||'').toLowerCase()===target.toLowerCase())||null;
-  if(lockedHex){const s=list.find(a=>(a.hex||'').toLowerCase()===lockedHex&&hasRoll(a));if(s)return s;lockedHex=null;}
-  const r=list.filter(hasRoll);
-  const pick=r.sort((a,b)=>Math.abs(b.bds50_roll)-Math.abs(a.bds50_roll))[0]||list.filter(posOf).sort((a,b)=>(a.seen||0)-(b.seen||0))[0]||list[0];
-  if(pick&&hasRoll(pick))lockedHex=(pick.hex||'').toLowerCase();
-  return pick||null;
+  if(target!=='__auto__')return list.find(a=>(a.hex||'').toLowerCase()===target)||null;
+  if(lockedHex){const s=list.find(a=>(a.hex||'').toLowerCase()===lockedHex);if(s&&stillWatchable(s))return s;lockedHex=null;}
+  const inbound=list.filter(onApproach).sort((a,b)=>(hasRoll(b)-hasRoll(a))||(distNm(a)-distNm(b)));
+  const near=list.filter(a=>posOf(a)&&distNm(a)<40&&a.alt_baro!=='ground').sort((a,b)=>distNm(a)-distNm(b))[0]||null;
+  const pick=inbound[0]||near;            // nothing within 40 nm → idle in the tower, don't chase a speck
+  if(pick&&onApproach(pick))lockedHex=(pick.hex||'').toLowerCase();
+  return pick;
+}
+/* idle: no aircraft worth watching — sit in the tower cab looking down 23L until one turns up */
+let idleMode=false;
+function idle(){
+  if(!idleMode){ idleMode=true; modelHolder.visible=false; curHex=null; haveFix=false; }
+  txt('d_cs','— no arrivals —'); txt('d_hex','watching for inbound traffic');
+  ['d_alt','d_gs','d_trk','d_dist','d_hdg','d_roll','d_tas','d_sel','d_vs'].forEach(id=>txt(id,'—'));
+  const rv=document.getElementById('rollval'); rv.textContent='—'; rv.style.color='var(--dim)';
+  document.getElementById('rollsrc').textContent='tower view · waiting';
+  const btn=document.getElementById('dirbtn'); if(btn) btn.textContent='Director · tower';
+}
+function idleCam(){
+  camera.position.copy(towerPos); camera.lookAt(rwyLook);
+  if(Math.abs(camera.fov-38)>0.2){camera.fov+=(38-camera.fov)*0.08;camera.updateProjectionMatrix();}
 }
 async function poll(){
+  if(SITE.lat==null){ setTimeout(poll,400); return; }   // wait for the site before placing anything
   try{
     const r=await fetch(CFG.flightsUrl,{cache:'no-store'}); const j=await r.json();
     const list=(j&&j.aircraft)?j.aircraft:[]; setFeed(true,list.length); refreshPicker(list);
-    const ac=choose(list); if(ac)applyAircraft(ac);
+    const ac=choose(list); if(ac)applyAircraft(ac); else idle();
   }catch(e){setFeed(false,0);}
   finally{setTimeout(poll,CFG.pollMs);}
 }
+let lastAlt=null, curHex=null;
+const mvSamples=[];
+function median(arr){const s=arr.slice().sort((x,y)=>x-y);const m=s.length>>1;return s.length%2?s[m]:(s[m-1]+s[m])/2;}
+function fmtSigned(v){return (v>=0?'+':'')+v.toFixed(1);}
 function applyAircraft(a){
   ensureModel(a.t);
+  lastAlt=a.alt_baro;
+  const hx=(a.hex||'').toLowerCase();
+  if(hx!==curHex){ curHex=hx; camInit=false; followInit=false; shot='chase'; haveFix=false; }   // new subject: hard cut, no lerp across the map
+  if(idleMode){ idleMode=false; modelHolder.visible=true; }
   const magH=(typeof a.bds60_magnetic_heading==='number')?a.bds60_magnetic_heading:null;
+  const roll=hasRoll(a)?a.bds50_roll:null;
+  // magnetic variation, self-calibrated: on straight, fast legs GPS track ≈ true heading,
+  // so (track − magnetic heading) ≈ local declination; the median over many aircraft
+  // on many headings washes out wind crab. Works anywhere on Earth, no tables.
+  if(magH!=null&&typeof a.track==='number'&&(roll==null||Math.abs(roll)<2)&&(a.gs||0)>60){
+    let d=a.track-magH; d=((d+540)%360)-180; mvSamples.push(d); if(mvSamples.length>80)mvSamples.shift();
+  }
+  const mvEst=mvSamples.length>=8?median(mvSamples):null;
+  const mv=(CFG.magVar!=null)?CFG.magVar:(mvEst!=null?mvEst:0);
+  txt('mv', CFG.magVar!=null?('mag var '+fmtSigned(CFG.magVar)+'° (set)')
+            :(mvEst!=null?('mag var '+fmtSigned(mvEst)+'° est · n='+mvSamples.length):'mag var: calibrating from traffic…'));
   let heading,hSrc;
-  if(magH!=null){heading=((magH+CFG.magVar)%360+360)%360;hSrc=Math.round(magH)+'°M → '+Math.round(heading)+'°T';}
+  if(magH!=null){heading=((magH+mv)%360+360)%360;hSrc=Math.round(magH)+'°M → '+Math.round(heading)+'°T';}
   else if(typeof a.track==='number'){heading=a.track;hSrc=Math.round(heading)+'°T (GPS trk)';}
   else{heading=null;hSrc='—';}
-  const roll=hasRoll(a)?a.bds50_roll:null;
   const vs=(typeof a.bds60_baro_vertical_rate==='number')?a.bds60_baro_vertical_rate:(a.baro_rate||0);
   const tas=(typeof a.bds50_true_airspeed==='number')?a.bds50_true_airspeed:(a.gs||250);
   const pitch=Math.atan2((vs/60)*0.3048,(tas*0.514)||1)*R2D;
@@ -229,7 +384,7 @@ function applyAircraft(a){
   if(roll!=null)attWant.roll=CFG.sign.roll*roll*D2R;
   attWant.pitch=CFG.sign.pitch*pitch*D2R;
   if(posOf(a)){
-    const altM=(a.alt_baro==='ground')?CFG.ref.fieldElevM:(typeof a.alt_baro==='number'?a.alt_baro*0.3048:CFG.ref.fieldElevM);
+    const altM=(a.alt_baro==='ground')?SITE.elev:(typeof a.alt_baro==='number'?Math.max(SITE.elev,a.alt_baro*0.3048):SITE.elev);
     posFix.set(enuE(a.lon), altM*CFG.ve, -enuN(a.lat));
     if(!haveFix){posCur.copy(posFix);haveFix=true;}
   }
@@ -255,30 +410,69 @@ function refreshPicker(list){
   const sel=document.getElementById('acsel'),keep=sel.value;
   const opts=['<option value="__auto__">AUTO · lock to roll ('+wr+')</option>'];
   list.slice().sort((a,b)=>(a.flight||a.hex||'').localeCompare(b.flight||b.hex||'')).forEach(a=>{opts.push('<option value="'+(a.hex||'')+'">'+(hasRoll(a)?'● ':'○ ')+((a.flight||'').trim()||(a.hex||'').toUpperCase())+(a.t?' · '+a.t:'')+'</option>');});
-  sel.innerHTML=opts.join(''); sel.value=keep&&[...sel.options].some(o=>o.value===keep)?keep:'__auto__';
+  sel.innerHTML=opts.join('');
+  const want=(target!=='__auto__')?target:(keep||'');
+  const m=[...sel.options].find(o=>o.value.toLowerCase()===want.toLowerCase());
+  sel.value=m?m.value:'__auto__';
 }
 function setFeed(ok,n){const el=document.getElementById('feed');el.className='pill '+(ok?(n?'live':'stale'):'none');el.textContent=ok?(n+' ac'):'no feed';}
 function txt(id,v){document.getElementById(id).textContent=v;}
 function fmtAlt(a){const v=a.alt_baro;if(v==null)return'—';if(v==='ground')return'GROUND';return Math.round(v).toLocaleString()+' ft';}
 
 /* ---- cameras ---- */
-let camMode='orbit', followInit=false;
-const towerPos=new THREE.Vector3(enuE(174.8017), 20, -enuN(-36.9895)); // ~NZAA 23L threshold (rough)
+let camMode='director', followInit=false, shot='chase';
+// tower cam + idle look point — placed once the site is resolved (placeCams)
+const towerPos=new THREE.Vector3(0,120,0), rwyLook=new THREE.Vector3(0,0,-2000);
+let camsPlaced=false;
+function placeCams(){
+  towerPos.set(enuE(SITE.tower.lon), SITE.elev*CFG.ve+SITE.tower.h+17, -enuN(SITE.tower.lat));   // just above the cab cap
+  rwyLook.set(enuE(SITE.look.lon), SITE.elev*CFG.ve, -enuN(SITE.look.lat));
+  camsPlaced=true;
+}
+const _camWant=new THREE.Vector3(), _look=new THREE.Vector3(), _fwd=new THREE.Vector3();
+let camInit=false;
+const DIR={cutToTowerNm:2.8, backToChaseNm:4.5};   // hysteresis so a go-around doesn't flicker
+controls.enabled=false;   // Director is the default; orbit re-enables
 document.querySelectorAll('.cambtn').forEach(b=>b.addEventListener('click',()=>{
   document.querySelectorAll('.cambtn').forEach(x=>x.classList.remove('on')); b.classList.add('on');
-  camMode=b.dataset.cam; followInit=false; controls.enabled=(camMode==='orbit');
+  camMode=b.dataset.cam; followInit=false; camInit=false; controls.enabled=(camMode==='orbit');
+  if(camMode!=='orbit'){camera.fov=55;camera.updateProjectionMatrix();}
 }));
+function currentDistNm(){return Math.hypot(posCur.x,posCur.z)/1852;}
+function directorShot(){
+  const d=currentDistNm(), gnd=(lastAlt==='ground');
+  if(gnd) shot='tower';
+  else if(shot==='chase' && d<DIR.cutToTowerNm) shot='tower';
+  else if(shot==='tower' && d>DIR.backToChaseNm) shot='chase';
+  const btn=document.getElementById('dirbtn'); if(btn) btn.textContent='Director · '+shot;
+  return shot;
+}
+function chaseCam(p){
+  // rear-looking-down: sit behind and above, look a little ahead of the aircraft
+  const h=attCur.yaw, back=420, up=150, ahead=180;
+  _camWant.set(p.x+Math.sin(h)*back, p.y+up, p.z+Math.cos(h)*back);
+  if(!camInit){camera.position.copy(_camWant);camInit=true;} else camera.position.lerp(_camWant,0.06);
+  _fwd.set(-Math.sin(h),0,-Math.cos(h));
+  _look.copy(p).addScaledVector(_fwd,ahead); _look.y=p.y-20;
+  camera.lookAt(_look);
+  if(camera.fov!==55){camera.fov=55;camera.updateProjectionMatrix();}
+}
+function towerCam(p){
+  camera.position.copy(towerPos); camera.lookAt(p);
+  // long lens: tighten FOV as the aircraft gets further from the cab, widen on short final
+  // frame the aircraft at ~a quarter of the width: fov ≈ 4× its angular size (45 m span)
+  const d=camera.position.distanceTo(p);
+  const fov=THREE.MathUtils.clamp(4*2*Math.atan(22.5/Math.max(d,1))*R2D, 4, 50);
+  if(Math.abs(camera.fov-fov)>0.2){camera.fov+= (fov-camera.fov)*0.08; camera.updateProjectionMatrix();}
+}
 function driveCamera(p){
   if(camMode==='orbit'){
     if(!followInit){controls.target.copy(p);camera.position.set(p.x+260,p.y+170,p.z+340);followInit=true;}
     else{_delta.copy(p).sub(controls.target);controls.target.copy(p);camera.position.add(_delta);}
     controls.update();
-  } else if(camMode==='chase'){
-    const h=attCur.yaw, back=380, up=150;
-    camera.position.set(p.x+Math.sin(h)*back, p.y+up, p.z+Math.cos(h)*back); camera.lookAt(p);
-  } else if(camMode==='tower'){
-    camera.position.copy(towerPos); camera.lookAt(p);
-  }
+  } else if(camMode==='chase'){ chaseCam(p); }
+  else if(camMode==='tower'){ towerCam(p); }
+  else { (directorShot()==='tower') ? towerCam(p) : chaseCam(p); }
 }
 
 addEventListener('keydown',e=>{if(e.key==='t'){CFG.test=!CFG.test;document.getElementById('rollsrc').textContent=CFG.test?'TEST — synthetic bank':'live';}});
@@ -293,7 +487,7 @@ function animate(){
   yawPivot.position.copy(posCur);
   yawPivot.rotation.y=attCur.yaw; pitchPivot.rotation.x=attCur.pitch; rollPivot.rotation.z=attCur.roll;
   modelHolder.rotation.set(CFG.base.pitch,CFG.base.yaw,CFG.base.roll);
-  if(haveFix)driveCamera(posCur);
+  if(idleMode && camMode!=='orbit'){ if(camsPlaced) idleCam(); } else if(haveFix) driveCamera(posCur);
   renderer.render(scene,camera);
 }
 animate(); poll();

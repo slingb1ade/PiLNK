@@ -1,0 +1,94 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<title>PiLNK · model inspector</title>
+<style>
+  :root{--purple:#7c3aed;--ink:#0b0f1a;--panel:rgba(10,14,26,.85);--line:#1f2a44;--txt:#dfe7f5;--dim:#8ea2c7;--good:#37d67a;}
+  *{box-sizing:border-box;margin:0;padding:0}
+  html,body{height:100%;background:var(--ink);color:var(--txt);font-family:ui-monospace,Menlo,Consolas,monospace;overflow:hidden}
+  #scene{position:fixed;inset:0}
+  .card{position:fixed;background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:10px 12px;backdrop-filter:blur(6px);font-size:12px;z-index:10}
+  #tl{top:12px;left:12px;max-width:360px}
+  #tl .t{color:var(--purple);font-weight:700;letter-spacing:.06em}
+  #tl .s{color:var(--dim);font-size:11px;margin-top:3px;line-height:1.5}
+  #base{margin-top:6px;color:var(--good);font-variant-numeric:tabular-nums}
+  #dims{margin-top:2px;color:var(--dim);font-size:10px}
+  #help{bottom:12px;right:12px;color:var(--dim);font-size:10px;text-align:right;max-width:340px;line-height:1.6}
+  #banner{position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);color:var(--dim);font-size:13px;text-align:center;z-index:20}
+</style>
+</head>
+<body>
+<div id="scene"></div>
+<div id="banner">Loading model…</div>
+<div class="card" id="tl">
+  <div class="t">PiLNK · MODEL INSPECTOR</div>
+  <div class="s" id="sub">—</div>
+  <div class="s">Orient so nose points <b>N</b>, upright, gear toward the grid.</div>
+  <div id="base">base yaw 0° · pitch 0° · roll 0°</div>
+  <div id="dims"></div>
+</div>
+<div id="help">
+  drag = orbit · scroll = zoom<br>
+  <b>Y/H</b> yaw ±15 &nbsp; <b>P/;</b> pitch ±15 &nbsp; <b>R/F</b> roll ±15<br>
+  <b>X/Z</b> pitch ±90 &nbsp; <b>N/M</b> yaw ±90 &nbsp; <b>V/B</b> roll ±90<br>
+  <b>L</b> landing pose &nbsp; <b>0</b> read out numbers (console)
+</div>
+
+<script crossorigin="anonymous" src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script crossorigin="anonymous" src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
+<script crossorigin="anonymous" src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/loaders/GLTFLoader.js"></script>
+<script>
+const _q=new URLSearchParams(location.search);
+const CFG={ model:_q.get('model')||'b747_100.glb', span:60, base:{yaw:0,pitch:0,roll:0} };
+document.getElementById('sub').textContent='model: '+CFG.model;
+const D2R=Math.PI/180,R2D=180/Math.PI;
+const host=document.getElementById('scene');
+const renderer=new THREE.WebGLRenderer({antialias:true}); renderer.setSize(innerWidth,innerHeight);
+renderer.setPixelRatio(Math.min(devicePixelRatio,2)); renderer.outputEncoding=THREE.sRGBEncoding; host.appendChild(renderer.domElement);
+const scene=new THREE.Scene(); scene.background=new THREE.Color(0x0b0f1a);
+const camera=new THREE.PerspectiveCamera(55,innerWidth/innerHeight,0.1,5000); camera.position.set(90,55,120);
+const controls=new THREE.OrbitControls(camera,renderer.domElement); controls.enableDamping=true; controls.dampingFactor=0.08;
+controls.target.set(0,0,0); controls.minDistance=20; controls.maxDistance=600;
+scene.add(new THREE.HemisphereLight(0xbcd4ff,0x1a2236,1.05));
+const sun=new THREE.DirectionalLight(0xffffff,1.1); sun.position.set(60,90,40); scene.add(sun);
+const _rim=new THREE.DirectionalLight(0x88aaff,0.5); _rim.position.set(-50,20,-60); scene.add(_rim);
+const grid=new THREE.GridHelper(400,40,0x223052,0x141d33); grid.position.y=-34; scene.add(grid);
+function lab(t,c){const cv=document.createElement('canvas');cv.width=cv.height=128;const x=cv.getContext('2d');x.fillStyle='#'+c.toString(16).padStart(6,'0');x.font='bold 90px monospace';x.textAlign='center';x.textBaseline='middle';x.fillText(t,64,72);const s=new THREE.Sprite(new THREE.SpriteMaterial({map:new THREE.CanvasTexture(cv),transparent:true}));s.scale.set(20,20,1);return s;}
+[['N',180,0x7c3aed],['E',90,0x8ea2c7],['S',0,0x8ea2c7],['W',270,0x8ea2c7]].forEach(([l,d,c])=>{const s=lab(l,c);s.position.set(Math.sin(d*D2R)*120,-30,Math.cos(d*D2R)*120);scene.add(s);});
+const attitude=new THREE.Group(), modelHolder=new THREE.Group(); attitude.add(modelHolder); scene.add(attitude);
+new THREE.GLTFLoader().load('/static/'+CFG.model,(g)=>{
+  const m=g.scene, box=new THREE.Box3().setFromObject(m), size=new THREE.Vector3(), c=new THREE.Vector3();
+  box.getSize(size); box.getCenter(c); m.position.sub(c);
+  // scale by the LARGEST horizontal-ish dimension, then frame the camera to it
+  const span=Math.max(size.x,size.y,size.z); const k=CFG.span/(span||1); m.scale.setScalar(k);
+  window._m=m; window._k=k;   // expose for the +/- size keys
+  modelHolder.add(m); document.getElementById('banner').style.display='none';
+  window._m=m; window._k=k;
+  const R=CFG.span*1.6; camera.position.set(R*0.8,R*0.5,R); controls.target.set(0,0,0);
+  controls.minDistance=0.5; controls.maxDistance=CFG.span*40; controls.update();
+  document.getElementById('dims').textContent='raw dims  x '+size.x.toFixed(0)+'  y '+size.y.toFixed(0)+'  z '+size.z.toFixed(0);
+  applyBase();
+},undefined,(e)=>{document.getElementById('banner').innerHTML='Load failed.<br><span style=font-size:11px>'+(e&&e.message||e)+'</span>';});
+function applyBase(){ modelHolder.rotation.set(CFG.base.pitch,CFG.base.yaw,CFG.base.roll);
+  document.getElementById('base').textContent='base yaw '+Math.round(CFG.base.yaw*R2D)+'° · pitch '+Math.round(CFG.base.pitch*R2D)+'° · roll '+Math.round(CFG.base.roll*R2D)+'°'; }
+let landing=false;
+addEventListener('keydown',e=>{const s=15*D2R,big=90*D2R;switch(e.key){
+  case 'y':CFG.base.yaw+=s;break;case 'h':CFG.base.yaw-=s;break;
+  case 'p':CFG.base.pitch+=s;break;case ';':CFG.base.pitch-=s;break;
+  case 'r':CFG.base.roll+=s;break;case 'f':CFG.base.roll-=s;break;
+  case 'x':CFG.base.pitch+=big;break;case 'z':CFG.base.pitch-=big;break;
+  case 'n':CFG.base.yaw+=big;break;case 'm':CFG.base.yaw-=big;break;
+  case 'v':CFG.base.roll+=big;break;case 'b':CFG.base.roll-=big;break;
+  case 'l':landing=!landing;attitude.rotation.set(landing?2*D2R:0,landing?-210*D2R:0,landing?-6*D2R:0);return;
+  case '+':case '=':if(window._m){window._k*=1.25;window._m.scale.setScalar(window._k);document.getElementById('dims').textContent='scale x'+window._k.toFixed(4);}return;
+  case '-':case '_':if(window._m){window._k/=1.25;window._m.scale.setScalar(window._k);document.getElementById('dims').textContent='scale x'+window._k.toFixed(4);}return;
+  case '0':console.log('base(deg)=',{yaw:Math.round(CFG.base.yaw*R2D),pitch:Math.round(CFG.base.pitch*R2D),roll:Math.round(CFG.base.roll*R2D)});return;
+  default:return;} applyBase();});
+function animate(){requestAnimationFrame(animate);controls.update();renderer.render(scene,camera);}
+animate();
+addEventListener('resize',()=>{camera.aspect=innerWidth/innerHeight;camera.updateProjectionMatrix();renderer.setSize(innerWidth,innerHeight);});
+</script>
+</body>
+</html>
