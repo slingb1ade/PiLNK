@@ -1583,16 +1583,40 @@ def _diff_new_awards(data):
     celebrate and each keeps its own session dedupe."""
     try:
         earned = set((data.get('earned') or {}).keys())
+        # XP / Rank (v1.0): a promotion rides the same toast/ack/dedupe path
+        # as a badge, as a synthetic slug 'rank:<index>'. Seeds silently the
+        # first time this node sees the rank feature (no phantom toast for
+        # the starting rank at rollout); every later rise toasts once.
+        rank = data.get('rank') or {}
+        rank_slug = None
+        if isinstance(rank, dict) and rank.get('rank_index') is not None:
+            rank_slug = 'rank:%d' % int(rank.get('rank_index') or 0)
         announced, existed = _load_announced()
         if not existed:
-            _save_announced(earned)          # silent seed on first sync
+            _save_announced(earned | ({rank_slug} if rank_slug else set()))   # silent seed on first sync
             return []
+        if rank_slug:
+            if not any(a.startswith('rank:') for a in announced):
+                announced.add(rank_slug)                 # first sight of ranks: seed, don't toast
+                _save_announced(announced)
+            earned.add(rank_slug)
         new = earned - announced
         if not new:
             return []
         defs_by_slug = {d.get('slug'): d for d in (data.get('defs') or [])}
         out = []
         for slug in sorted(new):
+            if slug.startswith('rank:'):
+                out.append({
+                    'slug': slug,
+                    'kind': 'promotion',
+                    'name': rank.get('rank_name', ''),
+                    'rank_index': int(rank.get('rank_index') or 0),
+                    'xp': rank.get('xp'),
+                    'next_name': rank.get('next_name'),
+                    'xp_remaining': rank.get('xp_remaining'),
+                })
+                continue
             d = defs_by_slug.get(slug) or {}
             out.append({
                 'slug': slug,

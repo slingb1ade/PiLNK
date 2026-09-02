@@ -9,6 +9,7 @@ update.log
 stats_records.json
 coverage.json
 ota_state.json
+badge_announced.json
 __pycache__/
 *.pyc
 *.pyo

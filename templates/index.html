@@ -1517,6 +1517,7 @@
         <div style="padding:14px 16px;overflow-y:auto;max-height:calc(100vh - 200px);">
           <div style="font-family:'Orbitron',sans-serif;font-size:0.72rem;letter-spacing:0.1em;color:var(--blue-light);margin-bottom:4px;">SERVICE RECORD</div>
           <div id="badgeSyncNote" style="font-family:'Share Tech Mono',monospace;font-size:0.55rem;color:var(--text-dim);margin-bottom:10px;"></div>
+          <div id="rankPanel"></div>
           <div id="badgeWall"></div>
         </div>
       </div>
@@ -2083,18 +2084,59 @@ function showTab(name, e) {
 var _badgesLoaded = false;
 function ensureBadgesLib(cb) {
   if (_badgesLoaded) { cb(); return; }
-  var s = document.createElement('script');
-  s.src = '/static/pilnk-badges.js';
-  s.onload = function () { _badgesLoaded = true; cb(); };
-  s.onerror = function () { var n = document.getElementById('badgeSyncNote'); if (n) n.textContent = 'Could not load the badge renderer.'; };
-  document.head.appendChild(s);
+  // Loads the badge renderer AND the rank insignia lib (v1.3.19); both are
+  // tiny and only fetched when the Badges tab is first opened.
+  var pending = 2, failed = false;
+  function done() { if (--pending === 0 && !failed) { _badgesLoaded = true; cb(); } }
+  [ '/static/pilnk-badges.js', '/static/pilnk-rank-insignia.js' ].forEach(function (src) {
+    var s = document.createElement('script');
+    s.src = src;
+    s.onload = done;
+    s.onerror = function () { failed = true; var n = document.getElementById('badgeSyncNote'); if (n) n.textContent = 'Could not load the badge renderer.'; };
+    document.head.appendChild(s);
+  });
 }
+
+// ── XP / Rank panel (v1.3.19) — sits above the badge wall. Insignia,
+// rank, XP, progress to the next rank, and the capture-gate note when a
+// general's star is what's blocking the next promotion.
+function renderRankPanel(rank) {
+  var host = document.getElementById('rankPanel');
+  if (!host) return;
+  if (!rank || rank.rank_index == null || !window.PilnkRanks) { host.innerHTML = ''; return; }
+  var idx = rank.rank_index, xp = rank.xp || 0;
+  var pct = 100, sub = '';
+  if (rank.is_max) {
+    sub = 'Maximum rank';
+  } else if (rank.gate_blocked) {
+    pct = 100;
+    sub = 'XP ready — ' + rank.gate_need + ' more capture' + (rank.gate_need === 1 ? '' : 's') + ' to make ' + rank.next_name;
+  } else {
+    // progress within the current band: this rank's threshold → the next's
+    // (both come from the server so the ladder lives in one place)
+    var lo = rank.cur_xp || 0, hi = rank.next_xp || lo;
+    pct = hi > lo ? Math.max(0, Math.min(100, Math.round((xp - lo) / (hi - lo) * 100))) : 100;
+    sub = xp.toLocaleString() + ' XP · ' + (rank.xp_remaining || 0).toLocaleString() + ' to ' + rank.next_name;
+  }
+  var tier = idx >= 16 ? '#e5484d' : (idx >= 10 ? '#d4af37' : '#39e58c');
+  host.innerHTML =
+    '<div style="display:flex;align-items:center;gap:14px;background:#0d1117;border:1px solid #1d4232;border-radius:14px;padding:12px 14px;margin-bottom:14px;">'
+    + '<div style="flex:0 0 auto;">' + PilnkRanks.insignia(idx, 64) + '</div>'
+    + '<div style="flex:1 1 auto;min-width:0;">'
+    +   '<div style="font-family:\'Share Tech Mono\',monospace;font-size:0.55rem;letter-spacing:0.18em;color:' + tier + ';">RANK</div>'
+    +   '<div style="font-family:\'Orbitron\',sans-serif;font-size:0.78rem;font-weight:700;color:#e6e8ea;line-height:1.2;">' + PilnkRanks.name(idx) + '</div>'
+    +   '<div style="height:6px;background:#161b22;border-radius:3px;margin:7px 0 5px;overflow:hidden;"><div style="height:100%;width:' + pct + '%;background:' + tier + ';border-radius:3px;"></div></div>'
+    +   '<div style="font-family:\'Share Tech Mono\',monospace;font-size:0.58rem;color:var(--text-dim);">' + sub + '</div>'
+    + '</div></div>';
+}
+
 function loadBadges() {
   var note = document.getElementById('badgeSyncNote');
   ensureBadgesLib(function () {
     fetch('/api/badges').then(function (r) { return r.json(); }).then(function (d) {
       if (d.error) { note.textContent = 'Badge sync unavailable — pilnk.io unreachable and no cached copy yet.'; return; }
       note.textContent = d.stale ? 'Offline — showing last synced copy.' : (d.cached ? 'Synced (cached).' : 'Synced with pilnk.io.');
+      renderRankPanel(d.rank);
       d.badgeSize = 64;
       d.columns = 3;
       PilnkBadges.renderBadgeWall(document.getElementById('badgeWall'), d);
@@ -2123,6 +2165,20 @@ function toastAwards(awards) {
     }
     awards.forEach(function (a, i) {
       setTimeout(function () {
+        // Promotion toast (v1.3.19): insignia instead of a scope, gold trim.
+        if (a.kind === 'promotion' && window.PilnkRanks) {
+          var pt = document.createElement('div');
+          pt.style.cssText = 'display:flex;align-items:center;gap:12px;background:#0d1117;border:1px solid #d4af37;border-radius:14px;padding:10px 16px 10px 10px;cursor:pointer;box-shadow:0 6px 24px rgba(0,0,0,0.55);max-width:320px;';
+          pt.innerHTML = '<div style="flex:0 0 auto;">' + PilnkRanks.insignia(a.rank_index || 0, 56) + '</div>'
+            + '<div><div style="font-family:\'Share Tech Mono\',monospace;font-size:0.55rem;letter-spacing:0.18em;color:#d4af37;">PROMOTED</div>'
+            + '<div style="font-family:\'Orbitron\',sans-serif;font-size:0.78rem;font-weight:700;color:#e6e8ea;">' + (a.name || 'New rank') + '</div>'
+            + (a.next_name ? '<div style="font-family:\'Share Tech Mono\',monospace;font-size:0.55rem;color:#8a929c;">' + (a.xp_remaining || 0).toLocaleString() + ' XP to ' + a.next_name + '</div>' : '')
+            + '</div>';
+          pt.addEventListener('click', function () { navPick('badges', 'Badges'); pt.remove(); });
+          host.appendChild(pt);
+          setTimeout(function () { if (pt.parentNode) pt.remove(); }, 11000);
+          return;
+        }
         var mil = a.category === 'military';
         var t = document.createElement('div');
         t.style.cssText = 'display:flex;align-items:center;gap:12px;background:#0d1117;border:1px solid ' + (mil ? '#6b7245' : '#1d4232') + ';border-radius:14px;padding:10px 16px 10px 10px;cursor:pointer;box-shadow:0 6px 24px rgba(0,0,0,0.55);max-width:320px;';
@@ -2484,14 +2540,21 @@ map.createPane('aircraftCanvas');
 map.getPane('aircraftCanvas').style.zIndex = 590;
 
 var planeSpriteCache = {};   // 'cat|col' -> {ready, size, canvas}
-function getPlaneSprite(cat, col){
-  var key = cat + '|' + col;
+function getPlaneSprite(cat, col, type){
+  // type-aware (v1.3.18): when an exact type shape exists, the sprite is that
+  // silhouette instead of the category blob. Cache key includes type so the
+  // canvas layer caches one sprite per (shape|colour) rather than per category.
+  type = type ? String(type).toUpperCase().trim() : '';
+  var hasShape = type && (window.AIRCRAFT_SHAPES||{})[type];
+  var key = cat + '|' + col + '|' + (hasShape ? type : '');
   var e = planeSpriteCache[key];
   if(e) return e;
   e = { ready:false, size:38, canvas:null };
   planeSpriteCache[key] = e;
   try {
-    var ic = makeIcon('', cat, 0, col, false);          // unrotated divIcon
+    // pass type so makeIcon builds the shape; h=0 (unrotated) — the canvas
+    // layer applies heading rotation to the finished sprite.
+    var ic = makeIcon('', cat, 0, col, false, hasShape ? type : undefined);
     e.size = (ic.options.iconSize && ic.options.iconSize[0]) || 38;
     var html = ic.options.html || '';
     var m = html.match(/<svg[\s\S]*?<\/svg>/);
@@ -2563,7 +2626,7 @@ var AircraftCanvasLayer = L.Layer.extend({
       var p = map.latLngToContainerPoint([a.lat, a.lon]);
       if(p.x < -80 || p.y < -80 || p.x > size.x+80 || p.y > size.y+80) continue;
       var cat = getCat(a.t, a.category), col = getPhase(a, cs).color;
-      var sp = getPlaneSprite(cat, col);
+      var sp = getPlaneSprite(cat, col, a.t);
       ctx.save();
       // Hunter Mode — fade civil traffic so military stands out.
       //
@@ -2893,7 +2956,7 @@ map.on('click', function(e){
     var a = lastAircraft[cs]; if(!a || a.lat==null || a.lon==null) continue;
     var p = map.latLngToContainerPoint([a.lat, a.lon]);
     var dx = p.x - pt.x, dy = p.y - pt.y, d = Math.sqrt(dx*dx + dy*dy);
-    var r = ((getPlaneSprite(getCat(a.t,a.category), getPhase(a,cs).color).size) || 38) / 2 + 6;
+    var r = ((getPlaneSprite(getCat(a.t,a.category), getPhase(a,cs).color, a.t).size) || 38) / 2 + 6;
     if(d <= r && d < bestD){ bestD = d; best = cs; }
   }
   if(best){ selectedFlight = best; hideTooltip(); updateFlights(); openCinematicCard(best, false); }
@@ -2907,7 +2970,7 @@ map.on('mousemove', function(e){
     var a = lastAircraft[cs]; if(!a || a.lat==null || a.lon==null) continue;
     var p = map.latLngToContainerPoint([a.lat, a.lon]);
     var dx = p.x - pt.x, dy = p.y - pt.y;
-    var r = ((getPlaneSprite(getCat(a.t,a.category), getPhase(a,cs).color).size) || 38) / 2 + 6;
+    var r = ((getPlaneSprite(getCat(a.t,a.category), getPhase(a,cs).color, a.t).size) || 38) / 2 + 6;
     if(dx*dx + dy*dy <= r*r){ hit = true; break; }
   }
   map.getContainer().style.cursor = hit ? 'pointer' : '';
@@ -3904,7 +3967,11 @@ function superheavyIcon(cs,h,col,tx){return mkIcon('<svg width="54" height="54" 
 // stays huge) and filled with the phase colour via currentColor, matching the
 // existing icons. Falls through to the category silhouette when no shape
 // exists (~18% of traffic) — the fallback chain we already trust.
-var CAT_SIZE={heli:41,lightsingle:30,lighttwin:34,heavytwin:36,narrowbody:38,widebody:46,superheavy:54};
+// Sizes for TYPE shapes (v1.3.19). Rex's shapes are now viewBox-normalised to
+// fill their marker, so these give a gentle, readable size hierarchy rather
+// than the wild 7x true-scale spread (A388 vs C172) that made small types
+// unreadable. Tight range, legible floor.
+var CAT_SIZE={lightsingle:28,lighttwin:30,heli:30,heavytwin:34,narrowbody:38,widebody:44,superheavy:50};
 // Rex's shapes are drawn nose-up. If they ever render pointing sideways, this
 // is the one number to change (90 or -90) — everything else stays put.
 var SHAPE_ROT_OFFSET=0;
