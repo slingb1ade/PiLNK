@@ -26,7 +26,15 @@ app.config['TEMPLATES_AUTO_RELOAD'] = True  # dev: reflect templates/index.html 
 app.jinja_env.auto_reload = True
 CORS(app)
 app.config['SECRET_KEY'] = 'pilnk_secret'
-socketio = SocketIO(app, cors_allowed_origins="*")
+# async_mode pinned to 'threading' (v1.4.1, 3 Sep 2026). Left unset,
+# flask-socketio picks eventlet whenever it is importable — and the PiAware
+# image ships eventlet 0.26.1 (2020) on Python 3.9. That put ONE node in the
+# fleet (MME1, armv7l) on a different, ancient server engine from the other
+# twelve, where any blocking call in a background thread (ping, OTA check,
+# weather proxy) stalls the whole hub: dashboard sometimes loads, sometimes
+# not, map freezes mid-session. Threading is what every other node already
+# runs, so this changes nothing for them and fixes the outlier.
+socketio = SocketIO(app, cors_allowed_origins="*", async_mode='threading')
 
 # Read location — config.json is authoritative (installer writes it).
 # /etc/default/dump1090-fa is a legacy fallback for pre-0.1.7 installs.
