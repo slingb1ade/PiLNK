@@ -2224,17 +2224,65 @@ def gone_dark():
     return jsonify({'ghosts': ghosts})
 
 
+# ── OpenAIP proxy — Aviation Overlay (NAVAIDs, airspaces) ────────
+#
+# ON THE KEY IN SOURCE. Deliberate, AJ's call 3 Sep 2026: OpenAIP is a
+# free, read-only aeronautical-data API, this repo is public and GPL,
+# and moving the key to config buys little against that threat model.
+# Written down so it reads as a decision and not an oversight. If
+# OpenAIP ever puts writes or billing behind this key, that reasoning
+# no longer holds and it must move out of source.
+#
+# CACHE + RETRY, added 3 Sep 2026. AJ's dashboard showed
+# "Error: navaids 500"; the endpoint answered perfectly seconds later.
+# A transient upstream blip, and it got no second chance — this made
+# exactly one attempt, and the browser then threw away BOTH layers
+# because either failing rejected the pair. Ninety-nine airspaces that
+# had loaded fine were discarded along with it.
+#
+# Aeronautical reference data changes on AIRAC cycles, not by the
+# minute, so caching it is free resilience: most overlay toggles never
+# leave the Pi, and a blip upstream is usually invisible. On total
+# failure we serve stale cache if we have any — an hour-old NAVAID
+# list beats an empty map for data that barely moves.
+_OPENAIP_CACHE = {}
+_OPENAIP_TTL = 900          # 15 minutes
+
+
 @app.route('/api/openaip/<path:endpoint>')
 def openaip_proxy(endpoint):
     OPENAIP_KEY = '7670c503a1c0929ee8e87ad581d9119e'
     params = request.args.to_dict()
+    cache_key = endpoint + '?' + '&'.join('%s=%s' % kv for kv in sorted(params.items()))
+
+    hit = _OPENAIP_CACHE.get(cache_key)
+    if hit and (time.time() - hit[0]) < _OPENAIP_TTL:
+        return jsonify(hit[1])
+
     params['apiKey'] = OPENAIP_KEY
     url = f'https://api.core.openaip.net/api/{endpoint}'
-    try:
-        r = requests.get(url, params=params, timeout=10)
-        return jsonify(r.json())
-    except Exception as e:
-        return jsonify({'error': str(e), 'items': []}), 500
+
+    last_err = None
+    for attempt in (1, 2):
+        try:
+            r = requests.get(url, params=params, timeout=10)
+            if r.status_code == 200:
+                data = r.json()
+                _OPENAIP_CACHE[cache_key] = (time.time(), data)
+                return jsonify(data)
+            last_err = 'upstream HTTP %s' % r.status_code
+        except Exception as e:
+            last_err = str(e)
+        if attempt == 1:
+            time.sleep(1.5)
+
+    if hit:
+        # Stale, but real. Better than a blank overlay.
+        return jsonify(hit[1])
+
+    app.logger.warning('[openaip] %s failed after 2 attempts: %s', endpoint, last_err)
+    # 502, not 500: the failure is upstream, not in this node.
+    return jsonify({'error': last_err, 'items': []}), 502
 
 @app.route('/api/adsbdb/<path:callsign>')
 def adsbdb_proxy(callsign):

@@ -3355,15 +3355,35 @@ function loadAvData(icao, lat, lon) {
   document.getElementById('avStatus').textContent = 'Loading '+icao+' data...';
   clearAvOverlay();
   var pos = lat+','+lon, dist = 150000;
-  Promise.all([
+  // allSettled, NOT all.
+  //
+  // These are two independent layers. With Promise.all, one blip on
+  // NAVAIDs rejected the pair and threw away a perfectly good set of
+  // 99 airspaces with it — the whole overlay went dark and the panel
+  // read "Error: navaids 500", which is a status code, not something
+  // a person watching aeroplanes can act on.
+  //
+  // Now each layer stands or falls on its own, and the status line
+  // says plainly which one is missing.
+  Promise.allSettled([
     fetchAV('navaids', pos, dist),
     fetchAV('airspaces', pos, dist)
   ]).then(function(results) {
-    avData = {navaids:results[0], airspaces:results[1]};
-    document.getElementById('avStatus').textContent = icao+': '+results[0].length+' NAVAIDs, '+results[1].length+' airspaces';
+    var nav = results[0].status === 'fulfilled' ? results[0].value : null;
+    var asp = results[1].status === 'fulfilled' ? results[1].value : null;
+    avData = { navaids: nav || [], airspaces: asp || [] };
+
+    var msg;
+    if (!nav && !asp) {
+      msg = icao + ': aviation data unavailable right now — try again shortly';
+    } else {
+      msg = icao + ': ' +
+            (nav ? nav.length + ' NAVAIDs'   : 'NAVAIDs unavailable') + ', ' +
+            (asp ? asp.length + ' airspaces' : 'airspaces unavailable');
+    }
+    document.getElementById('avStatus').textContent = msg;
+
     if (avOverlayOn) redrawAvOverlay();
-  }).catch(function(e) {
-    document.getElementById('avStatus').textContent = 'Error: '+e.message;
   });
 }
 
