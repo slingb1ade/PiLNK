@@ -3520,8 +3520,12 @@ function notamStatusFromData() {
 
   var list = (notamData && notamData.notams) || [];
   if (!list.length) { st.textContent = 'No active NOTAMs near your node'; return; }
+  // "On map" means drawable: it has a position AND is not an area-wide
+  // notice. A FIR-scale NOTAM carries the aerodrome reference point as
+  // its coordinates, so counting it as mapped would promise a pin that
+  // deliberately is not drawn.
   var mapped = 0;
-  list.forEach(function(n){ if (n.lat != null && n.lon != null) mapped++; });
+  list.forEach(function(n){ if (n.lat != null && n.lon != null && !n.area_wide) mapped++; });
   var areaWide = list.length - mapped;
   var line = mapped + ' on map' + (areaWide ? (', ' + areaWide + ' area-wide') : '');
 
@@ -3550,7 +3554,14 @@ function renderNotams() {
   notamLayer = L.featureGroup([]).addTo(map);
 
   list.forEach(function(n) {
-    if (n.lat == null || n.lon == null) return; // area-wide → status only, no pin
+    if (n.lat == null || n.lon == null) return; // no position → status only, no pin
+
+    // Area-wide notices are never drawn. They carry the aerodrome
+    // reference point as coordinates but apply to a whole FIR or
+    // oceanic region, so drawing them literally produced a disc that
+    // reached from New Zealand to Australia and hid every local
+    // closure underneath it. Counted in the status line instead.
+    if (n.area_wide) return;
     var win = (n.effective_start || '?') + ' → ' + (n.effective_end || '?');
     var popup =
       '<div style="font-family:monospace;font-size:11px;max-width:260px;line-height:1.35;">' +
