@@ -3507,15 +3507,38 @@ function loadNotams() {
 function notamStatusFromData() {
   var st = document.getElementById('notamStatus');
   var meta = (notamData && notamData.meta) || {};
-  if (meta.source === 'unconfigured') { st.textContent = 'NOTAM source not configured yet'; return; }
-  if (meta.source === 'unsupported_region') { st.textContent = 'NOTAMs not available for your region yet (US only for now)'; return; }
-  if (meta.source === 'error')        { st.textContent = 'NOTAMs unavailable right now';    return; }
+  // Non-success states: prefer the server's own note. It is authored
+  // beside the data, so it stays correct when the backend changes
+  // without needing a fleet release to fix a hardcoded string here.
+  // ('rate_limited' is new — the NMS-API spike-arrests, and "busy, try
+  // again" is a very different message from "unavailable".)
+  if (meta.source === 'unconfigured' || meta.source === 'unsupported_region' ||
+      meta.source === 'rate_limited'  || meta.source === 'error') {
+    st.textContent = meta.note || 'NOTAMs unavailable right now';
+    return;
+  }
+
   var list = (notamData && notamData.notams) || [];
   if (!list.length) { st.textContent = 'No active NOTAMs near your node'; return; }
   var mapped = 0;
   list.forEach(function(n){ if (n.lat != null && n.lon != null) mapped++; });
   var areaWide = list.length - mapped;
-  st.textContent = mapped + ' on map' + (areaWide ? (', ' + areaWide + ' area-wide') : '');
+  var line = mapped + ' on map' + (areaWide ? (', ' + areaWide + ' area-wide') : '');
+
+  // COVERAGE HONESTY LINE.
+  // coverage 'relay' means these came from the FAA's holdings of
+  // internationally-exchanged NOTAMs rather than your own country's
+  // AIS. The data is real, but a state's domestic-series notices are
+  // often not exchanged, so the set may be incomplete. Showing a clean
+  // count with no caveat would imply a completeness we cannot promise
+  // — on safety-adjacent data. So the caveat rides with the number.
+  if (meta.coverage === 'relay' && meta.note) {
+    st.innerHTML = notamEsc(line) +
+      '<div style="margin-top:4px;color:#f59e0b;font-size:10px;line-height:1.35;">&#9888; ' +
+      notamEsc(meta.note) + '</div>';
+  } else {
+    st.textContent = line;
+  }
 }
 
 function renderNotams() {
