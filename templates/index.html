@@ -1579,6 +1579,7 @@
               <label class="toggle-switch"><input type="checkbox" id="notamToggle" onchange="toggleNotams(this.checked)"/><span class="toggle-slider"></span></label>
             </div>
             <div class="av-status" id="notamStatus">Live flight advisories near your node</div>
+            <div id="notamList"></div>
           </div>
           <div class="panel">
             <div class="panel-title">Map Options</div>
@@ -3485,6 +3486,8 @@ function toggleNotams(on) {
 
 function clearNotams() {
   if (notamLayer) { map.removeLayer(notamLayer); notamLayer = null; }
+  var el = document.getElementById('notamList');
+  if (el) el.innerHTML = '';
 }
 
 function loadNotams() {
@@ -3553,37 +3556,112 @@ function renderNotams() {
   if (!list.length) return;
   notamLayer = L.featureGroup([]).addTo(map);
 
+  // GROUPED BY LOCATION, not one circle per NOTAM.
+  //
+  // NOTAMs are issued per LOCATION, and the source gives every notice
+  // that location's reference point — so all 33 of Auckland's arrived
+  // on identical coordinates. Drawn a circle each, they stacked
+  // exactly on top of one another: what looked like a single ring was
+  // 33 rings, and clicking opened whichever one Leaflet happened to
+  // put on top, with nothing to say the other 32 existed. AJ, on
+  // seeing it: "there's no information to tell me what I'm looking
+  // at." Correct — and the fault was the model, not the popup.
+  //
+  // One marker per aerodrome, its popup listing everything issued for
+  // that field. Area-wide notices have no honest place on a map, so
+  // they go to the panel list rather than being counted and then left
+  // unreachable.
+  var groups = {};
+  var areaWide = [];
+
   list.forEach(function(n) {
-    if (n.lat == null || n.lon == null) return; // no position → status only, no pin
-
-    // Area-wide notices are never drawn. They carry the aerodrome
-    // reference point as coordinates but apply to a whole FIR or
-    // oceanic region, so drawing them literally produced a disc that
-    // reached from New Zealand to Australia and hid every local
-    // closure underneath it. Counted in the status line instead.
-    if (n.area_wide) return;
-    var win = (n.effective_start || '?') + ' → ' + (n.effective_end || '?');
-    var popup =
-      '<div style="font-family:monospace;font-size:11px;max-width:260px;line-height:1.35;">' +
-        '<b style="color:#ef4444;">NOTAM ' + notamEsc(n.id || '') + '</b> ' +
-        notamEsc(n.location_icao || '') +
-        '<div style="margin:5px 0;white-space:pre-wrap;">' + notamEsc(n.text || '(no text)') + '</div>' +
-        '<div style="color:#9aa7bd;font-size:10px;">' + notamEsc(win) + '</div>' +
-      '</div>';
-
-    if (n.radius_nm && n.radius_nm > 0) {
-      L.circle([n.lat, n.lon], {
-        radius: n.radius_nm * 1852, // NM → metres
-        color:'#ef4444', weight:1.5, opacity:0.85,
-        fillColor:'#ef4444', fillOpacity:0.06, dashArray:'5 4', pane:'notamPane'
-      }).bindPopup(popup).addTo(notamLayer);
-    } else {
-      L.circleMarker([n.lat, n.lon], {
-        radius:6, color:'#ef4444', weight:2, opacity:0.9,
-        fillColor:'#ef4444', fillOpacity:0.25, pane:'notamPane'
-      }).bindPopup(popup).addTo(notamLayer);
+    if (n.area_wide || n.lat == null || n.lon == null) { areaWide.push(n); return; }
+    var key = n.location_icao || (n.lat.toFixed(4) + ',' + n.lon.toFixed(4));
+    if (!groups[key]) {
+      groups[key] = { icao: n.location_icao || '—', lat: n.lat, lon: n.lon, radius: 0, items: [] };
     }
+    groups[key].items.push(n);
+    if (n.radius_nm && n.radius_nm > groups[key].radius) groups[key].radius = n.radius_nm;
   });
+
+  Object.keys(groups).forEach(function(key) {
+    var g = groups[key];
+    var popup = notamGroupPopup(g);
+
+    var shape = (g.radius > 0)
+      ? L.circle([g.lat, g.lon], {
+          radius: g.radius * 1852, // NM → metres
+          color:'#ef4444', weight:1.5, opacity:0.85,
+          fillColor:'#ef4444', fillOpacity:0.06, dashArray:'5 4', pane:'notamPane'
+        })
+      : L.circleMarker([g.lat, g.lon], {
+          radius:6, color:'#ef4444', weight:2, opacity:0.9,
+          fillColor:'#ef4444', fillOpacity:0.25, pane:'notamPane'
+        });
+    shape.bindPopup(popup, { maxWidth: 340 }).addTo(notamLayer);
+
+    // Count badge, so one ring holding many notices says so at a
+    // glance. divIcon keeps the styling inline — no new CSS needed.
+    L.marker([g.lat, g.lon], {
+      pane: 'notamPane',
+      icon: L.divIcon({
+        className: '',
+        iconSize: [74, 15],
+        iconAnchor: [37, 8],
+        html: '<div style="font-family:monospace;font-size:9.5px;' +
+              'color:#fecaca;background:rgba(120,20,20,0.85);border:1px solid #ef4444;' +
+              'border-radius:3px;text-align:center;line-height:13px;white-space:nowrap;">' +
+              notamEsc(g.icao) + ' &middot; ' + g.items.length + '</div>'
+      })
+    }).bindPopup(popup, { maxWidth: 340 }).addTo(notamLayer);
+  });
+
+  renderNotamAreaWide(areaWide);
+}
+
+// Popup body for one location: every NOTAM issued for that field, in
+// a scrollable block so thirty of them do not run off the screen.
+function notamGroupPopup(g) {
+  var out = '<div style="font-family:monospace;font-size:11px;max-width:320px;line-height:1.35;">' +
+    '<b style="color:#ef4444;">' + notamEsc(g.icao) + '</b> — ' + g.items.length +
+    ' NOTAM' + (g.items.length === 1 ? '' : 's') +
+    '<div style="max-height:260px;overflow-y:auto;margin-top:6px;">';
+  g.items.forEach(function(n) {
+    out += '<div style="border-top:1px solid rgba(120,140,170,0.25);padding:5px 0;">' +
+      '<div style="color:#9aa7bd;font-size:9.5px;">' +
+        notamEsc((n.effective_start || '?') + ' → ' + (n.effective_end || '?')) + '</div>' +
+      '<div style="white-space:pre-wrap;">' + notamEsc(n.text || '(no text)') + '</div>' +
+    '</div>';
+  });
+  return out + '</div></div>';
+}
+
+// Area-wide notices: real, current, and impossible to draw usefully.
+// Counting them and then leaving them unreachable is its own kind of
+// hiding, so they get a list. Collapsed by default.
+function renderNotamAreaWide(items) {
+  var el = document.getElementById('notamList');
+  if (!el) return;
+  if (!items.length) { el.innerHTML = ''; return; }
+
+  var html = '<div style="margin-top:6px;font-size:10px;color:#9aa7bd;">' +
+    items.length + ' area-wide notice' + (items.length === 1 ? '' : 's') +
+    ' — too large to draw on the map:</div>' +
+    '<div style="max-height:170px;overflow-y:auto;margin-top:4px;">';
+
+  items.forEach(function(n) {
+    var first = (n.text || '').replace(/\s+/g, ' ').trim().substring(0, 44);
+    html += '<details style="margin:3px 0;">' +
+      '<summary style="cursor:pointer;font-size:10px;color:#e5b567;">' +
+        notamEsc((n.location_icao || '—') + ' · ' + first) + '</summary>' +
+      '<div style="white-space:pre-wrap;font-size:9.5px;color:#c9d4e6;line-height:1.3;margin:3px 0 6px 6px;">' +
+        notamEsc(n.text || '') +
+        '<div style="color:#9aa7bd;margin-top:3px;">' +
+          notamEsc((n.effective_start || '?') + ' → ' + (n.effective_end || '?')) + '</div>' +
+      '</div></details>';
+  });
+
+  el.innerHTML = html + '</div>';
 }
 
 // ── AIRPORT SEARCH ────────────────────────────────────────
