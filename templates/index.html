@@ -1528,6 +1528,14 @@
       <div class="tab-content" id="tab-options">
         <div class="scroll-area">
           <div class="panel">
+            <div class="panel-title">My Setup</div>
+            <div style="display:flex;gap:6px;align-items:center;">
+              <button id="optSaveBtn" onclick="PilnkOptions.save()" style="flex:1;background:var(--blue-dim);border:none;border-radius:5px;color:white;font-family:'Share Tech Mono',monospace;font-size:0.62rem;letter-spacing:0.1em;padding:6px 10px;cursor:pointer;">SAVE</button>
+              <button id="optResetBtn" onclick="PilnkOptions.reset()" style="flex:0 0 auto;background:transparent;border:1px solid var(--border);border-radius:5px;color:var(--text-dim);font-family:'Share Tech Mono',monospace;font-size:0.62rem;letter-spacing:0.1em;padding:6px 10px;cursor:pointer;">RESET</button>
+            </div>
+            <div class="av-status" id="optSaveStatus">Save your current options and they load on every refresh</div>
+          </div>
+          <div class="panel">
             <div class="panel-title">Map Layer</div>
             <div class="map-tiles">
               <button class="tile-btn active" id="tileOsm"  onclick="setTileLayer('osm')">Street</button>
@@ -8346,6 +8354,160 @@ setInterval(raPoll, 5000);
   probeEngine();
   setInterval(probeEngine, 300000);
 })();
+
+// ── OPTIONS PERSISTENCE (Sep 2026) ─────────────────────────
+// A hard refresh used to reset the whole Options panel — the Aviation
+// Overlay family in particular, plus Flight Trails and Distance Rings,
+// which are hard-checked in the markup. Twelve options already wrote
+// their own localStorage key; the rest wrote nothing, which is why
+// persistence felt arbitrary rather than absent.
+//
+// SAVE snapshots the entire panel into ONE versioned key. That snapshot
+// is applied on every load and WINS over the individual per-feature
+// keys, so there is a single source of truth for "my setup". With no
+// snapshot saved, nothing changes from the previous behaviour — this is
+// additive for anyone who never presses SAVE.
+//
+// Deliberately a button, not auto-save: flicking a layer on to glance at
+// it should not silently become your permanent default.
+window.PilnkOptions = (function () {
+  var KEY = 'pilnk-options-v1';
+
+  // Order matters on restore. A master must be applied before the
+  // sub-toggles it gates, or the sub-toggle is ignored: avToggle gates
+  // the av* family, wxToggle gates the wx* rows.
+  var CHECKS = [
+    ['wxToggle', 'toggleWxOverlay'],
+    ['wxAnimate', 'toggleWxAnimation'],
+    ['cloudCoverToggle', 'setCloudCover'],
+    ['avToggle', 'toggleAvOverlay'],
+    ['avNavaids', 'redrawAvOverlay'],
+    ['avAirways', 'redrawAvOverlay'],
+    ['avWaypoints', 'toggleWaypoints'],
+    ['avFootprint', 'toggleFootprint'],
+    ['avAirfields', 'toggleAirfields'],
+    ['avAltProfile', 'toggleAltProfile'],
+    ['avRunways', 'toggleRunways'],
+    ['notamToggle', 'toggleNotams'],
+    ['trailToggle', 'toggleTrails'],
+    ['ringToggle', 'toggleRings'],
+    ['labelToggle', 'toggleLabels'],
+    ['autoThemeToggle', 'toggleAutoTheme'],
+    ['terminatorToggle', 'toggleTerminator']
+  ];
+
+  var TILE = { tileOsm: 'osm', tileSat: 'sat', tileTopo: 'topo' };
+  var FPM  = { fpBtnRange: 'range', fpBtnHorizon: 'horizon', fpBtnRays: 'rays' };
+
+  function $(id) { return document.getElementById(id); }
+  function activeOf(ids) {
+    for (var i = 0; i < ids.length; i++) {
+      var e = $(ids[i]); if (e && e.classList.contains('active')) return ids[i];
+    }
+    return null;
+  }
+  function wxSlider() { return document.querySelector('.wx-opacity-row input[type=range]'); }
+  // Never let one missing handler abort the whole restore.
+  function call(fn, arg) {
+    try { if (typeof window[fn] === 'function') window[fn](arg); }
+    catch (e) { console.warn('[pilnk-options] ' + fn + ' failed', e); }
+  }
+  function lsGet(k) { try { return localStorage.getItem(k); } catch (e) { return null; } }
+  function lsSet(k, v) { try { localStorage.setItem(k, v); } catch (e) {} }
+
+  function snapshot() {
+    var s = { v: 1, saved_at: new Date().toISOString(), checks: {} };
+    CHECKS.forEach(function (c) { var e = $(c[0]); if (e) s.checks[c[0]] = !!e.checked; });
+
+    var t = activeOf(['tileOsm', 'tileSat', 'tileTopo']);   if (t) s.tile = TILE[t];
+    var f = activeOf(['fpBtnRange', 'fpBtnHorizon', 'fpBtnRays']); if (f) s.footprintMode = FPM[f];
+    var u = activeOf(['unitNm', 'unitKm']);                 if (u) s.ringUnit = (u === 'unitKm') ? 'km' : 'nm';
+
+    var sel = $('rwyAirportSel'); if (sel && sel.value) s.rwyAirport = sel.value;
+    var sl = wxSlider();          if (sl)               s.wxOpacity  = sl.value;
+
+    s.theme    = lsGet('pilnk-theme');
+    s.hunter   = lsGet('pilnkHunter');
+    s.sortMode = lsGet('pilnk-sort-mode');
+    return s;
+  }
+
+  function apply(s, pass) {
+    if (!s) return;
+    pass = pass || 0;
+
+    if (s.checks) {
+      CHECKS.forEach(function (c) {
+        var want = s.checks[c[0]];
+        if (typeof want !== 'boolean') return;
+        var e = $(c[0]); if (!e) return;
+        e.checked = want;
+        call(c[1], want);
+      });
+    }
+
+    if (s.tile)          call('setTileLayer', s.tile);
+    if (s.ringUnit)      call('setUnit', s.ringUnit);
+    if (s.footprintMode) call('setFootprintMode', s.footprintMode);
+
+    if (s.wxOpacity != null) {
+      var sl = wxSlider();
+      if (sl) { sl.value = s.wxOpacity; call('setWxOpacity', s.wxOpacity); }
+    }
+
+    if (s.theme)  { lsSet('pilnk-theme', s.theme); document.documentElement.setAttribute('data-theme', s.theme); }
+    if (s.hunter != null) { lsSet('pilnkHunter', s.hunter); call('setHunter', s.hunter === '1'); }
+    if (s.sortMode) { lsSet('pilnk-sort-mode', s.sortMode); }
+
+    // The runway airport list is fetched from runways.php, so it may not be
+    // populated yet. Retry for up to ~10s rather than silently dropping it.
+    if (s.rwyAirport) {
+      var sel = $('rwyAirportSel');
+      if (sel && sel.options.length) {
+        sel.value = s.rwyAirport;
+        call('setRunwayAirport', s.rwyAirport);
+      } else if (pass < 10) {
+        setTimeout(function () { apply({ rwyAirport: s.rwyAirport }, pass + 1); }, 1000);
+      }
+    }
+  }
+
+  function load()  { try { return JSON.parse(lsGet(KEY) || 'null'); } catch (e) { return null; } }
+  function status(){
+    var s = load();
+    return (s && s.saved_at)
+      ? 'Saved ' + new Date(s.saved_at).toLocaleString()
+      : 'Save your current options and they load on every refresh';
+  }
+  function flash(msg, ok) {
+    var el = $('optSaveStatus'); if (!el) return;
+    el.textContent = msg;
+    el.style.color = (ok === false) ? '#f87171' : '#39e58c';
+    setTimeout(function () { el.style.color = ''; el.textContent = status(); }, 2600);
+  }
+  function save() {
+    try { lsSet(KEY, JSON.stringify(snapshot())); flash('Saved.'); }
+    catch (e) { flash('Could not save — browser storage unavailable.', false); }
+  }
+  function reset() {
+    try { localStorage.removeItem(KEY); } catch (e) {}
+    flash('Cleared. Refresh for stock defaults.');
+  }
+  function restore() { var s = load(); if (s) apply(s, 0); }
+
+  return { save: save, reset: reset, restore: restore, snapshot: snapshot,
+           apply: apply, load: load, status: status };
+})();
+
+// Restore after the dashboard has finished its own init — the map, the
+// overlay handlers and the tile layer all have to exist first.
+window.addEventListener('load', function () {
+  setTimeout(function () {
+    try { PilnkOptions.restore(); } catch (e) { console.warn('[pilnk-options] restore failed', e); }
+    var el = document.getElementById('optSaveStatus');
+    if (el) el.textContent = PilnkOptions.status();
+  }, 1200);
+});
 </script>
 </body>
 </html>

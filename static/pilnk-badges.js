@@ -250,6 +250,16 @@
       h.push('<div class="pb-d-serial">#' + ('0000' + earnedRow.serial).slice(-4) + capStr + '</div>');
     }
     if (isEarned && earnedRow.awarded_at) h.push('<div class="pb-d-date">Earned ' + dateStr(earnedRow.awarded_at) + '</div>');
+    // Provenance: WHAT earned it. Populated for military catches; stat/tier
+    // badges carry no trigger yet, so this simply doesn't render for them.
+    if (isEarned && earnedRow.trigger && (earnedRow.trigger.callsign || earnedRow.trigger.hex)) {
+      var tg = earnedRow.trigger;
+      var bits = ['<strong>' + esc(tg.callsign || tg.hex) + '</strong>'];
+      if (tg.name) bits.push(esc(tg.name));
+      if (tg.tier) bits.push('<span class="pb-d-tier">' + esc(String(tg.tier).toUpperCase()) + '</span>');
+      if (tg.dex)  bits.push('dex #' + (tg.dex | 0));
+      h.push('<div class="pb-d-trigger">Earned with ' + bits.join(' &middot; ') + '</div>');
+    }
     if (!isEarned && typeof remaining === 'number' && cap) {
       h.push('<div class="pb-d-remaining">' + (remaining > 0 ? remaining + ' of ' + cap + ' serials remaining' : 'All ' + cap + ' serials awarded') + '</div>');
     }
@@ -277,6 +287,9 @@
     '.pb-d-next{font-family:"Share Tech Mono",monospace;font-size:0.7rem;color:#39e58c;margin-top:4px}' +
     '.pb-d-serial{font-family:"Orbitron",sans-serif;font-size:0.8rem;font-weight:900;letter-spacing:0.14em;color:#f0a832;margin-top:6px}' +
     '.pb-d-remaining{font-family:"Share Tech Mono",monospace;font-size:0.62rem;color:#f0a832;margin-top:6px}' +
+    '.pb-d-trigger{font-family:"Share Tech Mono",monospace;font-size:0.6rem;color:#94a3b8;margin-top:7px;line-height:1.4;max-width:270px}' +
+    '.pb-d-trigger strong{color:#e2e8f0;font-weight:400}' +
+    '.pb-d-tier{color:#f0a832;letter-spacing:0.08em}' +
     '.pb-ribbon{display:flex;gap:2px;margin-top:10px;justify-content:center}' +
     '.pb-ribbon span{width:26px;height:8px;border-radius:1px;background:#6b7245}' +
     '.pb-ribbon span:nth-child(2){background:#f0a832}' +
