@@ -349,14 +349,18 @@
   .stats-leader-callsign{font-family:'Share Tech Mono',monospace;font-size:0.72rem;color:var(--blue-light);font-weight:bold;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
   .stats-leader-val{font-family:'Orbitron',sans-serif;font-size:1rem;font-weight:700;color:var(--text);text-align:right;min-width:50px;}
   .stats-leader-unit{font-family:'Share Tech Mono',monospace;font-size:0.5rem;color:var(--text-dim);letter-spacing:0.1em;width:22px;flex-shrink:0;}
-  .stats-types-wrap{display:flex;align-items:center;gap:16px;}
-  .stats-donut-wrap{flex-shrink:0;width:130px;height:130px;}
-  .stats-type-list{flex:1;display:flex;flex-direction:column;gap:4px;}
-  .stats-type-row{display:flex;align-items:center;gap:8px;font-family:'Share Tech Mono',monospace;font-size:0.65rem;}
+  .stats-types-wrap{display:flex;align-items:center;gap:12px;}
+  /* 92px, down from 130 — the count and percentage were being clipped off the
+     right of the legend in narrow panels. The pie carries the shape; the
+     numbers carry the detail, so the numbers win the space. */
+  .stats-donut-wrap{flex-shrink:0;width:92px;height:92px;}
+  .stats-type-list{flex:1;min-width:0;display:flex;flex-direction:column;gap:4px;}
+  .stats-type-row{display:flex;align-items:center;gap:6px;font-family:'Share Tech Mono',monospace;font-size:0.65rem;}
   .stats-type-dot{width:8px;height:8px;border-radius:50%;flex-shrink:0;}
-  .stats-type-name{flex:1;color:var(--text);}
-  .stats-type-count{color:var(--text-dim);min-width:20px;text-align:right;}
-  .stats-type-pct{color:var(--blue-mid);min-width:32px;text-align:right;font-size:0.6rem;}
+  /* the type code may ellipsis if it must; the numbers never shrink */
+  .stats-type-name{flex:1;min-width:0;color:var(--text);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+  .stats-type-count{color:var(--text-dim);min-width:20px;text-align:right;flex-shrink:0;}
+  .stats-type-pct{color:var(--blue-mid);min-width:32px;text-align:right;font-size:0.6rem;flex-shrink:0;}
   .stats-traffic-info{display:flex;gap:6px;margin-bottom:12px;}
   .stats-traffic-stat{flex:1;background:var(--bg-card);border:1px solid var(--border);border-radius:8px;padding:8px 10px;text-align:center;}
   .stats-traffic-label{font-family:'Share Tech Mono',monospace;font-size:0.42rem;letter-spacing:0.2em;color:var(--text-dim);margin-bottom:4px;}
@@ -1668,7 +1672,7 @@
           <!-- AIRCRAFT TYPE BREAKDOWN -->
           <div class="panel">
             <div class="panel-title">Aircraft Types Today</div>
-            <div class="stats-types-wrap"><div class="stats-donut-wrap"><canvas id="statsTypeChart" width="130" height="130"></canvas></div><div class="stats-type-list" id="stats-type-list"><div style="color:var(--text-dim);font-size:0.62rem;">Collecting data...</div></div></div>
+            <div class="stats-types-wrap"><div class="stats-donut-wrap"><canvas id="statsTypeChart" width="92" height="92"></canvas></div><div class="stats-type-list" id="stats-type-list"><div style="color:var(--text-dim);font-size:0.62rem;">Collecting data...</div></div></div>
           </div>
 
           <!-- TRAFFIC PATTERNS -->
@@ -6183,9 +6187,10 @@ function initAdvTypeChart() {
   var ctx = document.getElementById('statsTypeChart');
   if (!ctx) return;
   advTypeChart = new Chart(ctx, {
-    type: 'doughnut',
+    // 'pie', not 'doughnut' — a solid disc reads better at this smaller size
+    type: 'pie',
     data: { labels: ['No data'], datasets: [{ data: [1], backgroundColor: ['rgba(58,90,138,0.3)'], borderColor: ['rgba(58,90,138,0.5)'], borderWidth: 1 }] },
-    options: { responsive: true, maintainAspectRatio: true, cutout: '65%', plugins: { legend: { display: false }, tooltip: { backgroundColor: 'rgba(10,16,32,0.95)', titleFont: { family: 'Share Tech Mono', size: 11 }, bodyFont: { family: 'Share Tech Mono', size: 11 }, borderColor: 'rgba(59,130,246,0.3)', borderWidth: 1 } }, animation: { animateRotate: true, duration: 800 } }
+    options: { responsive: true, maintainAspectRatio: true, plugins: { legend: { display: false }, tooltip: { backgroundColor: 'rgba(10,16,32,0.95)', titleFont: { family: 'Share Tech Mono', size: 11 }, bodyFont: { family: 'Share Tech Mono', size: 11 }, borderColor: 'rgba(59,130,246,0.3)', borderWidth: 1 } }, animation: { animateRotate: true, duration: 800 } }
   });
 }
 
