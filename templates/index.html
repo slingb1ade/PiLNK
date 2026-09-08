@@ -3686,19 +3686,26 @@ function renderNotamAreaWide(items) {
 
 // ── AIRPORT SEARCH ────────────────────────────────────────
 var airportDB=null, freqDB=null, dbLoading=false, airportMark=null, tunedFreq=null;
+var airportDBPromise=null;   // shared in-flight load — see loadAirportDB()
 var OURAIRPORTS_BASE = 'https://davidmegginson.github.io/ourairports-data';
 
 function loadAirportDB() {
   if (airportDB) return Promise.resolve(true);
-  if (dbLoading) return Promise.resolve(false);
+  // Share the in-flight load. This used to return Promise.resolve(false)
+  // immediately, so a second caller (Airfields, opening while Airport View
+  // was still downloading the CSV) got a promise that resolved with the DB
+  // still null, drew nothing, and never retried.
+  if (airportDBPromise) return airportDBPromise;
   dbLoading=true; setStatus('Loading airport database...');
-  return Promise.all([
+  airportDBPromise = Promise.all([
     fetch(OURAIRPORTS_BASE+'/airports.csv').then(function(r){return r.text();}),
     fetch(OURAIRPORTS_BASE+'/airport-frequencies.csv').then(function(r){return r.text();})
   ]).then(function(res){
     airportDB=parseCSV(res[0]); freqDB=parseCSV(res[1]);
     setStatus('Database loaded — enter a city name'); return true;
-  }).catch(function(){setStatus('Failed to load database');dbLoading=false;return false;});
+  }).catch(function(){setStatus('Failed to load database');airportDBPromise=null;return false;})
+    .then(function(v){ dbLoading=false; return v; });   // was never cleared on success
+  return airportDBPromise;
 }
 
 function parseCSV(text) {
@@ -3750,7 +3757,11 @@ function searchAirports(){
   });
 }
 
-function setStatus(msg){document.getElementById('searchStatus').textContent=msg;}
+// searchStatus belonged to the rtl_fm Radio tab, retired 2026-07-10. The
+// element is gone but these calls remain, and an unguarded lookup threw
+// before loadAirportDB() could return its promise — which left dbLoading
+// stuck true and silently killed Airport View and the Airfields overlay.
+function setStatus(msg){var el=document.getElementById('searchStatus'); if(el) el.textContent=msg;}
 
 function selectAirport(ap,el){
   document.querySelectorAll('.airport-item').forEach(function(d){d.classList.remove('selected');});el.classList.add('selected');
