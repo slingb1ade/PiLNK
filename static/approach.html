@@ -293,8 +293,37 @@ function modelFor(t){
   if(JU_B.includes(t))return'b747_100.glb'; if(WB_B.includes(t))return'b777_klm.glb'; if(NB_B.includes(t))return'b737_800.glb';
   if(t[0]==='A')return'a320_v2.glb'; if(t[0]==='B')return'b738_v2.glb'; return'b738_v2.glb';
 }
+/* fleet livery: all-white by default (liveries off — one clean fleet, no airline mismatches);
+   textures are desaturated and lifted toward white at load, keeping windows/doors/tyres as
+   light-grey detail. ?livery=1 keeps the models' painted colours. */
+CFG.livery=(_q.get('livery')==='1');
+const _whiteCache=new Map();
+function whitenTexture(tex){
+  if(!tex||!tex.image||!tex.image.width) return tex;
+  if(_whiteCache.has(tex)) return _whiteCache.get(tex);
+  try{
+    const c=document.createElement('canvas'); c.width=tex.image.width; c.height=tex.image.height;
+    const x=c.getContext('2d'); x.drawImage(tex.image,0,0);
+    const id=x.getImageData(0,0,c.width,c.height), d=id.data;
+    for(let i=0;i<d.length;i+=4){
+      const l=0.30*d[i]+0.59*d[i+1]+0.11*d[i+2];
+      const v=255-(255-l)*0.55;               // lift toward white, keep dark detail darkish
+      d[i]=d[i+1]=d[i+2]=v;
+    }
+    x.putImageData(id,0,0);
+    const t=new THREE.CanvasTexture(c); t.flipY=tex.flipY; t.encoding=tex.encoding; t.wrapS=tex.wrapS; t.wrapT=tex.wrapT;
+    t.anisotropy=renderer.capabilities.getMaxAnisotropy();
+    _whiteCache.set(tex,t); return t;
+  }catch(e){ return tex; }   // cross-origin/tainted → leave as is
+}
+function whiten(mt){
+  if(mt.map) mt.map=whitenTexture(mt.map);
+  if(mt.color){ const c=mt.color; const l=0.30*c.r+0.59*c.g+0.11*c.b; const v=1-(1-l)*0.55; c.setRGB(v,v,v); }
+  if(mt.emissive) mt.emissive.setRGB(0,0,0);
+  mt.needsUpdate=true;
+}
 /* per-model rest-orientation corrections (deg) — applied on load */
-const MODEL_ORIENT={ 'a320_200.glb':{yaw:-90}, 'atr72.glb':{yaw:90} };
+const MODEL_ORIENT={ 'a320_200.glb':{yaw:-90}, 'atr72.glb':{yaw:90}, 'b777_klm.glb':{yaw:180} };
 function ensureModel(t){
   const key=CFG.force||modelFor(t); if(key===currentModelKey||loadingModel)return;
   loadingModel=true;
@@ -303,7 +332,10 @@ function ensureModel(t){
     const m=g.scene, box=new THREE.Box3().setFromObject(m), size=new THREE.Vector3(), center=new THREE.Vector3();
     box.getSize(size); box.getCenter(center); m.position.sub(center);
     const span=Math.max(size.x,size.z); m.scale.setScalar(CFG.targetSpan/(span||1));
-    m.traverse(o=>{if(o.isMesh&&o.material){o.material.metalness=0.25;o.material.roughness=0.6;}});
+    m.traverse(o=>{if(o.isMesh&&o.material){
+      const mats=Array.isArray(o.material)?o.material:[o.material];
+      mats.forEach(mt=>{ mt.metalness=0.25; mt.roughness=0.6; if(!CFG.livery) whiten(mt); });
+    }});
     modelHolder.add(m); modelReady=true; loadingModel=false; currentModelKey=key;
     const _or=MODEL_ORIENT[key]||{};
     CFG.base.yaw=(_or.yaw||0)*D2R; CFG.base.pitch=(_or.pitch||0)*D2R; CFG.base.roll=(_or.roll||0)*D2R;
