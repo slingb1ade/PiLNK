@@ -349,6 +349,7 @@ ensureModel(null);
 let target=(_q.get('hex')||'__auto__').toLowerCase(),lockedHex=null,lastGood=0,haveFix=false;   // ?hex= deep-link locks to one aircraft
 const attWant={yaw:0,pitch:0,roll:0},attCur={yaw:0,pitch:0,roll:0};
 const posFix=new THREE.Vector3(),posCur=new THREE.Vector3(),_delta=new THREE.Vector3();
+const velFix=new THREE.Vector3(), velCur=new THREE.Vector3(), _pred=new THREE.Vector3(); let fixTime=0, fixAge=0;
 document.getElementById('acsel').addEventListener('change',e=>{target=e.target.value.toLowerCase();lockedHex=null;});
 function hasRoll(a){return typeof a.bds50_roll==='number';}
 function posOf(a){return a.lat!=null&&a.lon!=null;}
@@ -475,7 +476,14 @@ function applyAircraft(a){
     else { altM=SITE.elev; altSrc='—'; }
     txt('altsrc','alt: '+altSrc);
     posFix.set(enuE(a.lon), altM*CFG.ve, -enuN(a.lat));
-    if(!haveFix){posCur.copy(posFix);haveFix=true;}
+    // dead reckoning: velocity from ground speed / track / vertical speed, so the aircraft
+    // glides continuously between 2-second fixes instead of stepping (and the camera can
+    // ride rigidly behind it without the terrain "catching up")
+    const spd=(typeof a.gs==='number')?a.gs*0.5144:0, trk=(typeof a.track==='number')?a.track*D2R:(heading!=null?heading*D2R:0);
+    velFix.set(spd*Math.sin(trk), (a.alt_baro==='ground'?0:vs*0.00508*CFG.ve), -spd*Math.cos(trk));
+    fixAge=(typeof a.seen_pos==='number')?Math.min(a.seen_pos,10):0;   // the fix is already this old
+    fixTime=performance.now();
+    if(!haveFix){posCur.copy(posFix);velCur.copy(velFix);haveFix=true;}
   }
   if(roll!=null||heading!=null)lastGood=Date.now();
   const dist=posOf(a)?Math.hypot(enuE(a.lon),enuN(a.lat))/1852:null;
@@ -521,10 +529,10 @@ function placeCams(){
 const _camWant=new THREE.Vector3(), _look=new THREE.Vector3(), _fwd=new THREE.Vector3();
 let camInit=false;
 const DIR={cutToTowerNm:2.8, backToChaseNm:4.5};   // hysteresis so a go-around doesn't flicker
-let chaseDist=420, towerZoom=1;   // wheel-adjustable: chase follow distance, tower lens multiplier
+let chaseDist=150, towerZoom=1;   // wheel-adjustable: chase follow distance (starts close), tower lens multiplier
 renderer.domElement.addEventListener('wheel',e=>{
   if(camMode==='orbit') return;                       // OrbitControls owns the wheel there
-  e.preventDefault(); const k=e.deltaY>0?1.12:1/1.12;
+  e.preventDefault(); const k=e.deltaY>0?1.25:1/1.25;
   const towerNow=(camMode==='tower')||(camMode==='director'&&(idleMode||shot==='tower'));
   if(towerNow) towerZoom=THREE.MathUtils.clamp(towerZoom*k,0.25,3);   // >1 = wider, <1 = tighter
   else chaseDist=THREE.MathUtils.clamp(chaseDist*k,120,1600);
@@ -550,7 +558,7 @@ function chaseCam(p){
   // rear-looking-down: sit behind and above, look a little ahead of the aircraft
   const h=attCur.yaw, back=chaseDist, up=chaseDist*0.36, ahead=180;
   _camWant.set(p.x+Math.sin(h)*back, p.y+up, p.z+Math.cos(h)*back);
-  if(!camInit){camera.position.copy(_camWant);camInit=true;} else camera.position.lerp(_camWant,0.06);
+  if(!camInit){camera.position.copy(_camWant);camInit=true;} else camera.position.lerp(_camWant,0.35);   // ride close behind: the aircraft glides now, so the camera can too
   _fwd.set(-Math.sin(h),0,-Math.cos(h));
   _look.copy(p).addScaledVector(_fwd,ahead); _look.y=p.y-20;
   camera.lookAt(_look);
@@ -582,7 +590,13 @@ function animate(){
   attCur.yaw+=(attWant.yaw-attCur.yaw)*CFG.attSmooth;
   attCur.pitch+=(attWant.pitch-attCur.pitch)*CFG.attSmooth;
   attCur.roll+=(attWant.roll-attCur.roll)*CFG.attSmooth;
-  if(haveFix)posCur.lerp(posFix,CFG.posSmooth);
+  if(haveFix){
+    // predicted position = last fix advanced along its velocity (capped: a stale feed shouldn't fly the plane away)
+    const dt=Math.min(fixAge+(performance.now()-fixTime)/1000, 12);
+    velCur.lerp(velFix,0.05);                          // ease velocity changes — no kinks in the glide
+    _pred.copy(posFix).addScaledVector(velCur,dt);
+    posCur.lerp(_pred,0.08);                           // corrections spread over ~1 s, invisible at cruise
+  }
   yawPivot.position.copy(posCur);
   yawPivot.rotation.y=attCur.yaw; pitchPivot.rotation.x=attCur.pitch; rollPivot.rotation.z=attCur.roll;
   modelHolder.rotation.set(CFG.base.pitch,CFG.base.yaw,CFG.base.roll);
