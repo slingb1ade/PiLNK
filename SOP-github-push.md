@@ -19,11 +19,33 @@ This SOP is the canonical checklist. If a step is skipped, stop and go back to i
 
 | Role | Who | Responsibilities | Hard limits |
 |---|---|---|---|
-| **Authority** | AJ | Decides what ships. Picks the **version number + codename**. Performs **all git commits/pushes** (authenticates to GitHub). Approves every service restart. | — |
+| **Authority** | AJ | Decides **what ships and when**. Holds the push kill-switch (`PILNK_MCP_PI5_GIT_PUSH_ENABLED` in `/opt/pilnk-mcp/.env`). Approves every service restart. | — |
 | **Builder** | Claude Code | Writes/edits the feature on the dev box. First-pass testing. | Builds only — the release gates below still apply. |
-| **Release supervisor** | Hub Claude (via PiLNK Hub MCP) | Runs the read-only verification gate, syncs `version.php`, confirms the live endpoint, verifies OTA, drafts tester comms. | **Cannot push** (read-only git). **Only restarts services when AJ explicitly asks** (Rule #29). |
+| **Release supervisor** | Hub Claude (via PiLNK Hub MCP) | Owns the release mechanics end to end: version bump, commit, **push**, the Rule #31 verify, `version.php` sync, live-endpoint confirmation, OTA check, changelog, tester comms. | **Only restarts services when AJ explicitly asks** (Rule #29). Push is double-gated — see below. |
 
-> The push is always AJ's hands. Neither Claude can push to GitHub — by design.
+> **Changed 8 September 2026.** Push used to be AJ's hands only. It now sits with
+> the release supervisor, because splitting one release across three actors was
+> where changes went missing — work sat uncommitted in a tree that `update.sh`
+> hard-resets, and the site changelog silently fell four releases behind.
+>
+> **The push is double-gated and both gates are AJ's:**
+>
+> 1. `PILNK_MCP_PI5_GIT_PUSH_ENABLED=true` must be set in `/opt/pilnk-mcp/.env` —
+>    outside every tool's jail, so Claude cannot read, set or clear it. Removing
+>    that line revokes push instantly, no code change.
+> 2. `push=True` must be passed explicitly on the call. It defaults to `False`,
+>    so a push can never happen as a side effect of a commit.
+>
+> The tool runs `git push origin <branch>` and nothing else — current branch,
+> no flags, shell-quoted. Force-push, branch deletion and `--mirror` are not
+> reachable through it. This is why push was **not** added to the
+> `pi5_run_command` whitelist: that list is prefix-matched, so `git push` there
+> would also have authorised `git push --force` and `git push origin :main`
+> against the branch the whole fleet OTA-updates from.
+>
+> **AJ still decides what ships.** Claude states what it is about to push and why,
+> before passing `push=True`. The flag removed the SSH round-trip, not the
+> checkpoint.
 
 ---
 
@@ -97,23 +119,58 @@ Build (Pi4, Claude Code)
 
 > Rule #28: a Pi-side ship and the version metadata must move together, or the OTA updater silently does nothing.
 
-### Phase 4 — Commit & push (Pi5, AJ — manual)
-On **Pi5**, in `~/pilnk`:
+### Phase 4 — Commit & push (Pi5 — Hub Claude, via `pi5_git_commit_push`)
+One call does the whole thing. Stage **named paths only** — never everything:
+```
+pi5_git_commit_push(
+  message = "vX.Y.Z Codename — <concise description>",
+  paths   = ["VERSION", "<changed files>"],
+  push    = True
+)
+```
+This is the **single canonical commit**. Notes:
+
+- **Dry-run first if the staging is at all unclear:** same call with
+  `dry_run=True` returns `would_stage`, `status` and a `diffstat` and touches
+  nothing. It short-circuits before the push block, so it confirms *staging*,
+  not the push gate.
+- **`VERSION` goes in the same commit as the code.** Rule #28 — they must move
+  together.
+- **Untracked files are never staged.** Anything new (a model, an asset) has to
+  be named explicitly in `paths` or it stays behind and no other node gets it.
+- **`git reset --hard origin/main` in `update.sh` destroys uncommitted work.**
+  Anything left modified in the Pi5 tree dies at the next OTA. If it is worth
+  keeping, commit it.
+- If push is refused, `pushed` comes back `false` with `push_skipped` explaining
+  why — normally the `.env` flag being off. The commit still succeeded and is
+  safe locally; it just has not left the Pi.
+
+Manual fallback, if the MCP is down — on **Pi5**, in `~/pilnk` (AJ):
 ```bash
 git add <changed files> VERSION
 git commit -m "vX.Y.Z: <concise description>"
 git push origin main
 ```
-AJ authenticates. This is the **single canonical commit**.
 
-### Phase 5 — [GATE] Verify the push landed (Rule #31 — Hub Claude, read-only)
+### Phase 5 — [GATE] Verify the push landed (Rule #31 — Hub Claude)
 Before `version.php` is touched, confirm the code is actually on GitHub `main`:
 ```bash
-# Pi5 (read-only)
-git status                          # -> clean, "up to date with 'origin/main'"
-git log -1 --oneline                # local HEAD
-git log origin/main -1 --oneline    # must match local HEAD
+# Pi5
+git status -sb                      # -> "## main...origin/main", no ahead/behind
+git log origin/main -1 --oneline    # must be the commit just made
 ```
+**Then verify against GitHub itself, not just the local refs:**
+```
+http_get_external("https://api.github.com/repos/slingb1ade/PiLNK/contents/VERSION?ref=main")
+  -> content is base64; decode and check it is the version just shipped
+```
+- `git log origin/main` reads Pi5's **local copy** of the remote ref. It is
+  accurate right after a push, but it is not independent evidence. The API call
+  asks GitHub. Use both.
+- **Do not use `raw.githubusercontent.com` for this gate.** It is CDN-cached and
+  has been observed serving the old `VERSION` for 5–10 minutes after a confirmed
+  push, including with a cache-busting query string. It is what `version.php`
+  reads, so it matters — but as a *timing* consideration, not as verification.
 - If there are **uncommitted or unpushed** changes → **STOP. Push first.**
 - **Do not edit `version.php` until this gate passes.**
 
@@ -156,10 +213,11 @@ Confirm `version` (auto-read), `codename`, `released`, and `notes` are all corre
 [ ] Pi5: install + final test + hard-refresh
 [ ] Pi5: GLOBAL CHECK (AJ-NZ / Jim-US / KICTPI-US / M0CRT-UK)   (#25)
 [ ] Pi5: bump VERSION file (AJ picks number + codename)         (#28)
-[ ] Pi5: git add … VERSION ; git commit ; git push  (AJ pushes)
-[ ] Pi5: VERIFY pushed — git status / log / origin match        (#31)  <-- GATE
+[ ] Pi5: pi5_git_commit_push(paths=[VERSION, …], push=True)     (#32)
+[ ] Pi5: VERIFY pushed — status -sb + GitHub API, not raw CDN   (#31)  <-- GATE
 [ ] myHost: edit version.php $RELEASE_META + php_lint
 [ ] confirm https://pilnk.io/api/version.php is correct
+[ ] site: add the changelog.html entry                          (#33)
 [ ] OTA: fleet updates within ~5 min
 [ ] testers: plain text; single-line curl for commands          (#30)
 ```
@@ -184,8 +242,18 @@ Confirm `version` (auto-read), `codename`, `released`, and `notes` are all corre
 | **#28** | Pi-side ship requires `VERSION` + `version.php` metadata in sync. (version.php auto-reads the *number* from GitHub raw VERSION; only `$RELEASE_META` is hand-edited. AJ picks the number.) |
 | **#29** | Services are restarted **only** when AJ explicitly asks in that turn. |
 | **#30** | Forum/announcement copy defaults to plain text (Quill). Single-line curl for commands. |
-| **#31** | Before editing `version.php`, verify Pi5 has pushed the code to GitHub `main`. If not, STOP and push first. |
+| **#31** | Before editing `version.php`, verify Pi5 has pushed the code to GitHub `main`. Check `git status -sb` **and** the GitHub API — not `raw.githubusercontent.com`, which is CDN-cached. If not pushed, STOP and push first. |
+| **#32** | Push is the release supervisor's, double-gated: the `.env` flag (AJ's, outside every jail) **and** an explicit `push=True` per call. State what is being pushed and why before passing it. Never add `git push` to the `pi5_run_command` whitelist — prefix matching would authorise `--force` and branch deletion. |
+| **#33** | A release is not finished until `changelog.html` on the site carries it. On 8 Sep 2026 the site changelog was found four releases behind (stopped at v1.4.1), so the entire international-NOTAM story had shipped to the fleet but never to readers. |
 
 ---
 
-*This SOP reflects the process used to ship v1.2.11.1 "Vitals" (aircraft-labels + node-marker render fixes) on 2026-06-08.*
+*Originally written around the process used to ship v1.2.11.1 "Vitals" on 2026-06-08.*
+
+*Revised 2026-09-08 (v1.4.10 "Full-Circle"): push moved from AJ to the release
+supervisor behind a double gate, Phase 4 rewritten around `pi5_git_commit_push`,
+Rule #31 hardened to check the GitHub API rather than the CDN, and Rules #32/#33
+added. The trigger was a session in which a fix sat uncommitted in a tree that
+`update.sh` hard-resets, the site changelog had silently fallen four releases
+behind, and two features (Airport View, Airfields) had been dead fleet-wide for
+two months without anyone noticing.*
