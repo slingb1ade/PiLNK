@@ -45,13 +45,23 @@
   var GLYPHS = {
     tracker: 'M0,-20 L4,-8 L18,2 L18,7 L4,3 L4,12 L9,17 L9,20 L0,17 L-9,20 L-9,17 L-4,12 L-4,3 L-18,7 L-18,2 L-4,-8 Z',
     collector: 'M-11,-13 L-8,-6 L-1,-1 L-1,2 L-8,0 L-8,5 L-5,8 L-5,10 L-11,8 L-17,10 L-17,8 L-14,5 L-14,0 L-21,2 L-21,-1 L-14,-6 Z M11,-3 L14,4 L21,9 L21,12 L14,10 L14,15 L17,18 L17,20 L11,18 L5,20 L5,18 L8,15 L8,10 L1,12 L1,9 L8,4 Z M0,-21 L2,-16 L7,-12 L7,-10 L2,-11 L2,-8 L4,-6 L4,-4 L0,-6 L-4,-4 L-4,-6 L-2,-8 L-2,-11 L-7,-10 L-7,-12 L-2,-16 Z',
-    fastmover: 'M0,-21 L3,-12 L4,-2 L14,8 L14,12 L4,7 L3,13 L7,17 L7,20 L0,17 L-7,20 L-7,17 L-3,13 L-4,7 L-14,12 L-14,8 L-4,-2 L-3,-12 Z',
+    /* fastmover / interceptor were the same delta as tracker at three widths
+     * (36 / 28 / 24 wingspan). Inside a 96px badge the glyph is ~40px, so a
+     * few units of width is a couple of pixels — they were never going to
+     * read apart. Redrawn Sep 2026 so the SILHOUETTE differs, not the size:
+     * fastmover gets motion streaks, interceptor gets a hard-swept planform
+     * with twin fins. Shape survives shrinking; proportion does not. */
+    fastmover: 'M0,-24 L2,-16 L3,-7 L12,-1 L12,3 L3,0 L3,4 L6,7 L6,9 L0,7 L-6,9 L-6,7 L-3,4 L-3,0 L-12,3 L-12,-1 L-3,-7 L-2,-16 Z M-15,12 L1,12 L1,15 L-15,15 Z M-11,17 L5,17 L5,20 L-11,20 Z M-7,22 L9,22 L9,25 L-7,25 Z',
     longeyes: 'M6,-14 L9,-6 L18,0 L18,4 L9,1 L9,8 L13,12 L13,15 L6,12 L-1,15 L-1,12 L3,8 L3,1 L-6,4 L-6,0 L3,-6 Z M-12,-8 A 16 16 0 0 0 -12,8 L-15,8 A 19 19 0 0 1 -15,-8 Z M-18,-12 A 22 22 0 0 0 -18,12 L-21,12 A 25 25 0 0 1 -21,-12 Z',
     highflyer: 'M-2,-4 L1,4 L10,12 L10,16 L1,10 L0,17 L4,21 L-3,19 L-9,21 L-9,18 L-5,15 L-6,9 L-15,13 L-15,9 L-6,0 Z M4,-20 L20,-20 L20,-17 L4,-17 Z M8,-13 L20,-13 L20,-10 L8,-10 Z M12,-6 L20,-6 L20,-3 L12,-3 Z',
     tower: 'M-3,14 L-1,-10 L1,-10 L3,14 L7,18 L-7,18 Z M0,-14 L2,-10 L-2,-10 Z M-8,-16 A 11 11 0 0 1 8,-16 L6,-13 A 8 8 0 0 0 -6,-13 Z M-13,-19 A 18 18 0 0 1 13,-19 L11,-16 A 15 15 0 0 0 -11,-16 Z',
-    interceptor: 'M0,-20 L2,-10 L3,0 L12,6 L12,10 L3,7 L3,12 L8,15 L8,18 L2,16 L2,19 L-2,19 L-2,16 L-8,18 L-8,15 L-3,12 L-3,7 L-12,10 L-12,6 L-3,0 L-2,-10 Z',
+    interceptor: 'M0,-25 L3,-16 L3,-2 L20,14 L20,18 L3,10 L3,14 L11,21 L11,24 L2,20 L2,24 L-2,24 L-2,20 L-11,24 L-11,21 L-3,14 L-3,10 L-20,18 L-20,14 L-3,-2 L-3,-16 Z',
     ghosthunter: 'M-10,-4 A 10 10 0 0 1 10,-4 L10,14 L6,10 L3,14 L0,10 L-3,14 L-6,10 L-10,14 Z M-5,-4 A 2 2 0 1 0 -5,-4.01 M5,-4 A 2 2 0 1 0 5,-4.01',
-    photographer: 'M0,-16 L5,-6 L16,-8 L9,0 L16,8 L5,6 L0,16 L-5,6 L-16,8 L-9,0 L-16,-8 L-5,-6 Z M0,-5 A 5 5 0 1 0 0,5 A 5 5 0 1 0 0,-5',
+    /* Was an aperture starburst, which collapsed into "a star" at badge size
+     * and collided with crowdfav. A camera body with a lens hole is legible
+     * at any scale. The lens is a reverse-wound subpath, so it stays a hole
+     * under the default nonzero fill rule. */
+    photographer: 'M-19,-6 L-10,-6 L-7,-12 L7,-12 L10,-6 L19,-6 A4,4 0 0 1 23,-2 L23,14 A4,4 0 0 1 19,18 L-19,18 A4,4 0 0 1 -23,14 L-23,-2 A4,4 0 0 1 -19,-6 Z M-9,6 A9,9 0 0 0 9,6 A9,9 0 0 0 -9,6 Z',
     crowdfav: 'M0,-18 L5,-6 L18,-6 L8,3 L12,16 L0,8 L-12,16 L-8,3 L-18,-6 L-5,-6 Z',
     watchstander: 'M-18,0 Q0,-16 18,0 Q0,16 -18,0 Z M0,-7 A 7 7 0 1 0 0,7 A 7 7 0 1 0 0,-7 M0,-2.5 A 2.5 2.5 0 1 1 0,2.5 A 2.5 2.5 0 1 1 0,-2.5',
     firstresponder: 'M-4,-18 L4,-18 L4,-4 L18,-4 L18,4 L4,4 L4,18 L-4,18 L-4,4 L-18,4 L-18,-4 L-4,-4 Z'
