@@ -175,6 +175,30 @@
     return s.join('');
   }
 
+  /* 3D Military Honours art (v1.4.15). Same rule as the rank insignia: the
+   * SVG stays the source of truth and still draws every locked badge and
+   * every chip; the render is a second asset for the earned state at 64px+.
+   *
+   * ONLY swapped in when the honour is EARNED. An unearned honour keeps the
+   * locked SVG — showing the finished medal for something you have not won
+   * would give away the artwork and flatten the reason to go and earn it.
+   *
+   * The <img> carries its own SVG as the onerror fallback, so anywhere the
+   * art is missing — a node updated before the files landed, or the shared
+   * copy of this renderer running on pilnk.io where /static/honours/ does
+   * not exist — it silently draws the flat badge instead of a broken image.
+   * That fallback is why this is safe to ship to both surfaces at once. */
+  var HONOURS_BASE = '/static/honours/';
+  function honourArt(def, svg, size) {
+    if (!def || def.category !== 'military') return svg;
+    return '<img src="' + HONOURS_BASE + def.slug + '.webp"'
+      + ' width="' + size + '" height="' + size + '"'
+      + ' alt="" loading="lazy" decoding="async"'
+      + ' style="display:block;width:' + size + 'px;height:' + size + 'px;object-fit:contain;"'
+      + ' onerror="this.parentNode.innerHTML=this.getAttribute(\'data-fb\')"'
+      + ' data-fb="' + svg.replace(/"/g, '&quot;') + '">';
+  }
+
   function familiesFrom(defs) {
     var fams = {};
     defs.forEach(function (d) {
@@ -283,7 +307,9 @@
     var isEarned = !!earnedRow;
     var col = commendColor(def);
     var h = [];
-    h.push('<div class="pb-d-hero">' + scopeSVG({ glyph: specialGlyph(def), tier: isEarned ? (mil ? 3 : 2) : 0, military: mil, bezelColor: mil ? null : col, glyphColor: mil ? null : col, sweep: isEarned, size: 132 }) + '</div>');
+    var hero = scopeSVG({ glyph: specialGlyph(def), tier: isEarned ? (mil ? 3 : 2) : 0, military: mil, bezelColor: mil ? null : col, glyphColor: mil ? null : col, sweep: isEarned, size: 132 });
+    if (mil && isEarned) hero = honourArt(def, hero, 132);
+    h.push('<div class="pb-d-hero">' + hero + '</div>');
     h.push('<div class="pb-d-name">' + esc(def.name) + '</div>');
     h.push('<div class="pb-d-desc">' + esc(def.description || '') + '</div>');
     if (isEarned && earnedRow.serial) {
@@ -416,8 +442,9 @@
     if (mil.length) {
       frag.appendChild(cat('MILITARY HONOURS'));
       frag.appendChild(grid(mil, function (d) {
+        var msvg = scopeSVG({ glyph: specialGlyph(d), tier: earned[d.slug] ? 3 : 0, military: true, size: badgeSize });
         return hexBtn(
-          scopeSVG({ glyph: specialGlyph(d), tier: earned[d.slug] ? 3 : 0, military: true, size: badgeSize }),
+          earned[d.slug] ? honourArt(d, msvg, badgeSize) : msvg,
           d.name, d.name + ': ' + (d.description || ''),
           function () { openDetail(specialDetail(d, earned[d.slug], remaining[d.slug], caps[d.slug])); }
         );
