@@ -28,19 +28,46 @@
   'use strict';
 
   /* Rev C (28 Aug, AJ): green was drowning the metals. The glyph and range
-   * rings now wear the TIER colour; phosphor green is reserved for the
-   * progress arc alone — green means "living signal", metal means rank.
-   * Stealth keeps the phosphor glyph: on near-black, the joke needs light. */
+   * rings now wear the TIER colour; phosphor is reserved for the progress
+   * arc alone — accent means "living signal", metal means rank.
+   *
+   * Rev D (9 Sep, AJ): the phosphor green fought the rest of the PiLNK
+   * theme, so it is now theme blue (#60a5fa, = --blue-light on dark). This
+   * is a straight colour swap — the Rev C rule above is unchanged, accent
+   * still means living signal. Stealth loses its green glyph too: with no
+   * other green left in the section, one green tier read as a bug rather
+   * than a joke. PHOSPHOR keeps its name (blue phosphor is a real CRT
+   * thing) but no longer holds a green.
+   *
+   * Military badges stay AMBER. That is the mil / non-mil tell and it must
+   * not go blue. */
   var TIERS = {
     1: { name: 'Fabric',    bezel: '#c9a87c', face: '#141008', ring: '#574a38', glyph: '#c9a87c' },
     2: { name: 'Aluminium', bezel: '#c8ccd2', face: '#0f1215', ring: '#4c5158', glyph: '#c8ccd2' },
     3: { name: 'Titanium',  bezel: '#7e9ab8', face: '#0c1118', ring: '#39485c', glyph: '#7e9ab8' },
     4: { name: 'Carbon',    bezel: '#4a5058', face: '#0d0f12', ring: '#2c3138', glyph: '#8b939e' },
-    5: { name: 'Stealth',   bezel: '#191c20', face: '#0b1410', rim: '#39e58c', ring: '#1e3a2c', glyph: '#39e58c' }
+    5: { name: 'Stealth',   bezel: '#191c20', face: '#0b1014', rim: '#60a5fa', ring: '#1e3a5c', glyph: '#60a5fa' }
   };
-  var PHOSPHOR = '#39e58c', PHOSPHOR_DIM = '#1e3a2c';
+  var PHOSPHOR = '#60a5fa', PHOSPHOR_DIM = '#1e3a5c';
   var AMBER = '#f0a832', AMBER_DIM = '#4a3512', OLIVE = '#6b7245';
   var LOCKED_BEZEL = '#3a3f46', LOCKED_GLYPH = '#3a4149', LOCKED_FACE = '#12151a', LOCKED_RING = '#232830';
+
+  /* Commendations, Rev D (9 Sep, AJ): this section used to paint bezel AND
+   * glyph straight from each badge's DB colour — ten saturated hues that
+   * meant nothing and did not even discriminate (VVIP, Founder and AF1
+   * Spotter all shared #eab308; Ghost Hunter, Phantom Tracker and Beta
+   * Tester were three near-identical purples). Next to cast-metal 3D
+   * honours they read as stickers.
+   *
+   * Now the CATEGORY does the talking, the same way tier metal does in
+   * Service Record and amber does in Honours:
+   *   rare    → what you CAUGHT  (7700, 7600, AF1, ghosts)  → cool steel
+   *   special → who you ARE      (Founder, Pioneer, Beta)   → warm gold
+   * Two materials, not ten hues, and the split is a real one that already
+   * existed in the data. The badge_defs.color column is untouched — it is
+   * simply no longer read here, so this is reversible with one line. */
+  var COMMEND = { rare: '#a8c0d8', special: '#d4af37' };
+  function commendColor(def) { return COMMEND[def.category] || COMMEND.rare; }
 
   var GLYPHS = {
     tracker: 'M0,-20 L4,-8 L18,2 L18,7 L4,3 L4,12 L9,17 L9,20 L0,17 L-9,20 L-9,17 L-4,12 L-4,3 L-18,7 L-18,2 L-4,-8 Z',
@@ -103,6 +130,10 @@
     return 'M0,' + (-r) + ' A' + r + ',' + r + ' 0 ' + (frac > 0.5 ? 1 : 0) + ',1 ' + x.toFixed(2) + ',' + y.toFixed(2);
   }
 
+  /* Kept deliberately, though Rev D left it with no callers: it is the guard
+   * that stops a DB colour string reaching an SVG attribute. If anyone ever
+   * wires badge_defs.color back into the render, it must come back through
+   * here. Cheaper to keep five lines than to re-learn why they existed. */
   function sanitizeColor(c, fallback) {
     return (typeof c === 'string' && /^#[0-9a-fA-F]{3,8}$/.test(c)) ? c : fallback;
   }
@@ -134,10 +165,10 @@
     s.push('<circle r="32" fill="none" stroke="' + ringC + '" stroke-width="1.5"/>');
     s.push('<circle r="18" fill="none" stroke="' + ringC + '" stroke-width="1.5"/>');
     if (opts.sweep && !locked) {
-      s.push('<g><path d="M0,0 L38,-16 A41,41 0 0,1 41,0 Z" fill="' + (mil ? '#3a2c10' : '#1d4232') + '">' +
+      s.push('<g><path d="M0,0 L38,-16 A41,41 0 0,1 41,0 Z" fill="' + (mil ? '#3a2c10' : '#1d3f62') + '">' +
         '<animateTransform attributeName="transform" type="rotate" from="0" to="360" dur="6s" repeatCount="indefinite"/></path></g>');
     } else if (!locked) {
-      s.push('<path d="M0,0 L38,-16 A41,41 0 0,1 41,0 Z" fill="' + (mil ? '#3a2c10' : '#1d4232') + '"/>');
+      s.push('<path d="M0,0 L38,-16 A41,41 0 0,1 41,0 Z" fill="' + (mil ? '#3a2c10' : '#1d3f62') + '"/>');
     }
     s.push('<path d="' + (GLYPHS[opts.glyph] || GLYPHS.tracker) + '" fill="' + glyphC + '"/>');
     s.push('</svg>');
@@ -250,7 +281,7 @@
   function specialDetail(def, earnedRow, remaining, cap) {
     var mil = def.category === 'military';
     var isEarned = !!earnedRow;
-    var col = sanitizeColor(def.color, null);
+    var col = commendColor(def);
     var h = [];
     h.push('<div class="pb-d-hero">' + scopeSVG({ glyph: specialGlyph(def), tier: isEarned ? (mil ? 3 : 2) : 0, military: mil, bezelColor: mil ? null : col, glyphColor: mil ? null : col, sweep: isEarned, size: 132 }) + '</div>');
     h.push('<div class="pb-d-name">' + esc(def.name) + '</div>');
@@ -280,13 +311,13 @@
   var CSS = '.pb-wall{display:flex;flex-direction:column;gap:8px}' +
     '.pb-grid{display:flex;flex-wrap:wrap;gap:6px}' +
     '.pb-hex{background:none;border:none;padding:2px;cursor:pointer;line-height:0;border-radius:50%}' +
-    '.pb-hex:hover{transform:scale(1.07)}.pb-hex:focus-visible{outline:2px solid #39e58c;outline-offset:2px}' +
+    '.pb-hex:hover{transform:scale(1.07)}.pb-hex:focus-visible{outline:2px solid #60a5fa;outline-offset:2px}' +
     '.pb-cat{font-family:"Share Tech Mono",monospace;font-size:0.66rem;letter-spacing:0.18em;color:#7d8590;margin:12px 0 2px}' +
     '.pb-summary{font-family:"Share Tech Mono",monospace;font-size:0.62rem;color:#7d8590}' +
     '.pb-overlay{position:fixed;inset:0;background:rgba(3,6,10,0.82);display:flex;align-items:center;justify-content:center;z-index:9000;padding:16px}' +
     '.pb-sheet{background:#0d1117;border:1px solid #263041;border-radius:16px;max-width:420px;width:100%;max-height:88vh;overflow-y:auto;padding:22px 20px;text-align:center}' +
     '.pb-d-hero{line-height:0;margin-bottom:8px}' +
-    '.pb-d-stat{font-family:"Orbitron",sans-serif;font-size:1.4rem;font-weight:900;color:#39e58c;letter-spacing:0.04em}' +
+    '.pb-d-stat{font-family:"Orbitron",sans-serif;font-size:1.4rem;font-weight:900;color:#60a5fa;letter-spacing:0.04em}' +
     '.pb-d-name{font-family:"Orbitron",sans-serif;font-size:0.85rem;font-weight:700;color:#e6e8ea;margin-top:4px}' +
     '.pb-d-desc{font-size:0.72rem;color:#9aa4b0;line-height:1.5;margin:8px auto 14px;max-width:320px}' +
     '.pb-d-tiers{display:flex;justify-content:center;gap:8px;flex-wrap:wrap;margin-bottom:12px}' +
@@ -294,7 +325,7 @@
     '.pb-d-thr{font-family:"Share Tech Mono",monospace;font-size:0.66rem;color:#c8ccd2;margin-top:2px}' +
     '.pb-d-sub{font-size:0.55rem;color:#7d8590;line-height:1.25}' +
     '.pb-d-date{font-family:"Share Tech Mono",monospace;font-size:0.55rem;color:#5b6470;margin-top:1px}' +
-    '.pb-d-next{font-family:"Share Tech Mono",monospace;font-size:0.7rem;color:#39e58c;margin-top:4px}' +
+    '.pb-d-next{font-family:"Share Tech Mono",monospace;font-size:0.7rem;color:#60a5fa;margin-top:4px}' +
     '.pb-d-serial{font-family:"Orbitron",sans-serif;font-size:0.8rem;font-weight:900;letter-spacing:0.14em;color:#f0a832;margin-top:6px}' +
     '.pb-d-remaining{font-family:"Share Tech Mono",monospace;font-size:0.62rem;color:#f0a832;margin-top:6px}' +
     '.pb-d-trigger{font-family:"Share Tech Mono",monospace;font-size:0.6rem;color:#94a3b8;margin-top:7px;line-height:1.4;max-width:270px}' +
@@ -373,7 +404,7 @@
     if (specials.length) {
       frag.appendChild(cat('COMMENDATIONS'));
       frag.appendChild(grid(specials, function (d) {
-        var scol = sanitizeColor(d.color, null);
+        var scol = commendColor(d);
         return hexBtn(
           scopeSVG({ glyph: specialGlyph(d), tier: earned[d.slug] ? 2 : 0, bezelColor: scol, glyphColor: scol, size: badgeSize }),
           d.name, d.name + ': ' + (d.description || ''),

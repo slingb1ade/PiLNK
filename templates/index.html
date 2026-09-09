@@ -2126,6 +2126,24 @@ function ensureBadgesLib(cb) {
 // ── XP / Rank panel (v1.3.19) — sits above the badge wall. Insignia,
 // rank, XP, progress to the next rank, and the capture-gate note when a
 // general's star is what's blocking the next promotion.
+/* 3D rank insignia (v1.4.13). The Meshy renders are a SECOND asset for large
+ * display — pilnk-rank-insignia.js stays the source of truth and still draws
+ * every chip. Rule from the brief: SVG at chip sizes, render at 64px+.
+ *
+ * The <img> carries the SVG as its own fallback: if the WebP is missing (node
+ * updated code but not art, or a part-finished OTA) onerror swaps the flat
+ * insignia back in, so a rank panel can never render as a broken-image box.
+ * Failure mode is "looks like last week", not "looks broken". */
+function rankArt(idx, size) {
+  var svg = PilnkRanks.insignia(idx, size);
+  var src = '/static/ranks/rank-' + ('0' + idx).slice(-2) + '.webp';
+  return '<img src="' + src + '" width="' + size + '" height="' + size + '"'
+    + ' alt="" loading="lazy" decoding="async"'
+    + ' style="display:block;width:' + size + 'px;height:' + size + 'px;object-fit:contain;"'
+    + ' onerror="this.parentNode.innerHTML=this.getAttribute(\'data-fb\')"'
+    + ' data-fb="' + svg.replace(/"/g, '&quot;') + '">';
+}
+
 function renderRankPanel(rank) {
   var host = document.getElementById('rankPanel');
   if (!host) return;
@@ -2144,14 +2162,13 @@ function renderRankPanel(rank) {
     pct = hi > lo ? Math.max(0, Math.min(100, Math.round((xp - lo) / (hi - lo) * 100))) : 100;
     sub = xp.toLocaleString() + ' XP · ' + (rank.xp_remaining || 0).toLocaleString() + ' to ' + rank.next_name;
   }
-  var tier = idx >= 16 ? '#e5484d' : (idx >= 10 ? '#d4af37' : '#39e58c');
   host.innerHTML =
-    '<div style="display:flex;align-items:center;gap:14px;background:#0d1117;border:1px solid #1d4232;border-radius:14px;padding:12px 14px;margin-bottom:14px;">'
-    + '<div style="flex:0 0 auto;">' + PilnkRanks.insignia(idx, 64) + '</div>'
+    '<div style="display:flex;align-items:center;gap:14px;background:#0d1117;border:1px solid #1d3f62;border-radius:14px;padding:12px 14px;margin-bottom:14px;">'
+    + '<div style="flex:0 0 auto;width:64px;height:64px;">' + rankArt(idx, 64) + '</div>'
     + '<div style="flex:1 1 auto;min-width:0;">'
-    +   '<div style="font-family:\'Share Tech Mono\',monospace;font-size:0.55rem;letter-spacing:0.18em;color:' + tier + ';">RANK</div>'
+    +   '<div style="font-family:\'Share Tech Mono\',monospace;font-size:0.55rem;letter-spacing:0.18em;color:#60a5fa;">RANK</div>'
     +   '<div style="font-family:\'Orbitron\',sans-serif;font-size:0.78rem;font-weight:700;color:#e6e8ea;line-height:1.2;">' + PilnkRanks.name(idx) + '</div>'
-    +   '<div style="height:6px;background:#161b22;border-radius:3px;margin:7px 0 5px;overflow:hidden;"><div style="height:100%;width:' + pct + '%;background:' + tier + ';border-radius:3px;"></div></div>'
+    +   '<div style="height:6px;background:#161b22;border-radius:3px;margin:7px 0 5px;overflow:hidden;"><div style="height:100%;width:' + pct + '%;background:#60a5fa;border-radius:3px;"></div></div>'
     +   '<div style="font-family:\'Share Tech Mono\',monospace;font-size:0.58rem;color:var(--text-dim);">' + sub + '</div>'
     + '</div></div>';
 }
