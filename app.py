@@ -2308,11 +2308,41 @@ _OPENAIP_CACHE = {}
 _OPENAIP_TTL = 900          # 15 minutes
 
 
+def _openaip_cache_key(endpoint, params):
+    """Cache key with the position ROUNDED.
+
+    11 Sep 2026: the overlay was dying with 502s and the cause was this key.
+    The browser sends the receiver position at whatever precision it happens to
+    have — one request arrives as pos=-37.0082,174.7917 and the next, a second
+    later, as pos=-37.008,174.791. Same place, ~20 metres apart, but two
+    different strings and therefore two different cache entries.
+
+    So the cache essentially never hit. Every overlay toggle and every hard
+    refresh went upstream for both layers, OpenAIP answered 429 Too Many
+    Requests, and the proxy turned that into a 502 with an empty items list —
+    which the map faithfully drew as "no airspaces". That is the reported
+    "shows then disappears": the first pair loaded, the second pair wiped them.
+
+    Rounding to 2dp is ~1 km. The query radius is 150 km and the data changes
+    on AIRAC cycles, so this is free: every request from one receiver now
+    collapses onto a single entry.
+    """
+    p = dict(params)
+    pos = p.get('pos')
+    if pos:
+        try:
+            lat, lon = pos.split(',')
+            p['pos'] = '%.2f,%.2f' % (float(lat), float(lon))
+        except Exception:
+            pass                      # unparseable: key on it verbatim
+    return endpoint + '?' + '&'.join('%s=%s' % kv for kv in sorted(p.items()))
+
+
 @app.route('/api/openaip/<path:endpoint>')
 def openaip_proxy(endpoint):
     OPENAIP_KEY = '7670c503a1c0929ee8e87ad581d9119e'
     params = request.args.to_dict()
-    cache_key = endpoint + '?' + '&'.join('%s=%s' % kv for kv in sorted(params.items()))
+    cache_key = _openaip_cache_key(endpoint, params)
 
     hit = _OPENAIP_CACHE.get(cache_key)
     if hit and (time.time() - hit[0]) < _OPENAIP_TTL:
@@ -2330,18 +2360,30 @@ def openaip_proxy(endpoint):
                 _OPENAIP_CACHE[cache_key] = (time.time(), data)
                 return jsonify(data)
             last_err = 'upstream HTTP %s' % r.status_code
+            # 429 is rate limiting, not a blip. Retrying 1.5s later just spends
+            # another request on a refusal and digs the hole deeper.
+            if r.status_code == 429:
+                break
         except Exception as e:
             last_err = str(e)
         if attempt == 1:
             time.sleep(1.5)
 
     if hit:
-        # Stale, but real. Better than a blank overlay.
+        # Stale, but real. Better than a blank overlay. Note this deliberately
+        # ignores TTL — for AIRAC-cycle data, hours old still beats nothing.
+        app.logger.info('[openaip] %s serving stale cache (%s)', endpoint, last_err)
         return jsonify(hit[1])
 
-    app.logger.warning('[openaip] %s failed after 2 attempts: %s', endpoint, last_err)
+    app.logger.warning('[openaip] %s failed after %d attempt(s): %s',
+                       endpoint, attempt, last_err)
     # 502, not 500: the failure is upstream, not in this node.
-    return jsonify({'error': last_err, 'items': []}), 502
+    #
+    # NO 'items': [] here. It used to send an empty list, which is a valid,
+    # believable answer meaning "nothing in range" — so the client drew it and
+    # erased good data. An error must not be shaped like a successful empty
+    # result. The client sees the 502 and keeps what it already had.
+    return jsonify({'error': last_err, 'rate_limited': last_err.endswith('429')}), 502
 
 @app.route('/api/adsbdb/<path:callsign>')
 def adsbdb_proxy(callsign):

@@ -197,16 +197,45 @@
       backdrop-filter:blur(2px); -webkit-backdrop-filter:blur(2px);
     }
     body.sidebar-open #sidebar-backdrop{ display:block; }
+    /* Sidebar is an overlay at this width, so the map runs full-bleed and the
+       altitude panel goes back to a plain 12px inset on the left. */
+    #altProfilePanel{ left:12px; }
   }
   .av-toggles{display:flex;flex-direction:column;gap:6px;margin-top:8px;padding:8px;background:var(--bg-card);border-radius:6px;border:1px solid var(--border);}
   .av-toggle-row{display:flex;align-items:center;justify-content:space-between;font-size:0.62rem;color:var(--text-dim);}
   .av-dot{width:8px;height:8px;border-radius:50%;flex-shrink:0;margin-right:4px;}
   /* ── Altitude Profile slide-up panel ─────────────────────────────── */
-  #altProfilePanel{position:absolute;left:0;right:0;bottom:0;height:38%;min-height:220px;
-    background:rgba(10,14,22,.96);border-top:1px solid var(--border);
-    transform:translateY(100%);transition:transform .32s cubic-bezier(.4,0,.2,1);
+  /* Height: was 38% / min 220px, which ate a third of the map. Smaller by
+     default and DRAGGABLE from the top edge — the right size depends on the
+     screen and on whether you are watching traffic or terrain, so it is the
+     user's call and it is remembered (same principle as the Options SAVE
+     button in v1.4.11). JS sets an inline height from localStorage. */
+  /* Inset rather than edge-to-edge. It used to be left:0;right:0;bottom:0 — a
+     slab bolted across the bottom of the screen. Deliberately still WIDE: the
+     X axis is distance, so narrowing it compresses the approach and throws away
+     the thing the view is for. The fix for "too big" is the gap and the rounded
+     corners, which let it read as a panel floating over the map rather than a
+     second screen. Capped on very wide displays so an ultrawide does not
+     stretch the slice into a thin ribbon. */
+  /* left:252px = the 240px sidebar + the same 12px gap used on the other three
+     sides. This panel is a SIBLING of #map, not a child, so its offsets are
+     measured from the window — left:12px put it underneath the sidebar. Below
+     768px the sidebar becomes an overlay and the map is full width, so the
+     offset is dropped in the media query further down. */
+  #altProfilePanel{position:absolute;left:252px;right:12px;bottom:12px;
+    margin:0 auto;max-width:1500px;height:27%;min-height:170px;
+    background:rgba(10,14,22,.96);border:1px solid var(--border);border-radius:12px;
+    box-shadow:0 8px 28px rgba(0,0,0,.45);overflow:hidden;
+    transform:translateY(calc(100% + 20px));transition:transform .32s cubic-bezier(.4,0,.2,1);
     z-index:600;display:flex;flex-direction:column;backdrop-filter:blur(4px);}
   #altProfilePanel.open{transform:translateY(0);}
+  /* Drag handle — sits on the top edge, widened hit area, no layout shift. */
+  #altProfileGrip{position:absolute;top:0;left:0;right:0;height:12px;cursor:ns-resize;
+    z-index:2;display:flex;align-items:center;justify-content:center;}
+  #altProfileGrip::after{content:'';width:44px;height:3px;border-radius:2px;
+    background:var(--border);transition:background .15s;}
+  #altProfileGrip:hover::after{background:#36d3ff;}
+  #altProfilePanel.resizing{transition:none;}
   #altProfileBar{display:flex;align-items:center;gap:10px;padding:6px 12px;
     border-bottom:1px solid var(--border);flex-wrap:wrap;}
   .alt-pp-title{font-size:0.62rem;letter-spacing:.18em;color:#36d3ff;text-transform:uppercase;}
@@ -1791,6 +1820,7 @@
     <!-- ── Altitude Profile (side-on view) — slide-up panel. One self-contained
          block; toggled from Aviation Overlay > Altitude View. Removable cleanly. -->
     <div id="altProfilePanel" aria-hidden="true">
+      <div id="altProfileGrip" title="Drag to resize — your height is remembered"></div>
       <div id="altProfileBar">
         <span class="alt-pp-title">ALTITUDE VIEW</span>
         <span class="alt-pp-sub">side-on · vertical separation the map can't show</span>
@@ -3870,7 +3900,26 @@ function tuneToFreq(mhz,btn){
 
 // ── DISTANCE RINGS ────────────────────────────────────────
 var NM_TO_KM=1.852, NM_RINGS=[25,50,100,150,200,250,300];
-var activeRings={50:true,100:true,200:true}, ringUnit='nm', ringsOn=true;
+// ringUnit self-persists, like theme and sort mode already do.
+//
+// 11 Sep 2026: picking Kilometres and pressing SAVE did not survive a hard
+// refresh. The options blob does carry ringUnit and the restore does call
+// setUnit — but that restore runs on a 1200ms timer after load and every step
+// in it is individually try/caught, so if it does not reach this one, it fails
+// silently and the default wins. Theme and sort mode never had that problem
+// because they write their own localStorage key and read it at startup.
+//
+// This is NOT the thing v1.4.11 deliberately refused to auto-save. That was
+// about LAYERS — "switching a layer on for a moment to look at something
+// should not quietly become your permanent default". A unit of measurement is
+// not a peek, it is who you are: nobody toggles to kilometres for five seconds
+// and wants nautical miles back. It belongs with theme, not with layers.
+// SAVE still captures it too, so RESET still returns to stock.
+var activeRings={50:true,100:true,200:true}, ringsOn=true;
+var ringUnit=(function(){
+  try{ var v=localStorage.getItem('pilnk-ring-unit'); return (v==='km'||v==='nm')?v:'nm'; }
+  catch(e){ return 'nm'; }
+})();
 var ringLayers={}, rxMarker=null;
 
 function buildRingChips(){
@@ -3883,7 +3932,25 @@ function buildRingChips(){
   });
 }
 function toggleRing(nm,on){if(on)activeRings[nm]=true;else delete activeRings[nm];buildRingChips();drawRings();}
-function setUnit(u){ringUnit=u;document.getElementById('unitNm').classList.toggle('active',u==='nm');document.getElementById('unitKm').classList.toggle('active',u==='km');buildRingChips();drawRings();}
+function setUnit(u){
+  if(u!=='km')u='nm';
+  ringUnit=u;
+  try{ localStorage.setItem('pilnk-ring-unit',u); }catch(e){}
+  var nmB=document.getElementById('unitNm'), kmB=document.getElementById('unitKm');
+  if(nmB)nmB.classList.toggle('active',u==='nm');
+  if(kmB)kmB.classList.toggle('active',u==='km');
+  buildRingChips();drawRings();
+}
+// The buttons are static HTML with Nautical Miles pre-marked active, so if the
+// stored unit is km the highlight has to be corrected once the DOM exists —
+// otherwise the rings read in km while the button still says NM.
+window.addEventListener('DOMContentLoaded',function(){
+  if(ringUnit==='km'){
+    var nmB=document.getElementById('unitNm'), kmB=document.getElementById('unitKm');
+    if(nmB)nmB.classList.remove('active');
+    if(kmB)kmB.classList.add('active');
+  }
+});
 function toggleRings(on){ringsOn=on;document.getElementById('ringSettings').style.opacity=on?'1':'0.4';if(on)drawRings();else{Object.values(ringLayers).forEach(function(l){map.removeLayer(l);});Object.keys(ringLayers).forEach(function(k){delete ringLayers[k];});}}
 
 function drawRxMarker(){
@@ -6666,13 +6733,74 @@ setInterval(updateFlights,2000);
 // Entirely removable: delete this block + the panel HTML + the toggle row.
 // ═══════════════════════════════════════════════════════════════════════════
 var altProfileOn=false, altEyeMode='approach', altShowTerrain=true, altShowConflict=true, altTimer=null;
-// Approach-view bearing. HARDCODED to NZAA rwy 05 (053°) for now — MUST become
-// runway-derived per nearest airport before any fleet push (Rule #25: KICTPI/M0CRT/Thor
-// have different fields). Eye sits SW, looking NE up the 05 centreline: Waitākeres
-// left, Manukau Heads/harbour mouth right, NZAA centre.
-var ALT_APPROACH_BRG = 53;
+
+// Approach-view bearing — DERIVED, never hardcoded.
+//
+// This was `var ALT_APPROACH_BRG = 53;` — NZAA runway 05 — with a comment saying
+// it MUST become runway-derived before any fleet push. It shipped anyway, so
+// every node outside Auckland has been looking down Auckland's runway 05 with
+// Auckland landmarks captioned underneath. Fixed 2026-09-11.
+//
+// nearestAirport.hdg is the runway heading the dashboard already resolves for
+// the 3D Approach view (see build3DUrl). If a node has no field with a known
+// heading, approach mode has no meaning there — so it falls back to N/E rather
+// than inventing an orientation.
+function altApproachBrg(){
+  if (typeof nearestAirport !== 'undefined' && nearestAirport &&
+      typeof nearestAirport.hdg === 'number' && isFinite(nearestAirport.hdg)) {
+    return ((nearestAirport.hdg % 360) + 360) % 360;
+  }
+  return null;
+}
+// Compass point for a bearing, for the axis captions. Replaces the hardcoded
+// "Waitākeres" / "Manukau Hds" — those are Auckland's, and naming real
+// landmarks was half of what made this view misleading elsewhere.
+function altCompass(brg){
+  var pts=['N','NNE','NE','ENE','E','ESE','SE','SSE','S','SSW','SW','WSW','W','WNW','NW','NNW'];
+  return pts[Math.round((((brg%360)+360)%360)/22.5)%16];
+}
+// Panel height — user-set, remembered, and clamped so it can never be dragged
+// to something unusable or taller than the window.
+function altApplyHeight(px){
+  var p=document.getElementById('altProfilePanel'); if(!p)return;
+  // -164 rather than -140: the panel now sits 12px off the bottom and has a
+  // border, so it needs a little more room left above it than it used to.
+  var maxH=Math.max(200,window.innerHeight-164);
+  var h=Math.max(150,Math.min(maxH,px));
+  p.style.height=h+'px';
+  try{ localStorage.setItem('pilnk-alt-h',String(h)); }catch(e){}
+  if(altProfileOn && window.AltProfile){ AltProfile.resizeNow(); }
+}
+function altInitResize(){
+  var p=document.getElementById('altProfilePanel'), g=document.getElementById('altProfileGrip');
+  if(!p||!g||g._hooked)return; g._hooked=true;
+  try{ var saved=parseInt(localStorage.getItem('pilnk-alt-h'),10);
+       if(saved>0) p.style.height=saved+'px'; }catch(e){}
+  function startDrag(clientY){
+    var h0=p.getBoundingClientRect().height, y0=clientY;
+    p.classList.add('resizing');
+    function mv(cy){ altApplyHeight(h0+(y0-cy)); }        // drag up = taller
+    function onMM(e){ mv(e.clientY); e.preventDefault(); }
+    function onTM(e){ if(e.touches&&e.touches[0]) mv(e.touches[0].clientY); }
+    function end(){
+      p.classList.remove('resizing');
+      document.removeEventListener('mousemove',onMM);
+      document.removeEventListener('mouseup',end);
+      document.removeEventListener('touchmove',onTM);
+      document.removeEventListener('touchend',end);
+    }
+    document.addEventListener('mousemove',onMM);
+    document.addEventListener('mouseup',end);
+    document.addEventListener('touchmove',onTM,{passive:true});
+    document.addEventListener('touchend',end);
+  }
+  g.addEventListener('mousedown',function(e){ startDrag(e.clientY); e.preventDefault(); });
+  g.addEventListener('touchstart',function(e){ if(e.touches&&e.touches[0]) startDrag(e.touches[0].clientY); },{passive:true});
+}
+
 function toggleAltProfile(on){
   altProfileOn = !!on;
+  altInitResize();
   var p=document.getElementById('altProfilePanel');
   var chk=document.getElementById('avAltProfile');
   if(chk) chk.checked = altProfileOn;
@@ -6687,6 +6815,9 @@ function toggleAltProfile(on){
 }
 function altProfileToggleEye(){
   altEyeMode = altEyeMode==='approach' ? 'north' : altEyeMode==='north' ? 'east' : 'approach';
+  // A node with no field, or a field with no known runway heading, has no
+  // meaningful approach axis — skip that mode rather than invent a bearing.
+  if(altEyeMode==='approach' && altApproachBrg()===null) altEyeMode='north';
   var b=document.getElementById('altEyeBtn');
   if(b){ b.classList.add('on');
     b.textContent='EYE: '+(altEyeMode==='approach'?'APPROACH':altEyeMode==='north'?'N':'E'); }
@@ -6698,68 +6829,214 @@ function altProfileToggleConflict(){ altShowConflict=!altShowConflict;
 
 var AltProfile=(function(){
   var cv,ctx,W=0,H=0,DPR=Math.min(window.devicePixelRatio||1,2),raf=null,terrain=[];
-  var PADL=42,PADR=12,PADT=12,PADB=22, MAX_FT_FLOOR=12000, V_THRESH=1000, X_THRESH=0.05;
+  var PADL=42,PADR=12,PADT=12,PADB=22;
+  // Separation thresholds. 5 NM lateral / 1000 ft vertical are the familiar
+  // radar minima; both must be broken to count. X_THRESH (a screen-space
+  // fraction) is gone — see the conflict block for why it was wrong.
+  var V_THRESH=1000, H_THRESH_NM=5;
 
-  function fbm(x,seed){var t=0,a=1,f=1,n=0;for(var o=0;o<5;o++){t+=a*Math.sin(x*f*0.9+seed*1.7+o*2.1)*Math.cos(x*f*0.37-seed*0.6);n+=a;a*=0.5;f*=2.03;}return (t/n)*0.5+0.5;}
+  // ── REAL terrain ─────────────────────────────────────────────────────────
+  //
+  // What was here: three layers of fbm() sine-noise, peaking at 6,800 ft, drawn
+  // under a caption reading "Waitākeres". The Waitākeres top out near 1,550 ft.
+  // The view was showing aircraft clearing ridges that did not exist, at four
+  // times their real height, labelled as real places. The original comment was
+  // honest about it — "Terrain is PROCEDURAL here (Step 1) — Step 2 swaps in
+  // real elevation" — but Step 2 never came. This is Step 2.
+  //
+  // Source: AWS terrarium elevation tiles, the same ones static/approach.html
+  // already uses for the 3D view. Client-side, so no Flask route, no Python
+  // dependency and no cache to invalidate — and a path already proven to work
+  // from these nodes.
+  //
+  // ⚠️ If elevation cannot be fetched, this draws NOTHING and says so. It must
+  // never fall back to invented ground. That was the original fault and a
+  // silent fallback would simply recreate it.
+  var terrainState='idle';           // idle | loading | ready | failed
+  var tileCache={};                  // "z/x/y" -> {data:Uint8ClampedArray} | 'pending' | 'failed'
+  var terrainToken=0;                // guards against out-of-order rebuilds
+
+  function lon2tx(lon,z){return (lon+180)/360*Math.pow(2,z);}
+  function lat2ty(lat,z){var r=lat*Math.PI/180;
+    return (1-Math.log(Math.tan(r)+1/Math.cos(r))/Math.PI)/2*Math.pow(2,z);}
+
+  function fetchTile(z,x,y){
+    var key=z+'/'+x+'/'+y;
+    if(tileCache[key] && tileCache[key]!=='pending') return Promise.resolve(tileCache[key]);
+    if(tileCache[key]==='pending') return new Promise(function(res){
+      var iv=setInterval(function(){ if(tileCache[key]!=='pending'){clearInterval(iv);res(tileCache[key]);} },80);
+    });
+    tileCache[key]='pending';
+    return new Promise(function(res){
+      var im=new Image(); im.crossOrigin='anonymous';
+      im.onload=function(){
+        try{
+          var c=document.createElement('canvas'); c.width=256; c.height=256;
+          var cx2=c.getContext('2d'); cx2.drawImage(im,0,0);
+          tileCache[key]={data:cx2.getImageData(0,0,256,256).data};
+        }catch(e){ tileCache[key]='failed'; }
+        res(tileCache[key]);
+      };
+      im.onerror=function(){ tileCache[key]='failed'; res('failed'); };
+      im.src='https://s3.amazonaws.com/elevation-tiles-prod/terrarium/'+z+'/'+x+'/'+y+'.png';
+    });
+  }
+
+  // Terrarium encoding: elevation_m = (R*256 + G + B/256) - 32768
+  function decodeM(px,i){ return (px[i]*256 + px[i+1] + px[i+2]/256) - 32768; }
+
+  // The geographic line the profile slices along, matching collect()'s axes.
+  function profileLine(){
+    if(typeof map==='undefined') return null;
+    var b; try{b=map.getBounds();}catch(e){return null;}
+    var w=b.getWest(),e=b.getEast(),s=b.getSouth(),n=b.getNorth();
+    if(altEyeMode==='north') return {aLat:(s+n)/2,aLon:w,bLat:(s+n)/2,bLon:e};
+    if(altEyeMode==='east')  return {aLat:s,aLon:(w+e)/2,bLat:n,bLon:(w+e)/2};
+    var brg=altApproachBrg(); if(brg===null) return null;
+    var oLat=(typeof nearestAirport!=='undefined'&&nearestAirport&&nearestAirport.lat!=null)?nearestAirport.lat:(s+n)/2;
+    var oLon=(typeof nearestAirport!=='undefined'&&nearestAirport&&nearestAirport.lon!=null)?nearestAirport.lon:(w+e)/2;
+    var coslat=Math.cos(oLat*Math.PI/180)||1;
+    var half=Math.max(((e-w)||1)*coslat,((n-s)||1))*0.75;
+    var r=brg*Math.PI/180, ax=Math.sin(r), ay=Math.cos(r);
+    return {aLat:oLat-ay*half, aLon:oLon-(ax*half)/coslat,
+            bLat:oLat+ay*half, bLon:oLon+(ax*half)/coslat};
+  }
+
   function rebuildTerrain(){
-    terrain=[];
-    var sA = altEyeMode==='approach'?0:altEyeMode==='north'?1:2;  // per-mode terrain seed offset
-    var defs=[
-      {seed:[3.1,2.0,5.3][sA],peak:2600,base:300,col:'#1a2233',jag:0.6},
-      {seed:[6.4,7.1,1.4][sA],peak:4200,base:500,col:'#222d44',jag:0.9},
-      {seed:[9.2,4.4,8.8][sA],peak:6800,base:800,col:'#2b3855',jag:1.25}
-    ];
-    var N=200;
-    defs.forEach(function(d){var pts=[];for(var i=0;i<=N;i++){var fx=i/N;
-      var h=d.base+d.peak*Math.pow(fbm(fx*d.jag*6.0,d.seed),1.7);
-      h+=d.peak*0.35*Math.max(0,fbm(fx*d.jag*13.0+9.0,d.seed)-0.62);
-      pts.push(h);} terrain.push({pts:pts,col:d.col});});
+    terrain=[]; var tok=++terrainToken;
+    var ln=profileLine();
+    if(!ln){ terrainState='failed'; return; }
+    terrainState='loading';
+    // Zoom chosen so the slice spans roughly six tiles — enough detail to see a
+    // ridge, few enough requests to be polite.
+    var spanDeg=Math.max(Math.abs(ln.bLon-ln.aLon),Math.abs(ln.bLat-ln.aLat))||1;
+    var z=Math.max(7,Math.min(12,Math.round(Math.log(6*360/spanDeg)/Math.LN2)));
+    var N=160, pts=new Array(N+1), need={};
+    for(var i=0;i<=N;i++){
+      var f=i/N, la=ln.aLat+(ln.bLat-ln.aLat)*f, lo=ln.aLon+(ln.bLon-ln.aLon)*f;
+      var fx2=lon2tx(lo,z), fy2=lat2ty(la,z);
+      var tx=Math.floor(fx2), ty=Math.floor(fy2);
+      pts[i]={tx:tx,ty:ty,px:Math.min(255,Math.floor((fx2-tx)*256)),py:Math.min(255,Math.floor((fy2-ty)*256))};
+      need[z+'/'+tx+'/'+ty]=[z,tx,ty];
+    }
+    var keys=Object.keys(need);
+    Promise.all(keys.map(function(k){var t=need[k];return fetchTile(t[0],t[1],t[2]);}))
+      .then(function(){
+        if(tok!==terrainToken) return;              // a newer rebuild won
+        var got=0, prof=new Array(N+1);
+        for(var i=0;i<=N;i++){
+          var p=pts[i], t=tileCache[z+'/'+p.tx+'/'+p.ty];
+          if(!t||t==='failed'||t==='pending'){ prof[i]=null; continue; }
+          var m=decodeM(t.data,(p.py*256+p.px)*4);
+          prof[i]=(m>-1000&&m<30000)?Math.max(0,m*3.28084):0;   // metres -> feet, sea = 0
+          got++;
+        }
+        if(got<N*0.5){ terrainState='failed'; return; }
+        for(var j=0;j<=N;j++) if(prof[j]===null) prof[j]=0;
+        terrain=[{pts:prof,col:'#2b3855'}];
+        terrainState='ready';
+        if(altProfileOn) draw();
+      })
+      .catch(function(){ if(tok===terrainToken) terrainState='failed'; });
   }
   function resize(){ if(!cv)return; var r=cv.getBoundingClientRect(); W=r.width;H=r.height;
     cv.width=W*DPR;cv.height=H*DPR;ctx.setTransform(DPR,0,0,DPR,0,0); }
 
   // Map live aircraft -> profile coords.
-  //  approach: X = distance along the runway-approach bearing through the field
-  //            (Waitākeres left, Manukau Heads right, NZAA centre); depth = sideways.
+  //  approach: X = distance along the field's runway-approach bearing; the
+  //            field sits centre, depth = sideways offset. Bearing comes from
+  //            nearestAirport.hdg — it is NOT hardcoded (it used to be, to
+  //            NZAA 05, on every node in the world).
   //  north:    X = lon (looking N); east: X = lat (looking E).
-  function collect(){
-    var out=[]; if(typeof lastAircraft==='undefined'||typeof map==='undefined')return out;
-    var b; try{b=map.getBounds();}catch(e){return out;}
+  // The lat/lon -> (fx, depth) transform, built once per frame. Extracted from
+  // collect() so that TRAILS can be projected through exactly the same maths as
+  // the live position — otherwise a trail would drift away from its aircraft
+  // whenever the viewport or eye mode changed.
+  function makeProjector(){
+    if(typeof map==='undefined')return null;
+    var b; try{b=map.getBounds();}catch(e){return null;}
     var w=b.getWest(),e=b.getEast(),s=b.getSouth(),n=b.getNorth();
     var lonSpan=(e-w)||1, latSpan=(n-s)||1;
-    // approach-mode geometry: unit vectors for the bearing axis + its perpendicular,
-    // origin at the field (nearestAirport) or viewport centre as a fallback.
-    var brgRad=(ALT_APPROACH_BRG)*Math.PI/180;
-    // east/north components of the bearing (x=E, y=N). Aircraft NE of field -> +along.
+    var _brg=altApproachBrg();
+    var brgRad=((_brg===null?0:_brg))*Math.PI/180;
     var ax=Math.sin(brgRad), ay=Math.cos(brgRad);          // along-track unit (E,N)
     var px=Math.cos(brgRad), py=-Math.sin(brgRad);         // cross-track unit (right of track)
     var oLat=(typeof nearestAirport!=='undefined'&&nearestAirport&&nearestAirport.lat!=null)?nearestAirport.lat:(s+n)/2;
     var oLon=(typeof nearestAirport!=='undefined'&&nearestAirport&&nearestAirport.lon!=null)?nearestAirport.lon:(w+e)/2;
     var coslat=Math.cos(oLat*Math.PI/180)||1;
-    // scale: half-diagonal of the viewport in "deg-equivalent" so the field sits centre
     var halfSpan=Math.max(lonSpan*coslat,latSpan)*0.75 || 1;
+    return {
+      w:w,e:e,s:s,n:n,
+      inView:function(la,lo){ return !(la<s||la>n||lo<w||lo>e); },
+      project:function(la,lo){
+        if(altEyeMode==='approach'){
+          var dE=(lo-oLon)*coslat, dN=(la-oLat);
+          var along=dE*ax+dN*ay, cross=dE*px+dN*py;
+          return {fx:Math.max(0,Math.min(1,0.5+(along/(2*halfSpan)))),
+                  depth:Math.max(0,Math.min(1,0.5+(cross/(2*halfSpan))))};
+        }
+        if(altEyeMode==='north') return {fx:(lo-w)/lonSpan, depth:1-(la-s)/latSpan};
+        return {fx:(la-s)/latSpan, depth:(lo-w)/lonSpan};
+      }
+    };
+  }
+
+  // ── Trails ───────────────────────────────────────────────────────────────
+  // An altitude view without history cannot show the thing altitude is for: a
+  // descent developing, a level-off, a go-around. Positions are kept as
+  // lat/lon/alt (NOT screen coords) so they reproject correctly when the map
+  // moves or the eye mode changes.
+  var altHist={}, HIST_MS=6*60*1000, HIST_MAX=90;
+  function pushHist(cs,la,lo,alt,now){
+    var h=altHist[cs]||(altHist[cs]=[]);
+    var last=h[h.length-1];
+    if(last && now-last.t < 4000) return;        // ~4s resolution is plenty
+    h.push({t:now,lat:la,lon:lo,alt:alt});
+    while(h.length>HIST_MAX) h.shift();
+    while(h.length && now-h[0].t>HIST_MS) h.shift();
+  }
+  function pruneHist(now){
+    for(var k in altHist){
+      var h=altHist[k];
+      while(h.length && now-h[0].t>HIST_MS) h.shift();
+      if(!h.length) delete altHist[k];
+    }
+  }
+
+  function collect(){
+    var out=[]; if(typeof lastAircraft==='undefined')return out;
+    var P=makeProjector(); if(!P)return out;
+    lastProjector=P;
+    var now=Date.now();
     for(var cs in lastAircraft){ var a=lastAircraft[cs];
       if(!a||a.lat==null||a.lon==null)continue;
       var alt=(a.alt_baro==='ground')?0:(a.alt_baro||a.alt_geom||0);
-      if(a.lat<s||a.lat>n||a.lon<w||a.lon>e)continue;   // viewport = selector
-      var fx,depth;
-      if(altEyeMode==='approach'){
-        var dE=(a.lon-oLon)*coslat, dN=(a.lat-oLat);     // offset from field (deg, E/N)
-        var along=dE*ax+dN*ay;                            // distance along bearing
-        var cross=dE*px+dN*py;                            // sideways offset
-        fx=0.5 + (along/(2*halfSpan));                    // field at 0.5; NE→right, SW→left
-        depth=0.5 + (cross/(2*halfSpan));                 // near/far by side
-        fx=Math.max(0,Math.min(1,fx)); depth=Math.max(0,Math.min(1,depth));
-      } else if(altEyeMode==='north'){ fx=(a.lon-w)/lonSpan; depth=1-(a.lat-s)/latSpan; }
-      else { fx=(a.lat-s)/latSpan; depth=(a.lon-w)/lonSpan; }
-      out.push({cs:cs,fx:fx,depth:depth,alt:alt,
+      pushHist(cs,a.lat,a.lon,alt,now);              // history regardless of viewport
+      if(!P.inView(a.lat,a.lon))continue;            // viewport = selector
+      var pr=P.project(a.lat,a.lon);
+      out.push({cs:cs,fx:pr.fx,depth:pr.depth,alt:alt,lat:a.lat,lon:a.lon,
         vs:(a.baro_rate||a.geom_rate||0),gs:(a.gs||0)});
     }
+    pruneHist(now);
     return out;
   }
-  function altCeil(list){var m=0;list.forEach(function(a){if(a.alt>m)m=a.alt;});
-    terrain.forEach(function(L){L.pts.forEach(function(h){if(h>m)m=h;});});
-    m=Math.max(m*1.12,MAX_FT_FLOOR);return Math.ceil(m/5000)*5000;}
+  var lastProjector=null, lastDrawn=[];   // lastDrawn feeds click hit-testing
+  // ── Vertical scale, adaptive ─────────────────────────────────────────────
+  // Was: Math.max(m*1.12, 12000) rounded up to 5,000 ft steps — so the axis
+  // always ran to at least 15,000 ft. Circuit and approach traffic, which is
+  // the entire point of a side-on view, lived in the bottom fifth of the panel.
+  // The fake 6,800 ft terrain dragged the ceiling higher still.
+  //
+  // Now the ceiling follows the traffic, with a step size that stays legible:
+  // 1,000 ft bands down low where separation is interesting, coarser up high.
+  function altStep(c){ return c<=6000?1000 : c<=15000?2500 : 5000; }
+  function altCeil(list){
+    var m=0; list.forEach(function(a){ if(a.alt>m)m=a.alt; });
+    terrain.forEach(function(L){ L.pts.forEach(function(h){ if(h>m)m=h; }); });
+    m=Math.max(m*1.15,2000);                       // headroom, and a sane minimum
+    var st=altStep(m);
+    return Math.ceil(m/st)*st;
+  }
   function xPix(fx){return PADL+fx*(W-PADL-PADR);}
   function yPix(ft,c){return PADT+(1-ft/c)*(H-PADT-PADB);}
   function rr(x,y,w,h,r){ctx.beginPath();ctx.moveTo(x+r,y);ctx.arcTo(x+w,y,x+w,y+h,r);ctx.arcTo(x+w,y+h,x,y+h,r);ctx.arcTo(x,y+h,x,y,r);ctx.arcTo(x,y,x+w,y,r);ctx.closePath();}
@@ -6771,9 +7048,11 @@ var AltProfile=(function(){
     ctx.clearRect(0,0,W,H);
     // grid 5k/10k/15k
     ctx.lineWidth=1;ctx.font='10px ui-monospace,monospace';ctx.textBaseline='middle';
-    for(var ft=0;ft<=c;ft+=5000){var y=yPix(ft,c);
+    var gStep=altStep(c);
+    for(var ft=0;ft<=c;ft+=gStep){var y=yPix(ft,c);
       ctx.strokeStyle='rgba(28,39,64,.7)';ctx.beginPath();ctx.moveTo(PADL,y);ctx.lineTo(W-PADR,y);ctx.stroke();
-      ctx.fillStyle='#5b6b8a';ctx.textAlign='right';ctx.fillText(ft===0?'0':(ft/1000)+'k',PADL-6,y);}
+      ctx.fillStyle='#5b6b8a';ctx.textAlign='right';
+      ctx.fillText(ft===0?'0':(ft>=1000?(ft/1000)+'k':String(ft)),PADL-6,y);}
     // terrain (far->near)
     if(altShowTerrain){ for(var li=0;li<terrain.length;li++){var L=terrain[li],p=L.pts,N=p.length-1;
       ctx.beginPath();ctx.moveTo(xPix(0),H-PADB);
@@ -6812,9 +7091,26 @@ var AltProfile=(function(){
       }
     }catch(e){}
 
+    // ── Conflicts, in real units ─────────────────────────────────────────────
+    // Was: Math.abs(A.fx-B.fx) < X_THRESH — i.e. screen-space X only. fx is
+    // distance ALONG the view axis; `depth` (the sideways offset) was computed,
+    // used for drawing, and then ignored here. Two aircraft fifty miles apart
+    // across the view collapsed to the same X and got a red "conflict" line.
+    // In a busy viewport that fires constantly, which is worse than useless —
+    // it trains you to ignore the one that matters.
+    //
+    // Now: true horizontal separation from lat/lon, against thresholds that
+    // mean something. 5 NM and 1000 ft are the familiar radar-separation
+    // minima, and BOTH have to be broken before it is a conflict.
     var inC={};
     if(altShowConflict){ for(var x=0;x<list.length;x++)for(var j=x+1;j<list.length;j++){
-      var A=list[x],B=list[j];if(Math.abs(A.fx-B.fx)<X_THRESH&&Math.abs(A.alt-B.alt)<V_THRESH){
+      var A=list[x],B=list[j];
+      if(A.lat==null||B.lat==null) continue;
+      var mLat=(A.lat+B.lat)/2*Math.PI/180;
+      var dyNm=(A.lat-B.lat)*60;                       // 1 deg lat = 60 NM
+      var dxNm=(A.lon-B.lon)*60*Math.cos(mLat);        // lon shrinks with latitude
+      var sepNm=Math.sqrt(dxNm*dxNm+dyNm*dyNm);
+      if(sepNm<H_THRESH_NM&&Math.abs(A.alt-B.alt)<V_THRESH){
         inC[A.cs]=1;inC[B.cs]=1;
         var x1=xPix(A.fx),y1=yPix(A.alt,c),x2=xPix(B.fx),y2=yPix(B.alt,c);
         ctx.strokeStyle='rgba(255,59,92,.9)';ctx.lineWidth=2;ctx.setLineDash([4,3]);
@@ -6823,9 +7119,31 @@ var AltProfile=(function(){
         ctx.font='11px ui-monospace,monospace';ctx.textAlign='center';
         var w2=ctx.measureText(lab).width+10;ctx.fillStyle='rgba(255,59,92,.92)';rr(mx-w2/2,my-9,w2,18,4);ctx.fill();
         ctx.fillStyle='#fff';ctx.fillText(lab,mx,my);}}}
+    // trails, behind the aircraft (drawn first so dots sit on top)
+    if(lastProjector){
+      list.forEach(function(a){
+        var h=altHist[a.cs]; if(!h||h.length<2)return;
+        var col=inC[a.cs]?'#ff3b5c':(a.vs<-300?'#ffb020':'#00ff88');
+        var near=1-a.depth;
+        for(var i=1;i<h.length;i++){
+          var p0=lastProjector.project(h[i-1].lat,h[i-1].lon);
+          var p1=lastProjector.project(h[i].lat,h[i].lon);
+          // fade with age: the oldest end of the trail is nearly gone
+          var age=i/(h.length-1);
+          ctx.strokeStyle=rgba(col,(0.06+0.34*age)*(0.35+near*0.65));
+          ctx.lineWidth=1.4;
+          ctx.beginPath();
+          ctx.moveTo(xPix(p0.fx),yPix(h[i-1].alt,c));
+          ctx.lineTo(xPix(p1.fx),yPix(h[i].alt,c));
+          ctx.stroke();
+        }
+      });
+    }
     // aircraft far->near
+    lastDrawn=[];
     list.sort(function(a,b){return b.depth-a.depth;}).forEach(function(a){
       var x=xPix(a.fx),y=yPix(a.alt,c),near=1-a.depth,r=3+near*3.0,al=0.45+near*0.55;
+      lastDrawn.push({cs:a.cs,x:x,y:y,r:r});      // for click hit-testing
       var col=inC[a.cs]?'#ff3b5c':(a.vs<-300?'#ffb020':'#00ff88');
       ctx.strokeStyle=rgba(col,al*0.8);ctx.lineWidth=1.5;ctx.beginPath();ctx.moveTo(x,y);
       ctx.lineTo(x,y+(a.vs<0?9:a.vs>0?-9:0));ctx.stroke();
@@ -6837,19 +7155,77 @@ var AltProfile=(function(){
     // baseline + eye label
     ctx.strokeStyle='rgba(28,39,64,1)';ctx.lineWidth=1;ctx.beginPath();ctx.moveTo(PADL,H-PADB);ctx.lineTo(W-PADR,H-PADB);ctx.stroke();
     ctx.fillStyle='#5b6b8a';ctx.font='9px ui-monospace,monospace';ctx.textAlign='left';ctx.textBaseline='bottom';
-    var eyeLabel = altEyeMode==='approach' ? '◀ SW · Waitākeres        approach 05 → '+( (typeof nearestAirport!=='undefined'&&nearestAirport)?nearestAirport.icao:'field' )+'        Manukau Hds · NE ▶'
-                 : altEyeMode==='north' ? '◀ W      viewport (looking N)      E ▶'
-                 : '◀ S      viewport (looking E)      N ▶';
+    // Axis caption, derived. Was hardcoded to "Waitākeres" / "Manukau Hds" —
+    // Auckland's landmarks, printed under every node's view worldwide.
+    var eyeLabel;
+    if(altEyeMode==='approach'){
+      var _b=altApproachBrg();
+      var _f=(typeof nearestAirport!=='undefined'&&nearestAirport&&nearestAirport.icao)?nearestAirport.icao:'field';
+      eyeLabel = (_b===null)
+        ? '◀      approach view needs a known runway heading      ▶'
+        : '◀ '+altCompass(_b+180)+'        approach '+('00'+Math.round(_b/10)).slice(-2)+' → '+_f+'        '+altCompass(_b)+' ▶';
+    } else if(altEyeMode==='north'){ eyeLabel='◀ W      viewport (looking N)      E ▶'; }
+    else { eyeLabel='◀ S      viewport (looking E)      N ▶'; }
     ctx.fillText(eyeLabel,PADL,H-5);
+
+    // Terrain honesty line. If elevation could not be fetched we say so and
+    // draw nothing — never invented ground under a real place name.
+    if(altShowTerrain && terrainState!=='ready'){
+      ctx.textAlign='right';ctx.fillStyle='#5b6b8a';
+      ctx.fillText(terrainState==='loading'?'terrain: loading…':'terrain: unavailable',W-PADR,H-5);
+    }
     if(!list.length){ctx.fillStyle='#5b6b8a';ctx.textAlign='center';ctx.font='11px ui-monospace,monospace';
       ctx.fillText('No aircraft in the current map view',W/2,H/2);}
   }
+  // The terrain used to be static noise, so it never needed rebuilding. It is
+  // now sampled from the actual viewport, so panning or zooming the map makes
+  // the existing slice wrong. Debounced — a drag fires moveend once, but a
+  // pinch-zoom can fire several.
+  var moveHooked=false, moveTimer=null;
+  function hookMove(){
+    if(moveHooked||typeof map==='undefined'||!map||!map.on)return;
+    map.on('moveend',function(){
+      if(!altProfileOn)return;
+      clearTimeout(moveTimer);
+      moveTimer=setTimeout(function(){ rebuildTerrain(); draw(); },350);
+    });
+    moveHooked=true;
+  }
+  // ── Click an aircraft in the profile ─────────────────────────────────────
+  // The panel was inert: you could see an aircraft descending and had no way to
+  // get to it. Now it opens the same cinematic card the map does, so the side
+  // view is a way IN rather than a dead end.
+  var clickHooked=false;
+  function hookClick(){
+    if(clickHooked||!cv)return;
+    cv.style.cursor='crosshair';
+    cv.addEventListener('click',function(ev){
+      var r=cv.getBoundingClientRect();
+      var mx=ev.clientX-r.left, my=ev.clientY-r.top;
+      var best=null,bd=1e9;
+      for(var i=0;i<lastDrawn.length;i++){
+        var d=Math.hypot(lastDrawn[i].x-mx,lastDrawn[i].y-my);
+        if(d<bd){bd=d;best=lastDrawn[i];}
+      }
+      // generous radius — these are small dots on a touch-friendly panel
+      if(best && bd<Math.max(14,best.r+10) && typeof openCinematicCard==='function'){
+        openCinematicCard(best.cs);
+      }
+    });
+    clickHooked=true;
+  }
+
   function start(){ cv=document.getElementById('altProfileCanvas');
-    if(!cv)return; ctx=cv.getContext('2d'); if(!terrain.length)rebuildTerrain();
+    if(!cv)return; ctx=cv.getContext('2d');
+    hookMove(); hookClick();
+    rebuildTerrain();                       // always: the viewport may have moved
     resize(); if(altTimer)clearInterval(altTimer); altTimer=setInterval(draw,1000); draw(); }
-  function stop(){ if(altTimer){clearInterval(altTimer);altTimer=null;} }
+  function stop(){ if(altTimer){clearInterval(altTimer);altTimer=null;} clearTimeout(moveTimer); }
   window.addEventListener('resize',function(){ if(altProfileOn){resize();draw();} });
-  return {start:start,stop:stop,rebuildTerrain:rebuildTerrain,draw:draw};
+  // Called by the resize drag — recompute the backing store and repaint
+  // immediately, otherwise the canvas stretches blurrily until the next tick.
+  function resizeNow(){ if(!cv||!ctx)return; resize(); draw(); }
+  return {start:start,stop:stop,rebuildTerrain:rebuildTerrain,draw:draw,resizeNow:resizeNow};
 })();
 // ═══════════════════════════════ end Altitude Profile ═══════════════════════
 
