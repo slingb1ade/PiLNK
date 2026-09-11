@@ -125,6 +125,61 @@ print('[PILNK] env: arch=%s python=%s pyModeS=%s eventlet=%s enc=%s port=%s' % (
     NODE_ENV.get('arch'), NODE_ENV.get('python'), NODE_ENV.get('pymodes'),
     NODE_ENV.get('eventlet'), NODE_ENV.get('stdout_encoding'), NODE_ENV.get('dashboard_port')))
 
+
+# ── Compute capability probe (v1.4.16) ─────────────────────────────────────
+# Speech-to-text is the first feature PiLNK has that a node can be genuinely
+# too slow to run. EpsomPi is a Pi 5 and decodes at 94% of real time — not
+# comfortably capable, JUST capable. Anything slower does not degrade, it falls
+# behind and never recovers, because the backlog only grows.
+#
+# So before offering anyone a ~1.5GB model download we want to be able to say
+# "THIS node decodes at 0.6x real time", not "a Pi 4 is probably slow". That
+# means measuring, and measuring means a number from every node.
+#
+# Deliberately NOT a verdict. This reports a raw score only. Thresholds get set
+# once there is fleet data to calibrate against — EpsomPi's score is the known
+# anchor, because its real whisper throughput has been measured. Inventing
+# cutoffs now, from one machine, would just be a guess wearing a number's
+# clothes.
+#
+# Why a matmul: it is the inner loop of transformer inference, and numpy is
+# already present fleet-wide (see the env fingerprint above). It also picks up
+# the thing that actually matters and that a model name cannot tell you —
+# whether this box has a decent BLAS and usable SIMD. An x86 machine with
+# AVX2 will pull far ahead of its clock speed here, which is exactly the
+# signal we want.
+#
+# Costs ~0.5s, once, on a background thread so startup is never blocked.
+# Wrapped so that a node without numpy, or with a broken BLAS, reports None
+# and carries on — a capability probe must never be the thing that breaks a
+# node that was working fine.
+STT_BENCH = {'score': None, 'note': 'not yet run'}
+
+def _run_capability_probe():
+    global STT_BENCH
+    try:
+        import numpy as _np
+        n, reps = 192, 12
+        a = _np.random.rand(n, n).astype(_np.float32)
+        b = _np.random.rand(n, n).astype(_np.float32)
+        a @ b                                   # warm BLAS, don't time the first
+        t0 = time.time()
+        for _ in range(reps):
+            a = a @ b
+        dt = time.time() - t0
+        if dt <= 0:
+            STT_BENCH = {'score': None, 'note': 'timer resolution too coarse'}
+            return
+        gflops = (2.0 * (n ** 3) * reps) / dt / 1e9
+        STT_BENCH = {'score': round(gflops, 2), 'note': 'gflops_f32_matmul'}
+        print('[PILNK] capability probe: %.2f GFLOPS (f32 matmul)' % gflops)
+    except ImportError:
+        STT_BENCH = {'score': None, 'note': 'numpy absent'}
+    except Exception as e:
+        STT_BENCH = {'score': None, 'note': 'probe failed: %s' % e}
+
+threading.Thread(target=_run_capability_probe, daemon=True).start()
+
 def read_receiver_location():
     # 1. config.json (authoritative, written by installer)
     try:
@@ -1197,6 +1252,10 @@ def ping_server():
                 'features': dict({
                     'sdr_audio': 'ready' if os.path.exists('/usr/local/bin/pilnkradio') else 'engine_absent',
                     'atc_stt':   'ready' if os.path.exists(ATC_TRANSCRIPT_PATH) else 'absent',
+                    # Raw compute score, no verdict attached — see the capability
+                    # probe above. Answers "which nodes COULD run STT" with a
+                    # measurement instead of a guess from the model name.
+                    'stt_bench': STT_BENCH.get('score'),
                 }, **_ota_ping_features()),
             }
             if emergency_aircraft:

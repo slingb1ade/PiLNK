@@ -5646,10 +5646,21 @@ function updateCCTranscript(lines, freq) {
   if (!lines || !lines.length) return;
   dot.style.display = 'inline-block';
   freqEl.textContent = freq || '';
+  // ESCAPE BOTH FIELDS. This is speech-to-text off a radio: untrusted input
+  // that no human reviewed, produced by a model that demonstrably hallucinates
+  // (see the atc-stt measurements — "praha", "csa", "britair" invented at
+  // Auckland). Whatever it emits ends up in the DOM, so it gets escaped like
+  // any other untrusted string. Same class as the IITC F9 portal-name fix.
+  // Cheap insurance; there is no version of this where raw is correct.
+  var esc = function (s) {
+    return String(s == null ? '' : s)
+      .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+  };
   body.innerHTML = lines.map(function(l) {
     return '<div class="cc-tx-line">' +
-      '<span class="cc-tx-time">' + l.time + '</span>' +
-      '<span class="cc-tx-text">' + l.text + '</span>' +
+      '<span class="cc-tx-time">' + esc(l.time) + '</span>' +
+      '<span class="cc-tx-text">' + esc(l.text) + '</span>' +
     '</div>';
   }).join('');
 }
