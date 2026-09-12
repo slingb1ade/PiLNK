@@ -322,7 +322,23 @@ AIRCRAFT_DB = {}  # hex (uppercase) -> {'t': type, 'r': registration}
 # Optional national-register overlay (CAA/FAA-derived). Same Mictronics
 # ';' format (hex;reg;type). Merged on top of AIRCRAFT_DB after every load.
 # Absent on most nodes -> silent no-op. See scripts/build-overlay-nz.py.
+#
+# NOTE: build-overlay-nz.py REBUILDS this file from scratch (atomic replace) and
+# keeps only NZ 'C8' hexes, so a hand-added row here is silently deleted on its
+# next cron run. It also writes a blank TYPE column, so it cannot correct a type
+# even for an NZ aircraft. Hand corrections go in the MANUAL file below.
 AIRCRAFT_OVERLAY_LOCAL = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'aircraft-overlay.csv.gz')
+
+# Hand-maintained corrections, shipped IN THE REPO so every node gets them by
+# OTA. Plain CSV rather than gzip on purpose: it is meant to be opened, diffed
+# and reviewed. No generator ever writes it. Loaded LAST, so it wins over both
+# the global DB and the generated national overlay.
+#
+# For when upstream tar1090-db has a hex against the wrong airframe. First case
+# (13 Sep 2026): 897005 was listed as H4-OTA / DHC6, but it is Solomon Airlines'
+# A320 H4-SAL — so the dashboard labelled an A320 a Twin Otter, while the photo
+# (fetched by hex from Planespotters, bypassing this DB) correctly showed the A320.
+AIRCRAFT_OVERLAY_MANUAL = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'aircraft-overlay-manual.csv')
 
 def _aircraft_db_path():
     """Return the first available aircraft DB path, or None.
@@ -378,30 +394,37 @@ def load_aircraft_db():
         logging.error(f'Failed to load aircraft DB: {e}')
         return 0
 
-def load_aircraft_overlay():
-    """Merge an optional national-register overlay on top of AIRCRAFT_DB.
+def _merge_overlay_file(path, label):
+    """Merge one ';'-delimited hex;reg;type overlay onto AIRCRAFT_DB.
 
-    The primary source (wiedehopf/tar1090-db) has coverage gaps for some
-    national fleets — light aircraft, microlights, gliders, amateur-built —
-    which surface as unidentified "ghosts". A node operator can drop an
-    authoritative overlay built from their CAA/FAA register at
-    aircraft-overlay.csv.gz (same ';' format: hex;reg;type) and it is merged
-    here. Overlay registration wins; a blank overlay type preserves whatever
-    the primary DB already had. Silent no-op when the file is absent, so this
-    is harmless on every node that doesn't use one. Call AFTER load_aircraft_db
-    (which rebuilds AIRCRAFT_DB from scratch), so the overlay survives refreshes.
+    Shared by both overlays deliberately: two copies of this parser would be
+    free to drift apart, and a subtle difference between them would show up as
+    one aircraft being right on one node and wrong on another.
+
+    Handles .gz and plain text by extension. Overlay values win; a blank field
+    preserves whatever the primary DB already had. Lines beginning '#' are
+    skipped, because the manual file is meant to be read by people. Silent
+    no-op when the file is absent.
     """
-    path = AIRCRAFT_OVERLAY_LOCAL
     if not os.path.exists(path):
         return 0
     try:
         merged = 0
-        with gzip.open(path, 'rt', encoding='utf-8', errors='replace') as f:
+        opener = gzip.open if path.endswith('.gz') else open
+        with opener(path, 'rt', encoding='utf-8', errors='replace') as f:
             for row in csv.reader(f, delimiter=';'):
+                if not row or (row[0] or '').lstrip().startswith('#'):
+                    continue
                 if len(row) < 2:
                     continue
                 hex_code = (row[0] or '').strip().upper()
-                if len(hex_code) != 6:
+                # Validate the DIGITS, not just the length. A hand-typed 'O'
+                # for '0' is still six characters: it would be accepted here,
+                # stored, and then never match a real aircraft — a correction
+                # that silently does nothing. Reject it and say so.
+                if len(hex_code) != 6 or any(c not in '0123456789ABCDEF' for c in hex_code):
+                    logging.warning(
+                        f'[overlay] {label}: skipping malformed hex {hex_code!r} in {path}')
                     continue
                 reg = (row[1] or '').strip()
                 typ = (row[2].strip() if len(row) > 2 else '')
@@ -413,11 +436,32 @@ def load_aircraft_overlay():
                     'r': reg or existing.get('r', ''),
                 }
                 merged += 1
-        logging.info(f'Aircraft overlay merged: {merged} entries from {path}')
+        logging.info(f'Aircraft overlay merged: {merged} entries from {path} ({label})')
         return merged
     except Exception as e:
-        logging.error(f'Failed to load aircraft overlay: {e}')
+        logging.error(f'Failed to load {label} aircraft overlay: {e}')
         return 0
+
+
+def load_aircraft_overlay():
+    """Merge the national-register overlay, then hand corrections on top.
+
+    The primary source (wiedehopf/tar1090-db) has coverage gaps for some
+    national fleets — light aircraft, microlights, gliders, amateur-built —
+    which surface as unidentified "ghosts". A node operator can drop an
+    authoritative overlay built from their CAA/FAA register at
+    aircraft-overlay.csv.gz and it is merged here.
+
+    aircraft-overlay-manual.csv is merged AFTER it and therefore wins, because
+    it is the one a human edited on purpose. It ships in the repo, so a
+    correction made once reaches the whole fleet on the next OTA — unlike the
+    generated overlay, which is per-node and rebuilt from scratch.
+
+    Call AFTER load_aircraft_db (which rebuilds AIRCRAFT_DB from scratch), so
+    both overlays survive refreshes.
+    """
+    return (_merge_overlay_file(AIRCRAFT_OVERLAY_LOCAL, 'national register')
+            + _merge_overlay_file(AIRCRAFT_OVERLAY_MANUAL, 'manual corrections'))
 
 def _download_aircraft_db():
     """Fetch Mictronics aircraft DB and save to AIRCRAFT_DB_LOCAL.

@@ -1,0 +1,27 @@
+# PiLNK — hand-maintained aircraft corrections
+#
+# Format:  HEX;REGISTRATION;ICAO_TYPE     (';' separated, Mictronics style)
+#          A blank field keeps whatever the upstream database already had,
+#          so you can correct a type without touching the registration.
+#          Lines beginning '#' are ignored.
+#
+# Loaded AFTER the global wiedehopf/tar1090-db and after the generated
+# national-register overlay, so anything in here wins. Unlike that generated
+# file — which is per-node and rebuilt from scratch by build-overlay-nz.py —
+# this one ships in the repo, so a correction made once reaches every node on
+# the next OTA.
+#
+# Only add a row for an aircraft you have actually checked, and record how you
+# checked it. This file is trusted last and therefore looks authoritative: a
+# wrong entry here is worse than the upstream error it was meant to replace,
+# because nothing downstream will argue with it.
+
+# 897005 — Solomon Airlines Airbus A320-232, H4-SAL (MSN 5566).
+# Upstream tar1090-db has this hex against H4-OTA / DHC6, so the dashboard
+# labelled an A320 a Twin Otter while the photo — fetched by hex straight from
+# Planespotters, bypassing this database — correctly showed the A320.
+# Confirmed 13 Sep 2026 from three independent sources:
+#   1. pilnk.io adsb_database        -> H4-SAL / A320 / "AIRBUS A-320"
+#   2. Planespotters photo by hex    -> h4-sal-solomon-airlines-airbus-a320-232-wl
+#   3. live aircraft_history         -> SOL728 + SOL729 (CHC-VLI) on this hex, typed A320
+897005;H4-SAL;A320
