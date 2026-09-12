@@ -2156,23 +2156,11 @@ function ensureBadgesLib(cb) {
 // ── XP / Rank panel (v1.3.19) — sits above the badge wall. Insignia,
 // rank, XP, progress to the next rank, and the capture-gate note when a
 // general's star is what's blocking the next promotion.
-/* 3D rank insignia (v1.4.13). The Meshy renders are a SECOND asset for large
- * display — pilnk-rank-insignia.js stays the source of truth and still draws
- * every chip. Rule from the brief: SVG at chip sizes, render at 64px+.
- *
- * The <img> carries the SVG as its own fallback: if the WebP is missing (node
- * updated code but not art, or a part-finished OTA) onerror swaps the flat
- * insignia back in, so a rank panel can never render as a broken-image box.
- * Failure mode is "looks like last week", not "looks broken". */
-function rankArt(idx, size) {
-  var svg = PilnkRanks.insignia(idx, size);
-  var src = '/static/ranks/rank-' + ('0' + idx).slice(-2) + '.webp';
-  return '<img src="' + src + '" width="' + size + '" height="' + size + '"'
-    + ' alt="" loading="lazy" decoding="async"'
-    + ' style="display:block;width:' + size + 'px;height:' + size + 'px;object-fit:contain;"'
-    + ' onerror="this.parentNode.innerHTML=this.getAttribute(\'data-fb\')"'
-    + ' data-fb="' + svg.replace(/"/g, '&quot;') + '">';
-}
+/* 3D rank insignia (v1.4.13; moved into the shared lib 12 Sep 2026).
+ * rankArt() used to be defined right here, node-only — which is why pilnk.io
+ * had no way to draw the tiles and rendered its 80px rank panel as flat SVG.
+ * It is now PilnkRanks.art() in static/pilnk-rank-insignia.js, a file both
+ * surfaces already load. Same behaviour, same /static/ranks/ path, one copy. */
 
 function renderRankPanel(rank) {
   var host = document.getElementById('rankPanel');
@@ -2194,7 +2182,7 @@ function renderRankPanel(rank) {
   }
   host.innerHTML =
     '<div style="display:flex;align-items:center;gap:14px;background:#0d1117;border:1px solid #1d3f62;border-radius:14px;padding:12px 14px;margin-bottom:14px;">'
-    + '<div style="flex:0 0 auto;width:64px;height:64px;">' + rankArt(idx, 64) + '</div>'
+    + '<div style="flex:0 0 auto;width:64px;height:64px;">' + PilnkRanks.art(idx, 64) + '</div>'
     + '<div style="flex:1 1 auto;min-width:0;">'
     +   '<div style="font-family:\'Share Tech Mono\',monospace;font-size:0.55rem;letter-spacing:0.18em;color:#60a5fa;">RANK</div>'
     +   '<div style="font-family:\'Orbitron\',sans-serif;font-size:0.78rem;font-weight:700;color:#e6e8ea;line-height:1.2;">' + PilnkRanks.name(idx) + '</div>'
@@ -5383,12 +5371,14 @@ function populateBDS(a) {
   if (has(a.bds40_altitude_hold_mode))     sec.push(row('ALT HOLD', onoff(a.bds40_altitude_hold_mode), ''));
   if (has(a.bds40_approach_mode))          sec.push(row('APPR', onoff(a.bds40_approach_mode), ''));
   // TCAS status (BDS 3,0) — deferred pending pyModeS field verification
-  // Meteorological fields (BDS 4,4 — rare) — combined into the same box
-  var mt = [];
-  if (has(a.bds44_wind_speed))     mt.push(row('Wind Speed', Math.round(a.bds44_wind_speed), 'kt'));
-  if (has(a.bds44_wind_direction)) mt.push(row('Wind Direction', Math.round(a.bds44_wind_direction), '°'));
-  if (has(a.bds44_temperature))    mt.push(row('Temperature', a.bds44_temperature.toFixed(1), '°C'));
-  block('ccPrimary', pri.concat(sec, mt));
+  // BDS 4,4 (Wind Speed / Wind Direction / Temperature) REMOVED 2026-09-12.
+  // Measured ZERO across a 13.5-hour, 833 MB capture covering a full day cycle
+  // at NZAA — aircraft here do not broadcast the register, and their own GICB
+  // capability reports do not advertise it. Every value these three rows could
+  // ever have displayed was a Comm-B register-inference false positive shown to
+  // the user as a real meteorological observation. A plausible-looking wrong
+  // wind passes any range check, so the only honest fix is not to show it.
+  block('ccPrimary', pri.concat(sec));
 }
 
 function openCinematicCard(cs, auto) {

@@ -1444,19 +1444,32 @@ def _semver_gt(a, b):
 def _is_auto_update_enabled():
     """Whether to silently auto-install non-required updates.
 
-    Default is FALSE as of v0.1.11 — the new UX shows a banner on
-    the dashboard and waits for the user to click "Install now".
-    Users who prefer the old silent-update behaviour can opt in by
-    setting `"auto_update": true` in their ~/pilnk/config.json.
-    Required updates (security/breaking) ignore this flag and
-    install immediately regardless.
+    Default is TRUE as of 2026-09-12 (was FALSE since v0.1.11).
+
+    install.sh has written `"auto_update": true` into config.json for a long
+    time, so this fallback never decided anything for a normally-installed
+    node — it only decided for configs written BEFORE the key existed. Those
+    users were never asked; they were defaulted to manual by the age of their
+    install and then quietly left behind. M0CRT sat 19 releases back that way
+    while feeding perfectly for 110 days.
+
+    Opting out stays easy and explicit: `"auto_update": false` in
+    ~/pilnk/config.json. An explicit false always wins over this default.
+    Required updates ignore the flag entirely and install regardless.
     """
     config_path = os.path.join(PILNK_DIR, 'config.json')
     try:
         with open(config_path, 'r') as f:
-            cfg = json.load(f)
-            return cfg.get('auto_update', False)
-    except:
+            return json.load(f).get('auto_update', True)
+    except FileNotFoundError:
+        # No config yet: a node with no stated preference is better off current.
+        return True
+    except Exception as e:
+        # A config we cannot PARSE is a different thing from one that says
+        # nothing. Unknown state is not consent to change the machine, and the
+        # old bare `except: return False` swallowed the reason. Say it.
+        logging.warning('[ota] config.json unreadable (%s) — auto-update OFF '
+                        'until it parses', e)
         return False
 
 def _run_update():
@@ -1956,8 +1969,45 @@ _BDS_FIELDS = {
     'bds50': ('roll', 'true_track', 'track_rate', 'true_airspeed'),
     'bds60': ('magnetic_heading', 'indicated_airspeed', 'mach',
               'baro_vertical_rate', 'inertial_vertical_rate'),
-    'bds44': ('wind_speed', 'wind_direction', 'temperature'),
+    # BDS 4,4 (wind_speed / wind_direction / temperature) REMOVED 2026-09-12.
+    # Measured ZERO across a 13.5-hour, 833 MB capture over a full day cycle;
+    # aircraft here do not broadcast it and their GICB reports do not advertise
+    # it. The only values it ever produced were register-inference false
+    # positives. Do not re-add without evidence the register is actually being
+    # transmitted — a wrong wind is indistinguishable from a right one.
 }
+
+# Physical plausibility bounds, applied BEFORE a value enters the cache.
+#
+# DF20/21 Comm-B replies carry NO register identifier. The decoder INFERS which
+# BDS register a 56-bit payload is by testing whether the bit pattern looks
+# plausible for each candidate, and that inference is fallible. Observed 2026-09-12:
+# a mostly-zero payload decoded as a valid-looking BDS 4,5 carrying
+# static_pressure 1060 hPa — near the highest surface pressure ever recorded, and
+# flatly contradicted by barometric_setting 1012.0 in the SAME frame.
+#
+# An impossible number is worse than a missing one: /flights feeds the 3D view,
+# which renders whatever it is given as a real attitude. Bounds are deliberately
+# generous — wide enough for military and high-performance types, tight enough to
+# catch garbage. A field outside its bound is dropped, not clamped: we do not know
+# the true value, and inventing one is the same mistake in a different hat.
+_BDS_LIMITS = {
+    'selected_altitude_mcp':  (-1000, 65520),
+    'selected_altitude_fms':  (-1000, 65520),
+    'baro_pressure_setting':  (800.0, 1100.0),
+    'roll':                   (-90.0, 90.0),
+    'true_track':             (0.0, 360.0),
+    'track_rate':             (-16.0, 16.0),
+    'true_airspeed':          (0, 1000),
+    'magnetic_heading':       (0.0, 360.0),
+    'indicated_airspeed':     (0, 600),
+    'mach':                   (0.0, 3.0),
+    'baro_vertical_rate':     (-20000, 20000),
+    'inertial_vertical_rate': (-20000, 20000),
+}
+
+# Counters, not globals — a dict avoids a `global` declaration in the loop.
+_bds_stats = {'rejected': 0, 'tas_dropped': 0}
 
 
 def _bds_enrichment_loop():
@@ -1997,9 +2047,30 @@ def _bds_enrichment_loop():
                         now = time.time()
                         with _bds_lock:
                             rec = enrichment_cache.setdefault(icao, {})
+                            # Per-FIELD timestamps. '_updated' alone is the age of
+                            # the newest field of ANY register, so a chatty BDS 6,0
+                            # kept a minutes-old bds50_roll looking fresh — and the
+                            # 3D view banked the model to a stale angle on final.
+                            # Each field now carries its own stamp; _merge_bds
+                            # expires them independently.
+                            fts = rec.setdefault('_ts', {})
                             for k, v in res.items():
-                                if k not in _BDS_SKIP and v is not None:
-                                    rec[k] = v
+                                if k in _BDS_SKIP or v is None:
+                                    continue
+                                lim = _BDS_LIMITS.get(k)
+                                if (lim is not None
+                                        and isinstance(v, (int, float))
+                                        and not isinstance(v, bool)
+                                        and not (lim[0] <= v <= lim[1])):
+                                    _bds_stats['rejected'] += 1
+                                    if _bds_stats['rejected'] % 100 == 1:
+                                        logging.warning(
+                                            '[bds] dropped implausible %s=%r for %s '
+                                            '(outside %s) — %d rejected so far',
+                                            k, v, icao, lim, _bds_stats['rejected'])
+                                    continue
+                                rec[k] = v
+                                fts[k] = now
                             rec['_updated'] = now
                             seen += 1
                             if seen % 2000 == 0:  # bound memory: evict long-stale ICAOs
@@ -2016,16 +2087,48 @@ def _bds_enrichment_loop():
 
 
 def _merge_bds(ac, icao_upper):
-    """Additively merge fresh (<TTL) cached BDS fields onto one aircraft dict."""
+    """Additively merge cached BDS fields onto one aircraft dict.
+
+    Each field is expired on its OWN age, not the record's. An aircraft
+    transmitting one register steadily and another rarely used to have the
+    rare one served indefinitely as current; a stale roll is worse than no
+    roll, because the 3D view renders it as a real bank angle.
+    """
     now = time.time()
     with _bds_lock:
         rec = enrichment_cache.get(icao_upper)
         if not rec or (now - rec.get('_updated', 0)) >= BDS_CACHE_TTL:
             return
+        fts = rec.get('_ts') or {}
         for prefix, fields in _BDS_FIELDS.items():
             for f in fields:
-                if f in rec:
+                # Absent stamp -> treated as infinitely old and dropped, so a
+                # cache written by an older build can never leak an undated value.
+                if f in rec and (now - fts.get(f, 0)) < BDS_CACHE_TTL:
                     ac['{}_{}'.format(prefix, f)] = rec[f]
+
+    # Cross-field sanity: a true airspeed below HALF the groundspeed implies a
+    # tailwind larger than the aircraft's own airspeed, which cannot happen;
+    # likewise TAS above twice GS implies an impossible headwind. Observed live
+    # on ZK-NEP (DH8C): bds50_true_airspeed 66 kt against a 215 kt groundspeed at
+    # 8,700 ft, sitting beside an otherwise plausible roll — a range check alone
+    # would never catch it, because 66 kt is a perfectly legal airspeed.
+    #
+    # Gated on gs > 150 so a hovering helicopter, which legitimately has near-zero
+    # TAS at low groundspeed, is never touched. Only the suspect field is dropped:
+    # roll and track are cached with their own timestamps and may well have come
+    # from a different, good reply.
+    gs = ac.get('gs')
+    tas = ac.get('bds50_true_airspeed')
+    if (isinstance(gs, (int, float)) and gs > 150
+            and isinstance(tas, (int, float)) and not isinstance(tas, bool)
+            and (tas < gs * 0.5 or tas > gs * 2.0)):
+        ac.pop('bds50_true_airspeed', None)
+        _bds_stats['tas_dropped'] += 1
+        if _bds_stats['tas_dropped'] % 100 == 1:
+            logging.warning('[bds] dropped TAS %r vs groundspeed %r for %s — '
+                            '%d dropped so far',
+                            tas, gs, icao_upper, _bds_stats['tas_dropped'])
 
 
 def _bds_bootstrap():

@@ -1,7 +1,15 @@
-/* pilnk-rank-insignia.js — USAF rank insignia, inline SVG (house rule: no emoji).
- * window.PilnkRanks.insignia(index, size) -> SVG string.
+/* pilnk-rank-insignia.js — USAF rank insignia (house rule: no emoji).
+ * window.PilnkRanks.insignia(index, size) -> flat SVG string.
+ * window.PilnkRanks.art(index, size)      -> <img> 3D tile, SVG as fallback.
  * 20 ranks, matches pilnk-ranks.php / spec v1.0. Parametric so it stays tiny
  * and scales cleanly from a 24px dashboard chip to a 120px profile badge.
+ *
+ * Rev B (12 Sep 2026) — art() lifted in from the node's templates/index.html so
+ * the node dashboard and pilnk.io share one implementation instead of two.
+ *
+ * NOTE: this file is loaded by BOTH surfaces. The node gets it from the repo via
+ * OTA; pilnk.io is a hand copy at public_html/pilnk-rank-insignia.js. There is
+ * no automation — see pilnk-release-checklist.md item 7.
  */
 (function (root) {
   var GOLD = '#d4af37', SILVER = '#c9ccd2', DARK = '#3a3f47', EDGE = '#1c1f24';
@@ -109,9 +117,37 @@
     return s;
   }
 
+  // 3D rank tile, carrying the flat insignia as its own fallback.
+  // Brief's rule: SVG at chip sizes, art at 64px+ — below that call insignia()
+  // directly; the detail is wasted and the tile just costs a request.
+  //
+  // The <img> holds the SVG in data-fb, so if the WebP is missing (node updated
+  // code but not art, a part-finished OTA, or a surface that hasn't mirrored
+  // static/ranks yet) onerror swaps the flat insignia back in. The failure mode
+  // is "looks like last week", never a broken-image box.
+  //
+  // Both surfaces serve these from the same /static/ranks/ path, which is why
+  // one implementation covers both. This lived in the node's templates/index.html
+  // until 12 Sep 2026 — being node-only is exactly how pilnk.io ended up drawing
+  // its 80px rank panel in flat SVG while the node showed the tile.
+  var ART_BASE = '/static/ranks/';
+
+  function art(index, size) {
+    var idx = index | 0;
+    size = size || 96;
+    var svg = insignia(idx, size);
+    var src = ART_BASE + 'rank-' + ('0' + idx).slice(-2) + '.webp';
+    return '<img src="' + src + '" width="' + size + '" height="' + size + '"'
+      + ' alt="" loading="lazy" decoding="async"'
+      + ' style="display:block;width:' + size + 'px;height:' + size + 'px;object-fit:contain;"'
+      + ' onerror="this.parentNode.innerHTML=this.getAttribute(\'data-fb\')"'
+      + ' data-fb="' + svg.replace(/"/g, '&quot;') + '">';
+  }
+
   root.PilnkRanks = {
     RANKS: R.map(function (x, i) { return { index: i, name: x.n, tier: x.t }; }),
     name: function (i) { return (R[i] || R[0]).n; },
-    insignia: insignia
+    insignia: insignia,
+    art: art
   };
 })(typeof window !== 'undefined' ? window : this);
