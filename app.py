@@ -340,6 +340,23 @@ AIRCRAFT_OVERLAY_LOCAL = os.path.join(os.path.dirname(os.path.abspath(__file__))
 # (fetched by hex from Planespotters, bypassing this DB) correctly showed the A320.
 AIRCRAFT_OVERLAY_MANUAL = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'aircraft-overlay-manual.csv')
 
+# --- ATC STT transcript (fed by the node-local atc_service daemon) -----------
+# Resolved from the SERVICE USER's home, never a hardcoded username. This read
+# '/home/aj/...' — correct on the development node and wrong on every other one
+# in the fleet, where the service runs as 'pi'. It fails safe (see the route
+# below), so nothing broke — but when STT ships fleet-wide it would have been
+# silently dead everywhere except here, which is exactly how the audio engine
+# managed to look shipped for six weeks without ever running on another node.
+#
+# DEFINED HERE rather than beside the route that uses it (moved 14 Sep 2026).
+# ping_server() reads this path to report STT status, and the ping thread starts
+# ~670 lines before that route — so on every restart the first ping raced the
+# definition and died with "name 'ATC_TRANSCRIPT_PATH' is not defined". It healed
+# on the next ping, which is exactly why it went unnoticed: a once-per-restart
+# failure that repairs itself reads as noise in the log rather than a bug.
+ATC_TRANSCRIPT_PATH = os.path.join(os.path.expanduser('~'), 'atc-stt', 'atc_transcript.json')
+ATC_TRANSCRIPT_STALE_SECS = 120   # no update in this long => treat the daemon as down
+
 def _aircraft_db_path():
     """Return the first available aircraft DB path, or None.
 
@@ -2308,15 +2325,10 @@ def _track_mil(hex_code, ac):
         }
 
 
-# --- ATC STT transcript (fed by the node-local atc_service daemon) -----------
-# Resolved from the SERVICE USER's home, never a hardcoded username. This read
-# '/home/aj/...' — correct on the development node and wrong on every other one
-# in the fleet, where the service runs as 'pi'. It fails safe (see the route
-# below), so nothing broke — but when STT ships fleet-wide it would have been
-# silently dead everywhere except here, which is exactly how the audio engine
-# managed to look shipped for six weeks without ever running on another node.
-ATC_TRANSCRIPT_PATH = os.path.join(os.path.expanduser('~'), 'atc-stt', 'atc_transcript.json')
-ATC_TRANSCRIPT_STALE_SECS = 120   # no update in this long => treat the daemon as down
+# --- ATC STT transcript route ------------------------------------------------
+# ATC_TRANSCRIPT_PATH and ATC_TRANSCRIPT_STALE_SECS now live near the top with
+# the other path constants. They were defined here, which put them ~670 lines
+# after the ping thread that reads the path — see the note there.
 
 
 @app.route('/atc/transcript')
