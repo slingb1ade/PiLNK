@@ -1446,6 +1446,15 @@ def _ota_ping_features():
       ota:            auto | manual   (how updates are configured)
       ota_check:      ok | stale | starting | never   (is the checker ALIVE)
       ota_last_result:success | interrupted | started@v | exit_N | error:X | none
+      ota_fail:       '' | cd_failed | fetch_failed | reset_failed |
+                      version_unchanged | restart_blocked | service_dead |
+                      restart_noop | exception | unknown
+                      (WHY the last attempt failed — empty when it did not)
+
+    ota_last_result says an attempt broke; ota_fail says where. update.sh has
+    three separate exit-1 paths, so the exit code alone cannot tell them apart
+    and the only way to find out used to be asking the node's owner to read his
+    own log back to us. Added 14 Sep 2026.
     """
     now = time.time()
     checked = ota_status.get('last_check', 0)
@@ -1459,6 +1468,7 @@ def _ota_ping_features():
         'ota':             'auto' if _is_auto_update_enabled() else 'manual',
         'ota_check':       check,
         'ota_last_result': str(_load_ota_state().get('last_result', 'none'))[:40],
+        'ota_fail':        str(_load_ota_state().get('last_fail', ''))[:24],
     }
 
 ota_last_update = _load_ota_last_update()
@@ -1533,6 +1543,41 @@ def _is_auto_update_enabled():
                         'until it parses', e)
         return False
 
+# Fixed vocabulary for WHY an update failed. The ping's features dict has to
+# stay LOW-CARDINALITY (see _ota_ping_features), so this maps update.sh's error
+# text onto a handful of states instead of reporting the raw line — free text
+# would make every failing node its own group and defeat fleet_query entirely.
+#
+# Ordered: the first match wins, so specific patterns sit above general ones.
+_OTA_FAIL_PATTERNS = (
+    ('cannot cd to',                     'cd_failed'),          # exit 1
+    ('git fetch failed',                 'fetch_failed'),       # exit 1
+    ('git reset --hard failed',          'reset_failed'),       # exit 1
+    ('version unchanged',                'version_unchanged'),  # exit 3, abort
+    ('restart blocked',                  'restart_blocked'),    # exit 4, no NOPASSWD sudo
+    ('service not active after restart', 'service_dead'),       # exit 2
+    ('mainpid is unchanged',             'restart_noop'),       # restart silently no-op'd
+)
+
+
+def _classify_ota_failure(output):
+    """Name the failure in one short token, from update.sh's own output.
+
+    update.sh log()s every error to stdout as well as to its log file, so the
+    reason is already in hand at the moment we record 'exit_N' — it was simply
+    printed and thrown away. That gap cost real time: update.sh has THREE
+    separate exit-1 paths, so a node could report the same code for three
+    unrelated faults, and the only way to tell them apart was to ask its owner
+    to read his own log back to us. An exit code says that it broke; this says
+    where.
+    """
+    low = (output or '').lower()
+    for needle, token in _OTA_FAIL_PATTERNS:
+        if needle in low:
+            return token
+    return 'unknown'
+
+
 def _run_update():
     global ota_last_update
     ota_status['updating'] = True
@@ -1559,15 +1604,20 @@ def _run_update():
         # an abort (exit 3 = Rule #28 mismatch, 4 = restart blocked, ...)
         # or a failure. Record which: this is the number that would have
         # named M0CRT's fault in one fleet query.
+        _ok = result.returncode == 0
         _save_ota_state(
-            last_result=('success' if result.returncode == 0
-                         else 'exit_%d' % result.returncode),
+            last_result=('success' if _ok else 'exit_%d' % result.returncode),
+            # WHY, not just THAT. Cleared on success so a node that recovers
+            # stops advertising an old fault it no longer has.
+            last_fail=('' if _ok else _classify_ota_failure(
+                (result.stdout or '') + '\n' + (result.stderr or ''))),
             last_result_ts=time.time())
-        return result.returncode == 0
+        return _ok
     except Exception as e:
         print(f'[PILNK-OTA] Update failed: {e}')
         ota_status['updating'] = False
         _save_ota_state(last_result='error:' + type(e).__name__,
+                        last_fail='exception',
                         last_result_ts=time.time())
         return False
 
