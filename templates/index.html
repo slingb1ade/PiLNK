@@ -8307,6 +8307,19 @@ setInterval(raPoll, 5000);
   var fftWs=null, audioWs=null, wantConn=false, connected=false, retryT=null, statusT=null;
   var latestFFT=null, fftDirty=false, rendering=false, didFirst=false;
   var audioCtx=null, masterGain=null, afGainNode=null, limiter=null, nextTime=0;
+
+  // THIS BROWSER's consent to hear audio. Deliberately NOT part of `st`.
+  //
+  // `st` is the RADIO's state, refreshed wholesale by pollStatus every 2s
+  // (`st = s`). Local intent cannot live in there: press STOP, and two seconds
+  // later the server's answer — which may say playing:true because a DIFFERENT
+  // viewer pressed LISTEN — overwrote it, the button flipped back to ■ STOP,
+  // and audio resumed in a browser whose owner had just stopped it. onAudio
+  // only ever checked audioCtx.state, and STOP never suspended the context.
+  //
+  // Shared state may not override local consent. userListen is the only thing
+  // that decides whether this browser makes a sound.
+  var userListen=false;
   var afMeterRms=0, afMeterT=0, afMeterDisp=0;   // voice (AF) meter state
   var muted=false, volume=0.60, afGainDb=-6;
   var sqOn=false, sqLevel=-65;
@@ -8354,10 +8367,17 @@ setInterval(raPoll, 5000);
   }
   function firstConnect(){
     if(didFirst) return; didFirst=true;
-    // radio OFF by default — operator must press LISTEN (legal consent gate)
-    post('/sdr/playing',{on:false});
+    // Radio OFF by default for THIS BROWSER — userListen starts false, so
+    // nothing is audible until the operator presses LISTEN. That is the legal
+    // consent gate, and it is now enforced locally rather than by commanding
+    // the radio.
+    //
+    // No longer posts playing:false. Opening the dashboard used to switch the
+    // radio off for the whole node, which killed ATC transcript collection
+    // every time anyone loaded a page. Silencing your own speakers should not
+    // reach across and stop someone else's receiver.
     post('/sdr/mode',{mode:'AM'});         // airband is AM
-    st.playing=false; updateUI();
+    updateUI();
   }
   function scheduleRetry(){
     if(!wantConn) return; clearTimeout(retryT);
@@ -8397,11 +8417,17 @@ setInterval(raPoll, 5000);
   }
   function updateAudioBanner(){
     var on=!!(audioCtx && audioCtx.state==='running');
-    var b=$('sdrAudioBanner'); if(b) b.style.display=(on||!st.playing)?'none':'block';
+    // "Click to enable audio" belongs to this browser: show it when the user
+    // has asked to listen but the context is not running, not when the radio
+    // happens to be on for someone else.
+    var b=$('sdrAudioBanner'); if(b) b.style.display=(on||!userListen)?'none':'block';
   }
   function applyVolume(){ if(masterGain) masterGain.gain.value=muted?0:volume; }
   function applyAfGain(){ if(afGainNode) afGainNode.gain.value=Math.pow(10, afGainDb/20); }
   function onAudio(buf){
+    // Local consent first. The socket keeps delivering audio for whoever else
+    // on the node is listening; this browser simply does not play it.
+    if(!userListen) return;
     if(!audioCtx || audioCtx.state!=='running') return;
     var samples=new Float32Array(buf); var n=samples.length; if(!n) return;
     var sr=st.audioSampleRate||48000;
@@ -8544,7 +8570,11 @@ setInterval(raPoll, 5000);
   function updateUI(){
     var fd=$('saFreqDisplay'); if(fd) fd.textContent=fmtMHz(st.vfoHz)+' MHz';
     var dot=$('saStatusDot'), status=$('saStatusText'), btn=$('saListenBtn');
-    if(st.playing){
+    // Button and status describe what THIS browser is doing, so they follow
+    // userListen. st.playing is the radio's state and may be true because
+    // someone else is listening — showing ■ STOP then would tell you to stop
+    // something you are not doing.
+    if(userListen){
       if(btn){ btn.textContent='■ STOP'; btn.style.borderColor='#ef4444'; btn.style.color='#ef4444'; }
       if(dot){ dot.style.background='#00ff88'; dot.style.boxShadow='0 0 6px #00ff88'; }
       if(status){ status.textContent='RECEIVING '+fmtMHz(st.vfoHz)+' MHz'; status.style.color='#00ff88'; }
@@ -8554,8 +8584,8 @@ setInterval(raPoll, 5000);
       if(status){ status.textContent=connected?'READY — press LISTEN':'CONNECTING…'; status.style.color='var(--text-dim)'; }
     }
     var rb=$('saRecordBtn');
-    if(rb){ rb.disabled=!st.playing; rb.style.opacity=st.playing?'1':'0.5';
-      if(!recording){ rb.style.borderColor=st.playing?'#ef4444':'var(--border)'; rb.style.color=st.playing?'#ef4444':'var(--text-dim)'; } }
+    if(rb){ rb.disabled=!userListen; rb.style.opacity=userListen?'1':'0.5';
+      if(!recording){ rb.style.borderColor=userListen?'#ef4444':'var(--border)'; rb.style.color=userListen?'#ef4444':'var(--text-dim)'; } }
     if(latestFFT){
       var c=latestFFT.centerHz, sp=latestFFT.spanHz;
       var l=$('sdrScLeft'),m=$('sdrScMid'),rr=$('sdrScRight');
@@ -8655,8 +8685,19 @@ setInterval(raPoll, 5000);
   // ---- exposed globals (markup onclicks + showTab) ----
   window.saCheckVHF = function(){ connect(); };            // opening the SDR Audio tab → connect
   window.saToggle = function(){
-    ensureAudio();
-    var target = !st.playing;
+    // Toggle against LOCAL consent, not st.playing. If another viewer had the
+    // radio on, st.playing is already true and toggling off it would make your
+    // first press of ▶ LISTEN mean "stop".
+    var target = !userListen;
+    userListen = target;
+    if(target){
+      ensureAudio();
+    } else if(audioCtx && audioCtx.state==='running'){
+      // Suspend, don't just stop asking. This is what makes STOP hold: even if
+      // the radio stays on for someone else and pollStatus reports playing:true
+      // two seconds from now, this context is not running and onAudio returns.
+      audioCtx.suspend().then(updateAudioBanner);
+    }
     st.playing = target; updateUI();
     post('/sdr/playing',{on:target});
   };
@@ -8670,7 +8711,10 @@ setInterval(raPoll, 5000);
   };
   window.saRecordToggle = function(){
     ensureAudio();
-    if(!st.playing && !recording){ recInfo('press LISTEN first'); return; }
+    // userListen, not st.playing. Recording captures inside onAudio, which now
+    // returns early without local consent — so gating this on the shared radio
+    // state would let you start a recording that silently produced silence.
+    if(!userListen && !recording){ recInfo('press LISTEN first'); return; }
     var rb=$('saRecordBtn');
     if(!recording){
       recChunks=[]; recSamples=0; recHold=0; recording=true;
