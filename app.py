@@ -65,14 +65,21 @@ _config = _load_config()
 # PiLNK died with EADDRINUSE, 606 restarts. The operator edited app.py to use
 # 5001, which worked until the next release reset it and took the node down a
 # second time. Hence: the port lives in config, where the updater leaves it.
-def _dashboard_port():
-    try:
-        p = int(_config.get('dashboard_port') or 5000)
-        return p if 1 <= p <= 65535 else 5000
-    except (TypeError, ValueError):
-        return 5000
+def _cfg_port(key, default):
+    """Read a port from config.json, falling back to `default` on anything odd.
 
-DASHBOARD_PORT = _dashboard_port()
+    Shared by every port PiLNK takes from config so the validation cannot drift
+    between them. A second near-identical parser is how two ports end up with
+    two different ideas of what counts as valid, and nobody finds out until a
+    node refuses to start.
+    """
+    try:
+        p = int(_config.get(key) or default)
+        return p if 1 <= p <= 65535 else default
+    except (TypeError, ValueError):
+        return default
+
+DASHBOARD_PORT = _cfg_port('dashboard_port', 5000)
 
 
 # ── Node environment fingerprint (v1.3.6) ──────────────────────────────────
@@ -2069,7 +2076,17 @@ try:
 except Exception:
     _pms = None
 
-BDS_PORT = 30002
+# Raw Mode S stream port. dump1090-fa and readsb both default to 30002, but a
+# node running a third-party decoder stack (adsb.im and similar) can serve it
+# elsewhere. Configurable via "bds_port" in config.json.
+#
+# Getting it wrong is not silent in the journal — the loop below warns and
+# retries every 5s — but it IS invisible everywhere anyone looks. The dashboard
+# just shows empty extended fields (selected altitude, roll, true airspeed, the
+# values the 3D Approach view draws) and the ping reports nothing about it, so
+# the only evidence is a warning repeating forever in a log nobody opens.
+# Surfacing a bds state in node_features would close that; not done yet.
+BDS_PORT = _cfg_port('bds_port', 30002)
 BDS_CACHE_TTL = 60            # seconds a cached field stays valid for display
 enrichment_cache = {}        # {ICAO_UPPER: {field: value, ..., '_updated': ts}}
 _bds_lock = threading.Lock()
