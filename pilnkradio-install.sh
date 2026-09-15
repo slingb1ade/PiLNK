@@ -188,14 +188,64 @@ elif [ -n "${PILNKRADIO_NONINTERACTIVE:-}" ]; then
     SERIAL="${CANDIDATES[0]:-00000002}"
     info "unattended: engine will wait for serial $SERIAL (retries every 5s until it appears)"
 else
-    if [ ${#CANDIDATES[@]} -ge 1 ] && [ "$DECODER_ACTIVE" -gt 0 ] && [ -z "$CLAIMED" ]; then
+    # How many RTL dongles are on the bus at all, whoever is holding them.
+    TOTAL=0
+    for line in "${ALL[@]:-}"; do [ -n "$line" ] && TOTAL=$((TOTAL+1)); done
+
+    # MME1, 16 Sep 2026: one dongle on the bus, a decoder running on it, no free
+    # receiver for the radio. This script had every fact it needed to say so and
+    # instead asked him to pick a serial, wrote a config that could only ever
+    # crash-loop, and left the dashboard showing "Radio Off" with no reason.
+    # An airband ANTENNA is not a second RECEIVER — an easy and entirely
+    # reasonable thing to conflate if nobody says otherwise. So say it.
+    if [ "$TOTAL" -le 1 ] && [ "$DECODER_ACTIVE" -gt 0 ]; then
+        warn "This node has $TOTAL RTL-SDR dongle(s) and an ADS-B decoder is running."
+        warn "ADS-B and ATC airband CANNOT share one dongle. An RTL-SDR has a single"
+        warn "tuner: it listens on 1090 MHz for ADS-B, or 118-137 MHz for the airband,"
+        warn "never both — and dump1090/readsb holds the device exclusively while it runs."
+        warn "The radio needs a SECOND dongle of its own. An airband antenna alone will"
+        warn "not do it: the antenna plugs into a receiver this node does not have yet."
+        warn "You can still finish this install. The engine waits for its dongle and"
+        warn "starts by itself the moment one appears, so there is nothing to re-run"
+        warn "later — it simply will not produce audio until that second dongle exists."
+    fi
+
+    if [ ${#CANDIDATES[@]} -ge 1 ] && [ "$DECODER_ACTIVE" -gt 0 ] && [ -z "$CLAIMED" ] && [ "$TOTAL" -gt 1 ]; then
         warn "an ADS-B decoder is running but its dongle couldn't be identified —"
         warn "confirm which serial is the RADIO dongle (do NOT pick the decoder's)"
     fi
     [ ${#CANDIDATES[@]} -eq 0 ] && warn "no free RTL-SDR dongle found — you can finish now and plug it in later"
-    printf "Radio dongle serial [default 00000002]: " > "$TTY"
+
+    # Offer a real free candidate as the default only when one plausibly exists:
+    # more than one dongle present, or no decoder competing for it. Otherwise
+    # 00000002, the placeholder meaning "wait for the dongle I have yet to buy",
+    # which is the honest answer for a single-dongle node.
+    if [ ${#CANDIDATES[@]} -ge 1 ] && { [ "$TOTAL" -gt 1 ] || [ "$DECODER_ACTIVE" -eq 0 ]; }; then
+        DEFSER="${CANDIDATES[0]}"
+    else
+        DEFSER="00000002"
+    fi
+    printf "Radio dongle serial [default %s]: " "$DEFSER" > "$TTY"
     read -r SERIAL < "$TTY" || true
-    SERIAL=${SERIAL:-00000002}
+    SERIAL=${SERIAL:-$DEFSER}
+
+    # Never write a serial without saying whether that dongle is actually here.
+    # A config pinned to a dongle that is not on the bus can only crash-loop,
+    # and "Radio Off" on the dashboard does not explain itself.
+    if printf '%s\n' "${ALL[@]:-}" | cut -f1 | grep -qFx "$SERIAL"; then
+        ok "serial $SERIAL is plugged in now — the engine will use it"
+    else
+        warn "serial $SERIAL is NOT among the dongles currently plugged in:"
+        if [ "$TOTAL" -eq 0 ]; then
+            warn "    (none found)"
+        else
+            printf '%s\n' "${ALL[@]:-}" | while IFS=$'\t' read -r s p; do
+                [ -n "$s" ] && warn "    $s  $p"
+            done
+        fi
+        warn "The engine will exit and retry every 5 s until it appears. That is"
+        warn "correct if the dongle is simply not plugged in yet, and a typo if it is."
+    fi
     info "engine will wait for serial $SERIAL (exits+retries every 5 s until it appears)"
 fi
 
