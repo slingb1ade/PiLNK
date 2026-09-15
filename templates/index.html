@@ -6,12 +6,6 @@
 <title>PiLNK</title>
 <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-<!-- Vector basemap (OpenFreeMap via MapLibre). Pinned exactly (decisions.md 2026-09-15): a
-     future upgrade is a deliberate act. If either script fails to load, the map falls back
-     to the classic OSM raster tiles — see makeBaseLayer(). -->
-<link rel="stylesheet" href="https://unpkg.com/maplibre-gl@5.24.0/dist/maplibre-gl.css"/>
-<script src="https://unpkg.com/maplibre-gl@5.24.0/dist/maplibre-gl.js"></script>
-<script src="https://unpkg.com/@maplibre/maplibre-gl-leaflet@0.1.4/leaflet-maplibre-gl.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
 <!-- Type-specific aircraft silhouettes (RexKramer1/AircraftShapesSVG). Sets
      window.AIRCRAFT_SHAPES; makeIcon() uses it when a type shape exists and
@@ -2605,67 +2599,7 @@ map.createPane('notamPane');map.getPane('notamPane').style.zIndex = 415;
 // Trails render on a single shared CANVAS (not per-segment SVG) — keeps zoom smooth.
 var trailRenderer = L.canvas({ padding: 0.5, pane: 'trails' });
 var TRAIL_MAX = 100;  // cap trail points per aircraft (was unbounded)
-// ── BASE MAP ──────────────────────────────────────────────
-// Default: OpenFreeMap vector tiles (OSM data, no key, no limits, commercial OK,
-// attribution required) rendered by MapLibre through the Leaflet binding. The
-// style follows the theme (Fiord dark / Positron light) instead of the old CSS
-// invert. `osmLayer` keeps its name so the basemap switcher, applyTileFilter and
-// everything else keep working unchanged — it is simply "the street base layer".
-// Fail-soft, load-bearing: no MapLibre (script blocked), no WebGL (some Pi kiosk
-// browsers), a style that fails to load, or ?basemap=classic / localStorage
-// pilnk-basemap=classic → the classic OSM raster layer, silently.
-var VECTOR_STYLES = { dark: 'https://tiles.openfreemap.org/styles/fiord', light: 'https://tiles.openfreemap.org/styles/positron' };
-var VECTOR_ATTRIB = '<a href="https://openfreemap.org" target="_blank" rel="noopener">OpenFreeMap</a> © <a href="https://www.openmaptiles.org/" target="_blank" rel="noopener">OpenMapTiles</a> Data from © <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">OpenStreetMap</a>';
-var baseIsVector = false, currentVectorStyle = null;
-function makeRasterBase(){ return L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',{attribution:'© OpenStreetMap'}); }
-function wantVectorBase(){
-  try {
-    if (new URLSearchParams(location.search).get('basemap') === 'classic') return false;
-    if (localStorage.getItem('pilnk-basemap') === 'classic') return false;
-    return !!(window.maplibregl && L.maplibreGL && (typeof maplibregl.supported !== 'function' || maplibregl.supported()));
-  } catch(e) { return false; }
-}
-function fallbackToRaster(why){
-  if (!baseIsVector) return;
-  try { console.warn('[basemap] vector base unavailable (' + why + ') — using classic OSM tiles'); } catch(e){}
-  var wasOn = map.hasLayer(osmLayer);
-  try { map.removeLayer(osmLayer); } catch(e){}
-  baseIsVector = false; osmLayer = makeRasterBase();
-  if (wasOn) osmLayer.addTo(map);
-  try { map.attributionControl.removeAttribution(VECTOR_ATTRIB); } catch(e){}
-  applyTileFilter();
-}
-function makeBaseLayer(){
-  if (!wantVectorBase()) return makeRasterBase();
-  try {
-    var dark = document.documentElement.getAttribute('data-theme') === 'dark';
-    currentVectorStyle = dark ? VECTOR_STYLES.dark : VECTOR_STYLES.light;
-    var layer = L.maplibreGL({ style: currentVectorStyle, attribution: VECTOR_ATTRIB });
-    baseIsVector = true;
-    layer.on('add', function(){
-      try {
-        var gl = layer.getMaplibreMap();
-        gl.on('error', function(e){
-          // A failed style/source load is the fail-soft case; a missing sprite or glyph is not.
-          var msg = (e && e.error && e.error.message) || '';
-          if (/style|source|Failed to fetch|NetworkError|tiles\.openfreemap/i.test(msg)) fallbackToRaster(msg);
-        });
-      } catch(e){ fallbackToRaster('no gl map'); }
-    });
-    return layer;
-  } catch(e) { baseIsVector = false; return makeRasterBase(); }
-}
-function syncVectorStyle(){
-  if (!baseIsVector) return;
-  var dark = document.documentElement.getAttribute('data-theme') === 'dark';
-  var want = dark ? VECTOR_STYLES.dark : VECTOR_STYLES.light;
-  if (want === currentVectorStyle) return;
-  currentVectorStyle = want;
-  try { osmLayer.getMaplibreMap().setStyle(want); } catch(e){}
-}
-var osmLayer = makeBaseLayer().addTo(map);
-// The Leaflet binding doesn't forward its attribution option — add it to the control ourselves (required by OpenFreeMap).
-if (baseIsVector && map.attributionControl) map.attributionControl.addAttribution(VECTOR_ATTRIB);
+var osmLayer = L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',{attribution:'© OpenStreetMap'}).addTo(map);
 var currentTileLayerName = 'osm', extraLayer = null;
 L.control.zoom({position:'bottomright'}).addTo(map);
 
@@ -3139,12 +3073,6 @@ map.on('zoom', function(){ if(typeof positionTooltipOnMarker==='function') posit
 function applyTileFilter() {
   var dark = document.documentElement.getAttribute('data-theme') === 'dark';
   var pane = map.getPanes().tilePane;
-  // Vector base: the style itself is light or dark — swap it, and never filter the canvas
-  // (an inverted Fiord is unreadable). Sat/topo overlays still get their treatment below.
-  if (baseIsVector && currentTileLayerName === 'osm' || baseIsVector && currentTileLayerName === 'wx') {
-    syncVectorStyle(); pane.style.filter = ''; return;
-  }
-  if (baseIsVector) syncVectorStyle();
   if (!dark) {
     // Light mode: mute the bright OSM street base so aircraft + weather pop
     // (UI polish prototype). Sat/topo keep their natural colours.
@@ -5808,9 +5736,7 @@ function updateCCTranscript(lines, freq) {
 // (terrain + satellite imagery + gear-down fleet, Director camera). Same-origin
 // static page, so a plain window.open is fine; named target reuses one tab.
 function build3DUrl(hex) {
-  // Engine: 'ml' = MapLibre world (OpenFreeMap 3D map + terrain, AJ's pick 2026-09-15); 'three' = the original Three.js scene.
-  var engine = (function(){ try { return localStorage.getItem('pilnk-3d-engine') || 'ml'; } catch(e){ return 'ml'; } })();
-  var u = (engine === 'three' ? '/static/approach.html' : '/static/approach-ml.html') + (hex ? '?hex=' + encodeURIComponent(hex) : '?');
+  var u = '/static/approach.html' + (hex ? '?hex=' + encodeURIComponent(hex) : '?');
   // Pass the dash's nearest airport so the 3D scene centres on the right field
   // anywhere in the world (global-by-default); the page falls back to /api/location.
   var ap = (typeof nearestAirport !== 'undefined') ? nearestAirport : null;

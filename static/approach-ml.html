@@ -100,7 +100,7 @@ function integrate(){   // predict where the aircraft is *now* from the last fix
 const st=(t)=>document.getElementById('st').textContent=t;
 
 /* ---------- Three.js custom layer: the aircraft ---------- */
-const MODEL_ORIENT={ 'a320_200.glb':{yaw:-90}, 'atr72.glb':{yaw:90}, 'b777_klm.glb':{yaw:180} };
+const MODEL_ORIENT={ 'a320_200.glb':{yaw:-90}, 'atr72.glb':{yaw:90}, 'b777_klm.glb':{yaw:180}, 'b737_800.glb':{yaw:180} };
 function modelFor(t){ t=(t||'').toUpperCase();
   const TP=['AT72','AT73','AT75','AT76','AT43','AT45','AT46','DH8A','DH8B','DH8C','DH8D','SF34','SB20','JS31','JS32','JS41','B350','BE20','BE9L','C208','PC12','E120','D228','DHC6','F50','ATP'];
   if(TP.includes(t))return'atr72.glb';
@@ -149,20 +149,86 @@ const acLayer={
     const M=(args&&args.defaultProjectionData)?args.defaultProjectionData.mainMatrix:args;
     this.camera.projectionMatrix=new THREE.Matrix4().fromArray(M).multiply(L);
     this.yaw.rotation.y=-a.hdg*D2R; this.pitch.rotation.x=a.pitch*D2R; this.roll.rotation.z=-a.roll*D2R;   // sign.roll = -1 as in approach.html
+    this.yaw.scale.setScalar(modelScale);   // the tower shot enlarges the aircraft without touching the map's framing
     this.renderer.resetState(); this.renderer.render(this.scene,this.camera);
+    /* Hand the context back: reset Three's state tracker and unbind its VAO. Nothing else — MapLibre
+       caches its own GL state and re-applies it after custom layers; setting depth/cull/program
+       behind its back desyncs that cache (it drew the aircraft mirrored when we tried). */
+    this.renderer.resetState();
+    if(gl.bindVertexArray) gl.bindVertexArray(null);
   }
 };
+
+/* ---------- local tile store + DEM clean-up ----------
+   Every map and elevation tile goes through the 'pilnk' protocol: IndexedDB first (persistent on
+   this browser, works on plain http where a service worker would not), network on a miss, and the
+   result stored so the next approach reads it from disk. DEM tiles are cleaned on the way in:
+     • sea-level clamp — Terrarium carries bathymetry, and its land/seabed seam leaves pixels hundreds
+       of metres below sea level beside +5 m land (measured −378 m at z15, −5463 m at z14 on the
+       Māngere Inlet coast). Below 0 m becomes 0 m: flat sea, no seam.
+     • despike — the coarser zooms MapLibre shows while z15 is still loading carry positive garbage
+       too (+1299 m at z11, +1181 m at z12 over Auckland). A pixel more than SPIKE_M from the median
+       of its 8 neighbours is replaced by that median. Real terrain is coherent; a 100 m spire two
+       metres wide is not real.
+   Fails soft to the raw bytes at every step. */
+const SPIKE_M=100;
+const TILE_DB=(()=>{ let p=null; return ()=>p||(p=new Promise((res,rej)=>{ try{
+  const r=indexedDB.open('pilnk-tiles',1);
+  r.onupgradeneeded=()=>{ const s=r.result.createObjectStore('t'); s.createIndex('t','t'); };
+  r.onsuccess=()=>res(r.result); r.onerror=()=>rej(r.error); }catch(e){rej(e);} })); })();
+async function tileGet(key){ try{ const db=await TILE_DB(); return await new Promise(res=>{ const q=db.transaction('t','readonly').objectStore('t').get(key); q.onsuccess=()=>res(q.result?q.result.b:null); q.onerror=()=>res(null); }); }catch(e){ return null; } }
+let _tileCount=null;
+async function tilePut(key,buf){ try{ const db=await TILE_DB(); const tx=db.transaction('t','readwrite'), s=tx.objectStore('t'); s.put({b:buf,t:Date.now()},key);
+  if(_tileCount==null){ const c=s.count(); c.onsuccess=()=>{_tileCount=c.result;}; } else if(++_tileCount>5000){ _tileCount=null;   // evict the 800 oldest
+    const cur=s.index('t').openCursor(); let n=0; cur.onsuccess=()=>{ const k=cur.result; if(k&&n++<800){ k.delete(); k.continue(); } }; }
+}catch(e){} }
+async function cleanDem(raw){
+  try{
+    const bmp=await createImageBitmap(new Blob([raw]),{premultiplyAlpha:'none',colorSpaceConversion:'none'});   // exact bytes — data, not a picture
+    const W=bmp.width,H=bmp.height,c=new OffscreenCanvas(W,H),x=c.getContext('2d',{willReadFrequently:true});
+    x.drawImage(bmp,0,0); const id=x.getImageData(0,0,W,H),d=id.data;
+    const h=new Float32Array(W*H); for(let i=0,p=0;i<d.length;i+=4,p++) h[p]=d[i]*256+d[i+1]+d[i+2]/256-32768;
+    const out=new Float32Array(h), nb=new Float32Array(8);
+    for(let y=1;y<H-1;y++) for(let xx=1;xx<W-1;xx++){ const p=y*W+xx; let k=0;
+      nb[k++]=h[p-W-1];nb[k++]=h[p-W];nb[k++]=h[p-W+1];nb[k++]=h[p-1];nb[k++]=h[p+1];nb[k++]=h[p+W-1];nb[k++]=h[p+W];nb[k++]=h[p+W+1];
+      const s=Array.from(nb).sort((a,b)=>a-b), med=(s[3]+s[4])/2;
+      if(Math.abs(h[p]-med)>SPIKE_M) out[p]=med; }
+    for(let p=0,i=0;p<out.length;p++,i+=4){ const v=Math.max(0,out[p])+32768, r=Math.floor(v/256), g=Math.floor(v-r*256), b=Math.round((v-r*256-g)*256);
+      d[i]=r; d[i+1]=g; d[i+2]=Math.min(255,b); d[i+3]=255; }   // ≥ 0 m only: the sea is flat
+    x.putImageData(id,0,0);
+    return await (await c.convertToBlob({type:'image/png'})).arrayBuffer();
+  }catch(e){ return raw; }
+}
+async function tileFetch(url,signal){
+  const hit=await tileGet(url); if(hit) return hit;
+  const r=await fetch(url,{signal}); if(!r.ok) throw new Error('tile '+r.status);
+  let buf=await r.arrayBuffer(); if(/terrarium/.test(url)) buf=await cleanDem(buf);
+  tilePut(url,buf); return buf;
+}
+maplibregl.addProtocol('pilnk', async (params, abort) => ({data: await tileFetch(params.url.replace(/^pilnk:\/\//,'https://'), abort&&abort.signal)}));
 
 /* ---------- map ---------- */
 async function boot(){
   await resolveSite(); mPerLon=111320*Math.cos(SITE.lat*D2R);
-  map=new maplibregl.Map({ container:'map', style:'https://tiles.openfreemap.org/styles/liberty', center:[SITE.lon,SITE.lat], zoom:13.5, pitch:60, bearing:0,
+  /* Resolve the style and its TileJSON here so the vector tiles can be pointed at the local store.
+     The tile path (with OpenFreeMap's dated segment) is read from the server every load, never hardcoded. */
+  let style='https://tiles.openfreemap.org/styles/liberty';
+  try{
+    const s=await fetch(style).then(r=>r.json());
+    for(const id in s.sources){ const src=s.sources[id]; if(src.type!=='vector')continue;
+      if(!src.tiles&&src.url){ const tj=await fetch(src.url).then(r=>r.json()); src.tiles=tj.tiles; if(tj.minzoom!=null)src.minzoom=tj.minzoom; if(tj.maxzoom!=null)src.maxzoom=tj.maxzoom; if(tj.attribution)src.attribution=tj.attribution; delete src.url; }
+      if(src.tiles) src.tiles=src.tiles.map(t=>t.replace(/^https:\/\//,'pilnk://')); }
+    // handed over as a blob URL rather than an object: MapLibre applies an inline style object on the next
+    // animation frame, which a background tab never gets; a URL loads on fetch completion regardless
+    style=URL.createObjectURL(new Blob([JSON.stringify(s)],{type:'application/json'}));
+  }catch(e){ /* fall back to MapLibre loading the style itself — no local store, but the map still works */ }
+  map=new maplibregl.Map({ container:'map', style, center:[SITE.lon,SITE.lat], zoom:13.5, pitch:60, bearing:0,
     maxPitch:85,   // MapLibre's supported limit — past it, geometry beyond the horizon folds back into the sky
     antialias:true, attributionControl:{compact:false},
     maxTileCacheSize:600,   // keep tiles the camera just swept past
     centerClampedToGround:false });   // with terrain on, MapLibre otherwise snaps the look-at point back to ground every frame — the chase camera would sink to 100 m AGL
   map.on('load',()=>{
-    map.addSource('dem',{type:'raster-dem', tiles:['https://s3.amazonaws.com/elevation-tiles-prod/terrarium/{z}/{x}/{y}.png'], encoding:'terrarium', tileSize:256, maxzoom:DEM_MAX, attribution:'Elevation: AWS Terrain Tiles'});
+    map.addSource('dem',{type:'raster-dem', tiles:['pilnk://s3.amazonaws.com/elevation-tiles-prod/terrarium/{z}/{x}/{y}.png'], encoding:'terrarium', tileSize:256, maxzoom:DEM_MAX, attribution:'Elevation: AWS Terrain Tiles'});
     /* DEM maxzoom 12 = what approach.html uses; z14 quadrupled the S3 fetches (no CDN, us-east) for no visible gain at approach heights */
     if(TERRAIN) map.setTerrain({source:'dem', exaggeration:VE}); else terrainReady=true;
     /* field elevation, sampled from the same terrain the aircraft is drawn against (queryTerrainElevation
@@ -181,6 +247,11 @@ async function boot(){
     }
     // BASE==='vector' (default): the whole OpenFreeMap 3D map as the world — its own land, water,
     // parks, roads, labels and buildings, one consistent style, lifted into relief by the terrain.
+    /* One-way arrows are symbols spaced along the road in screen pixels; a chase camera whose zoom
+       changes every frame makes them re-space and crawl along the road like a train. Meaningless
+       from the air — hidden. Road-name labels are the same mechanism but sparse enough to keep. */
+    layers.filter(l=>l.type==='symbol'&&l.layout&&l.layout['icon-image']!=null&&/line/.test(JSON.stringify(l.layout['symbol-placement']||'')))
+          .forEach(l=>map.setLayoutProperty(l.id,'visibility','none'));   // one-way arrows AND route shields (placement is a zoom expression, hence the stringify)
     if(!SHOW_BLD) layers.filter(l=>l.type==='fill-extrusion').forEach(l=>map.setLayoutProperty(l.id,'visibility','none'));
     else layers.filter(l=>l.type==='fill-extrusion').forEach(l=>{ map.setLayoutProperty(l.id,'visibility','visible'); map.setLayerZoomRange(l.id,12,24); if(BASE==='sat'){ map.setPaintProperty(l.id,'fill-extrusion-opacity',0.9); map.setPaintProperty(l.id,'fill-extrusion-color','#c9d0da'); } });
     try{ map.setSky({'sky-color':'#0b0f1a','horizon-color':'#1a2a44','fog-color':'#0b0f1a','sky-horizon-blend':0.6,'horizon-fog-blend':0.6,'fog-ground-blend':0.6}); }catch(e){}
@@ -188,6 +259,7 @@ async function boot(){
     if(camMode!=='free') map.scrollZoom.disable();
     st((BASE==='sat'?'satellite hybrid':'OpenFreeMap 3D map')+' + terrain loaded · waiting for an aircraft');
     poll();
+    setTimeout(warmCorridor,4000);   // after the live view has what it needs
   });
   map.on('error',e=>{ const m=(e&&e.error&&e.error.message)||''; if(!/sprite|glyph/i.test(m)) st('map error: '+m); });
 }
@@ -232,12 +304,31 @@ function prefetchAhead(){
   for(const dt of [6,14,24,36,50,66,84]){              // seconds down the track — ~5 km ahead at approach speed
     const lon=fix.lon+fix.vE*dt/mPerLon, lat=fix.lat+fix.vN*dt/mPerLat;
     for(const s of srcs){ const t=tileXY(lon,lat,s.z);
-      const url=s.tpl.replace('{z}',s.z).replace('{x}',t.x).replace('{y}',t.y);
-      if(_pfSeen.has(url)||_pfBusy>6)continue; _pfSeen.add(url); _pfBusy++;
-      fetch(url,{mode:'cors',credentials:'omit'}).then(r=>r.blob()).catch(()=>{}).then(()=>{_pfBusy--;});
+      warm(s.tpl.replace('{z}',s.z).replace('{x}',t.x).replace('{y}',t.y));
     }
   }
   if(_pfSeen.size>1200)_pfSeen.clear();
+}
+function warm(url){ url=url.replace(/^pilnk:\/\//,'https://'); if(_pfSeen.has(url)||_pfBusy>6)return; _pfSeen.add(url); _pfBusy++;
+  tileFetch(url).catch(()=>{}).then(()=>{_pfBusy--;}); }
+/* Corridor pre-warm: the approach path both ways along the site heading, threshold to 8 nm out, one
+   tile either side, at the zooms the chase and tower views use. Runs once the map is up, at low
+   priority, so the first approach after a fresh cache is already on disk. */
+let _warmed=0,_warmTotal=0;
+async function warmCorridor(){
+  if(SITE.hdg==null||!map||!map.isStyleLoaded())return;
+  const srcs=pfSources(); if(!srcs.length)return; const urls=new Set();
+  for(const s of srcs){ for(const z of [s.z, s.z-2]){ if(z<10)continue;
+    for(const dir of [SITE.hdg, SITE.hdg+180]){ const h=dir*D2R;
+      for(let nm=0;nm<=8;nm+=0.5){ const d=nm*1852;
+        for(const side of [-1,0,1]){ const off=side*1400;   // ±1.4 km lateral
+          const lon=SITE.lon+(Math.sin(h)*d+Math.cos(h)*off)/mPerLon, lat=SITE.lat+(Math.cos(h)*d-Math.sin(h)*off)/mPerLat;
+          const t=tileXY(lon,lat,z); urls.add(s.tpl.replace('{z}',z).replace('{x}',t.x).replace('{y}',t.y).replace(/^pilnk:\/\//,'https://')); } } } } }
+  _warmTotal=urls.size; const sub=document.getElementById('sub'), base=sub.textContent;
+  const tick=setInterval(()=>{ sub.textContent=base+' · corridor '+_warmed+'/'+_warmTotal+' tiles on disk'; if(_warmed>=_warmTotal){ clearInterval(tick); setTimeout(()=>{sub.textContent=base+' · corridor cached';},3000); } },500);
+  for(const u of urls){ if(await tileGet(u)){_warmed++;continue;}
+    while(_pfBusy>3) await new Promise(r=>setTimeout(r,100));
+    _pfBusy++; tileFetch(u).catch(()=>{}).then(()=>{_pfBusy--;_warmed++;}); }
 }
 const mvS=[]; function median(a){const s=a.slice().sort((x,y)=>x-y),m=s.length>>1;return s.length%2?s[m]:(s[m-1]+s[m])/2;}
 async function poll(){
@@ -297,8 +388,18 @@ async function poll(){
 /* ---------- cameras (MapLibre free camera) ---------- */
 let camMode='director', shot='chase', chaseDist=110, towerZoom=1;   // chase follow distance (m) — starts close; wheel adjusts
 const FOV_DEFAULT=36.87;   // MapLibre's default vertical FOV; restored for chase/free
-const FRAME_M=(_q.get('frame')!=null&&_q.get('frame')!=='')?+_q.get('frame'):55;   // tower lens frames a 2*FRAME_M metre slice at the aircraft (smaller = bigger aircraft)
-const HORIZON_MARGIN=2;    // tower shot looks down by half-FOV + this, so the horizon stays just off the top of frame
+/* Tower cam: a fixed lens, like a real one. The aircraft starts small and grows to fill the frame on
+   short final, with the runway and the field in shot the whole way. The camera sits in the cab whenever
+   MapLibre allows it — pitch is capped at 85, so it must ride at least MIN_DEP above the aircraft's eye
+   line, and it settles back down onto the tower as the aircraft descends. */
+const TOWER_FOV=(_q.get('fov')!=null&&_q.get('fov')!=='')?+_q.get('fov'):18;
+const MIN_DEP=5.5;         // degrees above the aircraft the camera must stay (MapLibre clamps pitch at 85)
+const CUT_NM=(_q.get('cut')!=null&&_q.get('cut')!=='')?+_q.get('cut'):1.5;   // Director cuts chase → tower here
+/* The tower lens is set by how much of the field we want in frame, which leaves the aircraft small.
+   Rather than fight that with the camera, draw the aircraft larger than life in the tower shot only —
+   the map keeps its framing, the aircraft reads clearly, and the chase view stays true to scale. */
+const TOWER_AC=(_q.get('acscale')!=null&&_q.get('acscale')!=='')?+_q.get('acscale'):3;
+let modelScale=1, modelWant=1;
 document.querySelectorAll('.cambtn').forEach(b=>b.addEventListener('click',()=>{document.querySelectorAll('.cambtn').forEach(x=>x.classList.remove('on'));b.classList.add('on');camMode=b.dataset.cam;
   if(map){ if(camMode==='free') map.scrollZoom.enable(); else map.scrollZoom.disable(); } }));
 // wheel = chase distance while the camera is on rails (MapLibre's own scroll zoom is off in those modes)
@@ -318,22 +419,18 @@ function tick(){
   integrate();
   if(!aircraft)return;
   if(camMode==='free'){ map.triggerRepaint(); return; }
-  const a=aircraft; const useTower=(camMode==='tower')||(camMode==='director'&&(a.gnd||a.dist<2.8));
+  const a=aircraft; const useTower=(camMode==='tower')||(camMode==='director'&&(a.gnd||a.dist<CUT_NM));
   if(camMode==='director'){ shot=useTower?'tower':'chase'; const b=document.querySelector('[data-cam=director]'); b.textContent='Director · '+shot; }
+  else shot=camMode;
+  modelWant=useTower?TOWER_AC:1; modelScale+=(modelWant-modelScale)*0.12;   // eased, so the cut doesn't pop
   if(useTower){
-    /* Long lens from the tower, looking DOWN at the aircraft. The camera is lifted above the cab when
-       needed so the depression angle always clears MIN_DEP: a map projection degenerates as pitch nears
-       90 (geometry past the horizon folds back into the sky), and a narrow lens magnifies whatever sits
-       on the horizon 30-80 km away. Keeping the horizon out of frame removes both. */
     const dE=(a.lon-SITE.tower.lon)*mPerLon, dN=(a.lat-SITE.tower.lat)*mPerLat, dH=Math.hypot(dE,dN)||1;
     const acAlt=a.altM*VE+10;
-    let camAlt=Math.max(SITE.tower.h+17,acAlt), fov=FOV_DEFAULT;
-    for(let i=0;i<2;i++){                       // lens sets the safe depression, depression sets the range, range sets the lens
-      const d=Math.hypot(dH,camAlt-acAlt);
-      fov=Math.max(2.5,Math.min(37,2*Math.atan(FRAME_M/d)*R2D/towerZoom));
-      camAlt=Math.max(SITE.tower.h+17, acAlt+dH*Math.tan((fov/2+HORIZON_MARGIN)*D2R));
-    }
+    const fov=Math.max(4,Math.min(50,TOWER_FOV/towerZoom));
     map.setVerticalFieldOfView(fov);
+    // MapLibre clamps pitch at 85, so the camera can never sit below the aircraft's eye line; it is
+    // lifted only as far as that limit demands, which keeps it as close to the cab as the engine allows.
+    const camAlt=Math.max(SITE.tower.h+17, acAlt+dH*Math.tan(MIN_DEP*D2R));
     aimCamera(SITE.tower.lon,SITE.tower.lat,camAlt, a.lon,a.lat,acAlt);
   } else {
     if(map.getVerticalFieldOfView()!==FOV_DEFAULT) map.setVerticalFieldOfView(FOV_DEFAULT);
