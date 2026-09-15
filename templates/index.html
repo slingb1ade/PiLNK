@@ -1685,9 +1685,19 @@
             </div>
           </div>
 
-          <!-- AIRCRAFT TRACKED -->
+          <!-- AIRCRAFT TRACKED
+               Scope note: these three tiles are computed from localStorage in
+               THIS browser, not from the node. "All Time" therefore means
+               "since this browser last cleared its site data" — on a fresh
+               browser today/all-time/best-day are mathematically identical,
+               which is exactly what it looked like on 15 Sep 2026 (62/62/62).
+               The title is scoped rather than the labels because all three
+               tiles share the limitation. Proper fix is to source Best Day
+               from the node's stats_records.json most_day (already persisted
+               and validated) and add server-side tracking for a true all-time
+               total; until then the honest thing is to say whose count it is. -->
           <div class="panel">
-            <div class="panel-title">Aircraft Tracked</div>
+            <div class="panel-title">Aircraft Tracked (this browser)</div>
             <div class="streak-grid" id="streakGrid">
               <div class="streak-item"><div class="streak-num" id="streakToday">0</div><div class="streak-label">Today</div></div>
               <div class="streak-item"><div class="streak-num" id="streakTotal">0</div><div class="streak-label">All Time</div></div>
@@ -6119,8 +6129,20 @@ setInterval(loadMETAR, 30 * 60 * 1000);
 // ── FLIGHT STREAK ──────────────────────────────────────────
 var streakData = JSON.parse(localStorage.getItem('pilnk-streak') || '{"total":0,"best":0,"today":0,"date":""}');
 var todayStr = new Date().toISOString().slice(0,10);
-if (streakData.date !== todayStr) { streakData.today = 0; streakData.date = todayStr; }
-var seenHexes = new Set(JSON.parse(localStorage.getItem('pilnk-streak-today') || '[]'));
+var seenHexes;
+if (streakData.date !== todayStr) {
+  // A new day since this page was last open. checkMidnightReset() handles the
+  // rollover while the tab stays open; this is the same reset for the case where
+  // the dashboard was simply closed overnight. Clearing seenHexes is the part
+  // that matters — without it every aircraft seen yesterday is skipped today,
+  // and the Today counter silently under-counts for the rest of the day.
+  streakData.today = 0;
+  streakData.date = todayStr;
+  seenHexes = new Set();
+  localStorage.setItem('pilnk-streak-today', '[]');
+} else {
+  seenHexes = new Set(JSON.parse(localStorage.getItem('pilnk-streak-today') || '[]'));
+}
 
 function trackStreak(a) {
   if (!a.hex || seenHexes.has(a.hex)) return;
@@ -6357,6 +6379,16 @@ function renderAdvRecords() {
   if (r.furthest) { animateStat('rec-furthest', r.furthest.dist.toLocaleString() + ' nm'); document.getElementById('rec-furthest-info').textContent = (r.furthest.callsign || '') + ' ' + (r.furthest.date || ''); }
 }
 
+// Record sanity limits — these MUST match app.py (STATS_MAX_ALT_FT and friends).
+// The browser computes all-time records and POSTs them; the server re-checks
+// with the same numbers and drops anything implausible. Keeping the two equal
+// means the UI never shows a record the server is going to throw away.
+// They drifted once: the client allowed 70000 ft while the server allowed 60000.
+var STATS_MIN_SPEED_KTS = 30;
+var STATS_MAX_SPEED_KTS = 750;
+var STATS_MAX_ALT_FT    = 60000;
+var STATS_MAX_DIST_NM   = 400;
+
 function checkAdvRecords(aircraft) {
   // Don't touch records until they've been loaded from disk.
   // Otherwise an early updateFlights() call would wipe the saved file.
@@ -6371,11 +6403,11 @@ function checkAdvRecords(aircraft) {
     var alt = parseInt(ac.alt_baro || ac.alt || 0);
     var lat = parseFloat(ac.lat || 0);
     var lon = parseFloat(ac.lon || 0);
-    if (speed >= 30 && speed <= 750 && (!advRecords.fastest || speed > advRecords.fastest.speed)) { advRecords.fastest = { callsign: cs, speed: speed, date: today }; changed = true; }
-    if (alt > 0 && alt <= 70000 && (!advRecords.highest || alt > advRecords.highest.alt)) { advRecords.highest = { callsign: cs, alt: alt, date: today }; changed = true; }
+    if (speed >= STATS_MIN_SPEED_KTS && speed <= STATS_MAX_SPEED_KTS && (!advRecords.fastest || speed > advRecords.fastest.speed)) { advRecords.fastest = { callsign: cs, speed: speed, date: today }; changed = true; }
+    if (alt > 0 && alt <= STATS_MAX_ALT_FT && (!advRecords.highest || alt > advRecords.highest.alt)) { advRecords.highest = { callsign: cs, alt: alt, date: today }; changed = true; }
     if (lat && lon) {
       var dist = Math.round(haversineNm(RX_LAT, RX_LON, lat, lon));
-      if (dist > 0 && (!advRecords.furthest || dist > advRecords.furthest.dist)) { advRecords.furthest = { callsign: cs, dist: dist, date: today }; changed = true; }
+      if (dist > 0 && dist <= STATS_MAX_DIST_NM && (!advRecords.furthest || dist > advRecords.furthest.dist)) { advRecords.furthest = { callsign: cs, dist: dist, date: today }; changed = true; }
     }
   });
   if (changed) { renderAdvRecords(); fetch('/api/stats/records', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(advRecords) }).catch(function() {}); }

@@ -1153,7 +1153,7 @@ def get_stats_payload():
         try:
             if os.path.exists(STATS_RECORDS_FILE):
                 with open(STATS_RECORDS_FILE, 'r') as f:
-                    records = json.load(f)
+                    records = _sane_records(json.load(f))
         except Exception:
             pass
 
@@ -3209,12 +3209,54 @@ def serve_recording(filename):
 # -- Stats Records (all-time records persistence) --
 STATS_RECORDS_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'stats_records.json')
 
+# Line-of-sight at FL400 is ~250 nm. 400 leaves room for tropospheric ducting
+# while still rejecting a corrupt position that puts the aircraft in Chile.
+STATS_MAX_DIST_NM = 400
+
+
+def _sane_records(data):
+    """Filter all-time records against the same limits the live stats use.
+
+    The dashboard computes these client-side and POSTs them back, so they are
+    untrusted input — the server-side gate on the ADS-B feed (STATS_MAX_ALT_FT
+    and friends, see ~line 1091) never sees this path. That is how a Gillham
+    decode glitch reached stats_records.json as "ANZ974 at 96,400 ft".
+
+    Applied on BOTH write and read: on write so a bad value is never stored, on
+    read so records captured before this guard existed stop being served.
+
+    A failing record is DROPPED, not clamped — clamping would publish a number
+    nobody actually observed.
+    """
+    if not isinstance(data, dict):
+        return {}
+    limits = {
+        'highest':  ('alt',   0,                   STATS_MAX_ALT_FT),
+        'fastest':  ('speed', STATS_MIN_SPEED_KTS, STATS_MAX_SPEED_KTS),
+        'furthest': ('dist',  0,                   STATS_MAX_DIST_NM),
+        'most_day': ('count', 0,                   1000000),
+    }
+    out = {}
+    for key, (field, lo, hi) in limits.items():
+        rec = data.get(key)
+        if not isinstance(rec, dict):
+            continue
+        val = rec.get(field)
+        if isinstance(val, bool) or not isinstance(val, (int, float)):
+            continue
+        if not (lo < val <= hi):
+            logging.warning(f'[stats] dropped implausible {key} record: {field}={val}')
+            continue
+        out[key] = rec
+    return out
+
+
 @app.route('/api/stats/records', methods=['GET'])
 def get_stats_records():
     try:
         if os.path.exists(STATS_RECORDS_FILE):
             with open(STATS_RECORDS_FILE, 'r') as f:
-                return jsonify(json.load(f))
+                return jsonify(_sane_records(json.load(f)))
     except Exception:
         pass
     return jsonify({})
@@ -3222,7 +3264,7 @@ def get_stats_records():
 @app.route('/api/stats/records', methods=['POST'])
 def save_stats_records():
     try:
-        data = request.get_json()
+        data = _sane_records(request.get_json())
         if data:
             with open(STATS_RECORDS_FILE, 'w') as f:
                 json.dump(data, f, indent=2)
