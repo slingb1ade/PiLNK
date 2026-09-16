@@ -192,22 +192,31 @@ else
     TOTAL=0
     for line in "${ALL[@]:-}"; do [ -n "$line" ] && TOTAL=$((TOTAL+1)); done
 
-    # MME1, 16 Sep 2026: one dongle on the bus, a decoder running on it, no free
-    # receiver for the radio. This script had every fact it needed to say so and
-    # instead asked him to pick a serial, wrote a config that could only ever
-    # crash-loop, and left the dashboard showing "Radio Off" with no reason.
-    # An airband ANTENNA is not a second RECEIVER — an easy and entirely
-    # reasonable thing to conflate if nobody says otherwise. So say it.
+    # MME1, 16 Sep 2026: one dongle VISIBLE on the bus with a decoder running on
+    # it. The script had every fact it needed to explain that and instead asked
+    # him to pick a serial, wrote a config that could only crash-loop, and left
+    # the dashboard saying "Radio Off" with no reason given anywhere.
+    #
+    # Second lesson, same thread, and the more important one: he actually HAD a
+    # second dongle plugged in. It was not enumerating because a Pi 5 on an
+    # undersized supply cuts USB current. "Not on the bus" therefore has two
+    # quite different causes — not owned, or not powered — and telling someone
+    # to buy hardware they already own is its own kind of wrong. Cover both.
     if [ "$TOTAL" -le 1 ] && [ "$DECODER_ACTIVE" -gt 0 ]; then
-        warn "This node has $TOTAL RTL-SDR dongle(s) and an ADS-B decoder is running."
-        warn "ADS-B and ATC airband CANNOT share one dongle. An RTL-SDR has a single"
-        warn "tuner: it listens on 1090 MHz for ADS-B, or 118-137 MHz for the airband,"
-        warn "never both — and dump1090/readsb holds the device exclusively while it runs."
-        warn "The radio needs a SECOND dongle of its own. An airband antenna alone will"
-        warn "not do it: the antenna plugs into a receiver this node does not have yet."
-        warn "You can still finish this install. The engine waits for its dongle and"
-        warn "starts by itself the moment one appears, so there is nothing to re-run"
-        warn "later — it simply will not produce audio until that second dongle exists."
+        warn "Only $TOTAL RTL-SDR dongle(s) visible on the USB bus, and an ADS-B"
+        warn "decoder is already using one of them."
+        warn "ADS-B and ATC airband CANNOT share a dongle. An RTL-SDR has a single"
+        warn "tuner: 1090 MHz for ADS-B, or 118-137 MHz for the airband, never both,"
+        warn "and dump1090/readsb holds the device exclusively while it runs. The"
+        warn "radio needs a second dongle of its own — an airband ANTENNA is not a"
+        warn "second RECEIVER."
+        warn "IF YOU HAVE ALREADY PLUGGED IN A SECOND DONGLE and it is not listed"
+        warn "above, the cause is almost certainly POWER rather than a fault. A Pi 5"
+        warn "on an undersized supply quietly cuts USB current and the second dongle"
+        warn "never enumerates. Use the official 27W USB-C supply, and if you add a"
+        warn "hub make sure it is externally powered, not bus-powered."
+        warn "Either way you can finish this install now. The engine waits for its"
+        warn "dongle and starts by itself the moment one appears — nothing to re-run."
     fi
 
     if [ ${#CANDIDATES[@]} -ge 1 ] && [ "$DECODER_ACTIVE" -gt 0 ] && [ -z "$CLAIMED" ] && [ "$TOTAL" -gt 1 ]; then
