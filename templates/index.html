@@ -298,6 +298,12 @@
   .av-status{font-size:0.6rem;color:var(--text-dim);margin-top:6px;font-style:italic;}
   /* Map */
   #map{flex:1;min-width:0;min-height:0;}
+  /* 3D Approach panel: a flex sibling of #map that swaps in for it */
+  #view3d{display:none;flex:1;min-width:0;min-height:0;flex-direction:column;background:#0b0f1a;}
+  #body.view3d-open #map{display:none;}
+  #body.view3d-open #view3d{display:flex;}
+  #view3dBar{flex-shrink:0;height:34px;display:flex;align-items:center;gap:10px;padding:0 10px;background:rgba(10,14,26,0.85);border-bottom:1px solid #1f2a44;font-family:'Share Tech Mono',monospace;}
+  #view3dFrame{flex:1;min-height:0;width:100%;border:0;background:#0b0f1a;}
   .map-legend{background:var(--bg-card);border:1px solid var(--border);border-radius:8px;padding:8px 12px;font-family:'Share Tech Mono',monospace;font-size:0.6rem;color:var(--text-dim);box-shadow:var(--shadow);}
   .map-legend-row{display:flex;align-items:center;gap:6px;margin-bottom:3px;}
   .map-legend-row:last-child{margin-bottom:0;}
@@ -1302,6 +1308,9 @@
         </button>
         <div class="nav-menu" id="navMenu" role="menu">
           <button class="nav-item active" data-tab="traffic" role="menuitem" onclick="navPick('traffic','Traffic')">Traffic</button>
+          <!-- Opens the 3D view in the map's place (AUTO: watches for arrivals). Not a sidebar pane, so the
+               current pane (usually Traffic) stays put and its cards can retarget the view. -->
+          <button class="nav-item" data-tab="approach3d" role="menuitem" onclick="open3D(null,'AUTO · watching for arrivals'); closeNavMenu();">3D Approach</button>
           <!-- rtl_fm Radio tab hidden 2026-07-07 — superseded by SDR Audio (pilnk_bridge); tab code retained below for the release-line merge -->
           <!-- Pi5 2026-07-08: Radio button RESTORED — no SDR++ engine here yet; rtl_fm may still work. Re-hide at Phase 2/3. -->
 <!-- rtl_fm Radio tab retired 2026-07-10: pilnkradio (v2 engine) + SDR Audio tab
@@ -1827,6 +1836,20 @@
 
     </div><!-- end sidebar -->
     <div id="map"></div>
+    <!-- 3D Approach — takes the map's place in the layout (header and sidebar stay; the Traffic
+         list keeps working, and 🛬 on any card switches the aircraft being followed). Loaded in an
+         iframe (zero CSS/JS coupling), unloaded on close (no idle GPU cost). v1.4.7 opened this as
+         a full-screen layer; AJ's design (2026-09-17) is a view inside the dashboard, not over it. -->
+    <div id="view3d">
+      <div id="view3dBar">
+        <span style="color:#a78bfa;font-family:'Orbitron',sans-serif;font-size:0.7rem;letter-spacing:0.08em;">3D APPROACH</span>
+        <span id="view3dTitle" style="color:#8ea2c7;font-size:0.65rem;"></span>
+        <span style="flex:1"></span>
+        <button onclick="popout3D()" title="Open in its own tab" style="background:none;border:1px solid #1f2a44;border-radius:4px;color:#8ea2c7;font-family:inherit;font-size:0.6rem;padding:3px 8px;cursor:pointer;">↗ Pop out</button>
+        <button onclick="close3D()" title="Back to the map (Esc)" style="background:none;border:1px solid rgba(167,139,250,0.45);border-radius:4px;color:#a78bfa;font-family:inherit;font-size:0.6rem;padding:3px 9px;cursor:pointer;">✕ Map</button>
+      </div>
+      <iframe id="view3dFrame" src="about:blank" title="PiLNK 3D Approach" allow="fullscreen"></iframe>
+    </div>
     <!-- ── Altitude Profile (side-on view) — slide-up panel. One self-contained
          block; toggled from Aviation Overlay > Altitude View. Removable cleanly. -->
     <div id="altProfilePanel" aria-hidden="true">
@@ -1890,18 +1913,6 @@
   @media (max-width:600px){ .cc-bds-grid{ grid-template-columns:1fr; } }
 </style>
 <div id="cinematicOverlay">
-  <!-- v1.4.7: 3D Approach overlay — the approach view opens over the dashboard in an
-       iframe (zero CSS/JS coupling) and unloads on close (no idle GPU cost). -->
-  <div id="view3d" style="display:none;position:fixed;inset:0;z-index:100000;background:#0b0f1a;">
-    <div style="position:absolute;top:0;left:0;right:0;height:34px;display:flex;align-items:center;gap:10px;padding:0 10px;background:rgba(10,14,26,0.85);border-bottom:1px solid #1f2a44;z-index:2;font-family:'Share Tech Mono',monospace;">
-      <span style="color:#a78bfa;font-family:'Orbitron',sans-serif;font-size:0.7rem;letter-spacing:0.08em;">3D APPROACH</span>
-      <span id="view3dTitle" style="color:#8ea2c7;font-size:0.65rem;"></span>
-      <span style="flex:1"></span>
-      <button onclick="popout3D()" title="Open in its own tab" style="background:none;border:1px solid #1f2a44;border-radius:4px;color:#8ea2c7;font-family:inherit;font-size:0.6rem;padding:3px 8px;cursor:pointer;">↗ Pop out</button>
-      <button onclick="close3D()" title="Close (Esc)" style="background:none;border:1px solid rgba(167,139,250,0.45);border-radius:4px;color:#a78bfa;font-family:inherit;font-size:0.7rem;padding:2px 9px;cursor:pointer;">✕</button>
-    </div>
-    <iframe id="view3dFrame" src="about:blank" title="PiLNK 3D Approach" style="position:absolute;top:34px;left:0;width:100%;height:calc(100% - 34px);border:0;background:#0b0f1a;" allow="fullscreen"></iframe>
-  </div>
   <div id="cinematicCard">
     <div class="cc-timer-bar" id="ccTimerBar" style="position:absolute;top:0;left:0;z-index:5;"></div>
     <div class="cc-left">
@@ -5748,22 +5759,28 @@ function build3DUrl(hex) {
   return u.replace('?&', '?');
 }
 var view3dUrl = '';
+function is3DOpen() { return document.getElementById('body').classList.contains('view3d-open'); }
 function open3D(hex, title) {
-  view3dUrl = build3DUrl(hex);
+  var url = build3DUrl(hex), frame = document.getElementById('view3dFrame');
   document.getElementById('view3dTitle').textContent = title || '';
-  document.getElementById('view3dFrame').src = view3dUrl;
-  document.getElementById('view3d').style.display = 'block';
+  if (url !== view3dUrl || !is3DOpen()) frame.src = url;   // same aircraft while already open: leave the scene alone
+  view3dUrl = url;
+  document.getElementById('body').classList.add('view3d-open');   // the panel takes the map's place; header and sidebar stay
+  if (typeof closeCinematicCard === 'function' && typeof ccVisible !== 'undefined' && ccVisible) { try { closeCinematicCard(); } catch (e) {} }   // the card is a modal over the whole dashboard; it would hide the view
 }
 function close3D() {
-  document.getElementById('view3d').style.display = 'none';
+  document.getElementById('body').classList.remove('view3d-open');
   document.getElementById('view3dFrame').src = 'about:blank';   // unload the WebGL scene
+  view3dUrl = '';
+  // Leaflet was display:none while the 3D view had its place; tell it the box is back
+  if (typeof map !== 'undefined' && map && map.invalidateSize) setTimeout(function(){ map.invalidateSize(); }, 0);
 }
 function popout3D() {
   if (view3dUrl) window.open(view3dUrl, 'pilnk3d');
   close3D();
 }
 document.addEventListener('keydown', function(e){
-  if (e.key === 'Escape' && document.getElementById('view3d').style.display === 'block') close3D();
+  if (e.key === 'Escape' && is3DOpen()) close3D();
 });
 function cc3DView() {
   if (!ccCurrentHex) return;
