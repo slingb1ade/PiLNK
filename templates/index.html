@@ -4929,6 +4929,13 @@ function updateFlights(){
       }
       trackStreak(a);
     });
+    // Keep an open cinematic card live. lastAircraft[] has just been refreshed
+    // for every aircraft above, so this re-reads the one the card is showing.
+    // Cheap: DOM writes only, no fetch. Gated on ccVisible so it costs nothing
+    // when no card is open.
+    if (ccVisible && ccCurrentCS && lastAircraft[ccCurrentCS]) {
+      refreshCinematicCardLive(lastAircraft[ccCurrentCS], ccCurrentCS);
+    }
     // Update advanced stats with full aircraft array
     updateAdvStats(ac);
     if(window.updateAirportInset) updateAirportInset();
@@ -5037,6 +5044,7 @@ function highlightTransmitting(callsign){
 
 // ── CINEMATIC CARD ─────────────────────────────────────────
 var ccVisible = false;
+var ccAuto = false;    // was the open card auto-triggered ("NOW PASSING")? read by refreshCinematicCardLive()
 var ccDismissTimer = null;
 var ccWaveTimer = null;
 var ccCurrentCS = null;
@@ -5402,6 +5410,76 @@ function populateBDS(a) {
   block('ccPrimary', pri.concat(sec));
 }
 
+// Live half of the cinematic card (2026-09-18). Everything here can change
+// while the card is open, so updateFlights() calls it on every 2 s poll for
+// the aircraft the card is showing. Before this, the card was a snapshot of
+// the moment it opened: altitude, speed, heading, V/S, the squawk banner and
+// the Mode S data all froze until you closed and reopened it.
+//
+// Static content — callsign text, airline lookup, photo, meta tags — stays in
+// openCinematicCard() and is set once. Keeping the two apart is what makes
+// the refresh cheap enough to run every tick.
+function refreshCinematicCardLive(a, cs) {
+  if (!a) return;
+  var ph = getPhase(a, cs);
+  var col = ph.color === '#ffffff' ? '#dc2626' : ph.color;
+  var vr = a.baro_rate || a.geom_rate || 0;
+  var isTx = !!transmitting[cs];
+
+  document.getElementById('ccCallsign').style.color = col;
+
+  // Emergency squawk banner — colour-coded flashing alert for 7700/7600/7500.
+  (function(){
+    var el = document.getElementById('ccEmerg');
+    var info = a.squawk && SQUAWK_CODES[a.squawk];
+    if (info) {
+      el.textContent = info.label + ' · SQUAWK ' + a.squawk;
+      el.style.background = info.color;
+      el.style.display = 'block';
+    } else { el.style.display = 'none'; }
+  })();
+  document.getElementById('ccAlt').textContent = a.alt_baro ? Math.round(a.alt_baro).toLocaleString() + ' ft' : '–';
+  document.getElementById('ccSpd').textContent = a.gs ? Math.round(a.gs) + ' kt' : '–';
+  document.getElementById('ccHdg').textContent = a.track ? Math.round(a.track) + '°' : '–';
+  document.getElementById('ccVs').textContent = vr ? (vr>0?'+':'')+Math.round(vr)+' fpm' : '–';
+
+  // Mode S Comm-B enrichment sections (Hidden Sky Data) — additive, self-hiding
+  populateBDS(a);
+
+  // Badge — only show for auto-triggered or transmitting
+  var badge = document.getElementById('ccBadge');
+  badge.style.display = 'none';
+  if (ccAuto) {
+    badge.style.display = 'inline-flex';
+    badge.innerHTML = '<span>NOW PASSING</span>';
+    badge.style.borderColor = col;
+    badge.style.color = col;
+  }
+  // Transmitting badge always shows
+  if (isTx) {
+    badge.style.display = 'inline-flex';
+    badge.innerHTML = '<span class="cc-live-dot"></span><span>TRANSMITTING</span>';
+    badge.style.borderColor = '#dc2626';
+    badge.style.color = '#dc2626';
+  }
+
+  // Phase indicator
+  document.getElementById('ccPhase').innerHTML =
+    '<div class="cc-phase-dot" style="background:'+col+';box-shadow:0 0 6px '+col+';"></div>' +
+    '<span style="color:'+col+';">'+ph.label+'</span>';
+
+  // Waveform. startCCWaveform() is NOT idempotent — every call starts a new
+  // requestAnimationFrame loop and drops the handle to the previous one, so
+  // calling it on every 2 s tick would pile up orphan draw loops. Only start
+  // it on the transition into 'active'; stop is safe to repeat.
+  var wf = document.getElementById('ccWaveform');
+  if (isTx) {
+    if (!wf.classList.contains('active')) { wf.classList.add('active'); startCCWaveform(); }
+  } else {
+    wf.classList.remove('active'); stopCCWaveform();
+  }
+}
+
 function openCinematicCard(cs, auto) {
   var a = lastAircraft[cs];
   if (!a) return;
@@ -5427,48 +5505,13 @@ function openCinematicCard(cs, auto) {
   // Clear any existing dismiss timer
   if (ccDismissTimer) { clearTimeout(ccDismissTimer); ccDismissTimer = null; }
 
-  var ph = getPhase(a, cs);
-  var col = ph.color === '#ffffff' ? '#dc2626' : ph.color;
-  var vr = a.baro_rate || a.geom_rate || 0;
-  var isTx = !!transmitting[cs];
+  ccAuto = !!auto;
 
-  // Populate data
+  // Callsign text is fixed for the life of the card. Everything that can
+  // change while it is open is written by refreshCinematicCardLive(), which
+  // updateFlights() also calls on every 2 s poll while the card is showing.
   document.getElementById('ccCallsign').textContent = cs;
-  document.getElementById('ccCallsign').style.color = col;
-  // Emergency squawk banner — colour-coded flashing alert for 7700/7600/7500.
-  (function(){
-    var el = document.getElementById('ccEmerg');
-    var info = a.squawk && SQUAWK_CODES[a.squawk];
-    if (info) {
-      el.textContent = info.label + ' · SQUAWK ' + a.squawk;
-      el.style.background = info.color;
-      el.style.display = 'block';
-    } else { el.style.display = 'none'; }
-  })();
-  document.getElementById('ccAlt').textContent = a.alt_baro ? Math.round(a.alt_baro).toLocaleString() + ' ft' : '–';
-  document.getElementById('ccSpd').textContent = a.gs ? Math.round(a.gs) + ' kt' : '–';
-  document.getElementById('ccHdg').textContent = a.track ? Math.round(a.track) + '°' : '–';
-  document.getElementById('ccVs').textContent = vr ? (vr>0?'+':'')+Math.round(vr)+' fpm' : '–';
-
-  // Mode S Comm-B enrichment sections (Hidden Sky Data) — additive, self-hiding
-  populateBDS(a);
-
-  // Badge — only show for auto-triggered or transmitting
-  var badge = document.getElementById('ccBadge');
-  badge.style.display = 'none';
-  if (auto) {
-    badge.style.display = 'inline-flex';
-    badge.innerHTML = '<span>NOW PASSING</span>';
-    badge.style.borderColor = col;
-    badge.style.color = col;
-  }
-  // Transmitting badge always shows
-  if (isTx) {
-    badge.style.display = 'inline-flex';
-    badge.innerHTML = '<span class="cc-live-dot"></span><span>TRANSMITTING</span>';
-    badge.style.borderColor = '#dc2626';
-    badge.style.color = '#dc2626';
-  }
+  refreshCinematicCardLive(a, cs);
 
   // Airline & model (route display removed — accurate flight-route data isn't
   // always available so we no longer surface it on the cinematic card)
@@ -5498,15 +5541,7 @@ function openCinematicCard(cs, auto) {
     watchBtn.classList.remove('show');
   }
 
-  // Phase indicator
-  document.getElementById('ccPhase').innerHTML =
-    '<div class="cc-phase-dot" style="background:'+col+';box-shadow:0 0 6px '+col+';"></div>' +
-    '<span style="color:'+col+';">'+ph.label+'</span>';
-
-  // Waveform
-  var wf = document.getElementById('ccWaveform');
-  if (isTx) { wf.classList.add('active'); startCCWaveform(); }
-  else { wf.classList.remove('active'); stopCCWaveform(); }
+  // Phase indicator and waveform are live — written by refreshCinematicCardLive().
 
   // Photo — reset first
   document.getElementById('ccImg').style.display = 'none';
