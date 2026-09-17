@@ -20,7 +20,9 @@
   #cams{bottom:12px;left:50%;transform:translateX(-50%);display:flex;gap:6px;pointer-events:auto}
   .cambtn{font-family:inherit;font-size:11px;background:#0e1526;color:var(--dim);border:1px solid var(--line);border-radius:6px;padding:6px 10px;cursor:pointer}
   .cambtn.on{color:var(--txt);border-color:var(--purple)}
-  #note{bottom:12px;right:12px;color:var(--dim);font-size:10px;text-align:right;max-width:300px}
+  #helpbtn{bottom:12px;left:12px;pointer-events:auto;width:28px;padding:6px 0;text-align:center}   /* bottom-right belongs to the map attribution */
+  #note{display:none;bottom:46px;left:12px;color:var(--dim);font-size:10px;text-align:left;max-width:320px;background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:8px 10px}
+  #note.show{display:block}
   .maplibregl-ctrl-attrib{font-size:10px}
 </style>
 </head>
@@ -37,9 +39,13 @@
   <div class="row"><span class="k">Alt</span><span class="v" id="d_alt">—</span></div>
   <div class="row"><span class="k">Dist</span><span class="v" id="d_dist">—</span></div>
   <div class="row"><span class="k">Hdg / Roll</span><span class="v" id="d_att">—</span></div>
-  <div class="row"><span class="k">TAS</span><span class="v" id="d_tas">—</span></div>
-  <div class="row"><span class="k">Sel alt</span><span class="v" id="d_sel">—</span></div>
+  <div class="row"><span class="k">GS / TAS / IAS</span><span class="v" id="d_spd">—</span></div>
+  <div class="row"><span class="k">Mach</span><span class="v" id="d_mach">—</span></div>
+  <div class="row"><span class="k">V/S</span><span class="v" id="d_vs">—</span></div>
+  <div class="row"><span class="k">Sel alt / hdg</span><span class="v" id="d_sel">—</span></div>
+  <div class="row"><span class="k">QNH set</span><span class="v" id="d_qnhset">—</span></div>
   <div class="row"><span class="k" id="d_altsrc" style="font-size:10px;opacity:.7">alt: —</span></div>
+  <div class="row"><span class="k" id="d_src" style="font-size:10px;opacity:.7">—</span></div>
 </div>
 <div class="hud" id="cams">
   <button class="cambtn on" data-cam="director">Director</button>
@@ -47,7 +53,8 @@
   <button class="cambtn" data-cam="tower">Tower</button>
   <button class="cambtn" data-cam="free">Free (drag · right-drag tilt)</button>
 </div>
-<div class="hud" id="note">Wheel: chase distance / tower zoom. Buildings are OSM heights (patchy outside city centres). Options: <b>?buildings=0</b>, <b>?ve=</b> terrain exaggeration (1.5), <b>?fov=</b> tower lens (18), <b>?cut=</b> tower cut, nm (1.5), <b>?acscale=</b> aircraft size in the tower shot (3), <b>?magvar= ?geomoff= ?qnh=</b> calibration overrides, <b>?terrain=0</b>, <b>?dem=</b>, <b>?base=sat</b>.</div>
+<button class="hud cambtn" id="helpbtn" title="Options" onclick="document.getElementById('note').classList.toggle('show')">?</button>
+<div class="hud" id="note">Wheel: chase distance / tower zoom. Buildings are OSM heights (patchy outside city centres). Options: <b>?buildings=0</b>, <b>?ve=</b> terrain exaggeration (1.5), <b>?fov=</b> tower lens (18), <b>?cut=</b> tower cut, ft above the field (500), <b>?acscale=</b> aircraft size in the tower shot (3), <b>?magvar= ?geomoff= ?qnh=</b> calibration overrides, <b>?terrain=0</b>, <b>?dem=</b>, <b>?base=sat</b>.</div>
 
 <script src="https://unpkg.com/maplibre-gl@5.24.0/dist/maplibre-gl.js"></script>
 <script crossorigin="anonymous" src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
@@ -100,12 +107,37 @@ function integrate(){   // predict where the aircraft is *now* from the last fix
     dE=(fix.gs/r)*(Math.cos(th0)-Math.cos(th)); dN=(fix.gs/r)*(Math.sin(th)-Math.sin(th0)); pHdg=(fix.hdg+r*dt*R2D+360)%360; }
   else { dE=fix.vE*dt; dN=fix.vN*dt; pHdg=fix.hdg; }
   const pLon=fix.lon+dE/mPerLon, pLat=fix.lat+dN/mPerLat, pAlt=fix.gnd?SITE.elev:Math.max(SITE.elev,fix.altM+fix.vU*dt);   // real metres; VE is applied at draw time
-  if(!aircraft||aircraft.key!==fix.key||document.hidden){ aircraft={lon:pLon,lat:pLat,altM:pAlt,hdg:pHdg,roll:fix.roll,pitch:fix.pitch,dist:fix.dist,gnd:fix.gnd,key:fix.key}; return; }
-  const k=0.08;   // per-frame easing: fix corrections arrive as a glide, not a jump
-  aircraft.lon+=(pLon-aircraft.lon)*k; aircraft.lat+=(pLat-aircraft.lat)*k; aircraft.altM+=(pAlt-aircraft.altM)*k;
-  aircraft.hdg=lerpAng(aircraft.hdg,pHdg,k); aircraft.roll+=(fix.roll-aircraft.roll)*k; aircraft.pitch+=(fix.pitch-aircraft.pitch)*k;
+  const now=performance.now();
+  if(!aircraft||aircraft.key!==fix.key||document.hidden){ aircraft={lon:pLon,lat:pLat,altM:pAlt,hdg:pHdg,roll:fix.roll,pitch:fix.pitch,dist:fix.dist,gnd:fix.gnd,key:fix.key,fixT:fix.t}; corr=null; return; }
+  /* When a new fix lands, the prediction restarts from it — typically 10-30 m from where the old guess
+     had the aircraft drawn (ordinary ADS-B noise). Snapping that closed, even over half a second, is a
+     visible nudge every two seconds at chase range. Instead the gap is captured as an offset and faded
+     out smoothly across the interval until the next fix is due, so the drawn path stays continuous:
+     drawn = prediction(now) + offset · (1 − smoothstep(elapsed / CORR_T)). */
+  if(aircraft.fixT!==fix.t){
+    const oE=(aircraft.lon-pLon)*mPerLon, oN=(aircraft.lat-pLat)*mPerLat;
+    /* Split the correction along and across the track. Along-track is timing and speed — real, take
+       it in full. Cross-track on a straight leg is almost entirely position noise: an airliner on the
+       autopilot does not weave. Keeping a fraction of the cross-track offset makes the drawn path a
+       low-pass of the fixes instead of following every wobble. Dropped during a turn, and whenever
+       the offset is too big to be noise (a genuine sidestep), so nothing real is ever lagged. */
+    const s=Math.sin(fix.trk), c=Math.cos(fix.trk);
+    const cross=oE*c-oN*s;
+    const keep=(turning||Math.abs(cross)>60)?0.15:XTRACK_KEEP;
+    bias.e=cross*keep*c; bias.n=-cross*keep*s;
+    corr={dE:oE-bias.e, dN:oN-bias.n, dAlt:aircraft.altM-pAlt, dHdg:((aircraft.hdg-pHdg+540)%360)-180, t0:now};
+    aircraft.fixT=fix.t;
+  }
+  let w=0;
+  if(corr){ const u=Math.min(1,(now-corr.t0)/1000/CORR_T); w=1-u*u*(3-2*u); if(u>=1)corr=null; }
+  aircraft.lon=pLon+(bias.e+(corr?corr.dE*w:0))/mPerLon; aircraft.lat=pLat+(bias.n+(corr?corr.dN*w:0))/mPerLat; aircraft.altM=pAlt+(corr?corr.dAlt*w:0);
+  aircraft.hdg=(pHdg+(corr?corr.dHdg*w:0)+360)%360;
+  const k=0.08; aircraft.roll+=(fix.roll-aircraft.roll)*k; aircraft.pitch+=(fix.pitch-aircraft.pitch)*k;   // attitude: plain easing is fine
   aircraft.dist=fix.dist; aircraft.gnd=fix.gnd;
 }
+let corr=null; const CORR_T=1.8;   // seconds to absorb a fix correction — just under the 2 s poll, so it is gone before the next one
+const bias={e:0,n:0};              // retained cross-track offset: the lateral low-pass
+const XTRACK_KEEP=(_q.get('xtrack')!=null&&_q.get('xtrack')!=='')?+_q.get('xtrack'):0.75;   // 0 = follow every fix, 0.9 = very smooth
 const st=(t)=>document.getElementById('st').textContent=t;
 
 /* ---------- Three.js custom layer: the aircraft ---------- */
@@ -141,7 +173,7 @@ const acLayer={
     this.loader=new THREE.GLTFLoader(); this.key=null; this.targetSpan=40;
   },
   ensureModel(t){
-    const key=_q.get('force')||modelFor(t); if(key===this.key||this.loading)return; this.loading=true;
+    const key=_q.get('force')||modelFor(t); if(!this.loader||key===this.key||this.loading)return; this.loading=true;   // no loader until the layer is on the map
     this.loader.load('/static/'+key,(g)=>{ while(this.holder.children.length)this.holder.remove(this.holder.children[0]);
       const mm=g.scene,box=new THREE.Box3().setFromObject(mm),size=new THREE.Vector3(),c=new THREE.Vector3(); box.getSize(size);box.getCenter(c);mm.position.sub(c);
       mm.scale.setScalar(this.targetSpan/(Math.max(size.x,size.z)||1)); mm.traverse(o=>{if(o.isMesh&&o.material){(Array.isArray(o.material)?o.material:[o.material]).forEach(mt=>{mt.metalness=0.25;mt.roughness=0.6;whiten(mt);});}});
@@ -339,6 +371,7 @@ async function warmCorridor(){
     while(_pfBusy>3) await new Promise(r=>setTimeout(r,100));
     _pfBusy++; tileFetch(u).catch(()=>{}).then(()=>{_pfBusy--;_warmed++;}); }
 }
+const _hdgMem={hex:null,magH:null,trk:null,crab:0};   // last fresh magnetic heading, the track at that moment, and the crab it implied
 const mvS=[]; function median(a){const s=a.slice().sort((x,y)=>x-y),m=s.length>>1;return s.length%2?s[m]:(s[m-1]+s[m])/2;}
 async function poll(){
   try{
@@ -355,9 +388,24 @@ async function poll(){
       if(mvLive!=null&&mvS.length%10===0&&mvStored!==mvLive){mvStored=mvLive;saveCal();}
       const mvEst=(mvLive!=null)?mvLive:mvStored;
       const mv=(CFG.magVar!=null)?CFG.magVar:(mvEst!=null?mvEst:0);
-      const hdg=magH!=null?((magH+mv)%360+360)%360:(typeof a.track==='number'?a.track:0);
+      /* Heading. Magnetic heading (BDS 6,0) is interrogated, not broadcast: away from the radar it
+         can sit unchanged for many seconds while the ADS-B track keeps turning — the model paused
+         facing north mid-turn on the 05R base. Its resolution is 0.35°, so in a turn a fresh reply
+         always differs from the last; an IDENTICAL value while the track has swung is stale. Then
+         steer by track plus the last known crab (heading − track) until a fresh heading arrives. */
+      const trkNow=(typeof a.track==='number')?a.track:null, hx=(a.hex||'').toLowerCase();
+      if(_hdgMem.hex!==hx){ _hdgMem.magH=null; _hdgMem.trk=null; _hdgMem.crab=0; }   // new subject: forget the old one's crab
+      let hdg;
+      if(magH!=null){
+        const fresh=(magH!==_hdgMem.magH), swung=(trkNow!=null&&_hdgMem.trk!=null&&Math.abs(((trkNow-_hdgMem.trk+540)%360)-180)>3);
+        if(fresh||!swung||trkNow==null){ hdg=((magH+mv)%360+360)%360; _hdgMem.stale=false; if(fresh){ _hdgMem.magH=magH; _hdgMem.trk=trkNow; if(trkNow!=null)_hdgMem.crab=((hdg-trkNow+540)%360)-180; } }
+        else { hdg=((trkNow+(_hdgMem.crab||0))%360+360)%360; _hdgMem.stale=true; }   // stale heading, aircraft turning: follow the track
+      } else { hdg=trkNow!=null?trkNow:0; _hdgMem.stale=false; }
+      _hdgMem.hex=hx;
       const vs=vsOf(a), tas=(typeof a.bds50_true_airspeed==='number')?a.bds50_true_airspeed:(a.gs||250);
-      const pitch=Math.atan2((vs/60)*0.3048,(tas*0.514)||1)*R2D;
+      // pitch attitude from the inertial vertical rate when the aircraft sends it (BDS 6,0) — steadier than the barometric one
+      const vsAtt=(typeof a.bds60_inertial_vertical_rate==='number')?a.bds60_inertial_vertical_rate:vs;
+      const pitch=Math.atan2((vsAtt/60)*0.3048,(tas*0.514)||1)*R2D;
       /* Altitude: prefer GNSS geometric altitude (immune to QNH) once the local datum has been learned
          from aircraft seen ON THE GROUND at the field; until then barometric + METAR QNH. */
       const geomM=(typeof a.alt_geom==='number')?a.alt_geom*0.3048:null;
@@ -371,14 +419,22 @@ async function poll(){
       else if(typeof a.alt_baro==='number'){ altM=Math.max(SITE.elev,(a.alt_baro+corr)*0.3048);
         altSrc=(qnh!=null?'baro + QNH '+Math.round(qnh)+' ('+(corr>=0?'+':'')+Math.round(corr)+' ft)':'baro (pressure alt, no QNH)')+(gSamples.length?' · GNSS datum '+gSamples.length+'/3':''); }
       else { altM=SITE.elev; altSrc='—'; }
-      document.getElementById('d_altsrc').textContent='alt: '+altSrc;
+      document.getElementById('d_altsrc').textContent='alt: '+altSrc+' · fix '+(typeof a.seen_pos==='number'?a.seen_pos.toFixed(1):'?')+' s old';
       // dead-reckoning fix: position + velocity (m/s ENU) + age; tick() integrates and eases toward it
       const gsMs=(a.gs||0)*0.5144, trkDeg=(typeof a.track==='number'?a.track:hdg), trk=trkDeg*D2R;
       const tFix=performance.now()-Math.min(a.seen_pos||0,12)*1000, key=(a.hex||'').toLowerCase();
       // turn rate, rad/s (+ = right): BDS 5,0 track rate when the aircraft sends it, else the change in
       // track between this fix and the last one from the same aircraft. Clamped to ±6°/s.
+      /* Turn rate, best source first:
+           1. BDS 5,0 track rate — the aircraft's own figure.
+           2. BDS 5,0 roll — bank angle *is* the turn rate (rate = g·tan(bank)/TAS), and it is
+              instantaneous: the moment the wings are level on final, the rate is zero. The two-fix
+              estimate below is what made the aircraft curve through the centreline after a turn —
+              it still held the last two seconds of the turn.
+           3. Change in track between consecutive fixes — for aircraft with no Mode S EHS at all. */
       let rate=0;
       if(typeof a.bds50_track_rate==='number') rate=a.bds50_track_rate*D2R;
+      else if(typeof a.bds50_roll==='number'&&tas>40) rate=9.81*Math.tan(a.bds50_roll*D2R)/(tas*0.5144);
       else if(fix&&fix.key===key&&tFix-fix.t>800&&tFix-fix.t<12000){ let d=((trkDeg-fix.trk*R2D+540)%360)-180; rate=d*D2R/((tFix-fix.t)/1000); }
       rate=Math.max(-6*D2R,Math.min(6*D2R,rate));
       if(fix&&fix.key===key&&tFix-fix.t<300) rate=fix.rate;   // same fix re-served: keep the last estimate
@@ -391,8 +447,16 @@ async function poll(){
       document.getElementById('d_alt').textContent=a.alt_baro==='ground'?'GROUND':Math.round(a.alt_baro).toLocaleString()+' ft'+(qnh?' (Q'+qnh+')':'');
       document.getElementById('d_dist').textContent=fix.dist.toFixed(1)+' nm';
       document.getElementById('d_att').textContent=Math.round(hdg)+'° / '+roll.toFixed(1)+'°';
-      document.getElementById('d_tas').textContent=a.bds50_true_airspeed!=null?Math.round(a.bds50_true_airspeed)+' kt':'—';
-      document.getElementById('d_sel').textContent=a.bds40_selected_altitude_mcp!=null?Math.round(a.bds40_selected_altitude_mcp)+' ft':'—';
+      const n=(v,u,d)=>(typeof v==='number')?(d?v.toFixed(d):Math.round(v))+(u||''):'—';
+      document.getElementById('d_spd').textContent=n(a.gs)+' / '+n(a.bds50_true_airspeed)+' / '+n(a.bds60_indicated_airspeed)+' kt';
+      document.getElementById('d_mach').textContent=n(a.bds60_mach,'',3);
+      document.getElementById('d_vs').textContent=(typeof vs==='number'&&vs!==0?(vs>0?'+':'')+Math.round(vs)+' fpm':'—')
+        +(typeof a.bds60_inertial_vertical_rate==='number'?' · inertial '+(a.bds60_inertial_vertical_rate>0?'+':'')+Math.round(a.bds60_inertial_vertical_rate):'');
+      const selHdg=(typeof a.bds40_selected_heading==='number')?a.bds40_selected_heading:(typeof a.nav_heading==='number'?a.nav_heading:null);
+      document.getElementById('d_sel').textContent=n(a.bds40_selected_altitude_mcp,' ft')+' / '+n(selHdg,'°');
+      document.getElementById('d_qnhset').textContent=(typeof a.bds40_baro_pressure_setting==='number')?a.bds40_baro_pressure_setting.toFixed(1)+' hPa'+(qnh?' (METAR '+Math.round(qnh)+')':''):'—';
+      const src=[]; if(a.bds40_selected_altitude_mcp!=null||a.bds40_baro_pressure_setting!=null)src.push('4,0'); if(a.bds50_roll!=null||a.bds50_true_airspeed!=null)src.push('5,0'); if(a.bds60_magnetic_heading!=null||a.bds60_indicated_airspeed!=null)src.push('6,0');
+      document.getElementById('d_src').textContent=(src.length?'Mode S EHS: BDS '+src.join(' · ')+(a.bds50_track_rate!=null?' · turn rate from aircraft':(a.bds50_roll!=null?' · turn rate from bank':'')):'ADS-B only — no EHS from this aircraft')+(_hdgMem.stale?' · hdg stale → track':'');
       st(CFG.magVar!=null?'mag var '+fmtSigned(CFG.magVar)+'° (set)'
         :(mvLive!=null?'mag var '+fmtSigned(mvLive)+'° est · n='+mvS.length
         :(mvStored!=null?'mag var '+fmtSigned(mvStored)+'° (remembered) · refining n='+mvS.length:'mag var: calibrating from traffic…')));
@@ -411,7 +475,10 @@ const FOV_DEFAULT=36.87;   // MapLibre's default vertical FOV; restored for chas
    line, and it settles back down onto the tower as the aircraft descends. */
 const TOWER_FOV=(_q.get('fov')!=null&&_q.get('fov')!=='')?+_q.get('fov'):18;
 const MIN_DEP=5.5;         // degrees above the aircraft the camera must stay (MapLibre clamps pitch at 85)
-const CUT_NM=(_q.get('cut')!=null&&_q.get('cut')!=='')?+_q.get('cut'):1.5;   // Director cuts chase → tower here
+const CUT_FT=(_q.get('cut')!=null&&_q.get('cut')!=='')?+_q.get('cut'):500;   // Director cuts chase → tower below this height above the field (feet)
+let dirTower=false, idle=false, lastSeenT=0;
+let camS=null;                 // smoothed camera state for the chase shot
+const CAM_TAU_POS=0.6, CAM_TAU_HDG=1.5;   // seconds; heading is smoothed harder — rotation is what the eye notices
 /* The tower lens is set by how much of the field we want in frame, which leaves the aircraft small.
    Rather than fight that with the camera, draw the aircraft larger than life in the tower shot only —
    the map keeps its framing, the aircraft reads clearly, and the chase view stays true to scale. */
@@ -434,9 +501,27 @@ function tick(){
   requestAnimationFrame(tick);
   if(!map)return;
   integrate();
-  if(!aircraft)return;
+  if(!aircraft){
+    /* Nothing inbound: a few seconds after the last aircraft leaves, ease to a wide shot from the
+       tower down the runway rather than freezing wherever the camera happened to be. */
+    if(camMode!=='free'&&!idle&&map.isStyleLoaded()&&performance.now()-lastSeenT>4000){
+      idle=true; map.setVerticalFieldOfView(FOV_DEFAULT);
+      const h=(SITE.hdg!=null?SITE.hdg:0)*D2R, ahead=1800;   // look-at point 1.8 km along the runway heading
+      map.easeTo({center:[SITE.lon+Math.sin(h)*ahead/mPerLon, SITE.lat+Math.cos(h)*ahead/mPerLat], zoom:14.3, pitch:62, bearing:SITE.hdg!=null?SITE.hdg:0, duration:2500, essential:true});
+    }
+    return;
+  }
+  lastSeenT=performance.now(); idle=false;
   if(camMode==='free'){ map.triggerRepaint(); return; }
-  const a=aircraft; const useTower=(camMode==='tower')||(camMode==='director'&&(a.gnd||a.dist<CUT_NM));
+  const a=aircraft;
+  /* Director cut, chase → tower. Measured as height above the field, not distance from the airport
+     reference point: on a 3° slope CUT_FT ≈ 500 ft is ~1.6 nm from the threshold — whichever end of
+     the runway, whatever the runway length, wherever the reference point sits. (Distance from the
+     reference point was 0.5 nm short of the 05R threshold at NZAA — a cut seconds from touchdown.)
+     Hysteresis so a go-around returns to the chase once it climbs back through CUT_FT + 300. */
+  const aglFt=(a.altM-SITE.elev)/0.3048;
+  if(camMode==='director'){ if(a.gnd||aglFt<CUT_FT) dirTower=true; else if(aglFt>CUT_FT+300&&!a.gnd) dirTower=false; }
+  const useTower=(camMode==='tower')||(camMode==='director'&&dirTower);
   if(camMode==='director'){ shot=useTower?'tower':'chase'; const b=document.querySelector('[data-cam=director]'); b.textContent='Director · '+shot; }
   else shot=camMode;
   modelWant=useTower?TOWER_AC:1; modelScale+=(modelWant-modelScale)*0.12;   // eased, so the cut doesn't pop
@@ -444,14 +529,27 @@ function tick(){
     const dE=(a.lon-SITE.tower.lon)*mPerLon, dN=(a.lat-SITE.tower.lat)*mPerLat, dH=Math.hypot(dE,dN)||1;
     const acAlt=a.altM*VE+10;
     const fov=Math.max(4,Math.min(50,TOWER_FOV/towerZoom));
-    map.setVerticalFieldOfView(fov);
+    map.setVerticalFieldOfView(fov); camS=null;   // re-seed the chase smoothing on the way back
     // MapLibre clamps pitch at 85, so the camera can never sit below the aircraft's eye line; it is
     // lifted only as far as that limit demands, which keeps it as close to the cab as the engine allows.
     const camAlt=Math.max(SITE.tower.h+17, acAlt+dH*Math.tan(MIN_DEP*D2R));
     aimCamera(SITE.tower.lon,SITE.tower.lat,camAlt, a.lon,a.lat,acAlt);
   } else {
     if(map.getVerticalFieldOfView()!==FOV_DEFAULT) map.setVerticalFieldOfView(FOV_DEFAULT);
-    const back=chaseDist, up=chaseDist*0.35, h=a.hdg*D2R; const cLon=a.lon-Math.sin(h)*back/mPerLon, cLat=a.lat-Math.cos(h)*back/mPerLat; aimCamera(cLon,cLat,a.altM*VE+up, a.lon,a.lat,a.altM*VE); }
+    /* The chase camera rides a smoothed copy of the path and heading, never the raw ones. Both carry
+       a degree or two of noise, and feeding that to the camera swings the whole world — which reads
+       as the aircraft swaying even when it is tracking dead straight. Because the camera position and
+       its look-at point come from the same smoothed point, the bearing is exactly the smoothed
+       heading: the world holds still and the aircraft floats a few metres in frame, the way a real
+       chase shot looks. */
+    const tNow=performance.now(), dtC=camS?Math.min((tNow-camS.t)/1000,0.5):0;
+    if(!camS||camS.key!==a.key) camS={lon:a.lon,lat:a.lat,alt:a.altM,hdg:a.hdg,key:a.key,t:tNow};
+    else { const kp=1-Math.exp(-dtC/CAM_TAU_POS), kh=1-Math.exp(-dtC/CAM_TAU_HDG);
+      camS.lon+=(a.lon-camS.lon)*kp; camS.lat+=(a.lat-camS.lat)*kp; camS.alt+=(a.altM-camS.alt)*kp;
+      camS.hdg=lerpAng(camS.hdg,a.hdg,kh); camS.t=tNow; }
+    const back=chaseDist, up=chaseDist*0.35, h=camS.hdg*D2R;
+    const cLon=camS.lon-Math.sin(h)*back/mPerLon, cLat=camS.lat-Math.cos(h)*back/mPerLat;
+    aimCamera(cLon,cLat,camS.alt*VE+up, camS.lon,camS.lat,camS.alt*VE); }
 }
 tick();
 </script>
