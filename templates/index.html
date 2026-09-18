@@ -5601,7 +5601,20 @@ function openCinematicCard(cs, auto) {
                 ccPendingSource = '📷 airport-data.com';
                 document.getElementById('ccPhotoSource').textContent = '📷 Loading photo…';
               } else {
-                document.getElementById('ccPhotoSource').textContent = '';
+                // Every source has now been tried and nobody anywhere has a
+                // photo of this airframe. The slot used to be left blank, which
+                // is a dead end: the Add Photo button sits right beside it but
+                // nothing connects the gap to the fix.
+                //
+                // This is the exact moment a user notices the absence — which is
+                // the reason the ONE person who uploads to the gallery started
+                // doing it (AJ, 18 Sep: "I find it annoying when I click a plane
+                // and the card has no photo, so that's why I have so many").
+                // That annoyance is universal; it was simply never pointed at
+                // anything. 33 photos, 1 contributor, and no permission gate on
+                // the upload path — so this is a discovery problem, not a bug.
+                document.getElementById('ccPhotoSource').textContent =
+                  'No photo of this aircraft yet — add one? 📸';
               }
             });
           }
