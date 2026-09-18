@@ -514,6 +514,19 @@ function refreshPicker(list){
 }
 function setFeed(ok,n){const el=document.getElementById('feed');el.className='pill '+(ok?(n?'live':'stale'):'none');el.textContent=ok?(n+' ac'):'no feed';}
 function txt(id,v){document.getElementById(id).textContent=v;}
+/* Arrived here because the OpenFreeMap engine could not run on this node (no WebGL for MapLibre, or
+   no route to the tile host). Say so plainly — a user who knows the map view exists should not be
+   left wondering why they are looking at the classic one. */
+if(new URLSearchParams(location.search).get('fellback')==='1'){
+  const mv=document.getElementById('mv');   // its own element: #mv is rewritten on every poll
+  if(mv&&mv.parentNode&&!document.getElementById('fellbacknote')){
+    const d=document.createElement('div');
+    d.id='fellbacknote';
+    d.style.cssText='color:var(--amber,#ffb020);font-size:10px;margin-top:4px';
+    d.textContent='classic view — the map-based 3D view could not start on this device';
+    mv.parentNode.insertBefore(d,mv);
+  }
+}
 function fmtAlt(a){const v=a.alt_baro;if(v==null)return'—';if(v==='ground')return'GROUND';return Math.round(v).toLocaleString()+' ft';}
 
 /* ---- cameras ---- */

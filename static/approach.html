@@ -24,6 +24,37 @@
   #note{display:none;bottom:46px;left:12px;color:var(--dim);font-size:10px;text-align:left;max-width:320px;background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:8px 10px}
   #note.show{display:block}
   .maplibregl-ctrl-attrib{font-size:10px}
+  .more{display:none}
+
+  /* ---------- phones ----------
+     The HUD is sized for a desktop window; on a 390 px screen the data card swallowed the top half
+     and covered the aircraft, and the camera row ran under the system navigation bar. Here the card
+     carries the five things worth seeing at a glance and the rest is one tap away; everything is
+     pinned clear of the notch and the home bar with the safe-area insets. */
+  @media (max-width:640px){
+    html,body{height:100dvh}                      /* 100% on mobile Safari includes the address bar */
+    .hud{font-size:11px;line-height:1.45}
+    .card{border-radius:8px;padding:7px 9px}
+    #tl{top:calc(8px + env(safe-area-inset-top));left:8px;max-width:58vw}
+    #tl .t{font-size:11px}
+    #tl .s{font-size:9px}
+    #tr{top:calc(8px + env(safe-area-inset-top));right:8px;min-width:0;max-width:56vw;font-size:10px}
+    #tr .row{gap:8px}
+    #tr .row.x{display:none}
+    #tr.open .row.x{display:flex}
+    #tr .more{display:block;margin-top:4px;color:var(--purple);font-size:9px;text-align:right;cursor:pointer}
+    #cams{bottom:calc(10px + env(safe-area-inset-bottom));gap:4px;max-width:96vw;flex-wrap:wrap;justify-content:center}
+    .cambtn{font-size:10px;padding:6px 9px}
+    #helpbtn{bottom:calc(10px + env(safe-area-inset-bottom));left:8px}
+    #note{bottom:calc(46px + env(safe-area-inset-bottom));left:8px;max-width:84vw}
+  }
+  /* landscape phone: the camera row and the cards compete for very little height */
+  @media (max-height:460px){
+    #tl .s{display:none}
+    #tr .row.x{display:none}
+    #cams{bottom:calc(6px + env(safe-area-inset-bottom))}
+    .cambtn{padding:4px 8px}
+  }
 </style>
 </head>
 <body>
@@ -39,13 +70,14 @@
   <div class="row"><span class="k">Alt</span><span class="v" id="d_alt">—</span></div>
   <div class="row"><span class="k">Dist</span><span class="v" id="d_dist">—</span></div>
   <div class="row"><span class="k">Hdg / Roll</span><span class="v" id="d_att">—</span></div>
-  <div class="row"><span class="k">GS / TAS / IAS</span><span class="v" id="d_spd">—</span></div>
-  <div class="row"><span class="k">Mach</span><span class="v" id="d_mach">—</span></div>
-  <div class="row"><span class="k">V/S</span><span class="v" id="d_vs">—</span></div>
-  <div class="row"><span class="k">Sel alt / hdg</span><span class="v" id="d_sel">—</span></div>
-  <div class="row"><span class="k">QNH set</span><span class="v" id="d_qnhset">—</span></div>
-  <div class="row"><span class="k" id="d_altsrc" style="font-size:10px;opacity:.7">alt: —</span></div>
-  <div class="row"><span class="k" id="d_src" style="font-size:10px;opacity:.7">—</span></div>
+  <div class="row x"><span class="k">GS / TAS / IAS</span><span class="v" id="d_spd">—</span></div>
+  <div class="row x"><span class="k">Mach</span><span class="v" id="d_mach">—</span></div>
+  <div class="row x"><span class="k">V/S</span><span class="v" id="d_vs">—</span></div>
+  <div class="row x"><span class="k">Sel alt / hdg</span><span class="v" id="d_sel">—</span></div>
+  <div class="row x"><span class="k">QNH set</span><span class="v" id="d_qnhset">—</span></div>
+  <div class="row x"><span class="k" id="d_altsrc" style="font-size:10px;opacity:.7">alt: —</span></div>
+  <div class="row x"><span class="k" id="d_src" style="font-size:10px;opacity:.7">—</span></div>
+  <div class="more" id="d_more">more ▾</div>
 </div>
 <div class="hud" id="cams">
   <button class="cambtn on" data-cam="director">Director</button>
@@ -141,9 +173,29 @@ const XTRACK_KEEP=(_q.get('xtrack')!=null&&_q.get('xtrack')!=='')?+_q.get('xtrac
 const st=(t)=>document.getElementById('st').textContent=t;
 
 /* ---------- Three.js custom layer: the aircraft ---------- */
-const MODEL_ORIENT={ 'a320_200.glb':{yaw:-90}, 'atr72.glb':{yaw:90}, 'b777_klm.glb':{yaw:180}, 'b737_800.glb':{yaw:180} };
+const MODEL_ORIENT={ 'a320_200.glb':{yaw:-90}, 'atr72.glb':{yaw:90}, 'b777_klm.glb':{yaw:180}, 'b737_800.glb':{yaw:180}, 'c172.glb':{yaw:180}, 'b429.glb':{yaw:180}, 'c208.glb':{yaw:90} };
+/* Real wingspan in metres, per model. Every model is normalised to this at load, so a Cessna is drawn
+   Cessna-sized next to a 747. Until now everything was normalised to a single 40 m span, which made an
+   ATR 48% too big and a 777 38% too small — invisible in a chase shot where there is nothing to compare
+   against, obvious the moment a light aircraft shares the frame with the buildings below it. */
+const MODEL_SPAN={ 'c172.glb':11.0, 'b429.glb':13.0, 'c208.glb':15.9, 'atr72.glb':27.1, 'a320_200.glb':35.8, 'a320_v2.glb':35.8,
+  'b737_800.glb':35.8, 'b738_v2.glb':35.8, 'a333_v2.glb':60.3, 'b747_100.glb':59.6,
+  'b777_klm.glb':64.8, 'a380_v2.glb':79.8 };
 function modelFor(t){ t=(t||'').toUpperCase();
-  const TP=['AT72','AT73','AT75','AT76','AT43','AT45','AT46','DH8A','DH8B','DH8C','DH8D','SF34','SB20','JS31','JS32','JS41','B350','BE20','BE9L','C208','PC12','E120','D228','DHC6','F50','ATP'];
+  /* Single-engine turboprops get the Caravan; the twins and the regionals keep the ATR. */
+  const SETP=['C208','C206','C210','PC12','PC6','TBM7','TBM8','TBM9','P46T','EPIC','K100','AT802','AT502','AT504','C295','GA8','CC19','DHC2','DHC3','U206','C207'];
+  if(SETP.includes(t))return'c208.glb';
+  const TP=['AT72','AT73','AT75','AT76','AT43','AT45','AT46','DH8A','DH8B','DH8C','DH8D','SF34','SB20','JS31','JS32','JS41','B350','BE20','BE9L','E120','D228','DHC6','F50','ATP'];
+  /* Light singles and twins. Drawn as a C172 — at the size these appear, a 172, a 152, a Cherokee and
+     a Robin are the same silhouette: single prop, fixed gear, high or low wing. Before this they fell
+     through to the airliner default and every Cessna was drawn as a Boeing 737. */
+  const GA=['C172','C152','C150','C162','C182','C177','C180','C185','C206','C210','P28A','P28B','P28R','P28T','PA18','PA22','PA24','PA25','PA28','PA32','PA38','R200','R22','DR40','DV20','DA40','DA20','AA5','BE33','BE35','BE36','BE23','M20P','M20T','SR20','SR22','RV6','RV7','RV8','RV9','RV10','RV12','CH70','TOBA','TB20','G115','AT3','C42','EUPA','P28S','ZLIN','YK52','SF25','S22T'];
+  if(GA.includes(t))return'c172.glb';
+  /* Helicopters. Six EC30s and two B429s a day over Auckland alone, all of them drawn as airliners
+     until now. One twin-engine light helicopter stands in for the lot — at this range a 429, an H130
+     and a Squirrel read the same: rotor disc, short fuselage, tail boom. */
+  const HELI=['B429','B06','B06T','B407','B412','B427','B430','B505','EC20','EC25','EC30','EC35','EC45','EC55','EC75','H500','H125','H130','H135','H145','H155','H160','H175','AS32','AS50','AS55','AS65','A109','A119','A139','A169','A189','R22','R44','R66','S76','S92','S61','S64','MD52','MD60','MD90','EN28','GAZL','LYNX','PUMA','SK76','BK17','NH90','UH60','UH1','CH47'];
+  if(HELI.includes(t))return'b429.glb';
   if(TP.includes(t))return'atr72.glb';
   if(['A380','A388'].includes(t))return'a380_v2.glb';
   if(/^A3[0-5]|^A3[0-9][0-9]$/.test(t)&&!['A318','A319','A320','A321'].includes(t))return'a333_v2.glb';
@@ -165,18 +217,21 @@ const acLayer={
   id:'pilnk-aircraft', type:'custom', renderingMode:'3d',
   onAdd(m,gl){
     this.camera=new THREE.Camera(); this.scene=new THREE.Scene();
-    this.scene.add(new THREE.HemisphereLight(0xbcd4ff,0x24303f,1.0));
-    const sun=new THREE.DirectionalLight(0xfff2e0,1.2); sun.position.set(-1,2,1); this.scene.add(sun);
+    // the aircraft is lit to match the ground: warm sun by day, cool and dim by night, or it reads as
+    // a daylight model pasted onto a night map
+    this.scene.add(new THREE.HemisphereLight(NIGHT_ON?0x3a4a68:0xbcd4ff, NIGHT_ON?0x0a0f18:0x24303f, NIGHT_ON?0.75:1.0));
+    const sun=new THREE.DirectionalLight(NIGHT_ON?0x9fb4d8:0xfff2e0, NIGHT_ON?0.45:1.2); sun.position.set(-1,2,1); this.scene.add(sun);
     this.yaw=new THREE.Group(); this.pitch=new THREE.Group(); this.roll=new THREE.Group(); this.holder=new THREE.Group();
     this.yaw.add(this.pitch); this.pitch.add(this.roll); this.roll.add(this.holder); this.scene.add(this.yaw);
     this.renderer=new THREE.WebGLRenderer({canvas:m.getCanvas(),context:gl,antialias:true}); this.renderer.autoClear=false; this.renderer.outputEncoding=THREE.sRGBEncoding;
-    this.loader=new THREE.GLTFLoader(); this.key=null; this.targetSpan=40;
+    this.loader=new THREE.GLTFLoader(); this.key=null; this.targetSpan=40;   // fallback span for a model with no MODEL_SPAN entry
   },
   ensureModel(t){
     const key=_q.get('force')||modelFor(t); if(!this.loader||key===this.key||this.loading)return; this.loading=true;   // no loader until the layer is on the map
     this.loader.load('/static/'+key,(g)=>{ while(this.holder.children.length)this.holder.remove(this.holder.children[0]);
       const mm=g.scene,box=new THREE.Box3().setFromObject(mm),size=new THREE.Vector3(),c=new THREE.Vector3(); box.getSize(size);box.getCenter(c);mm.position.sub(c);
-      mm.scale.setScalar(this.targetSpan/(Math.max(size.x,size.z)||1)); mm.traverse(o=>{if(o.isMesh&&o.material){(Array.isArray(o.material)?o.material:[o.material]).forEach(mt=>{mt.metalness=0.25;mt.roughness=0.6;whiten(mt);});}});
+      acSpan=MODEL_SPAN[key]||this.targetSpan;   // the cameras frame by this
+      mm.scale.setScalar(acSpan/(Math.max(size.x,size.z)||1)); mm.traverse(o=>{if(o.isMesh&&o.material){(Array.isArray(o.material)?o.material:[o.material]).forEach(mt=>{mt.metalness=0.25;mt.roughness=0.6;whiten(mt);});}});
       const or=MODEL_ORIENT[key]||{}; this.holder.rotation.set((or.pitch||0)*D2R,(or.yaw||0)*D2R,(or.roll||0)*D2R);
       this.holder.add(mm); this.key=key; this.loading=false; },undefined,()=>{this.loading=false;});
   },
@@ -223,21 +278,61 @@ async function tilePut(key,buf){ try{ const db=await TILE_DB(); const tx=db.tran
   if(_tileCount==null){ const c=s.count(); c.onsuccess=()=>{_tileCount=c.result;}; } else if(++_tileCount>5000){ _tileCount=null;   // evict the 800 oldest
     const cur=s.index('t').openCursor(); let n=0; cur.onsuccess=()=>{ const k=cur.result; if(k&&n++<800){ k.delete(); k.continue(); } }; }
 }catch(e){} }
+/* Re-encoding a cleaned DEM tile as PNG cost 1,005 ms of a 1,108 ms pipeline — the browser's PNG
+   encoder, not the network (19 ms) and not the filter (30 ms). That, not bandwidth, was why the
+   ground arrived late. WebP encodes the same tile in 45 ms and, on a canvas with alpha, losslessly —
+   but "lossless" is a browser implementation detail and these pixels ARE the elevation data, so it is
+   verified once at startup against a known pattern rather than assumed. A tile that needs no change
+   is returned exactly as it arrived, and never re-encoded at all. */
+let _encFmt=null;
+async function encoderFormat(){
+  if(_encFmt) return _encFmt;
+  try{
+    const c=new OffscreenCanvas(16,16), x=c.getContext('2d',{willReadFrequently:true});
+    const id=x.createImageData(16,16);
+    for(let i=0;i<id.data.length;i+=4){ const v=i>>2; id.data[i]=v*7&255; id.data[i+1]=v*13&255; id.data[i+2]=v*29&255; id.data[i+3]=255; }
+    x.putImageData(id,0,0);
+    const b=await c.convertToBlob({type:'image/webp'});
+    const bm=await createImageBitmap(b,{premultiplyAlpha:'none',colorSpaceConversion:'none'});
+    const c2=new OffscreenCanvas(16,16), x2=c2.getContext('2d',{willReadFrequently:true});
+    x2.drawImage(bm,0,0); const back=x2.getImageData(0,0,16,16).data;
+    let exact=true;
+    for(let i=0;i<id.data.length;i+=4) if(id.data[i]!==back[i]||id.data[i+1]!==back[i+1]||id.data[i+2]!==back[i+2]){exact=false;break;}
+    _encFmt=exact?'image/webp':'image/png';
+  }catch(e){ _encFmt='image/png'; }
+  return _encFmt;
+}
 async function cleanDem(raw){
   try{
     const bmp=await createImageBitmap(new Blob([raw]),{premultiplyAlpha:'none',colorSpaceConversion:'none'});   // exact bytes — data, not a picture
     const W=bmp.width,H=bmp.height,c=new OffscreenCanvas(W,H),x=c.getContext('2d',{willReadFrequently:true});
     x.drawImage(bmp,0,0); const id=x.getImageData(0,0,W,H),d=id.data;
     const h=new Float32Array(W*H); for(let i=0,p=0;i<d.length;i+=4,p++) h[p]=d[i]*256+d[i+1]+d[i+2]/256-32768;
-    const out=new Float32Array(h), nb=new Float32Array(8);
-    for(let y=1;y<H-1;y++) for(let xx=1;xx<W-1;xx++){ const p=y*W+xx; let k=0;
-      nb[k++]=h[p-W-1];nb[k++]=h[p-W];nb[k++]=h[p-W+1];nb[k++]=h[p-1];nb[k++]=h[p+1];nb[k++]=h[p+W-1];nb[k++]=h[p+W];nb[k++]=h[p+W+1];
-      const s=Array.from(nb).sort((a,b)=>a-b), med=(s[3]+s[4])/2;
-      if(Math.abs(h[p]-med)>SPIKE_M) out[p]=med; }
+    /* Two passes, because the naive one cost 1.15 s per tile on the main thread — sixty times longer
+       than fetching it — and that, not the network, was why the ground arrived late.
+       Pass 1 is a cheap four-neighbour test that clears >99% of pixels with four adds and a compare.
+       Pass 2 computes a true 8-neighbour median only for the handful that look wrong, sorting in a
+       reused array so there is no per-pixel allocation. Same output, a fraction of the work. */
+    const out=new Float32Array(h), nb=new Float32Array(8); let changed=false;
+    for(let y=1;y<H-1;y++){
+      const row=y*W;
+      for(let xx=1;xx<W-1;xx++){
+        const p=row+xx, v=h[p];
+        const est=(h[p-1]+h[p+1]+h[p-W]+h[p+W])*0.25;
+        if(v-est<SPIKE_M&&est-v<SPIKE_M) continue;           // ordinary terrain: leave it alone
+        nb[0]=h[p-W-1];nb[1]=h[p-W];nb[2]=h[p-W+1];nb[3]=h[p-1];
+        nb[4]=h[p+1];nb[5]=h[p+W-1];nb[6]=h[p+W];nb[7]=h[p+W+1];
+        for(let a=1;a<8;a++){ const t=nb[a]; let b=a-1; while(b>=0&&nb[b]>t){nb[b+1]=nb[b];b--;} nb[b+1]=t; }
+        const med=(nb[3]+nb[4])*0.5;
+        if(Math.abs(v-med)>SPIKE_M){ out[p]=med; changed=true; }
+      }
+    }
+    for(let p=0;p<out.length;p++) if(out[p]<0){ changed=true; break; }   // any sea floor to clamp?
+    if(!changed) return raw;                                             // nothing to fix: hand back the original bytes, unencoded
     for(let p=0,i=0;p<out.length;p++,i+=4){ const v=Math.max(0,out[p])+32768, r=Math.floor(v/256), g=Math.floor(v-r*256), b=Math.round((v-r*256-g)*256);
       d[i]=r; d[i+1]=g; d[i+2]=Math.min(255,b); d[i+3]=255; }   // ≥ 0 m only: the sea is flat
     x.putImageData(id,0,0);
-    return await (await c.convertToBlob({type:'image/png'})).arrayBuffer();
+    return await (await c.convertToBlob({type:await encoderFormat()})).arrayBuffer();
   }catch(e){ return raw; }
 }
 async function tileFetch(url,signal){
@@ -248,21 +343,124 @@ async function tileFetch(url,signal){
 }
 maplibregl.addProtocol('pilnk', async (params, abort) => ({data: await tileFetch(params.url.replace(/^pilnk:\/\//,'https://'), abort&&abort.signal)}));
 
+/* ---------- fall back to the Three.js engine ----------
+   This page needs WebGL and a route to tiles.openfreemap.org. Some Pi kiosk browsers have neither.
+   static/approach-three.html is the previous engine: it draws its own terrain from the AWS DEM and
+   needs no vector tiles, so it is a genuine fallback rather than a second thing to go wrong. Sends
+   the query string on untouched, plus ?fellback=1 so the old page can say why it is showing.
+   ?nofallback=1 stays put and shows the reason — for diagnosing a node rather than rescuing it. */
+let _fellBack=false;
+function fallbackToThree(why){
+  if(_fellBack) return; _fellBack=true;
+  try{ console.warn('3D: falling back to approach-three.html —',why); }catch(e){}
+  st('3D map unavailable ('+why+') — switching to the classic view…');
+  if(_q.get('nofallback')==='1') return;
+  const q=new URLSearchParams(location.search); q.set('fellback','1');
+  setTimeout(()=>{ location.replace('/static/approach-three.html?'+q.toString()); }, 1200);
+}
+function webglOK(){
+  // NB: maplibregl.supported() was REMOVED in MapLibre 5 — testing for it reports "unsupported" on
+  // every working browser. Ask the canvas directly instead, and on a fresh canvas each time: once a
+  // canvas has answered for webgl2 it will not hand back a webgl1 context.
+  try{
+    if(typeof maplibregl==='undefined') return false;
+    for(const t of ['webgl2','webgl','experimental-webgl']){
+      try{ if(document.createElement('canvas').getContext(t)) return true; }catch(e){}
+    }
+    return false;
+  }catch(e){ return false; }
+}
+
+/* ---------- day / night ----------
+   Liberty is the only OpenFreeMap style that carries 3D buildings, so rather than swap to the `dark`
+   style and lose them, the night look is painted onto Liberty's own layers before MapLibre ever sees
+   it — no flash of white map on load, every layer and the buildings intact.
+   Which one you get follows the sun at the SITE, computed from its latitude and longitude, so a node
+   anywhere on earth is dark when its own sky is. ?theme=day|night overrides. */
+function sunElevation(lat,lon,when){
+  const d=when||new Date(), rad=Math.PI/180;
+  const t=(d.getTime()/86400000)+2440587.5-2451545.0;          // days since J2000
+  const L=(280.460+0.9856474*t)%360, g=((357.528+0.9856003*t)%360)*rad;
+  const lam=(L+1.915*Math.sin(g)+0.020*Math.sin(2*g))*rad;      // ecliptic longitude
+  const eps=(23.439-0.0000004*t)*rad;
+  const dec=Math.asin(Math.sin(eps)*Math.sin(lam));             // declination
+  const gmst=(18.697374558+24.06570982441908*t)%24;
+  const ha=((gmst*15+lon)*rad)-Math.atan2(Math.cos(eps)*Math.sin(lam),Math.cos(lam));
+  return Math.asin(Math.sin(lat*rad)*Math.sin(dec)+Math.cos(lat*rad)*Math.cos(dec)*Math.cos(ha))/rad;
+}
+function isNight(){
+  const q=_q.get('theme');
+  if(q==='night')return true; if(q==='day')return false;
+  return sunElevation(SITE.lat,SITE.lon) < 0;                   // below the horizon: dusk counts as night
+}
+const NIGHT={ bg:'#060912', water:'#0a1526', wet:'#0a1526', green:'#0b1410', land:'#090d15',
+  bldg:'#161d2b', road:'#1b2332', roadMajor:'#2b3448', rail:'#171d29', text:'#7488a8', halo:'#04070e',
+  runway:'#ffd25e', runwayCase:'#7a5c12', taxi:'#3f5f86', apron:'#0e1420', boundary:'#2a3348' };
+function paintNight(style){
+  /* Pick one colour per layer from its id, then apply it through the property that layer type actually
+     has — MapLibre validates the style and rejects, say, line-color on a fill layer, which kills the
+     whole map with "unknown property". */
+  for(const l of style.layers){
+    const id=l.id.toLowerCase(); let c=null;
+    if(/aeroway_runway/.test(id))        c=NIGHT.runway;
+    else if(/aeroway_taxiway/.test(id))  c=NIGHT.taxi;
+    else if(/aeroway/.test(id))          c=NIGHT.apron;
+    else if(/water|ocean|sea|river|lake/.test(id)) c=NIGHT.water;
+    else if(/park|grass|wood|forest|scrub|cemetery|pitch|golf|farm|garden/.test(id)) c=NIGHT.green;
+    else if(/building/.test(id))         c=NIGHT.bldg;
+    else if(/motorway|trunk|primary/.test(id)) c=NIGHT.roadMajor;
+    else if(/rail|transit|ferry|aerialway/.test(id)) c=NIGHT.rail;
+    else if(/boundary|admin/.test(id))   c=NIGHT.boundary;
+    else if(/highway|road|street|bridge|tunnel|path|track|service/.test(id)) c=NIGHT.road;
+    else if(/landuse|landcover|residential|industrial|hospital|school|university|sand|rock|glacier/.test(id)) c=NIGHT.land;
+    const p=l.paint=l.paint||{};
+    switch(l.type){
+      case 'background':     p['background-color']=NIGHT.bg; break;
+      case 'fill':           p['fill-color']=c||NIGHT.land; if(p['fill-outline-color']!=null)p['fill-outline-color']=c||NIGHT.land; break;
+      case 'line':           p['line-color']=c||NIGHT.road; break;
+      case 'fill-extrusion': p['fill-extrusion-color']=NIGHT.bldg; p['fill-extrusion-opacity']=0.95; break;
+      case 'symbol':         p['text-color']=NIGHT.text; p['text-halo-color']=NIGHT.halo; p['icon-opacity']=0.55; break;
+      case 'circle':         p['circle-color']=c||NIGHT.road; break;
+    }
+  }
+  return style;
+}
+/* The runway is drawn by the map in near-white on a near-white background (#f0ede9 on #f8f4f0), which
+   is why a newcomer could not find the airport from 10 km out. Paint it and widen it, in both themes. */
+function paintRunway(style,night){
+  for(const l of style.layers){
+    if(!/aeroway_runway/.test(l.id)) continue;
+    l.paint=l.paint||{};
+    l.paint['line-color']=night?NIGHT.runway:'#3a3a3a';
+    l.paint['line-width']=['interpolate',['linear'],['zoom'],10,2.2,12,4,14,9,16,22,18,60];
+    l.paint['line-opacity']=night?0.95:0.9;
+    l.minzoom=Math.min(l.minzoom!=null?l.minzoom:11,9);   // visible from further out
+  }
+  return style;
+}
+
 /* ---------- map ---------- */
 async function boot(){
+  if(!webglOK()) return fallbackToThree('no WebGL in this browser');
+  if(typeof THREE==='undefined') return fallbackToThree('3D libraries did not load');
   await resolveSite(); mPerLon=111320*Math.cos(SITE.lat*D2R);
   /* Resolve the style and its TileJSON here so the vector tiles can be pointed at the local store.
      The tile path (with OpenFreeMap's dated segment) is read from the server every load, never hardcoded. */
-  let style='https://tiles.openfreemap.org/styles/liberty';
+  let style='https://tiles.openfreemap.org/styles/liberty', styleOK=false;
   try{
     const s=await fetch(style).then(r=>r.json());
+    styleOK=!!(s&&s.layers&&s.layers.length);
     for(const id in s.sources){ const src=s.sources[id]; if(src.type!=='vector')continue;
       if(!src.tiles&&src.url){ const tj=await fetch(src.url).then(r=>r.json()); src.tiles=tj.tiles; if(tj.minzoom!=null)src.minzoom=tj.minzoom; if(tj.maxzoom!=null)src.maxzoom=tj.maxzoom; if(tj.attribution)src.attribution=tj.attribution; delete src.url; }
       if(src.tiles) src.tiles=src.tiles.map(t=>t.replace(/^https:\/\//,'pilnk://')); }
+    NIGHT_ON=isNight();
+    if(NIGHT_ON) paintNight(s);
+    paintRunway(s,NIGHT_ON);
     // handed over as a blob URL rather than an object: MapLibre applies an inline style object on the next
     // animation frame, which a background tab never gets; a URL loads on fetch completion regardless
     style=URL.createObjectURL(new Blob([JSON.stringify(s)],{type:'application/json'}));
-  }catch(e){ /* fall back to MapLibre loading the style itself — no local store, but the map still works */ }
+  }catch(e){ /* the style host is unreachable: no vector map is possible here */ }
+  if(!styleOK) return fallbackToThree('map tiles unreachable');
   map=new maplibregl.Map({ container:'map', style, center:[SITE.lon,SITE.lat], zoom:13.5, pitch:60, bearing:0,
     maxPitch:85,   // MapLibre's supported limit — past it, geometry beyond the horizon folds back into the sky
     antialias:true, attributionControl:{compact:false},
@@ -295,16 +493,30 @@ async function boot(){
           .forEach(l=>map.setLayoutProperty(l.id,'visibility','none'));   // one-way arrows AND route shields (placement is a zoom expression, hence the stringify)
     if(!SHOW_BLD) layers.filter(l=>l.type==='fill-extrusion').forEach(l=>map.setLayoutProperty(l.id,'visibility','none'));
     else layers.filter(l=>l.type==='fill-extrusion').forEach(l=>{ map.setLayoutProperty(l.id,'visibility','visible'); map.setLayerZoomRange(l.id,12,24); if(BASE==='sat'){ map.setPaintProperty(l.id,'fill-extrusion-opacity',0.9); map.setPaintProperty(l.id,'fill-extrusion-color','#c9d0da'); } });
-    try{ map.setSky({'sky-color':'#0b0f1a','horizon-color':'#1a2a44','fog-color':'#0b0f1a','sky-horizon-blend':0.6,'horizon-fog-blend':0.6,'fog-ground-blend':0.6}); }catch(e){}
+    try{ map.setSky(NIGHT_ON
+      ? {'sky-color':'#03060e','horizon-color':'#0a1830','fog-color':'#04070f','sky-horizon-blend':0.5,'horizon-fog-blend':0.5,'fog-ground-blend':0.7}
+      : {'sky-color':'#7fb2e5','horizon-color':'#cfe3f5','fog-color':'#dde8f2','sky-horizon-blend':0.7,'horizon-fog-blend':0.6,'fog-ground-blend':0.5}); }catch(e){}
     map.addLayer(acLayer);
-    if(camMode!=='free') map.scrollZoom.disable();
+    mapGestures(camMode==='free');
     st((BASE==='sat'?'satellite hybrid':'OpenFreeMap 3D map')+' + terrain loaded · waiting for an aircraft');
     poll();
     setTimeout(warmCorridor,4000);   // after the live view has what it needs
   });
   map.on('error',e=>{ const m=(e&&e.error&&e.error.message)||''; if(!/sprite|glyph/i.test(m)) st('map error: '+m); });
+  /* Last resort: the style resolved and MapLibre started, but nothing ever finished loading — a
+     context lost on a weak GPU, or tiles that answer slowly enough to be useless. Give it 25 s. */
+  /* Count only time the page is actually VISIBLE. A background tab gets no animation frames, so the
+     map legitimately never finishes loading there — a wall-clock timer would bounce anyone who opened
+     the view and switched tabs for half a minute. */
+  let _wdVis=0, _wdLast=performance.now();
+  const _wd=setInterval(()=>{ const now=performance.now(); if(!document.hidden) _wdVis+=now-_wdLast; _wdLast=now;
+    if(map&&map.isStyleLoaded()){ clearInterval(_wd); return; }
+    if(_wdVis>25000){ clearInterval(_wd); fallbackToThree('the 3D map did not finish loading'); } },1000);
+  map.on('webglcontextlost',()=>fallbackToThree('the browser dropped the 3D context'));
 }
-boot().catch(e=>st('failed: '+e.message));
+boot().catch(e=>{ const m=(e&&e.message)||'startup failed';
+  if(/no location/i.test(m)) st('failed: '+m);      // a configuration problem, not a 3D one — the old engine would fail the same way
+  else fallbackToThree(m); });
 
 /* ---------- data (same rules as approach.html, condensed) ---------- */
 let target=(_q.get('hex')||'__auto__').toLowerCase(), lockedHex=null, qnh=null;
@@ -331,7 +543,14 @@ function learnDatum(list){ if(!terrainReady)return;
    never be hardcoded. */
 const _pfSeen=new Set(); let _pfBusy=0;
 function tileXY(lon,lat,z){const n=Math.pow(2,z);
-  return {x:Math.floor((lon+180)/360*n), y:Math.floor((1-Math.asinh(Math.tan(lat*D2R))/Math.PI)/2*n)};}
+  // wrap east-west (a corridor near the antimeridian runs off both ends of the map) and clamp
+  // north-south (Mercator has no tiles at the poles). Without this the prefetch asks for tiles that
+  // do not exist and stores the 404s.
+  lon=((lon+180)%360+360)%360-180;
+  lat=Math.max(-85.0511,Math.min(85.0511,lat));
+  const x=((Math.floor((lon+180)/360*n)%n)+n)%n;
+  const y=Math.max(0,Math.min(n-1,Math.floor((1-Math.asinh(Math.tan(lat*D2R))/Math.PI)/2*n)));
+  return {x,y};}
 function pfSources(){
   const out=[], ss=map.getStyle().sources||{};
   for(const id in ss){ const t=ss[id].type; if(t!=='vector'&&t!=='raster-dem'&&t!=='raster')continue;
@@ -467,7 +686,15 @@ async function poll(){
 }
 
 /* ---------- cameras (MapLibre free camera) ---------- */
-let camMode='director', shot='chase', chaseDist=110, towerZoom=1;   // chase follow distance (m) — starts close; wheel adjusts
+let camMode='director', shot='chase', towerZoom=1;
+/* The camera now frames by wingspan rather than by a fixed distance. A standoff of 110 m was chosen
+   for an A320 and looked right; applied unchanged to an 11 m Cessna it left a speck on the screen.
+   Holding a constant multiple of the span instead means every type — Cessna, helicopter, 777 — fills
+   the frame the same way, which is what a chase camera is for. 3.05 reproduces the airliner framing
+   that was already right, so nothing familiar changes. chaseZoom is the viewer's own wheel/pinch
+   preference and is a multiplier, so it survives switching between aircraft of different sizes. */
+let acSpan=36, chaseZoom=1;
+const CHASE_SPANS=(_q.get('chase')!=null&&_q.get('chase')!=='')?+_q.get('chase'):3.05;
 const FOV_DEFAULT=36.87;   // MapLibre's default vertical FOV; restored for chase/free
 /* Tower cam: a fixed lens, like a real one. The aircraft starts small and grows to fill the frame on
    short final, with the runway and the field in shot the whole way. The camera sits in the cab whenever
@@ -477,6 +704,7 @@ const TOWER_FOV=(_q.get('fov')!=null&&_q.get('fov')!=='')?+_q.get('fov'):18;
 const MIN_DEP=5.5;         // degrees above the aircraft the camera must stay (MapLibre clamps pitch at 85)
 const CUT_FT=(_q.get('cut')!=null&&_q.get('cut')!=='')?+_q.get('cut'):500;   // Director cuts chase → tower below this height above the field (feet)
 let dirTower=false, idle=false, lastSeenT=0;
+let NIGHT_ON=false;            // set at boot from the sun's elevation at the site
 let camS=null;                 // smoothed camera state for the chase shot
 const CAM_TAU_POS=0.6, CAM_TAU_HDG=1.5;   // seconds; heading is smoothed harder — rotation is what the eye notices
 /* The tower lens is set by how much of the field we want in frame, which leaves the aircraft small.
@@ -484,12 +712,40 @@ const CAM_TAU_POS=0.6, CAM_TAU_HDG=1.5;   // seconds; heading is smoothed harder
    the map keeps its framing, the aircraft reads clearly, and the chase view stays true to scale. */
 const TOWER_AC=(_q.get('acscale')!=null&&_q.get('acscale')!=='')?+_q.get('acscale'):3;
 let modelScale=1, modelWant=1;
+/* Map gestures belong to the user only in Free mode. On the rails the camera is ours every frame, so
+   the map's own scroll/pinch/drag are turned off — otherwise a pinch fights the camera and loses. */
+function mapGestures(on){ if(!map)return;
+  for(const g of ['scrollZoom','touchZoomRotate','dragPan','dragRotate','touchPitch','keyboard','doubleClickZoom']){
+    try{ on?map[g].enable():map[g].disable(); }catch(e){}
+  }
+}
 document.querySelectorAll('.cambtn').forEach(b=>b.addEventListener('click',()=>{document.querySelectorAll('.cambtn').forEach(x=>x.classList.remove('on'));b.classList.add('on');camMode=b.dataset.cam;
-  if(map){ if(camMode==='free') map.scrollZoom.enable(); else map.scrollZoom.disable(); } }));
-// wheel = chase distance while the camera is on rails (MapLibre's own scroll zoom is off in those modes)
+  mapGestures(camMode==='free'); }));
+function zoomStep(f){   // f > 1 = closer
+  if(shot==='tower') towerZoom=Math.max(0.5,Math.min(8,towerZoom*f));
+  else chaseZoom=Math.max(0.2,Math.min(6,chaseZoom*f));
+}
+// wheel = chase distance / tower zoom while the camera is on rails
 document.getElementById('map').addEventListener('wheel',e=>{ if(camMode==='free')return; e.preventDefault();
-  if(shot==='tower') towerZoom=Math.max(0.5,Math.min(8,towerZoom*(e.deltaY>0?0.8:1.25)));
-  else chaseDist=Math.max(60,Math.min(1200,chaseDist*(e.deltaY>0?1.25:0.8))); },{passive:false});
+  zoomStep(e.deltaY>0?0.8:1.25); },{passive:false});
+/* pinch does the same on a touchscreen — two fingers, distance between them drives the same control */
+(function(){ const el=document.getElementById('map'); let d0=null;
+  const dist=t=>Math.hypot(t[0].clientX-t[1].clientX, t[0].clientY-t[1].clientY);
+  el.addEventListener('touchstart',e=>{ if(camMode==='free')return; if(e.touches.length===2) d0=dist(e.touches); },{passive:true});
+  el.addEventListener('touchmove',e=>{ if(camMode==='free'||e.touches.length!==2||d0==null)return;
+    e.preventDefault(); const d=dist(e.touches); if(d0>0&&Math.abs(d-d0)>6){ zoomStep(Math.max(0.5,Math.min(2,d/d0))); d0=d; } },{passive:false});
+  el.addEventListener('touchend',()=>{ d0=null; },{passive:true});
+})();
+/* the data card: five rows at a glance on a phone, the rest on a tap */
+(function(){ const tr=document.getElementById('tr'), more=document.getElementById('d_more');
+  if(!tr||!more)return;
+  const toggle=()=>{ tr.classList.toggle('open'); more.textContent=tr.classList.contains('open')?'less ▴':'more ▾'; };
+  more.addEventListener('click',toggle);
+  // the long Free label does not fit a phone
+  if(window.matchMedia('(max-width:640px)').matches){
+    const f=document.querySelector('.cambtn[data-cam=free]'); if(f) f.textContent='Free';
+  }
+})();
 function aimCamera(fromLon,fromLat,fromAlt,toLon,toLat,toAlt){
   // MapLibre has no free-camera API (that's Mapbox) — derive center/zoom/pitch/bearing from a from→to pair instead.
   // Pitch is clamped to maxPitch (85°): the camera can never look *up*, so a tower shot at an aircraft above the
@@ -528,7 +784,8 @@ function tick(){
   if(useTower){
     const dE=(a.lon-SITE.tower.lon)*mPerLon, dN=(a.lat-SITE.tower.lat)*mPerLat, dH=Math.hypot(dE,dN)||1;
     const acAlt=a.altM*VE+10;
-    const fov=Math.max(4,Math.min(50,TOWER_FOV/towerZoom));
+    // the tower lens scales with the aircraft too, so a Cessna on short final reads like an airliner does
+    const fov=Math.max(2.5,Math.min(50,TOWER_FOV*(acSpan/36)/towerZoom));
     map.setVerticalFieldOfView(fov); camS=null;   // re-seed the chase smoothing on the way back
     // MapLibre clamps pitch at 85, so the camera can never sit below the aircraft's eye line; it is
     // lifted only as far as that limit demands, which keeps it as close to the cab as the engine allows.
@@ -547,7 +804,7 @@ function tick(){
     else { const kp=1-Math.exp(-dtC/CAM_TAU_POS), kh=1-Math.exp(-dtC/CAM_TAU_HDG);
       camS.lon+=(a.lon-camS.lon)*kp; camS.lat+=(a.lat-camS.lat)*kp; camS.alt+=(a.altM-camS.alt)*kp;
       camS.hdg=lerpAng(camS.hdg,a.hdg,kh); camS.t=tNow; }
-    const back=chaseDist, up=chaseDist*0.35, h=camS.hdg*D2R;
+    const back=Math.max(20,Math.min(1500, acSpan*CHASE_SPANS/chaseZoom)), up=back*0.35, h=camS.hdg*D2R;
     const cLon=camS.lon-Math.sin(h)*back/mPerLon, cLat=camS.lat-Math.cos(h)*back/mPerLat;
     aimCamera(cLon,cLat,camS.alt*VE+up, camS.lon,camS.lat,camS.alt*VE); }
 }

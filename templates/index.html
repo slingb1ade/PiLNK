@@ -18,7 +18,11 @@
   [data-theme="dark"]{--bg-deep:#060a14;--bg-panel:#0a1020;--bg-card:#0d1526;--border:#0f2040;--blue-dim:#1d4ed8;--blue-mid:#3b82f6;--blue-light:#60a5fa;--text:#e0e8ff;--text-dim:#6f8cbf;--green:#22c55e;--success:#22c55e;--warn:#f59e0b;--danger:#ef4444;--info:#60a5fa;--shadow:0 1px 2px rgba(0,0,0,.4),0 6px 18px rgba(0,0,0,.45);--shadow-2:0 12px 30px rgba(0,0,0,.55);--edge:inset 0 1px 0 rgba(255,255,255,.05);--r-1:6px;--r-2:10px;--r-3:14px;--sp-1:4px;--sp-2:8px;--sp-3:12px;--sp-4:16px;--sp-5:24px;}
   *{margin:0;padding:0;box-sizing:border-box;}
   html,body{height:100%;width:100%;overflow:hidden;background:var(--bg-deep);color:var(--text);font-family:'Share Tech Mono',monospace,'Apple Color Emoji','Segoe UI Emoji','Noto Color Emoji','Twemoji Mozilla';transition:background 0.3s,color 0.3s;}
-  #app{display:flex;flex-direction:column;height:100vh;width:100vw;}
+  /* 100vh on mobile is the LARGEST viewport (browser chrome hidden), so the bottom of the app sits
+     under the address bar / navigation bar whenever they are showing — anything anchored to the
+     bottom of a pane is clipped. 100dvh is the viewport as it actually is right now; the 100vh line
+     stays first as the fallback for older browsers. */
+  #app{display:flex;flex-direction:column;height:100vh;height:100dvh;width:100vw;}
   #header{flex-shrink:0;height:52px;background:var(--bg-panel);border-bottom:1px solid var(--border);display:flex;align-items:center;justify-content:space-between;padding:0 16px;z-index:1000;box-shadow:var(--shadow);}
   .logo{display:flex;align-items:center;gap:10px;}
   .logo svg{width:32px;height:32px;}
