@@ -21,6 +21,7 @@
   .cambtn{font-family:inherit;font-size:11px;background:#0e1526;color:var(--dim);border:1px solid var(--line);border-radius:6px;padding:6px 10px;cursor:pointer}
   .cambtn.on{color:var(--txt);border-color:var(--purple)}
   #helpbtn{bottom:12px;left:12px;pointer-events:auto;width:28px;padding:6px 0;text-align:center}   /* bottom-right belongs to the map attribution */
+  #themebtn{bottom:12px;left:46px;pointer-events:auto;width:28px;padding:6px 0;text-align:center}
   #note{display:none;bottom:46px;left:12px;color:var(--dim);font-size:10px;text-align:left;max-width:320px;background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:8px 10px}
   #note.show{display:block}
   .maplibregl-ctrl-attrib{font-size:10px}
@@ -46,6 +47,7 @@
     #cams{bottom:calc(10px + env(safe-area-inset-bottom));gap:4px;max-width:96vw;flex-wrap:wrap;justify-content:center}
     .cambtn{font-size:10px;padding:6px 9px}
     #helpbtn{bottom:calc(10px + env(safe-area-inset-bottom));left:8px}
+    #themebtn{bottom:calc(10px + env(safe-area-inset-bottom));left:42px}
     #note{bottom:calc(46px + env(safe-area-inset-bottom));left:8px;max-width:84vw}
   }
   /* landscape phone: the camera row and the cards compete for very little height */
@@ -85,6 +87,7 @@
   <button class="cambtn" data-cam="tower">Tower</button>
   <button class="cambtn" data-cam="free">Free (drag · right-drag tilt)</button>
 </div>
+<button class="hud cambtn" id="themebtn" title="Day / night — long-press to follow the sun" onclick="setTheme(NIGHT_ON?'day':'night')" oncontextmenu="event.preventDefault();setTheme('auto');return false;">☀</button>
 <button class="hud cambtn" id="helpbtn" title="Options" onclick="document.getElementById('note').classList.toggle('show')">?</button>
 <div class="hud" id="note">Wheel: chase distance / tower zoom. Buildings are OSM heights (patchy outside city centres). Options: <b>?buildings=0</b>, <b>?ve=</b> terrain exaggeration (1.5), <b>?fov=</b> tower lens (18), <b>?cut=</b> tower cut, ft above the field (500), <b>?acscale=</b> aircraft size in the tower shot (3), <b>?magvar= ?geomoff= ?qnh=</b> calibration overrides, <b>?terrain=0</b>, <b>?dem=</b>, <b>?base=sat</b>.</div>
 
@@ -104,11 +107,25 @@ const CFG={magVar:(_q.get('magvar')!=null&&_q.get('magvar')!=='')?+_q.get('magva
            qnh:(_q.get('qnh')!=null&&_q.get('qnh')!=='')?+_q.get('qnh'):null};
 const SITE={lat:null,lon:null,elev:0,icao:null,name:'field',hdg:null,tower:null};
 /* learned calibration (mag var, GNSS datum) is remembered per site in this browser, so the next
-   load starts calibrated instead of from zero — same key as approach.html, so the two engines share it */
-let mvStored=null, gStored=null;
+   load starts calibrated instead of from zero */
+let mvStored=null, gStored=null, _calRaw=null;
 function siteKey(){return 'pilnk3d:'+SITE.lat.toFixed(2)+','+SITE.lon.toFixed(2);}
-function loadCal(){try{const s=JSON.parse(localStorage.getItem(siteKey())||'null');if(s){if(typeof s.mv==='number')mvStored=s.mv;if(typeof s.g==='number')gStored=s.g;}}catch(e){}}
-function saveCal(){try{localStorage.setItem(siteKey(),JSON.stringify({mv:mvStored,g:gStored,t:Date.now()}));}catch(e){}}
+/* This key was once shared with the retired approach-three.html, and the two pages derived field
+   elevation from different ground: this page samples the map's terrain, that one sampled its own mesh
+   and then flattened the airport. Magnetic variation transfers cleanly either way — it is a property
+   of the place. The GNSS datum does not, because it is stored as (alt_geom − field elevation), so a
+   record written by the old page shifts the drawn altitude by the difference between the two grounds:
+   a few metres to twenty, which on a 3° slope is a visibly long or short touchdown. The elevation
+   used is therefore stored alongside, and the datum re-based to whatever this page is actually
+   drawing against. Records written before that (no `e`) are used as-is, exactly as before. Keep this:
+   browsers that ran the old page still hold its records, and they do not expire. */
+function loadCal(){try{const s=JSON.parse(localStorage.getItem(siteKey())||'null');
+  if(s){ _calRaw=s; if(typeof s.mv==='number')mvStored=s.mv; if(typeof s.g==='number')gStored=s.g; }}catch(e){}}
+function rebaseCal(){   // called once the terrain has given us a real field elevation
+  if(!_calRaw||typeof _calRaw.g!=='number'||typeof _calRaw.e!=='number')return;
+  gStored=_calRaw.g+_calRaw.e-SITE.elev;
+}
+function saveCal(){try{localStorage.setItem(siteKey(),JSON.stringify({mv:mvStored,g:gStored,e:SITE.elev,t:Date.now()}));}catch(e){}}
 const fmtSigned=v=>(v>=0?'+':'')+v.toFixed(1);
 const KNOWN={ NZAA:{ tower:{lat:-37.006428,lon:174.7837,h:105} } };
 async function resolveSite(){
@@ -118,7 +135,7 @@ async function resolveSite(){
   if(SITE.icao&&KNOWN[SITE.icao]) Object.assign(SITE,KNOWN[SITE.icao]);
   if(!SITE.tower){ const side=(SITE.hdg!=null)?(SITE.hdg+90)*D2R:Math.PI, off=SITE.icao?600:0;
     SITE.tower={lat:SITE.lat+Math.cos(side)*off/111320, lon:SITE.lon+Math.sin(side)*off/(111320*Math.cos(SITE.lat*D2R)), h:SITE.icao?105:40}; }
-  loadCal();
+  loadCal(); loadRunways();
   document.getElementById('sub').textContent=(SITE.icao?SITE.name:'your receiver')+' · '+(BASE==='sat'?'satellite hybrid':'OpenFreeMap 3D map')+' + AWS terrain';
 }
 const mPerLat=111320; let mPerLon=111320;
@@ -172,17 +189,89 @@ const bias={e:0,n:0};              // retained cross-track offset: the lateral l
 const XTRACK_KEEP=(_q.get('xtrack')!=null&&_q.get('xtrack')!=='')?+_q.get('xtrack'):0.75;   // 0 = follow every fix, 0.9 = very smooth
 const st=(t)=>document.getElementById('st').textContent=t;
 
+/* ---------- approach lighting ----------
+   The answer to "where is the airport?" that aviation already settled on. Real thresholds come from
+   PiLNK's own runway database (OurAirports-derived, global), fetched cross-origin from pilnk.io —
+   the same source the dashboard's glideslope view uses, so the two agree about which runway is which.
+   Drawn only at night, because that is when the real ones are the useful thing to look for. */
+const LIGHTS_ON=(_q.get('lights')!=null)?(_q.get('lights')!=='0'):true;
+let RWY_ENDS=[], rwyActive=null;
+async function loadRunways(){
+  if(!LIGHTS_ON||SITE.lat==null) return;
+  try{
+    const j=await fetch('https://pilnk.io/api/runways.php?lat='+SITE.lat+'&lon='+SITE.lon+'&limit=6').then(r=>r.json());
+    if(!j||!j.ok||!j.airports) return;
+    const apt=(SITE.icao&&j.airports.find(a=>a.icao===SITE.icao))||j.airports[0];
+    if(!apt) return;
+    for(const r of apt.runways||[]){
+      if(r.le_lat==null||r.he_lat==null) continue;
+      const len=(r.length_ft||0)*0.3048;
+      // each physical runway gives two landing directions; the aircraft picks one
+      RWY_ENDS.push({ident:r.le_ident, lat:r.le_lat, lon:r.le_lon, land:r.le_hdg, len, elev:(r.le_elev_ft||0)*0.3048});
+      RWY_ENDS.push({ident:r.he_ident, lat:r.he_lat, lon:r.he_lon, land:r.he_hdg, len, elev:(r.he_elev_ft||0)*0.3048});
+    }
+  }catch(e){}
+}
+/* Which end is in use: the one whose landing direction the aircraft is actually flying, and which it
+   is still short of. Falls back to the site heading when nothing is inbound, so the lights are lit
+   before the first arrival appears rather than after it. */
+function pickEnd(a){
+  if(!RWY_ENDS.length) return null;
+  const hdg=a?a.hdg:(SITE.hdg!=null?SITE.hdg:null);
+  if(hdg==null) return RWY_ENDS[0];
+  let best=null,bestScore=1e9;
+  for(const e of RWY_ENDS){
+    let d=Math.abs(((e.land-hdg+540)%360)-180);          // heading agreement
+    if(a){ // prefer an end the aircraft has not yet passed
+      const dE=(a.lon-e.lon)*mPerLon, dN=(a.lat-e.lat)*mPerLat;
+      const h=e.land*D2R, along=dE*Math.sin(h)+dN*Math.cos(h);   // +ve = beyond the threshold
+      if(along>1500) d+=90;   // 1500 m, not 300: the lights must not blink off in the flare or early rollout
+    }
+    if(d<bestScore){bestScore=d;best=e;}
+  }
+  return bestScore<70?best:null;
+}
+function buildLights(end,scene){
+  while(scene.children.length) scene.remove(scene.children[0]);
+  if(!end) return null;
+  const h=end.land*D2R, sh=Math.sin(h), ch=Math.cos(h);
+  const P=(along,lat,up)=>[ (sh*along+ch*lat), up, -(ch*along-sh*lat) ];   // local: x east, y up, -z north
+  const pos=[], col=[], flashIdx=[];
+  const white=[1,1,1], green=[0.25,1,0.45], red=[1,0.25,0.2];
+  const push=(p,c)=>{ pos.push(p[0],p[1],p[2]); col.push(c[0],c[1],c[2]); };
+  // centreline bars, 30 m spacing out to 900 m — the standard geometry
+  for(let d=30; d<=900; d+=30){
+    for(const lat of [-3,0,3]) push(P(-d,lat,3), white);
+    if(d%60===0) flashIdx.push((pos.length/3)-2);        // every other bar carries a sequenced flasher
+  }
+  // threshold bar, green, across the full width
+  for(let lat=-22; lat<=22; lat+=4) push(P(0,lat,1.5), green);
+  // runway edge lights down both sides
+  for(let d=0; d<=end.len; d+=60){ push(P(d,-22,1), white); push(P(d,22,1), white); }
+  // PAPI, four lights abeam the touchdown zone
+  for(let i=0;i<4;i++) push(P(300,-30-i*3,2), i<2?white:red);
+  const g=new THREE.BufferGeometry();
+  g.setAttribute('position',new THREE.Float32BufferAttribute(pos,3));
+  g.setAttribute('color',new THREE.Float32BufferAttribute(col,3));
+  const m=new THREE.PointsMaterial({size:9,sizeAttenuation:true,vertexColors:true,transparent:true,opacity:0.95,depthWrite:false,blending:THREE.AdditiveBlending});
+  const pts=new THREE.Points(g,m); scene.add(pts);
+  return {pts,flashIdx,baseCol:col.slice()};
+}
+
 /* ---------- Three.js custom layer: the aircraft ---------- */
-const MODEL_ORIENT={ 'a320_200.glb':{yaw:-90}, 'atr72.glb':{yaw:90}, 'b777_klm.glb':{yaw:180}, 'b737_800.glb':{yaw:180}, 'c172.glb':{yaw:180}, 'b429.glb':{yaw:180}, 'c208.glb':{yaw:90} };
+const MODEL_ORIENT={ 'a320_200.glb':{yaw:-90}, 'atr72.glb':{yaw:90}, 'b777_klm.glb':{yaw:180}, 'b737_800.glb':{yaw:180}, 'c172.glb':{yaw:180}, 'b429.glb':{yaw:180}, 'c208.glb':{yaw:90}, 'c130.glb':{yaw:180} };
 /* Real wingspan in metres, per model. Every model is normalised to this at load, so a Cessna is drawn
    Cessna-sized next to a 747. Until now everything was normalised to a single 40 m span, which made an
    ATR 48% too big and a 777 38% too small — invisible in a chase shot where there is nothing to compare
    against, obvious the moment a light aircraft shares the frame with the buildings below it. */
-const MODEL_SPAN={ 'c172.glb':11.0, 'b429.glb':13.0, 'c208.glb':15.9, 'atr72.glb':27.1, 'a320_200.glb':35.8, 'a320_v2.glb':35.8,
+const MODEL_SPAN={ 'c172.glb':11.0, 'b429.glb':13.0, 'c208.glb':15.9, 'atr72.glb':27.1, 'c130.glb':40.4, 'a320_200.glb':35.8, 'a320_v2.glb':35.8,
   'b737_800.glb':35.8, 'b738_v2.glb':35.8, 'a333_v2.glb':60.3, 'b747_100.glb':59.6,
   'b777_klm.glb':64.8, 'a380_v2.glb':79.8 };
 function modelFor(t){ t=(t||'').toUpperCase();
   /* Single-engine turboprops get the Caravan; the twins and the regionals keep the ATR. */
+  /* The Hercules. Flown by about seventy air forces, so on most nodes in the world it is the military
+     transport most likely to appear — and PiLNK already watches for military traffic. */
+  if(['C130','C30J','L100','C130J','LMT1','C130H'].includes(t))return'c130.glb';
   const SETP=['C208','C206','C210','PC12','PC6','TBM7','TBM8','TBM9','P46T','EPIC','K100','AT802','AT502','AT504','C295','GA8','CC19','DHC2','DHC3','U206','C207'];
   if(SETP.includes(t))return'c208.glb';
   const TP=['AT72','AT73','AT75','AT76','AT43','AT45','AT46','DH8A','DH8B','DH8C','DH8D','SF34','SB20','JS31','JS32','JS41','B350','BE20','BE9L','E120','D228','DHC6','F50','ATP'];
@@ -219,23 +308,63 @@ const acLayer={
     this.camera=new THREE.Camera(); this.scene=new THREE.Scene();
     // the aircraft is lit to match the ground: warm sun by day, cool and dim by night, or it reads as
     // a daylight model pasted onto a night map
-    this.scene.add(new THREE.HemisphereLight(NIGHT_ON?0x3a4a68:0xbcd4ff, NIGHT_ON?0x0a0f18:0x24303f, NIGHT_ON?0.75:1.0));
-    const sun=new THREE.DirectionalLight(NIGHT_ON?0x9fb4d8:0xfff2e0, NIGHT_ON?0.45:1.2); sun.position.set(-1,2,1); this.scene.add(sun);
+    this.hemi=new THREE.HemisphereLight(0xbcd4ff,0x24303f,1.0); this.scene.add(this.hemi);
+    this.sun=new THREE.DirectionalLight(0xfff2e0,1.2); this.sun.position.set(-1,2,1); this.scene.add(this.sun);
+    this.relight();
     this.yaw=new THREE.Group(); this.pitch=new THREE.Group(); this.roll=new THREE.Group(); this.holder=new THREE.Group();
     this.yaw.add(this.pitch); this.pitch.add(this.roll); this.roll.add(this.holder); this.scene.add(this.yaw);
     this.renderer=new THREE.WebGLRenderer({canvas:m.getCanvas(),context:gl,antialias:true}); this.renderer.autoClear=false; this.renderer.outputEncoding=THREE.sRGBEncoding;
     this.loader=new THREE.GLTFLoader(); this.key=null; this.targetSpan=40;   // fallback span for a model with no MODEL_SPAN entry
+    this.lightScene=new THREE.Scene(); this.lightEnd=undefined; this.lightData=null;   // approach lighting, drawn at the runway
+  },
+  relight(){   // the aircraft is lit to match the ground, and follows the theme toggle
+    if(!this.hemi) return;
+    this.hemi.color.setHex(NIGHT_ON?0x3a4a68:0xbcd4ff); this.hemi.groundColor.setHex(NIGHT_ON?0x0a0f18:0x24303f);
+    this.hemi.intensity=NIGHT_ON?0.75:1.0;
+    this.sun.color.setHex(NIGHT_ON?0x9fb4d8:0xfff2e0); this.sun.intensity=NIGHT_ON?0.45:1.2;
   },
   ensureModel(t){
     const key=_q.get('force')||modelFor(t); if(!this.loader||key===this.key||this.loading)return; this.loading=true;   // no loader until the layer is on the map
     this.loader.load('/static/'+key,(g)=>{ while(this.holder.children.length)this.holder.remove(this.holder.children[0]);
-      const mm=g.scene,box=new THREE.Box3().setFromObject(mm),size=new THREE.Vector3(),c=new THREE.Vector3(); box.getSize(size);box.getCenter(c);mm.position.sub(c);
+      const mm=g.scene,box=new THREE.Box3().setFromObject(mm),size=new THREE.Vector3(),c=new THREE.Vector3(); box.getSize(size);box.getCenter(c);
       acSpan=MODEL_SPAN[key]||this.targetSpan;   // the cameras frame by this
-      mm.scale.setScalar(acSpan/(Math.max(size.x,size.z)||1)); mm.traverse(o=>{if(o.isMesh&&o.material){(Array.isArray(o.material)?o.material:[o.material]).forEach(mt=>{mt.metalness=0.25;mt.roughness=0.6;whiten(mt);});}});
+      const k=acSpan/(Math.max(size.x,size.z)||1);
+      /* Scale FIRST, then offset by the scaled centre. A node's position is in parent space and is not
+         affected by its own scale, so subtracting the raw centre before scaling leaves the model out by
+         centre×(k−1). Harmless while every model happened to be built around its own origin; the C-130
+         is not, and was drawn 109 m below and 72 m aside from the aircraft it was meant to be. */
+      mm.scale.setScalar(k); mm.position.set(-c.x*k,-c.y*k,-c.z*k);
+      mm.traverse(o=>{if(o.isMesh&&o.material){(Array.isArray(o.material)?o.material:[o.material]).forEach(mt=>{mt.metalness=0.25;mt.roughness=0.6;whiten(mt);});}});
       const or=MODEL_ORIENT[key]||{}; this.holder.rotation.set((or.pitch||0)*D2R,(or.yaw||0)*D2R,(or.roll||0)*D2R);
       this.holder.add(mm); this.key=key; this.loading=false; },undefined,()=>{this.loading=false;});
   },
   render(gl,args){
+    const M0=(args&&args.defaultProjectionData)?args.defaultProjectionData.mainMatrix:args;
+    /* The approach lights live at the runway, not at the aircraft, so they get their own local
+       transform and a second render pass through the SAME renderer and camera — one GL context, one
+       renderer, composited because autoClear is off. */
+    if(LIGHTS_ON&&NIGHT_ON&&this.lightScene){
+      const end=pickEnd(aircraft);
+      if(end!==this.lightEnd){ this.lightEnd=end; this.lightData=buildLights(end,this.lightScene); }
+      if(end&&this.lightData){
+        const t=performance.now()/1000;
+        // the sequenced flasher — "the rabbit" — runs from the outermost bar in toward the threshold
+        const col=this.lightData.pts.geometry.getAttribute('color');
+        const base=this.lightData.baseCol, idx=this.lightData.flashIdx;
+        const step=Math.floor((t*2.5)%(idx.length+6));   // a pause after each run, as the real ones have
+        for(let k=0;k<idx.length;k++){
+          const i=idx[k], on=(k===idx.length-1-step);
+          col.array[i*3]=on?2.5:base[i*3]; col.array[i*3+1]=on?2.5:base[i*3+1]; col.array[i*3+2]=on?2.5:base[i*3+2];
+        }
+        col.needsUpdate=true;
+        const mc=maplibregl.MercatorCoordinate.fromLngLat([end.lon,end.lat], end.elev*VE);
+        const s=mc.meterInMercatorCoordinateUnits();
+        const L=new THREE.Matrix4().makeTranslation(mc.x,mc.y,mc.z).scale(new THREE.Vector3(s,-s,s)).multiply(new THREE.Matrix4().makeRotationX(Math.PI/2));
+        this.camera.projectionMatrix=new THREE.Matrix4().fromArray(M0).multiply(L);
+        this.renderer.resetState(); this.renderer.render(this.lightScene,this.camera);
+        map.triggerRepaint();       // the flasher needs frames even when the camera is still
+      }
+    }
     if(!aircraft||!this.holder.children.length)return;
     const a=aircraft;
     // Mercator placement: x east, y SOUTH (flip below), z up; model space = metres, Y-up (same rig as approach.html)
@@ -288,14 +417,24 @@ let _encFmt=null;
 async function encoderFormat(){
   if(_encFmt) return _encFmt;
   try{
-    const c=new OffscreenCanvas(16,16), x=c.getContext('2d',{willReadFrequently:true});
-    const id=x.createImageData(16,16);
-    for(let i=0;i<id.data.length;i+=4){ const v=i>>2; id.data[i]=v*7&255; id.data[i+1]=v*13&255; id.data[i+2]=v*29&255; id.data[i+3]=255; }
+    /* The pattern is adversarial on purpose. A gentle gradient can survive a lossy encoder intact and
+       give a false pass; what actually breaks under chroma subsampling and quantisation is
+       high-frequency noise and ±1 steps in the low bits. In terrarium, blue is 1/256 m and green is
+       1 m — precisely those low bits — so the test writes pseudorandom values across all three
+       channels plus a band of ±1 neighbours, over 64×64 = 4,096 pixels rather than 256. */
+    const N=64, c=new OffscreenCanvas(N,N), x=c.getContext('2d',{willReadFrequently:true});
+    const id=x.createImageData(N,N); let seed=12345;
+    const rnd=()=>{ seed=(seed*1103515245+12345)&0x7fffffff; return (seed>>7)&255; };
+    for(let p=0,i=0;p<N*N;p++,i+=4){
+      if(p%N<N/2){ id.data[i]=rnd(); id.data[i+1]=rnd(); id.data[i+2]=rnd(); }       // noise
+      else { const base=128+((p/N|0)&7); id.data[i]=base; id.data[i+1]=base+(p&1); id.data[i+2]=base+((p>>1)&1); }  // ±1 steps
+      id.data[i+3]=255;
+    }
     x.putImageData(id,0,0);
     const b=await c.convertToBlob({type:'image/webp'});
     const bm=await createImageBitmap(b,{premultiplyAlpha:'none',colorSpaceConversion:'none'});
-    const c2=new OffscreenCanvas(16,16), x2=c2.getContext('2d',{willReadFrequently:true});
-    x2.drawImage(bm,0,0); const back=x2.getImageData(0,0,16,16).data;
+    const c2=new OffscreenCanvas(N,N), x2=c2.getContext('2d',{willReadFrequently:true});
+    x2.drawImage(bm,0,0); const back=x2.getImageData(0,0,N,N).data;
     let exact=true;
     for(let i=0;i<id.data.length;i+=4) if(id.data[i]!==back[i]||id.data[i+1]!==back[i+1]||id.data[i+2]!==back[i+2]){exact=false;break;}
     _encFmt=exact?'image/webp':'image/png';
@@ -343,20 +482,18 @@ async function tileFetch(url,signal){
 }
 maplibregl.addProtocol('pilnk', async (params, abort) => ({data: await tileFetch(params.url.replace(/^pilnk:\/\//,'https://'), abort&&abort.signal)}));
 
-/* ---------- fall back to the Three.js engine ----------
-   This page needs WebGL and a route to tiles.openfreemap.org. Some Pi kiosk browsers have neither.
-   static/approach-three.html is the previous engine: it draws its own terrain from the AWS DEM and
-   needs no vector tiles, so it is a genuine fallback rather than a second thing to go wrong. Sends
-   the query string on untouched, plus ?fellback=1 so the old page can say why it is showing.
-   ?nofallback=1 stays put and shows the reason — for diagnosing a node rather than rescuing it. */
-let _fellBack=false;
-function fallbackToThree(why){
-  if(_fellBack) return; _fellBack=true;
-  try{ console.warn('3D: falling back to approach-three.html —',why); }catch(e){}
-  st('3D map unavailable ('+why+') — switching to the classic view…');
-  if(_q.get('nofallback')==='1') return;
-  const q=new URLSearchParams(location.search); q.set('fellback','1');
-  setTimeout(()=>{ location.replace('/static/approach-three.html?'+q.toString()); }, 1200);
+/* ---------- fail soft ----------
+   This page needs WebGL and a route to tiles.openfreemap.org. A Pi kiosk browser may have neither.
+   There used to be a second engine at static/approach-three.html and this redirected to it. That
+   page has been retired: it drew through THREE.WebGLRenderer, so the no-WebGL case it was meant to
+   rescue could never have worked, and it had drifted a long way behind this one. We now name the
+   problem and stop, rather than sending the user somewhere worse. Keep the reasons accurate — on a
+   remote node they are the only thing the page can tell us about itself. */
+let _failed=false;
+function failSoft(why){
+  if(_failed) return; _failed=true;
+  try{ console.warn('3D unavailable:',why); }catch(e){}
+  st('3D view unavailable — '+why+'. The 2D map on the dashboard still works.');
 }
 function webglOK(){
   // NB: maplibregl.supported() was REMOVED in MapLibre 5 — testing for it reports "unsupported" on
@@ -391,39 +528,82 @@ function sunElevation(lat,lon,when){
 function isNight(){
   const q=_q.get('theme');
   if(q==='night')return true; if(q==='day')return false;
+  let pref=null; try{ pref=localStorage.getItem('pilnk3d:theme'); }catch(e){}
+  if(pref==='night')return true; if(pref==='day')return false;
   return sunElevation(SITE.lat,SITE.lon) < 0;                   // below the horizon: dusk counts as night
 }
 const NIGHT={ bg:'#060912', water:'#0a1526', wet:'#0a1526', green:'#0b1410', land:'#090d15',
   bldg:'#161d2b', road:'#1b2332', roadMajor:'#2b3448', rail:'#171d29', text:'#7488a8', halo:'#04070e',
   runway:'#ffd25e', runwayCase:'#7a5c12', taxi:'#3f5f86', apron:'#0e1420', boundary:'#2a3348' };
-function paintNight(style){
-  /* Pick one colour per layer from its id, then apply it through the property that layer type actually
-     has — MapLibre validates the style and rejects, say, line-color on a fill layer, which kills the
-     whole map with "unknown property". */
-  for(const l of style.layers){
-    const id=l.id.toLowerCase(); let c=null;
-    if(/aeroway_runway/.test(id))        c=NIGHT.runway;
-    else if(/aeroway_taxiway/.test(id))  c=NIGHT.taxi;
-    else if(/aeroway/.test(id))          c=NIGHT.apron;
-    else if(/water|ocean|sea|river|lake/.test(id)) c=NIGHT.water;
-    else if(/park|grass|wood|forest|scrub|cemetery|pitch|golf|farm|garden/.test(id)) c=NIGHT.green;
-    else if(/building/.test(id))         c=NIGHT.bldg;
-    else if(/motorway|trunk|primary/.test(id)) c=NIGHT.roadMajor;
-    else if(/rail|transit|ferry|aerialway/.test(id)) c=NIGHT.rail;
-    else if(/boundary|admin/.test(id))   c=NIGHT.boundary;
-    else if(/highway|road|street|bridge|tunnel|path|track|service/.test(id)) c=NIGHT.road;
-    else if(/landuse|landcover|residential|industrial|hospital|school|university|sand|rock|glacier/.test(id)) c=NIGHT.land;
-    const p=l.paint=l.paint||{};
-    switch(l.type){
-      case 'background':     p['background-color']=NIGHT.bg; break;
-      case 'fill':           p['fill-color']=c||NIGHT.land; if(p['fill-outline-color']!=null)p['fill-outline-color']=c||NIGHT.land; break;
-      case 'line':           p['line-color']=c||NIGHT.road; break;
-      case 'fill-extrusion': p['fill-extrusion-color']=NIGHT.bldg; p['fill-extrusion-opacity']=0.95; break;
-      case 'symbol':         p['text-color']=NIGHT.text; p['text-halo-color']=NIGHT.halo; p['icon-opacity']=0.55; break;
-      case 'circle':         p['circle-color']=c||NIGHT.road; break;
-    }
+/* One place decides what a layer looks like at night; the pre-load painter and the live toggle both
+   read it, so the two can never drift apart. Returns [property, value] pairs valid for that layer's
+   type — MapLibre validates the style and rejects, say, line-color on a fill layer, which kills the
+   whole map with "unknown property". */
+function nightOps(l){
+  const id=l.id.toLowerCase(); let c=null;
+  if(/aeroway_runway/.test(id))        c=NIGHT.runway;
+  else if(/aeroway_taxiway/.test(id))  c=NIGHT.taxi;
+  else if(/aeroway/.test(id))          c=NIGHT.apron;
+  else if(/water|ocean|sea|river|lake/.test(id)) c=NIGHT.water;
+  else if(/park|grass|wood|forest|scrub|cemetery|pitch|golf|farm|garden/.test(id)) c=NIGHT.green;
+  else if(/building/.test(id))         c=NIGHT.bldg;
+  else if(/motorway|trunk|primary/.test(id)) c=NIGHT.roadMajor;
+  else if(/rail|transit|ferry|aerialway/.test(id)) c=NIGHT.rail;
+  else if(/boundary|admin/.test(id))   c=NIGHT.boundary;
+  else if(/highway|road|street|bridge|tunnel|path|track|service/.test(id)) c=NIGHT.road;
+  else if(/landuse|landcover|residential|industrial|hospital|school|university|sand|rock|glacier/.test(id)) c=NIGHT.land;
+  switch(l.type){
+    case 'background':     return [['background-color',NIGHT.bg]];
+    case 'fill':           return (l.paint&&l.paint['fill-outline-color']!=null)
+                             ? [['fill-color',c||NIGHT.land],['fill-outline-color',c||NIGHT.land]]
+                             : [['fill-color',c||NIGHT.land]];
+    case 'line':           return [['line-color',c||NIGHT.road]];
+    case 'fill-extrusion': return [['fill-extrusion-color',NIGHT.bldg],['fill-extrusion-opacity',0.95]];
+    case 'symbol':         return [['text-color',NIGHT.text],['text-halo-color',NIGHT.halo],['icon-opacity',0.55]];
+    case 'circle':         return [['circle-color',c||NIGHT.road]];
   }
+  return [];
+}
+/* The daytime value of every property the night painter touches, captured before anything is changed,
+   so the toggle can put it back exactly rather than guessing at a "day palette". */
+const DAY_PAINT={};
+function captureDayPaint(style){
+  for(const l of style.layers){
+    const ops=nightOps(l); if(!ops.length) continue;
+    const rec={}; for(const [prop] of ops) rec[prop]=(l.paint&&l.paint[prop]!==undefined)?l.paint[prop]:null;
+    DAY_PAINT[l.id]=rec;
+  }
+}
+function paintNight(style){
+  for(const l of style.layers){ const p=l.paint=l.paint||{};
+    for(const [prop,val] of nightOps(l)) p[prop]=val; }
   return style;
+}
+/* Switching theme on a LIVE map, deliberately without setStyle(). Reloading the style re-fires the
+   map's `load` event, and everything hung off it would run twice — including the Three.js custom
+   layer's onAdd, which would build a second renderer over the first. Recolouring the layers in place
+   avoids that entirely, and has no reload flash. */
+function applyTheme(night){
+  NIGHT_ON=night;
+  for(const id in DAY_PAINT){
+    const l=map.getLayer(id); if(!l) continue;
+    const ops=night?nightOps(l):null;
+    if(night){ for(const [prop,val] of ops) try{ map.setPaintProperty(id,prop,val); }catch(e){} }
+    else { const day=DAY_PAINT[id];
+      for(const prop in day) try{ map.setPaintProperty(id,prop,day[prop]===null?undefined:day[prop]); }catch(e){} }
+  }
+  try{ map.setPaintProperty('aeroway_runway','line-color',night?NIGHT.runway:'#3a3a3a');
+       map.setPaintProperty('aeroway_runway','line-opacity',night?0.95:0.9); }catch(e){}
+  try{ map.setSky(night
+    ? {'sky-color':'#03060e','horizon-color':'#0a1830','fog-color':'#04070f','sky-horizon-blend':0.5,'horizon-fog-blend':0.5,'fog-ground-blend':0.7}
+    : {'sky-color':'#7fb2e5','horizon-color':'#cfe3f5','fog-color':'#dde8f2','sky-horizon-blend':0.7,'horizon-fog-blend':0.6,'fog-ground-blend':0.5}); }catch(e){}
+  if(acLayer.relight) acLayer.relight();
+  const b=document.getElementById('themebtn'); if(b) b.textContent=night?'☾':'☀';
+  map.triggerRepaint();
+}
+function setTheme(mode){   // 'day' | 'night' | 'auto'
+  try{ localStorage.setItem('pilnk3d:theme',mode); }catch(e){}
+  applyTheme(mode==='auto'?(sunElevation(SITE.lat,SITE.lon)<0):(mode==='night'));
 }
 /* The runway is drawn by the map in near-white on a near-white background (#f0ede9 on #f8f4f0), which
    is why a newcomer could not find the airport from 10 km out. Paint it and widen it, in both themes. */
@@ -441,8 +621,8 @@ function paintRunway(style,night){
 
 /* ---------- map ---------- */
 async function boot(){
-  if(!webglOK()) return fallbackToThree('no WebGL in this browser');
-  if(typeof THREE==='undefined') return fallbackToThree('3D libraries did not load');
+  if(!webglOK()) return failSoft('no WebGL in this browser');
+  if(typeof THREE==='undefined') return failSoft('3D libraries did not load');
   await resolveSite(); mPerLon=111320*Math.cos(SITE.lat*D2R);
   /* Resolve the style and its TileJSON here so the vector tiles can be pointed at the local store.
      The tile path (with OpenFreeMap's dated segment) is read from the server every load, never hardcoded. */
@@ -454,13 +634,14 @@ async function boot(){
       if(!src.tiles&&src.url){ const tj=await fetch(src.url).then(r=>r.json()); src.tiles=tj.tiles; if(tj.minzoom!=null)src.minzoom=tj.minzoom; if(tj.maxzoom!=null)src.maxzoom=tj.maxzoom; if(tj.attribution)src.attribution=tj.attribution; delete src.url; }
       if(src.tiles) src.tiles=src.tiles.map(t=>t.replace(/^https:\/\//,'pilnk://')); }
     NIGHT_ON=isNight();
+    captureDayPaint(s);            // before anything is repainted, so the toggle can restore exactly
     if(NIGHT_ON) paintNight(s);
     paintRunway(s,NIGHT_ON);
     // handed over as a blob URL rather than an object: MapLibre applies an inline style object on the next
     // animation frame, which a background tab never gets; a URL loads on fetch completion regardless
     style=URL.createObjectURL(new Blob([JSON.stringify(s)],{type:'application/json'}));
   }catch(e){ /* the style host is unreachable: no vector map is possible here */ }
-  if(!styleOK) return fallbackToThree('map tiles unreachable');
+  if(!styleOK) return failSoft('map tiles unreachable');
   map=new maplibregl.Map({ container:'map', style, center:[SITE.lon,SITE.lat], zoom:13.5, pitch:60, bearing:0,
     maxPitch:85,   // MapLibre's supported limit — past it, geometry beyond the horizon folds back into the sky
     antialias:true, attributionControl:{compact:false},
@@ -473,7 +654,7 @@ async function boot(){
     /* field elevation, sampled from the same terrain the aircraft is drawn against (queryTerrainElevation
        returns exaggerated metres, so divide by VE to get real ones). Retried until the DEM tile is in. */
     (function sampleElev(n){ if(!TERRAIN)return; const e=map.queryTerrainElevation(new maplibregl.LngLat(SITE.lon,SITE.lat));
-      if(typeof e==='number'&&isFinite(e)){ SITE.elev=Math.max(0,e/VE); terrainReady=true; }
+      if(typeof e==='number'&&isFinite(e)){ SITE.elev=Math.max(0,e/VE); terrainReady=true; rebaseCal(); }
       else if(n<40) setTimeout(()=>sampleElev(n+1),500); })(0);
     const layers=map.getStyle().layers;
     if(BASE==='sat'){
@@ -511,12 +692,12 @@ async function boot(){
   let _wdVis=0, _wdLast=performance.now();
   const _wd=setInterval(()=>{ const now=performance.now(); if(!document.hidden) _wdVis+=now-_wdLast; _wdLast=now;
     if(map&&map.isStyleLoaded()){ clearInterval(_wd); return; }
-    if(_wdVis>25000){ clearInterval(_wd); fallbackToThree('the 3D map did not finish loading'); } },1000);
-  map.on('webglcontextlost',()=>fallbackToThree('the browser dropped the 3D context'));
+    if(_wdVis>25000){ clearInterval(_wd); failSoft('the 3D map did not finish loading'); } },1000);
+  map.on('webglcontextlost',()=>failSoft('the browser dropped the 3D context'));
 }
 boot().catch(e=>{ const m=(e&&e.message)||'startup failed';
   if(/no location/i.test(m)) st('failed: '+m);      // a configuration problem, not a 3D one — the old engine would fail the same way
-  else fallbackToThree(m); });
+  else failSoft(m); });
 
 /* ---------- data (same rules as approach.html, condensed) ---------- */
 let target=(_q.get('hex')||'__auto__').toLowerCase(), lockedHex=null, qnh=null;

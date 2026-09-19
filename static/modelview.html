@@ -60,9 +60,13 @@ function lab(t,c){const cv=document.createElement('canvas');cv.width=cv.height=1
 const attitude=new THREE.Group(), modelHolder=new THREE.Group(); attitude.add(modelHolder); scene.add(attitude);
 new THREE.GLTFLoader().load('/static/'+CFG.model,(g)=>{
   const m=g.scene, box=new THREE.Box3().setFromObject(m), size=new THREE.Vector3(), c=new THREE.Vector3();
-  box.getSize(size); box.getCenter(c); m.position.sub(c);
+  box.getSize(size); box.getCenter(c);
   // scale by the LARGEST horizontal-ish dimension, then frame the camera to it
   const span=Math.max(size.x,size.y,size.z); const k=CFG.span/(span||1); m.scale.setScalar(k);
+  // offset by the SCALED centre: position is in parent space and is not affected by this node's own
+  // scale, so subtracting the raw centre first leaves a model that is not built around its own origin
+  // adrift by centre×(k−1) — which is why the C-130 loaded fine and appeared nowhere.
+  m.position.set(-c.x*k,-c.y*k,-c.z*k);
   window._m=m; window._k=k;   // expose for the +/- size keys
   modelHolder.add(m); document.getElementById('banner').style.display='none';
   window._m=m; window._k=k;
