@@ -23,8 +23,36 @@ ok()   { printf "${GREEN}✓ %s${RESET}\n" "$1"; }
 info() { printf "${CYAN}→ %s${RESET}\n" "$1"; }
 warn() { printf "${YELLOW}⚠ %s${RESET}\n" "$1"; }
 err()  { printf "${RED}✗ %s${RESET}\n" "$1"; }
-step() { printf "\n${BOLD}${BLUE}[ %s ]${RESET}\n" "$1"; }
+step() { CURRENT_STEP="$1"; _state running; printf "\n${BOLD}${BLUE}[ %s ]${RESET}\n" "$1"; }
 die()  { err "$1"; exit 1; }
+
+# ── Build outcome, recorded where the fleet can see it ───────
+# Three fleet-wide killers of this build — the root guard, the hardcoded
+# FORK_LIB path, and the `ls … | head` exit status — each hid for WEEKS for
+# the same reason: a build that failed and a build that never ran leave
+# identical evidence, which is none. This script has always known which of
+# its eight steps it died on. It printed it to a journal nobody reads.
+# Recording it makes "what is blocking the audio build?" one fleet_query
+# instead of a fourth node-by-node investigation.
+#
+# NEVER allowed to fail. A state file that cannot be written must not abort
+# an otherwise good install, so every write ends in `|| true`.
+AUDIO_BUILD_STATE="${PILNKRADIO_STATE_FILE:-$HOME/pilnk/audio_build_state.json}"
+CURRENT_STEP="0/8 starting"
+_state() {
+    printf '{"step":"%s","result":"%s","ts":%s}\n' \
+        "$CURRENT_STEP" "$1" "$(date +%s)" > "$AUDIO_BUILD_STATE" 2>/dev/null || true
+    chmod 644 "$AUDIO_BUILD_STATE" 2>/dev/null || true
+}
+# ONE exit trap, rather than a line inside die(): `set -e` can kill this
+# script without ever reaching die() — which is exactly how killer #3 stayed
+# silent. Trapping EXIT catches die(), a set -e death, and success alike.
+_on_exit() {
+    local rc=$?
+    if [ "$rc" -eq 0 ]; then _state ok; else _state failed; fi
+    return "$rc"
+}
+trap _on_exit EXIT
 
 # prompts must survive `curl | bash` (stdin is the pipe) — read from the terminal
 TTY=/dev/tty

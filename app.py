@@ -1319,6 +1319,7 @@ def ping_server():
                 'env': NODE_ENV,
                 'features': dict({
                     'sdr_audio': _sdr_audio_feature(),
+                    'audio_build': _audio_build_feature(),
                     'atc_stt':   'ready' if os.path.exists(ATC_TRANSCRIPT_PATH) else 'absent',
                     # Raw compute score, no verdict attached — see the capability
                     # probe above. Answers "which nodes COULD run STT" with a
@@ -1445,6 +1446,46 @@ def _reconcile_pending_ota_result():
         _save_ota_state(last_result=(
             'success' if _pend.split('@', 1)[1] != _get_local_version()
             else 'interrupted'))
+
+AUDIO_BUILD_STATE_FILE = os.path.join(PILNK_DIR, 'audio_build_state.json')
+
+def _audio_build_feature():
+    """Whether the ATC audio engine ever BUILT, and if not, WHERE it stopped.
+
+    Companion to _sdr_audio_feature(): that one says whether the engine RUNS,
+    this says whether it was ever produced at all. They fail independently.
+
+    Three fleet-wide killers of this build each hid for weeks because a failed
+    build and a build that never ran leave identical evidence — no binary and
+    no word. pilnkradio-install.sh always knew which of its eight steps it died
+    on; it printed it to a journal nobody reads.
+
+      never_run     no state file AND no binary — never attempted here
+      ok_prereport  no state file but the binary exists — built before this
+                    reporting shipped. Healthy; it will become 'ok' at the
+                    next engine rebuild.
+      building:N/8  a build is running right now
+      failed:N/8    died on that step — THE ACTIONABLE ONE
+      ok            last attempt completed
+
+    Step NUMBER only, never the prose: 'failed:6/8' groups across the fleet,
+    while 'failed:6/8 radio dongle' would make every node its own group.
+    """
+    try:
+        with open(AUDIO_BUILD_STATE_FILE) as f:
+            s = json.load(f)
+    except Exception:
+        # No readable state file. Separate a node that never built from one
+        # that built BEFORE this reporting existed — otherwise every healthy
+        # node reports never_run until its next engine rebuild, which is
+        # exactly the confidently-wrong status this change exists to remove.
+        return ('ok_prereport' if os.path.exists('/usr/local/bin/pilnkradio')
+                else 'never_run')
+    result = str(s.get('result') or 'unknown')
+    if result == 'ok':
+        return 'ok'
+    step = str(s.get('step') or '?').split()[0]
+    return ('building:' if result == 'running' else 'failed:') + step
 
 def _sdr_audio_feature():
     """What is ACTUALLY answering on the radio port — not what sits on disk.
