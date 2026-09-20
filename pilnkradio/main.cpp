@@ -552,6 +552,13 @@ private:
     std::atomic<bool> sqEnabled{false};
     std::atomic<float> sqLevel{-50.0f};
     float sqPowSmooth = 0.0f;                 // DSP thread only
+    // Smoothed post-channel-filter power, published so the gain helper (and a
+    // human tuning by hand) can see what the radio is actually hearing.
+    // chanPowValid stays false until the DSP has run a block: a dead-silent
+    // channel and "nothing has been measured yet" must not collapse into the
+    // same number, so statusJson emits null rather than a floor value.
+    std::atomic<bool>  chanPowValid{false};
+    std::atomic<float> chanPowDb{0.0f};
     float dcState = 0.0f, dcPrev = 0.0f;      // DC blocker (one-pole HPF)
     float agcGain = 20.0f;                    // DSP thread only
     std::vector<float> audioAcc;              // pending output samples
@@ -611,11 +618,17 @@ private:
             pow += dspBufA[2*i]*dspBufA[2*i] + dspBufA[2*i+1]*dspBufA[2*i+1];
         if (n3) pow /= (float)n3;
         sqPowSmooth += 0.2f * (pow - sqPowSmooth);
-        bool muted = false;
-        if (sqEnabled.load(std::memory_order_relaxed)) {
-            float db = 10.0f * log10f(sqPowSmooth + 1e-12f);
-            muted = db < sqLevel.load(std::memory_order_relaxed);
+        // dB is computed unconditionally now. It used to be derived only when
+        // squelch happened to be enabled and thrown away otherwise — the one
+        // number a gain helper needs, calculated every block and discarded.
+        const float chanDb = 10.0f * log10f(sqPowSmooth + 1e-12f);
+        if (n3) {   // an empty block is not a measurement of silence
+            chanPowDb.store(chanDb, std::memory_order_relaxed);
+            chanPowValid.store(true, std::memory_order_relaxed);
         }
+        bool muted = false;
+        if (sqEnabled.load(std::memory_order_relaxed))
+            muted = chanDb < sqLevel.load(std::memory_order_relaxed);
 
         // AM envelope -> DC block -> AGC
         for (size_t i = 0; i < n3; i++) {
@@ -716,6 +729,8 @@ private:
         bool rfAgc = false;
         int fftFps = 0;
         int audioSps = 0;
+        bool  channelPowerValid = false; // false => statusJson emits null
+        float channelPowerDb = 0.0f;     // post-channel-filter power, dBFS
     };
     std::mutex statusMtx;
     StatusSnapshot status;
@@ -745,6 +760,10 @@ private:
                 case Command::PLAYING:
                     cfg.playing = c.bval;
                     if (c.bval) rtl.startStream(); else rtl.stopStream();
+                    // demodBlock only runs while the stream does, so a stopped
+                    // radio would otherwise keep publishing its last reading
+                    // as though it were current. Go back to "not measured".
+                    if (!c.bval) chanPowValid.store(false, std::memory_order_relaxed);
                     logI("control: playing -> %s", c.bval ? "true" : "false");
                     break;
                 case Command::FREQ:
@@ -794,6 +813,8 @@ private:
         s.rfAgc = cfg.agc;
         s.rfGainSteps = rtl.gains(); // empty list = no device: the tell the
                                      // tab/watchdog key on stays truthful
+        s.channelPowerValid = chanPowValid.load(std::memory_order_relaxed);
+        s.channelPowerDb    = chanPowDb.load(std::memory_order_relaxed);
         sampleFlow(s);
         { std::lock_guard<std::mutex> lk(statusMtx); status = s; }
     }
@@ -815,6 +836,9 @@ private:
         j["rfAgc"] = s.rfAgc;
         j["fftFps"] = s.fftFps;
         j["audioSps"] = s.audioSps;
+        // null, never a floor value: "quiet" and "not measured" stay distinct
+        if (s.channelPowerValid) j["channelPowerDb"] = s.channelPowerDb;
+        else                     j["channelPowerDb"] = nullptr;
         return j.dump();
     }
 
