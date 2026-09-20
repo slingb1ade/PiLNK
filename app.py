@@ -36,6 +36,44 @@ app.config['SECRET_KEY'] = 'pilnk_secret'
 # runs, so this changes nothing for them and fixes the outlier.
 socketio = SocketIO(app, cors_allowed_origins="*", async_mode='threading')
 
+
+@app.after_request
+def _dashboard_html_no_cache(resp):
+    """Make the dashboard HTML revalidate, so an OTA actually reaches the screen.
+
+    20 Sep 2026: AJ saw Carto "API key required" tiles on a node dashboard. The
+    Carto swap had been done on 31 Aug and the template was clean — his BROWSER
+    was holding a copy from before the fix. A hard refresh cured it.
+
+    Flask's render_template response carries NO Cache-Control, so browsers fall
+    back to HEURISTIC caching and may reuse a page for a long time. A node can
+    therefore OTA to a new version while its operator keeps seeing the old UI,
+    with every layer reporting success. That is the same failure as the audio
+    engine installing a new binary without restarting the process (#110), and
+    as sdr_audio reporting the installed file rather than the running one
+    (#102): the thing updated, the update did not take effect.
+
+    It is invisible by construction — nobody reports "I am looking at last
+    month's UI", because it looks like the UI. This was only caught because
+    Carto drew its refusal onto the map.
+
+    pilnk.io already does this in .htaccess (no-cache, must-revalidate on
+    .js/.css/.html, from the cache-bust work). The node never got it.
+
+    SCOPE, deliberately narrow:
+      - text/html ONLY. JSON, images, and the tile/photo proxies are untouched.
+      - never overrides a Cache-Control already set, so the four endpoints that
+        choose their own caching (RainViewer 300s, photo cache 1y) keep it.
+      - fail-soft: a header helper must never be able to break a response.
+    """
+    try:
+        ctype = (resp.headers.get('Content-Type') or '').split(';')[0].strip().lower()
+        if ctype == 'text/html' and not resp.headers.get('Cache-Control'):
+            resp.headers['Cache-Control'] = 'no-cache, must-revalidate'
+    except Exception:
+        pass
+    return resp
+
 # Read location — config.json is authoritative (installer writes it).
 # /etc/default/dump1090-fa is a legacy fallback for pre-0.1.7 installs.
 # If neither is set we return None — caller guards, and node pings without
