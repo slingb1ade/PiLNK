@@ -5077,6 +5077,13 @@ function isNotable(a) {
 }
 
 var ccCurrentHex = '';
+// Registration and type of the aircraft on the open card, kept alongside the
+// hex purely so ccAddPhoto() can pass them to the upload page. That page has
+// always accepted ?reg= and ?type= and pre-filled from them; the dashboard had
+// simply never sent anything but the hex, so the field the card was already
+// displaying arrived blank and the uploader retyped what was on screen.
+var ccCurrentReg = '';
+var ccCurrentType = '';
 var pilnkPhotoCache = {};
 
 // ── MILITARY WATCHLIST — Phase 3 (May 2026) ─────────────────
@@ -5623,6 +5630,8 @@ function openCinematicCard(cs, auto) {
       }
     });
     ccCurrentHex = a.hex;
+    ccCurrentReg  = a.r || '';
+    ccCurrentType = a.t || '';
     document.getElementById('cc3dBtn').style.display = 'inline-block';
   } else {
     // Hex-less target (rare — e.g. some MLAT/TIS-B contacts): no photo lookup
@@ -5738,6 +5747,8 @@ function closeCinematicCard() {
   ccVisible = false;
   ccCurrentCS = null;
   ccCurrentHex = '';
+  ccCurrentReg = '';
+  ccCurrentType = '';
   // Dismissing the card also drops the map selection. Without this the aircraft
   // stayed "selected" after the card closed, so the tooltip-positioning path in
   // updateMarker kept treating it as the focused aircraft with nothing on screen
@@ -5844,6 +5855,14 @@ function ccAddPhoto() {
 
   var hex = ccCurrentHex;
   var url = 'https://pilnk.io/upload-photo.html?hex=' + encodeURIComponent(hex);
+  // Pass what the card already knows. The upload page reads ?reg=, ?callsign=
+  // and ?type= and pre-fills from them — support that has been there the whole
+  // time with nothing sending it. Each is appended only when we actually have
+  // it: an empty parameter is not the same as an absent one, and the page
+  // should be left to its own placeholder rather than handed a blank string.
+  if (ccCurrentReg)  url += '&reg='      + encodeURIComponent(ccCurrentReg);
+  if (ccCurrentType) url += '&type='     + encodeURIComponent(ccCurrentType);
+  if (ccCurrentCS)   url += '&callsign=' + encodeURIComponent(String(ccCurrentCS).trim());
 
   // Open in a new tab/window — NOT an iframe. Iframing pilnk.io from a
   // 192.168.x.x origin makes the iframe a third-party context, and modern
