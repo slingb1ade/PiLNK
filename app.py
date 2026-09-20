@@ -1318,7 +1318,7 @@ def ping_server():
                 # instead of a survey.
                 'env': NODE_ENV,
                 'features': dict({
-                    'sdr_audio': 'ready' if os.path.exists('/usr/local/bin/pilnkradio') else 'engine_absent',
+                    'sdr_audio': _sdr_audio_feature(),
                     'atc_stt':   'ready' if os.path.exists(ATC_TRANSCRIPT_PATH) else 'absent',
                     # Raw compute score, no verdict attached — see the capability
                     # probe above. Answers "which nodes COULD run STT" with a
@@ -1445,6 +1445,49 @@ def _reconcile_pending_ota_result():
         _save_ota_state(last_result=(
             'success' if _pend.split('@', 1)[1] != _get_local_version()
             else 'interrupted'))
+
+def _sdr_audio_feature():
+    """What is ACTUALLY answering on the radio port — not what sits on disk.
+
+    This was `'ready' if os.path.exists('/usr/local/bin/pilnkradio')`. On
+    LINKLABS that reported 'ready' for 28 days while sdrpp held :5656 and
+    pilnkradio failed to start 393,391 consecutive times. A file-existence
+    check cannot fail, so it never told anyone anything.
+
+    LOW-CARDINALITY states, so fleet_query's grouping stays useful:
+      engine_absent    no binary installed
+      not_listening    binary present, nothing answering on :5656
+      foreign:<name>   something ELSE holds the port (the sdrpp case)
+      no_device        our engine is up but has no tuner behind it
+      running:<ver>    our engine, answering, and which build it is
+
+    Fail-soft and fast. This runs on every ping and a radio problem must never
+    delay or break an ADS-B ping: the common failure (crash-loop) is a refused
+    connection, which returns instantly.
+    """
+    if not os.path.exists('/usr/local/bin/pilnkradio'):
+        return 'engine_absent'
+    try:
+        s = requests.get('http://127.0.0.1:5656/sdr/status', timeout=1.5).json()
+    except Exception:
+        # Refused, timed out, or not JSON. Operationally identical: the
+        # installed engine is not serving.
+        return 'not_listening'
+    eng = s.get('engine')
+    if eng is None:
+        # Builds before 2.0.0-m1 do not name themselves — and neither does
+        # sdrpp. So a healthy old engine and a squatter are genuinely
+        # indistinguishable here. Say exactly that rather than guess either way.
+        # This state should drain to running:<ver> as the fleet rebuilds; a node
+        # still reporting it afterwards is the one worth opening.
+        return 'unidentified'
+    if eng != 'pilnkradio':
+        return 'foreign:' + str(eng)
+    if not s.get('rfGainSteps'):
+        # Bound and answering, but no tuner open — the honest middle state that
+        # 'ready' used to swallow.
+        return 'no_device'
+    return 'running:' + str(s.get('version') or 'unknown')
 
 def _ota_ping_features():
     """Three LOW-CARDINALITY strings for the ping's features dict — states,

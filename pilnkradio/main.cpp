@@ -839,6 +839,14 @@ private:
         // null, never a floor value: "quiet" and "not measured" stay distinct
         if (s.channelPowerValid) j["channelPowerDb"] = s.channelPowerDb;
         else                     j["channelPowerDb"] = nullptr;
+        // WHO is answering on this port, and which build. A node can have the
+        // current binary installed while a DIFFERENT program holds :5656 —
+        // sdrpp did exactly that on LINKLABS for 28 days, serving /sdr/status
+        // the whole time while pilnkradio failed to bind 393,391 times. From
+        // outside, the two were indistinguishable. These two keys make "is this
+        // node running the current engine?" a single curl, fleet-wide.
+        j["engine"]  = "pilnkradio";
+        j["version"] = PILNKRADIO_VERSION;
         return j.dump();
     }
 
