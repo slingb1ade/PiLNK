@@ -323,7 +323,12 @@ sudo cp "$SRC/pilnkradio/pilnkradio.service" /etc/systemd/system/
 sudo cp "$SRC/pilnkradio/99-pilnk-v4.rules" /etc/udev/rules.d/
 sudo udevadm control --reload
 sudo systemctl daemon-reload
-sudo systemctl enable --now pilnkradio >/dev/null 2>&1
+# enable, THEN restart — not `enable --now`. On a unit that is already active,
+# --now's start is a no-op, so a reinstall would leave the OLD binary running
+# and report success. Restart is the only verb that swaps the process. (Found
+# 20 Sep 2026 while shipping the first change to main.cpp since July.)
+sudo systemctl enable pilnkradio >/dev/null 2>&1
+sudo systemctl restart pilnkradio >/dev/null 2>&1
 UP=""
 for _ in 1 2 3 4 5 6 7 8; do
     sleep 1

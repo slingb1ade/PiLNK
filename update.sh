@@ -104,9 +104,26 @@ fi
 #   FAIL-SOFT — every failure path here is non-fatal. A node that can't build the
 #     audio engine is a node without ATC audio; it is NOT a node without ADS-B.
 #     Nothing in this block may ever stop pilnk.service starting.
-#   IDEMPOTENT — skipped entirely once the binary exists, so this costs nothing
-#     on every subsequent update.
-if [ ! -x /usr/local/bin/pilnkradio ] && [ -f "$PILNK_DIR/pilnkradio-install.sh" ]; then
+#   IDEMPOTENT — skipped unless the binary is missing or out of date, so this
+#     costs nothing on the updates that don't touch the engine.
+#
+# 20 Sep 2026: this used to test ONLY for a missing binary, with the comment
+# "skipped entirely once the binary exists". That was right while the question
+# was "has this node ever had ATC audio" — and silently wrong the first time we
+# changed main.cpp (v1.5.5), because every node that already had a radio pulled
+# the new source and kept running the old binary. A condition that tests for
+# MISSING cannot notice STALE. The mtime check below closes that: git only
+# touches main.cpp's mtime when the pull actually changes it, so a release that
+# leaves the engine alone still rebuilds nothing.
+PILNKRADIO_BIN=/usr/local/bin/pilnkradio
+PILNKRADIO_SRC="$PILNK_DIR/pilnkradio/main.cpp"
+RADIO_BUILD_WHY=""
+if [ ! -x "$PILNKRADIO_BIN" ]; then
+    RADIO_BUILD_WHY="engine not present"
+elif [ -f "$PILNKRADIO_SRC" ] && [ "$PILNKRADIO_SRC" -nt "$PILNKRADIO_BIN" ]; then
+    RADIO_BUILD_WHY="engine source is newer than the installed binary"
+fi
+if [ -n "$RADIO_BUILD_WHY" ] && [ -f "$PILNK_DIR/pilnkradio-install.sh" ]; then
     if systemctl list-unit-files pilnk-audio-build.service >/dev/null 2>&1; then
         # `systemctl start` on a Type=oneshot unit BLOCKS until it finishes, which
         # would park the OTA behind a 5-minute compile. --no-block returns at once
@@ -115,7 +132,7 @@ if [ ! -x /usr/local/bin/pilnkradio ] && [ -f "$PILNK_DIR/pilnkradio-install.sh"
         # Uses the dedicated unit, NOT systemd-run: the node's sudoers rule grants
         # `systemctl start pilnk-audio-build` specifically. Granting systemd-run
         # would be granting full root, since it can launch anything.
-        log "ATC audio engine not present — starting detached build"
+        log "ATC audio: $RADIO_BUILD_WHY — starting detached build"
         sudo -n systemctl start --no-block pilnk-audio-build 2>> "$LOG_FILE" \
             && log "ATC audio build started (journalctl -u pilnk-audio-build to follow)" \
             || log "could not start ATC audio build (continuing — non-fatal)"
