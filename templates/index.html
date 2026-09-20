@@ -273,6 +273,13 @@
   .flight-cs{font-weight:bold;font-size:0.75rem;display:flex;align-items:center;gap:5px;}
   .flight-details{color:var(--text-dim);margin-top:2px;font-size:0.63rem;}
   .flight-route{color:var(--blue-mid);font-size:0.6rem;margin-top:1px;}
+  /* Provenance for the route. ADS-B carries no origin/destination — the route
+     is a third-party callsign lookup sitting next to measured facts, and until
+     20 Sep 2026 nothing told the reader which was which. Must stay legible in
+     a screenshot: that is how a wrong route got published. */
+  .route-src{display:block;font-size:0.5rem;line-height:1.3;margin-top:1px;
+             color:var(--text-dim);opacity:0.9;letter-spacing:0.01em;}
+  .route-suspect{color:#f59e0b !important;opacity:1;}
   .no-flights{color:var(--text-dim);font-size:0.67rem;padding:8px 0;}
   /* Airport tab */
   .search-wrap{padding:14px;border-bottom:1px solid var(--border);flex-shrink:0;}
@@ -3413,18 +3420,71 @@ updateWxSource();  // compute once at load from the default coords; refined when
 // (setupNexradVisibility retired step 3 — NEXRAD is now auto-selected by wxSourceFor)
 
 // ── ADSBDB ROUTE LOOKUP ───────────────────────────────────
+// ⚠ ADS-B DOES NOT BROADCAST ORIGIN OR DESTINATION. The aircraft sends a
+// CALLSIGN; this asks api.adsbdb.com what route that flight NUMBER usually
+// flies. It is a schedule lookup, not an observation. It can be stale, or
+// simply about a different sector — cargo operators reuse flight numbers
+// across different legs on different days.
+//
+// 20 Sep 2026, why this was hardened: FDX75 on approach to Auckland was shown
+// as "HNL → AKL". adsbdb now returns "LAX → HNL" for that same callsign, and
+// the aircraft had in fact come from Oakland. Three answers, none agreeing.
+// A screenshot of that card was posted publicly and had to be corrected.
+// The cinematic card already had its route display removed for this exact
+// reason (see openCinematicCard) — the tooltip and the sidebar list were left
+// behind. That drift is what published the wrong claim.
+//
+// So: cache with a TTL, KEEP THE ENDPOINT COORDINATES, and let callers ask
+// whether the claimed route is consistent with where the aircraft actually is.
 var routeCache = {};
+// Schedules change and callsigns get reassigned. A dashboard left open all day
+// must not keep showing this morning's answer as though it were current.
+var ROUTE_TTL_MS = 30 * 60 * 1000;
+
+// Is the claimed route consistent with where this aircraft actually IS?
+// An ellipse test: for any point ON a route, distance-to-origin plus
+// distance-to-destination is roughly the route length. Well outside that, the
+// lookup is describing a different flight.
+// Deliberately generous, because a legitimate OVERFLIGHT sits mid-route and
+// must not be accused: SCL→SYD passing New Zealand still satisfies this, while
+// FDX75 over Auckland claiming LAX→HNL misses by thousands of miles.
+// Returns TRUE when it cannot judge — never accuse on missing data.
+function routeIsPlausible(c, a) {
+  if (!c || !c.route) return true;
+  if (c.oLat == null || c.oLon == null || c.dLat == null || c.dLon == null) return true;
+  if (!a || a.lat == null || a.lon == null) return true;
+  var legNm = haversineNm(c.oLat, c.oLon, c.dLat, c.dLon);
+  var viaNm = haversineNm(a.lat, a.lon, c.oLat, c.oLon) +
+              haversineNm(a.lat, a.lon, c.dLat, c.dLon);
+  return viaNm <= (legNm * 1.25) + 150;   // 150 nm slack for short legs and diversions
+}
+
+// The route line plus its provenance, as ONE block. The attribution is not
+// decoration — it has to survive a screenshot, because a screenshot is how the
+// wrong claim left the building.
+function routeHtmlFor(c, a, prefix) {
+  var ok = routeIsPlausible(c, a);
+  return '<span>' + (prefix || '') + c.route + '</span>' +
+         '<span class="route-src' + (ok ? '' : ' route-suspect') + '">' +
+         (ok ? 'scheduled route · adsbdb, not from this aircraft'
+             : '⚠ scheduled route disagrees with observed position · adsbdb') +
+         '</span>';
+}
 
 function lookupRoute(callsign, callback) {
   var cs = callsign.trim();
-  if (routeCache[cs] !== undefined) { callback(routeCache[cs]); return; }
+  var hit = routeCache[cs];
+  if (hit !== undefined && (Date.now() - hit.ts) < ROUTE_TTL_MS) { callback(hit); return; }
   fetch('/api/adsbdb/' + cs)
     .then(function(r){ return r.json(); })
     .then(function(data) {
       var route = null;
       var airline = null;
+      var o = null, d = null;
       if (data && data.response && data.response.flightroute) {
         var fr = data.response.flightroute;
+        o = fr.origin || null;
+        d = fr.destination || null;
         var dep = fr.origin && fr.origin.iata_code ? fr.origin.iata_code : (fr.origin && fr.origin.icao_code ? fr.origin.icao_code : null);
         var arr = fr.destination && fr.destination.iata_code ? fr.destination.iata_code : (fr.destination && fr.destination.icao_code ? fr.destination.icao_code : null);
         if (dep && arr) route = dep + ' → ' + arr;
@@ -3435,10 +3495,22 @@ function lookupRoute(callsign, callback) {
       if (data && data.response && data.response.aircraft) {
         reg = data.response.aircraft.registration || null;
       }
-      routeCache[cs] = {route: route, reg: reg, airline: airline};
+      // Endpoint COORDINATES are the whole point of keeping this: without them
+      // there is no way to ask whether the claimed route matches reality.
+      routeCache[cs] = {
+        route: route, reg: reg, airline: airline, ts: Date.now(),
+        oLat: o && o.latitude  != null ? o.latitude  : null,
+        oLon: o && o.longitude != null ? o.longitude : null,
+        dLat: d && d.latitude  != null ? d.latitude  : null,
+        dLon: d && d.longitude != null ? d.longitude : null
+      };
       callback(routeCache[cs]);
     })
-    .catch(function(){ routeCache[cs] = {route:null, reg:null, airline:null}; callback(routeCache[cs]); });
+    .catch(function(){
+      routeCache[cs] = {route:null, reg:null, airline:null, ts: Date.now(),
+                        oLat:null, oLon:null, dLat:null, dLon:null};
+      callback(routeCache[cs]);
+    });
 }
 
 // ── AVIATION OVERLAY ──────────────────────────────────────
@@ -4430,7 +4502,7 @@ function showTooltip(cs,ll){
   document.querySelector('.tt-inner').style.boxShadow='0 6px 24px '+pc+'44';
   document.getElementById('ttArrow').style.borderTopColor=pc;
   lookupRoute(cs, function(info){
-    if(info.route){document.getElementById('ttRoute').textContent='✈ '+info.route;document.getElementById('ttRoute').style.display='block';}
+    if(info.route){document.getElementById('ttRoute').innerHTML=routeHtmlFor(info,a,'✈ ');document.getElementById('ttRoute').style.display='block';}
     if(info.reg){document.getElementById('ttReg').textContent=info.reg;}
   });
   var pt=map.latLngToContainerPoint(ll), mapR=document.getElementById('map').getBoundingClientRect();
@@ -4979,7 +5051,10 @@ function updateFlights(){
       var sqInfo=a.squawk&&SQUAWK_CODES[a.squawk];
       var em=inlineIcon(cat, 14, col);
       var cached=routeCache[cs];
-      var routeHtml=cached&&cached.route?'<div class="flight-route">'+cached.route+'</div>':'';
+      // Dense scanning list: a marker only, no attribution line — the full
+      // provenance lives on the tooltip and the card, where people read before
+      // they screenshot. A silent row that is quietly wrong is the thing to avoid.
+      var routeHtml=cached&&cached.route?'<div class="flight-route'+(routeIsPlausible(cached,a)?'':' route-suspect')+'">'+cached.route+(routeIsPlausible(cached,a)?'':' ⚠')+'</div>':'';
       return '<div class="flight-item '+(sel?'selected ':'')+(tx?'transmitting':'')+'" style="border-left:3px solid '+col+';" onclick="sidebarSelect(\''+cs+'\')">' +
         '<div class="flight-cs" style="color:'+col+';">'+function(){var f=getFlag(cs);return f==='✈'?em+' '+cs:f+' '+em+' '+cs;}()+(sqInfo?'<span class="flight-sqk-badge" style="background:'+sqInfo.color+';">'+sqInfo.icon+' '+a.squawk+'</span>':'')+'</div>' +
         '<div class="flight-details">'+(a.alt_baro?Math.round(a.alt_baro)+'ft':'--')+' · '+(a.gs?Math.round(a.gs)+'kt':'--')+' · '+(a.track?Math.round(a.track)+'°':'--')+'</div>' +
