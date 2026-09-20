@@ -151,8 +151,22 @@ make -C "$SRC/pilnkradio/build" -j"$J"
 # Matches an optional multiarch subdirectory (see the note at [3/8]). The
 # /usr/local prefix is what distinguishes fork from stock — stock lives at
 # /lib/... or /usr/lib/..., neither of which can match this pattern.
-if ! ldd "$SRC/pilnkradio/build/pilnkradio" | grep -qE '/usr/local/lib(/[^/]+)?/librtlsdr'; then
-    ldd "$SRC/pilnkradio/build/pilnkradio" | grep rtlsdr || true
+# ⚠ KILLER #4, found 20 Sep 2026 on EpsomPi — DO NOT reintroduce the pipeline.
+# This was `ldd ... | grep -qE ...`. `grep -q` exits the instant it matches;
+# ldd is still writing, gets SIGPIPE, and exits 141. Under `set -o pipefail`
+# the PIPELINE inherits 141, so `if !` turns a SUCCESSFUL MATCH into an abort:
+#     "binary linked STOCK librtlsdr — Aborting"
+# on a binary that was linked to the fork perfectly well.
+# It is a RACE, so it is intermittent and machine-dependent — which is exactly
+# why "some nodes build and some do not" resisted diagnosis for so long.
+# Measured: reproduces reliably once the producer emits ~30 lines, which is
+# ordinary ldd output. Five lines passes. That is the whole margin.
+# This is the SAME trap as killer #3 (`ls … | head`) documented at [3/8], a few
+# lines above. The lesson was written down and the shape survived anyway.
+# So: capture ONCE, then test a variable. No pipeline, no exit status to lose.
+LDD_OUT="$(ldd "$SRC/pilnkradio/build/pilnkradio" 2>/dev/null || true)"
+if [[ ! "$LDD_OUT" =~ /usr/local/lib(/[^/]+)?/librtlsdr ]]; then
+    printf '%s\n' "$LDD_OUT" | grep rtlsdr || true
     die "binary linked STOCK librtlsdr — node would be ~10 dB deaf. Aborting."
 fi
 ok "built and linked against the fork"
@@ -269,7 +283,12 @@ else
     # Never write a serial without saying whether that dongle is actually here.
     # A config pinned to a dongle that is not on the bus can only crash-loop,
     # and "Radio Off" on the dashboard does not explain itself.
-    if printf '%s\n' "${ALL[@]:-}" | cut -f1 | grep -qFx "$SERIAL"; then
+    # Same SIGPIPE-under-pipefail trap as the ldd gate at [4/8]: `cut` can be
+    # killed the moment `grep -q` matches, and pipefail hands that 141 to the
+    # `if`. A FALSE NEGATIVE here tells an operator their dongle is missing
+    # when it is plugged in. Capture once, match on the variable.
+    SERIALS_NOW="$(printf '%s\n' "${ALL[@]:-}" | cut -f1 || true)"
+    if [[ $'\n'"$SERIALS_NOW"$'\n' == *$'\n'"$SERIAL"$'\n'* ]]; then
         ok "serial $SERIAL is plugged in now — the engine will use it"
     else
         warn "serial $SERIAL is NOT among the dongles currently plugged in:"
@@ -372,7 +391,11 @@ if [ -n "$UP" ]; then
         warn "it MUST show a /usr/local/lib/… path (a /lib/... or /usr/lib/... path = deaf node)"
     fi
 else
-    if sudo journalctl -u pilnkradio -n 10 --no-pager 2>/dev/null | grep -qiE 'no device|not found|absent'; then
+    # journalctl is an external producer feeding `grep -q` — same SIGPIPE race.
+    # A false negative here reports "engine not answering, inspect the journal"
+    # to someone whose engine is simply waiting for a dongle. Capture first.
+    JRNL_TAIL="$(sudo journalctl -u pilnkradio -n 10 --no-pager 2>/dev/null || true)"
+    if [[ "${JRNL_TAIL,,}" == *"no device"* || "${JRNL_TAIL,,}" == *"not found"* || "${JRNL_TAIL,,}" == *absent* ]]; then
         warn "engine installed but waiting for dongle serial $SERIAL — it will start by itself when plugged in (udev rule active)"
     else
         err "engine not answering on :5656 — inspect: journalctl -u pilnkradio -n 30"
