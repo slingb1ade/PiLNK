@@ -325,7 +325,7 @@ const acLayer={
   },
   ensureModel(t){
     const key=_q.get('force')||modelFor(t); if(!this.loader||key===this.key||this.loading)return; this.loading=true;   // no loader until the layer is on the map
-    this.loader.load('/static/'+key,(g)=>{ while(this.holder.children.length)this.holder.remove(this.holder.children[0]);
+    this.loader.load('/static/'+key,(g)=>{ while(this.holder.children.length)this.holder.remove(this.holder.children[0]); this.props=[];
       const mm=g.scene,box=new THREE.Box3().setFromObject(mm),size=new THREE.Vector3(),c=new THREE.Vector3(); box.getSize(size);box.getCenter(c);
       acSpan=MODEL_SPAN[key]||this.targetSpan;   // the cameras frame by this
       const k=acSpan/(Math.max(size.x,size.z)||1);
@@ -336,7 +336,7 @@ const acLayer={
       mm.scale.setScalar(k); mm.position.set(-c.x*k,-c.y*k,-c.z*k);
       mm.traverse(o=>{if(o.isMesh&&o.material){(Array.isArray(o.material)?o.material:[o.material]).forEach(mt=>{mt.metalness=0.25;mt.roughness=0.6;whiten(mt);});}});
       const or=MODEL_ORIENT[key]||{}; this.holder.rotation.set((or.pitch||0)*D2R,(or.yaw||0)*D2R,(or.roll||0)*D2R);
-      this.holder.add(mm); this.key=key; this.loading=false; },undefined,()=>{this.loading=false;});
+      this.holder.add(mm); this.props=findProps(mm); this.key=key; this.loading=false; },undefined,()=>{this.loading=false;});
   },
   render(gl,args){
     const M0=(args&&args.defaultProjectionData)?args.defaultProjectionData.mainMatrix:args;
@@ -375,6 +375,11 @@ const acLayer={
     this.camera.projectionMatrix=new THREE.Matrix4().fromArray(M).multiply(L);
     this.yaw.rotation.y=-a.hdg*D2R; this.pitch.rotation.x=a.pitch*D2R; this.roll.rotation.z=-a.roll*D2R;   // sign.roll = -1 as in approach.html
     this.yaw.scale.setScalar(modelScale);   // the tower shot enlarges the aircraft without touching the map's framing
+    if(this.props&&this.props.length){
+      const pa=performance.now()/1000*PROP_REV*Math.PI*2;
+      for(let i=0;i<this.props.length;i++) this.props[i].p.rotation[this.props[i].axis]=pa;
+      map.triggerRepaint();       // the props need frames even when the aircraft is briefly still
+    }
     this.renderer.resetState(); this.renderer.render(this.scene,this.camera);
     /* Hand the context back: reset Three's state tracker and unbind its VAO. Nothing else — MapLibre
        caches its own GL state and re-applies it after custom layers; setting depth/cull/program
@@ -506,6 +511,56 @@ function webglOK(){
     }
     return false;
   }catch(e){ return false; }
+}
+
+/* ---------- turning propellers ----------
+   Only models that NAME a prop node can be driven: the ATR names leftProp/rightProp, the C-130
+   names four model_*_prop_*. The 429, the 208 and the 172 are merged by material rather than by
+   part, so there is no rotor or prop node to turn and nothing here will find one.
+   Two things have to be right or the prop orbits the fuselage instead of turning on its shaft.
+   First, a named node is not always a pivot: the C-130's are bare mesh nodes sitting at the parent
+   origin, so rotating one would swing the whole propeller around the aircraft's centre. Each prop
+   therefore gets a fresh Group inserted at its own geometric centre and is turned through that.
+   Second, the shaft axis differs between files, so it is measured rather than assumed — a propeller
+   disc is wide in two axes and thin along the shaft, and the thin one wins. If the shape is not
+   clearly disc-like the node is left alone; a wrong guess here is extremely visible.
+   The speed is deliberately not the real figure. A Hercules prop turns about 1,020 rpm, which at
+   60 fps with six blades aliases into standing still or running backwards — the wagon-wheel effect,
+   where the true number produces a false picture. PROP_REV is chosen to read as turning. */
+const PROP_REV=2.0;
+function isAncestor(a,b){ let n=b.parent; while(n){ if(n===a) return true; n=n.parent; } return false; }
+function findProps(root){
+  const out=[];
+  root.updateMatrixWorld(true);
+  const named=[];
+  root.traverse(o=>{ if(o.name&&/prop|rotor/i.test(o.name)) named.push(o); });
+  for(const n of named){
+    const parent=n.parent;
+    if(!parent) continue;
+    if(named.some(o=>o!==n&&isAncestor(o,n))) continue;
+    const inv=new THREE.Matrix4().copy(parent.matrixWorld).invert();
+    const b=new THREE.Box3(), v=new THREE.Vector3(), m=new THREE.Matrix4();
+    n.traverse(o=>{
+      if(!o.isMesh||!o.geometry) return;
+      const g=o.geometry; if(!g.boundingBox) g.computeBoundingBox();
+      const bb=g.boundingBox; m.multiplyMatrices(inv,o.matrixWorld);
+      for(let i=0;i<8;i++){
+        v.set((i&1)?bb.max.x:bb.min.x,(i&2)?bb.max.y:bb.min.y,(i&4)?bb.max.z:bb.min.z).applyMatrix4(m);
+        b.expandByPoint(v);
+      }
+    });
+    if(b.isEmpty()) continue;
+    const size=new THREE.Vector3(), c=new THREE.Vector3();
+    b.getSize(size); b.getCenter(c);
+    const d=[size.x,size.y,size.z];
+    let ax=0; for(let i=1;i<3;i++) if(d[i]<d[ax]) ax=i;
+    const rest=[]; for(let i=0;i<3;i++) if(i!==ax) rest.push(d[i]);
+    if(d[ax]>0.6*Math.min(rest[0],rest[1])) continue;
+    const p=new THREE.Group(); p.position.copy(c); parent.add(p);
+    n.position.sub(c); p.add(n);
+    out.push({p:p, axis:['x','y','z'][ax]});
+  }
+  return out;
 }
 
 /* ---------- day / night ----------
