@@ -3635,6 +3635,26 @@ def _cap_log_tail(params):
     return {'log': _assist_run(['journalctl', '-u', 'pilnk', '-n', str(n), '--no-pager'], timeout=8)}
 
 
+def _cap_ota_log(params):
+    """The OTA updater's own log — the ONLY place git's error text is written.
+
+    log_tail reads `journalctl -u pilnk`, which does carry update.sh's own
+    log() lines (they echo to stdout as well as the file), so it can tell you
+    WHICH step failed. It cannot tell you WHY: update.sh sends git's stderr to
+    this file and nowhere else (`git fetch ... 2>> "$LOG_FILE"`).
+
+    That gap is why a node reporting ota_last_result=exit_1 was, for months,
+    three possible failures with no way to choose between them — cd, fetch or
+    reset. This capability closes it in one request instead of a round trip
+    per guess.
+    """
+    n = _assist_cap_lines(params)
+    path = os.path.join(PILNK_DIR, 'update.log')
+    if not os.path.exists(path):
+        return {'ota_log': '[no update.log on this node — the OTA updater has never run]'}
+    return {'ota_log': _assist_run(['tail', '-n', str(n), path])}
+
+
 def _cap_disk(params):
     return {'df': _assist_run(['df', '-h'])}
 
@@ -3709,6 +3729,7 @@ ASSIST_CAPABILITIES = {
     'decoder_log_tail': _cap_decoder_log_tail,
     'bds_status':       _cap_bds_status,
     'log_tail':         _cap_log_tail,
+    'ota_log':          _cap_ota_log,
     'disk':             _cap_disk,
     'mem':              _cap_mem,
     'uptime':           _cap_uptime,
