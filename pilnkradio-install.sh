@@ -431,8 +431,19 @@ else
     if [[ "${JRNL_TAIL,,}" == *"no device"* || "${JRNL_TAIL,,}" == *"not found"* || "${JRNL_TAIL,,}" == *absent* ]]; then
         warn "engine installed but waiting for dongle serial $SERIAL — it will start by itself when plugged in (udev rule active)"
     else
-        err "engine not answering on :5656 — inspect: journalctl -u pilnkradio -n 30"
-        exit 1
+        # Use die(), NOT `err` + `exit 1`. This was the ONLY bare exit in the
+        # whole script, and therefore the only fatal path that did not set
+        # LAST_ERR — so _on_exit recorded `failed:8/8` with an EMPTY detail.
+        # Found 2026-09-22 on adsb-pi, which had been reporting exactly that:
+        # the step number we already knew, and the reason we built this
+        # mechanism to capture, blank. The black box was fitted and this one
+        # path was not wired to it.
+        #
+        # tail is safe here where `head`/`grep -q` would not be: it consumes
+        # all of its input before writing, so there is no early-exit SIGPIPE
+        # race (see KILLER #4). _state sanitises and caps at 200 chars.
+        JRNL_LAST="$(printf '%s' "$JRNL_TAIL" | tail -2 | tr '\n' ' ')"
+        die "engine not answering on :5656 — journal: ${JRNL_LAST:-<journal empty>}"
     fi
 fi
 
