@@ -1358,6 +1358,7 @@ def ping_server():
                 'features': dict({
                     'sdr_audio': _sdr_audio_feature(),
                     'audio_build': _audio_build_feature(),
+                    'audio_build_err': _audio_build_err(),
                     'atc_stt':   'ready' if os.path.exists(ATC_TRANSCRIPT_PATH) else 'absent',
                     # Raw compute score, no verdict attached — see the capability
                     # probe above. Answers "which nodes COULD run STT" with a
@@ -1487,6 +1488,35 @@ def _reconcile_pending_ota_result():
 
 AUDIO_BUILD_STATE_FILE = os.path.join(PILNK_DIR, 'audio_build_state.json')
 
+def _audio_build_state():
+    """The raw audio-build state file, or None if absent/unreadable."""
+    try:
+        with open(AUDIO_BUILD_STATE_FILE) as f:
+            return json.load(f)
+    except Exception:
+        return None
+
+def _audio_build_err():
+    """WHY the last audio build failed. Empty string when it did not.
+
+    Deliberately SEPARATE from audio_build, and deliberately shaped like the
+    existing ota_last_result / ota_fail pair: the state stays low-cardinality
+    so fleet_query can group it, while the reason is free text that only
+    appears when something actually broke.
+
+    Added 21 Sep 2026. The step number alone was not enough — two nodes
+    reported failed:2/8 on every release and we still could not say why
+    without opening the node, which is the exact problem this reporting was
+    added to end. The installer knows apt's own error text; this carries it.
+
+    An EMPTY detail on a failed build is itself informative: it means the
+    script died without reaching die(), i.e. a bare `set -e` abort.
+    """
+    s = _audio_build_state()
+    if not s or str(s.get('result') or '') != 'failed':
+        return ''
+    return str(s.get('detail') or '')[:200]
+
 def _audio_build_feature():
     """Whether the ATC audio engine ever BUILT, and if not, WHERE it stopped.
 
@@ -1509,10 +1539,8 @@ def _audio_build_feature():
     Step NUMBER only, never the prose: 'failed:6/8' groups across the fleet,
     while 'failed:6/8 radio dongle' would make every node its own group.
     """
-    try:
-        with open(AUDIO_BUILD_STATE_FILE) as f:
-            s = json.load(f)
-    except Exception:
+    s = _audio_build_state()
+    if s is None:
         # No readable state file. Separate a node that never built from one
         # that built BEFORE this reporting existed — otherwise every healthy
         # node reports never_run until its next engine rebuild, which is

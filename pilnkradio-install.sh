@@ -24,7 +24,7 @@ info() { printf "${CYAN}→ %s${RESET}\n" "$1"; }
 warn() { printf "${YELLOW}⚠ %s${RESET}\n" "$1"; }
 err()  { printf "${RED}✗ %s${RESET}\n" "$1"; }
 step() { CURRENT_STEP="$1"; _state running; printf "\n${BOLD}${BLUE}[ %s ]${RESET}\n" "$1"; }
-die()  { err "$1"; exit 1; }
+die()  { LAST_ERR="$1"; err "$1"; exit 1; }
 
 # ── Build outcome, recorded where the fleet can see it ───────
 # Three fleet-wide killers of this build — the root guard, the hardcoded
@@ -39,9 +39,21 @@ die()  { err "$1"; exit 1; }
 # an otherwise good install, so every write ends in `|| true`.
 AUDIO_BUILD_STATE="${PILNKRADIO_STATE_FILE:-$HOME/pilnk/audio_build_state.json}"
 CURRENT_STEP="0/8 starting"
+LAST_ERR=""
+# 21 Sep 2026: the step alone was not enough. Two nodes reported failed:2/8 on
+# every release and we still could not say WHY without opening the node — the
+# very problem this file was added to end. `detail` carries die()'s own words,
+# so the ping can name the cause as well as the location. Mirrors the existing
+# ota_last_result / ota_fail pair: a low-cardinality state plus a free-text
+# reason that is empty unless something actually broke.
 _state() {
-    printf '{"step":"%s","result":"%s","ts":%s}\n' \
-        "$CURRENT_STEP" "$1" "$(date +%s)" > "$AUDIO_BUILD_STATE" 2>/dev/null || true
+    # Sanitise for JSON by hand — there is no jq on a fresh node. Remove only
+    # the three characters that can break the document, flatten whitespace, and
+    # cap the length so a runaway compiler error cannot bloat every ping.
+    local d
+    d="$(printf '%s' "${2:-}" | tr -d '\\"' | tr '\n\r\t' '   ' | cut -c1-200)"
+    printf '{"step":"%s","result":"%s","detail":"%s","ts":%s}\n' \
+        "$CURRENT_STEP" "$1" "$d" "$(date +%s)" > "$AUDIO_BUILD_STATE" 2>/dev/null || true
     chmod 644 "$AUDIO_BUILD_STATE" 2>/dev/null || true
 }
 # ONE exit trap, rather than a line inside die(): `set -e` can kill this
@@ -49,7 +61,10 @@ _state() {
 # silent. Trapping EXIT catches die(), a set -e death, and success alike.
 _on_exit() {
     local rc=$?
-    if [ "$rc" -eq 0 ]; then _state ok; else _state failed; fi
+    # A set -e death reaches here without ever passing through die(), so
+    # LAST_ERR is empty in that case — the step still gets recorded, and an
+    # empty detail is itself a signal that the script died without saying why.
+    if [ "$rc" -eq 0 ]; then _state ok; else _state failed "$LAST_ERR"; fi
     return "$rc"
 }
 trap _on_exit EXIT
@@ -89,10 +104,28 @@ ok "source: $SRC/pilnkradio"
 # ── [2/8] build dependencies ───────────────────────────────
 step "2/8 build dependencies"
 info "updating package lists (can take a minute or two on a fresh node)…"
-sudo apt-get update -qq
+# ⚠ `apt-get update` exits NON-ZERO if ANY configured source fails — one stale
+# third-party repo, an expired signing key, a single unreachable mirror. Under
+# `set -e` that aborted the entire install HERE, at step 2/8, before
+# `apt-get install` was ever attempted — on nodes where every package needed
+# was ALREADY INSTALLED and the install would have been a no-op.
+# adsb-pi and SUFFOLK1 have failed at this step on every release; both are
+# ADS-B boxes likely carrying a FlightAware/PiAware source alongside Debian's.
+# Same class as killer #4 at [4/8]: a non-zero exit that does not mean what
+# the script assumed. `update` is ADVISORY. `install` is the gate — let it
+# decide, and if the packages really are unavailable it will say so itself.
+sudo apt-get update -qq \
+    || warn "apt-get update reported errors — continuing; a single bad repo must not block packages that are already present"
 info "installing build tools…"
-sudo apt-get install -y build-essential cmake git pkg-config \
-    libusb-1.0-0-dev libfftw3-dev curl
+# Capture apt's own words. "failed at 2/8" is a LOCATION; this is a CAUSE.
+# NOTE no `head`/`grep -q` in these pipelines — see killer #4. `tail` and a
+# bare `grep` both read to EOF, so neither can SIGPIPE the producer.
+if ! APT_OUT="$(sudo apt-get install -y build-essential cmake git pkg-config \
+        libusb-1.0-0-dev libfftw3-dev curl 2>&1)"; then
+    printf '%s\n' "$APT_OUT" | tail -8
+    APT_ERR="$(printf '%s\n' "$APT_OUT" | grep -E '^E:' || true)"
+    die "build dependencies failed — apt: ${APT_ERR:-see journalctl -u pilnk-audio-build}"
+fi
 ok "deps installed"
 
 # ── [3/8] rtl-sdr-blog driver fork (THE deaf-V4 lesson) ────
