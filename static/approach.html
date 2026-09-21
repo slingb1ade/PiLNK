@@ -259,19 +259,30 @@ function buildLights(end,scene){
 }
 
 /* ---------- Three.js custom layer: the aircraft ---------- */
-const MODEL_ORIENT={ 'a320_200.glb':{yaw:-90}, 'atr72.glb':{yaw:90}, 'b777_klm.glb':{yaw:180}, 'b737_800.glb':{yaw:180}, 'c172.glb':{yaw:180}, 'b429.glb':{yaw:180}, 'c208.glb':{yaw:90}, 'c130.glb':{yaw:180} };
+const MODEL_ORIENT={ 'a320_200.glb':{yaw:-90}, 'atr72.glb':{yaw:90}, 'b777_klm.glb':{yaw:180}, 'b737_800.glb':{yaw:180}, 'c172.glb':{yaw:180}, 'b429.glb':{yaw:180}, 'c208.glb':{yaw:90}, 'c130.glb':{yaw:180},
+  'b52.glb':{yaw:180}, 'e3.glb':{yaw:90}, 'kc135.glb':{yaw:0}, 'kc46.glb':{yaw:0} };
 /* Real wingspan in metres, per model. Every model is normalised to this at load, so a Cessna is drawn
    Cessna-sized next to a 747. Until now everything was normalised to a single 40 m span, which made an
    ATR 48% too big and a 777 38% too small — invisible in a chase shot where there is nothing to compare
    against, obvious the moment a light aircraft shares the frame with the buildings below it. */
 const MODEL_SPAN={ 'c172.glb':11.0, 'b429.glb':13.0, 'c208.glb':15.9, 'atr72.glb':27.1, 'c130.glb':40.4, 'a320_200.glb':35.8, 'a320_v2.glb':35.8,
   'b737_800.glb':35.8, 'b738_v2.glb':35.8, 'a333_v2.glb':60.3, 'b747_100.glb':59.6,
-  'b777_klm.glb':64.8, 'a380_v2.glb':79.8 };
+  'b777_klm.glb':64.8, 'a380_v2.glb':79.8,
+  'b52.glb':56.4, 'e3.glb':44.4, 'kc135.glb':39.9, 'kc46.glb':47.6 };
 function modelFor(t){ t=(t||'').toUpperCase();
   /* Single-engine turboprops get the Caravan; the twins and the regionals keep the ATR. */
   /* The Hercules. Flown by about seventy air forces, so on most nodes in the world it is the military
      transport most likely to appear — and PiLNK already watches for military traffic. */
   if(['C130','C30J','L100','C130J','LMT1','C130H'].includes(t))return'c130.glb';
+  /* USAF types, for RAF Fairford and Mildenhall — these were all being drawn as 737s. The tanker
+     pair is worth separating because they are the two aircraft a UK node sees most: the KC-135R is
+     the narrow 1950s tube, the KC-46A is a 767. The Sentry carries its rotodome, which is the whole
+     point of recognising it. The rotodome does not turn: that model is merged by material, not by
+     part, so there is no dome node to rotate. */
+  if(/^B52/.test(t))return'b52.glb';
+  if(/^E3/.test(t))return'e3.glb';
+  if(/^K46/.test(t))return'kc46.glb';
+  if(/^(K35|C135|R135|W135|O135|E8)/.test(t))return'kc135.glb';
   const SETP=['C208','C206','C210','PC12','PC6','TBM7','TBM8','TBM9','P46T','EPIC','K100','AT802','AT502','AT504','C295','GA8','CC19','DHC2','DHC3','U206','C207'];
   if(SETP.includes(t))return'c208.glb';
   const TP=['AT72','AT73','AT75','AT76','AT43','AT45','AT46','DH8A','DH8B','DH8C','DH8D','SF34','SB20','JS31','JS32','JS41','B350','BE20','BE9L','E120','D228','DHC6','F50','ATP'];
