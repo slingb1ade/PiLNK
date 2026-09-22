@@ -3511,6 +3511,7 @@ _assist_state = {
     'human_code': None,
     'expires_at': 0,        # epoch seconds
     'active': False,
+    'kind': 'owner',        # 'owner' = owner pressed the button; 'maintenance' = standing consent
 }
 _assist_lock = threading.Lock()
 ASSIST_RESULT_CAP = 200000   # ~200KB, matches server cap
@@ -3784,15 +3785,31 @@ def _assist_post(action, payload):
     return json.loads(resp.read().decode() or '{}')
 
 
-def assist_open_session():
-    """Called by the OWNER (via the local dashboard button) to open a session."""
+def _remote_maintenance_enabled():
+    """Standing consent for unattended operator fixes. Fresh-read each call so a
+    toggle in config.json takes effect within one poll cycle — that fresh read IS
+    the revoke. Default OFF: a node grants remote maintenance only when its owner
+    opts in. Fail-closed: any read error means no consent."""
     try:
-        r = _assist_post('open_session', {})
+        with open(CONFIG_PATH, 'r') as f:
+            return bool(json.load(f).get('remote_maintenance', False))
+    except Exception:
+        return False
+
+
+def assist_open_session(kind='owner'):
+    """Open a session at pilnk.io. kind='owner' is the classic owner-pressed-the-
+    button session; kind='maintenance' is the standing session the poller keeps
+    alive while the owner has granted remote maintenance. Both only ever run
+    whitelisted capabilities — the kind is for visibility, audit and revoke."""
+    try:
+        r = _assist_post('open_session', {'kind': kind})
         if r.get('session_id'):
             with _assist_lock:
                 _assist_state['session_id'] = r['session_id']
                 _assist_state['human_code'] = r.get('human_code')
                 _assist_state['active'] = True
+                _assist_state['kind'] = r.get('kind', kind)
                 # expires tracked loosely; server is authoritative
                 mins = r.get('expires_minutes', 30)
                 _assist_state['expires_at'] = time.time() + mins * 60
@@ -3823,11 +3840,33 @@ def assist_poller():
             active = _assist_state['active']
             sid = _assist_state['session_id']
             exp = _assist_state['expires_at']
-        if not active or not sid:
-            time.sleep(5)
+            kind = _assist_state.get('kind', 'owner')
+
+        # Revoke: standing consent withdrawn while a maintenance session is live.
+        # The fresh config read here is what makes a toggle-off take effect within
+        # one cycle. Owner-initiated sessions are unaffected.
+        if active and sid and kind == 'maintenance' and not _remote_maintenance_enabled():
+            assist_close_session('owner')
             continue
-        if time.time() > exp:
-            assist_close_session('expired')
+
+        # Expiry. An owner session that expires is closed. A maintenance session
+        # that hits its 30-min cap is simply dropped, so the block below re-opens
+        # a fresh one — a rolling standing session.
+        if active and sid and time.time() > exp:
+            if kind == 'maintenance':
+                with _assist_lock:
+                    _assist_state['active'] = False
+                    _assist_state['session_id'] = None
+            else:
+                assist_close_session('expired')
+            continue
+
+        # No live session. Keep a maintenance session open if the owner has opted
+        # in (standing consent); otherwise stay idle exactly as before.
+        if not active or not sid:
+            if _remote_maintenance_enabled():
+                assist_open_session(kind='maintenance')
+            time.sleep(5)
             continue
         try:
             r = _assist_post('poll', {'session_id': sid})
@@ -3856,8 +3895,9 @@ def assist_poller():
                 })
         except Exception as e:
             print(f'[PILNK] Assist poll error: {e}')
-        # Faster cadence while a session is open (snappy for Claude-driven debug)
-        time.sleep(5)
+        # Snappy for an owner-driven session (Claude-driven debug); gentler for a
+        # standing maintenance session, which is idle most of the time.
+        time.sleep(5 if kind == 'owner' else 20)
 
 
 # ── Owner-facing controls (local dashboard) ──────────────────────────────────
@@ -3876,6 +3916,8 @@ def api_assist_status():
             'active': _assist_state['active'],
             'human_code': _assist_state['human_code'],
             'session_id': _assist_state['session_id'],
+            'kind': _assist_state.get('kind', 'owner'),
+            'remote_maintenance': _remote_maintenance_enabled(),
             'expires_in_sec': max(0, int(_assist_state['expires_at'] - time.time())) if _assist_state['active'] else 0,
         })
 
