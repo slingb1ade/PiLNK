@@ -1,0 +1,15 @@
+[Unit]
+Description=PiLNK dashboard/ping-loop watchdog (restarts pilnk if the worker wedges or the ping thread dies)
+After=pilnk.service
+Wants=pilnk.service
+
+[Service]
+# Runs as root (no User=) so `systemctl restart pilnk` needs no sudo, mirroring
+# pilnk-radio-watchdog.service. The PILNK_USER path is substituted per node by
+# bootstrap-selfheal.sh, the same way the SDR-recover unit is templated.
+ExecStart=/home/PILNK_USER/pilnk/pilnk-dashboard-watchdog.sh
+Restart=always
+RestartSec=15
+
+[Install]
+WantedBy=multi-user.target

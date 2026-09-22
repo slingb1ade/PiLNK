@@ -1220,6 +1220,13 @@ def get_stats_payload():
 # single blip never false-triggers).
 NET_STALE_S = 90
 PING_LAST_OK_TS = 0.0
+# Loop heartbeat — advances at the TOP of every ping-loop iteration, regardless of
+# whether the ping itself SUCCEEDS. This is the liveness signal the node watchdog
+# reads via /api/health. A stale PING_LOOP_TS means the ping THREAD has died and a
+# restart will fix it; PING_LAST_OK_TS going stale can instead just mean pilnk.io
+# is unreachable (a server outage — restarting the node would not help, and a whole
+# fleet restarting at once would be worse). Watch the loop, not the ping.
+PING_LOOP_TS = 0.0
 
 # ── Spurious-empty suppression (v1.2.15.5) ───────────────────────────────────
 # On a busy node the decoder's aircraft.json is large and rewritten every ~1s.
@@ -1276,13 +1283,14 @@ _ping_loop_running = False
 _ping_loop_lock = threading.Lock()
 
 def ping_server():
-    global PING_LAST_OK_TS, _ping_loop_running
+    global PING_LAST_OK_TS, PING_LOOP_TS, _ping_loop_running
     with _ping_loop_lock:
         if _ping_loop_running:
             print('[PILNK] ping_server already running — duplicate launch ignored')
             return
         _ping_loop_running = True
     while True:
+        PING_LOOP_TS = time.time()   # loop heartbeat — see PING_LOOP_TS decl above
         try:
             # Grab current aircraft from dump1090
             aircraft = []
@@ -2085,6 +2093,28 @@ current_squelch   = 50
 @app.route('/')
 def index():
     return render_template('index.html')
+
+@app.route('/api/health')
+def api_health():
+    """Liveness for the node watchdog (pilnk-dashboard-watchdog.sh). Deliberately
+    the LIGHTEST route on the node — no shelling out, no DB, no file reads — so a
+    wedged worker is the only reason it fails to answer. Reports two independent
+    ages so the watchdog acts on LOCAL faults only:
+      loop_ago_sec    — since the ping loop last iterated (PING_LOOP_TS). Stale
+                        means the ping thread died; a restart revives it.
+      ping_ok_ago_sec — since the last SUCCESSFUL ping to pilnk.io. INFORMATIONAL
+                        ONLY. This going stale can just mean pilnk.io is down, and
+                        the watchdog must NOT restart on it — a server outage would
+                        otherwise bounce every node in the fleet at once."""
+    now = time.time()
+    loop_ago = (now - PING_LOOP_TS) if PING_LOOP_TS else None
+    ping_ago = (now - PING_LAST_OK_TS) if PING_LAST_OK_TS else None
+    return jsonify({
+        'ok': True,
+        'loop_ago_sec': round(loop_ago, 1) if loop_ago is not None else None,
+        'ping_ok_ago_sec': round(ping_ago, 1) if ping_ago is not None else None,
+    })
+
 
 @app.route('/api/net/status')
 def net_status():

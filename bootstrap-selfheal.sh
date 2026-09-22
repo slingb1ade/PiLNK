@@ -34,6 +34,10 @@ DST_SERVICE="/etc/systemd/system/pilnk-sdr-recover.service"
 DST_TIMER="/etc/systemd/system/pilnk-sdr-recover.timer"
 DST_UDEV="/etc/udev/rules.d/99-pilnk-sdr.rules"
 
+SRC_WATCHDOG_SVC="$PILNK_DIR/pilnk-dashboard-watchdog.service"
+SRC_WATCHDOG_SH="$PILNK_DIR/pilnk-dashboard-watchdog.sh"
+DST_WATCHDOG_SVC="/etc/systemd/system/pilnk-dashboard-watchdog.service"
+
 log() { echo "[$(date '+%Y-%m-%d %H:%M:%S')] [selfheal-bootstrap] $1" >> "$LOG" 2>&1; }
 
 # Wrapper: prefer no sudo if already root, else sudo -n (non-interactive).
@@ -230,6 +234,17 @@ install_if_changed "$RENDERED_SERVICE"        "$DST_SERVICE" "pilnk-sdr-recover.
 install_if_changed "$(cat "$SRC_TIMER")"      "$DST_TIMER"   "pilnk-sdr-recover.timer"
 install_if_changed "$(cat "$SRC_UDEV")"       "$DST_UDEV"    "99-pilnk-sdr.rules"
 
+# ── PiLNK dashboard/ping-loop watchdog (fleet-wide, every OTA) ───────────────
+# Restarts pilnk when the worker wedges or the ping thread dies — the alive-but-
+# dark failure Restart= cannot see. Templated per node (home differs: aj here, pi
+# on most) the same way the SDR-recover unit is. Own inner guard so a partial
+# checkout of just these two files skips cleanly.
+if [ -f "$SRC_WATCHDOG_SVC" ] && [ -f "$SRC_WATCHDOG_SH" ]; then
+  priv chmod +x "$SRC_WATCHDOG_SH" 2>/dev/null || true
+  RENDERED_WATCHDOG="$(sed -e "s|/home/PILNK_USER/pilnk/pilnk-dashboard-watchdog.sh|$SRC_WATCHDOG_SH|g" "$SRC_WATCHDOG_SVC")"
+  install_if_changed "$RENDERED_WATCHDOG" "$DST_WATCHDOG_SVC" "pilnk-dashboard-watchdog.service"
+fi
+
 # ── reload + enable only if we changed something, or the timer isn't active ──
 TIMER_ACTIVE=0
 systemctl is-active --quiet pilnk-sdr-recover.timer 2>/dev/null && TIMER_ACTIVE=1
@@ -246,6 +261,18 @@ if [ "$CHANGED" -eq 1 ] || [ "$TIMER_ACTIVE" -eq 0 ]; then
   priv udevadm control --reload-rules 2>/dev/null || true
   priv udevadm trigger --subsystem-match=usb 2>/dev/null || true
   log "udev rules reloaded"
+fi
+
+# Enable the dashboard watchdog if we changed it or it isn't running yet.
+WATCHDOG_ACTIVE=0
+systemctl is-active --quiet pilnk-dashboard-watchdog.service 2>/dev/null && WATCHDOG_ACTIVE=1
+if [ -f "$DST_WATCHDOG_SVC" ] && { [ "$CHANGED" -eq 1 ] || [ "$WATCHDOG_ACTIVE" -eq 0 ]; }; then
+  priv systemctl daemon-reload 2>/dev/null || true
+  if priv systemctl enable --now pilnk-dashboard-watchdog.service 2>/dev/null; then
+    log "enabled + started pilnk-dashboard-watchdog.service"
+  else
+    log "could not enable dashboard watchdog (will retry next OTA)"
+  fi
 fi
 
 if [ "$CHANGED" -eq 1 ]; then
