@@ -660,6 +660,13 @@ sudo tee "$SERVICE_FILE" > /dev/null << SVCEOF
 Description=PiLNK — The Open Source ATC Network (Trixie/readsb/Airspy)
 After=network.target ${SVC_AFTER}
 Wants=${SVC_AFTER}
+# Never give up. The default systemd StartLimit (5 starts / 10s) marks the unit
+# 'failed' after a brief crash-loop, after which \`systemctl restart\` silently
+# no-ops until a human runs \`systemctl reset-failed\` — a documented dead-forever
+# trap (one node sat dead after 606 restarts). 0 disables the rate limiter, so a
+# node keeps trying to come back on its own, forever. A transient cause (a
+# re-seated dongle, a passing resource spike) then self-heals with no visit.
+StartLimitIntervalSec=0
 
 [Service]
 Type=simple

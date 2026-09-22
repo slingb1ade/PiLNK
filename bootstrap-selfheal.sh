@@ -172,6 +172,28 @@ if [ -f "$PILNK_UNIT" ] && ! grep -q '^Environment=PYTHONIOENCODING=' "$PILNK_UN
   fi
 fi
 
+# ── Never-give-up restart policy for pilnk.service (fleet-wide, every OTA) ────
+# The live unit has Restart=always but NO StartLimit override, so systemd's
+# default (5 starts / 10s) marks it 'failed' after a short crash-loop — and then
+# `systemctl restart` silently no-ops until someone runs `reset-failed`. That is
+# the dead-forever trap: a node that crash-looped in the field (a flapping
+# dongle, a transient resource spike) stays dead with no signal, needing a human
+# who isn't there. One node sat dead after 606 restarts until reset-failed. New
+# installs get StartLimitIntervalSec=0 in the unit template (install.sh); existing
+# nodes have their unit already written and a git pull doesn't touch /etc/systemd,
+# so patch it here. Idempotent: no-op once the line is present. reset-failed
+# clears any node ALREADY stuck in the failed state so update.sh's restart (which
+# runs right after this) can bring it back under the new never-give-up policy.
+if [ -f "$PILNK_UNIT" ] && ! grep -q '^StartLimitIntervalSec=' "$PILNK_UNIT"; then
+  if priv sed -i '/^\[Unit\]/a StartLimitIntervalSec=0' "$PILNK_UNIT" 2>/dev/null; then
+    priv systemctl daemon-reload 2>/dev/null || true
+    priv systemctl reset-failed pilnk 2>/dev/null || true
+    log "added StartLimitIntervalSec=0 to pilnk.service (never-give-up restart; takes effect next restart)"
+  else
+    log "could not patch pilnk.service for StartLimitIntervalSec (continuing — non-fatal)"
+  fi
+fi
+
 # Source files must exist (they ship in the repo). If a partial checkout means
 # one is missing, bail quietly — next OTA with a complete tree will wire it.
 for f in "$SRC_SERVICE" "$SRC_TIMER" "$SRC_UDEV" "$SRC_SCRIPT"; do
