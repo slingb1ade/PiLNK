@@ -544,6 +544,23 @@
     #cinematicOverlay{ left:8px; right:8px; }
     #cinematicCard .cc-transcript{ display:none; }
   }
+  /* ── Grow-to-fit (v1.5.22, desktop). The card was a FIXED 290px and the data
+     column was allowed to shrink below its content (.cc-top min-height:0), so
+     when the military box appeared above the stats — which RNZAF/RAAF aircraft
+     now get — the military box and the Mode-S box were both silently clipped.
+     290px is now the MINIMUM: the card grows to fit its data, capped so it can
+     never swallow the map (past the cap the data column scrolls). The ATC
+     transcript is size-contained so a long transcript can't drive the height;
+     the photo is absolutely positioned so it never did. Mobile already used
+     height:auto — this block leaves it alone. */
+  @media (min-width:769px){
+    #cinematicCard{ height:auto; min-height:290px; max-height:calc(100vh - 90px); }
+    #cinematicCard .cc-left{ height:auto; }
+    #cinematicCard .cc-data{ height:auto; }
+    #cinematicCard .cc-top{ flex:1 0 auto; }
+    #cinematicCard .cc-bds-primary{ flex:1 0 auto; }
+    #cinematicCard .cc-transcript{ contain:size; }
+  }
   /* Left column (340px): callsign/model/airline header plate stacked above the photo */
   .cc-left{
     flex:0 0 340px;
@@ -1534,6 +1551,17 @@
       <!-- HISTORY TAB -->
       <div class="tab-content" id="tab-history">
         <div class="scroll-area">
+          <!-- FLIGHT CAPSULES (v1.5.22) — recorded tracks, replay, auto-record -->
+          <div class="panel" id="capsulePanel">
+            <div class="panel-title" style="display:flex;justify-content:space-between;align-items:center;">
+              <span>Flight Capsules</span>
+              <span id="capsuleSummary" style="font-size:0.55rem;color:var(--text-dim);letter-spacing:0.05em;"></span>
+            </div>
+            <div id="capsuleActive"></div>
+            <div id="capsuleList" style="max-height:320px;overflow-y:auto;"></div>
+            <div class="panel-title" style="margin-top:10px;">Always Record</div>
+            <div id="capsuleRules"></div>
+          </div>
           <div class="panel">
             <div class="panel-title" style="display:flex;justify-content:space-between;align-items:center;">
               Flight History
@@ -1700,6 +1728,12 @@
           <div class="panel" id="squawkAlertPanel" style="display:none;">
             <div class="panel-title" style="color:#dc2626;"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linejoin="round" style="vertical-align:-1px;"><path d="M12 3 L22 20 H2 Z"/><line x1="12" y1="9" x2="12" y2="14" stroke-linecap="round"/><circle cx="12" cy="17.5" r="0.6" fill="currentColor" stroke="none"/></svg> SQUAWK ALERT</div>
             <div id="squawkAlertContent"></div>
+          </div>
+
+          <!-- WATCHLIST ALERTS (#123 — pilnk.io watch hits, opt-in) -->
+          <div class="panel" id="watchAlertPanel" style="display:none;">
+            <div class="panel-title" style="color:#38bdf8;"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-1px;"><circle cx="11" cy="11" r="7"/><line x1="16.5" y1="16.5" x2="21" y2="21"/></svg> WATCHLIST</div>
+            <div id="watchAlertContent"></div>
           </div>
 
           <!-- LIVE RIGHT NOW -->
@@ -1998,6 +2032,8 @@
           <div class="cc-planespotters" id="ccPhotoSource">📷 Planespotters.net</div>
           <button id="ccAddPhotoBtn" onclick="ccAddPhoto()" style="display:none;background:none;border:1px solid rgba(167,139,250,0.3);border-radius:4px;color:#a78bfa;font-family:'Share Tech Mono',monospace;font-size:0.58rem;padding:2px 8px;cursor:pointer;letter-spacing:0.05em;">📸 Add Photo</button>
           <button id="cc3dBtn" onclick="cc3DView()" title="Watch this aircraft in the 3D approach view" style="background:rgba(124,58,237,0.12);border:1px solid rgba(167,139,250,0.45);border-radius:4px;color:#a78bfa;font-family:'Share Tech Mono',monospace;font-size:0.58rem;padding:2px 8px;cursor:pointer;letter-spacing:0.05em;">🛬 3D View</button>
+          <button id="ccRecBtn" onclick="ccRecToggle()" title="Record this aircraft's track until it leaves your coverage (Flight Capsule)" style="display:none;background:rgba(220,38,38,0.12);border:1px solid rgba(248,113,113,0.5);border-radius:4px;color:#f87171;font-family:'Share Tech Mono',monospace;font-size:0.58rem;padding:2px 8px;cursor:pointer;letter-spacing:0.05em;">● REC</button>
+          <button id="ccAutoBtn" onclick="ccAutoToggle()" title="Always record this aircraft whenever your node hears it" style="display:none;background:rgba(56,189,248,0.10);border:1px solid rgba(56,189,248,0.45);border-radius:4px;color:#38bdf8;font-family:'Share Tech Mono',monospace;font-size:0.58rem;padding:2px 8px;cursor:pointer;letter-spacing:0.05em;">⟳ AUTO</button>
         </div>
       </div>
     </div>
@@ -2177,6 +2213,7 @@ function showTab(name, e) {
   document.getElementById('tab-'+name).classList.add('active');
   if (e && e.target) e.target.classList.add('active');
   if (name === 'history') loadHistory();
+  if (name === 'history' && typeof loadCapsules === 'function') loadCapsules();
   if (name === 'sdr-audio') saCheckVHF();
   if (name === 'badges') loadBadges();
 }
@@ -2736,7 +2773,9 @@ var AircraftCanvasLayer = L.Layer.extend({
       var p = map.latLngToContainerPoint([a.lat, a.lon]);
       if(p.x < -80 || p.y < -80 || p.x > size.x+80 || p.y > size.y+80) continue;
       var cat = getCat(a.t, a.category), col = getPhase(a, cs).color;
-      var sp = getPlaneSprite(cat, col, a.t);
+      // Military airframes get their silhouette (C-130, F-16…) when one fits (v1.5.22).
+      var sp = (a.is_military && typeof getMilSprite === 'function' && getMilSprite(a.t, a.mil_class, a.mil_rarity))
+               || getPlaneSprite(cat, col, a.t);
       ctx.save();
       // Hunter Mode — fade civil traffic so military stands out.
       //
@@ -4411,6 +4450,51 @@ function milIcon(type, cls, rarity, h, tx){
   return mkIcon(milSVG(type, cls, rarity, h), sz, tx);
 }
 
+// ── Military sprites for the CANVAS renderer (v1.5.22) ──────────────────
+// milIcon() above only ever served the DOM markers, and SHOW_DOM_PLANES has
+// been false since the canvas renderer landed — so the military silhouettes
+// (C-130, KC-135, E-3, F-16, H-60…) had quietly stopped appearing on the map
+// for EVERY military aircraft. The canvas uses them now. Deliberately
+// conservative: an exact ICAO type, or a known alias (C30J is a C-130J, K35R a
+// KC-135R), gets its silhouette; otherwise only the generic classes (fighter,
+// rotary, tilt-rotor, bomber) fall back to a class shape. A military 757 or
+// C-17 keeps its normal airliner shape rather than being drawn as a Hercules.
+var MIL_TYPE_ALIAS = { C30J:'C130', K35R:'K35', K35E:'K35', K35A:'K35', E3TF:'E3', E3CF:'E3', KC46:'K46' };
+var MIL_SAFE_CLASS_FALLBACK = { fighter:1, rotary:1, tilt_rotor:1, bomber:1 };
+var milSpriteCache = {};
+function milCanvasKey(type, cls){
+  if (typeof MIL_PATHS === 'undefined' || typeof MIL_TYPE_ALIAS === 'undefined') return null;
+  var t = type ? String(type).toUpperCase().trim() : '';
+  if (t && MIL_PATHS[t]) return t;
+  if (t && MIL_TYPE_ALIAS[t]) return MIL_TYPE_ALIAS[t];
+  if (cls && MIL_SAFE_CLASS_FALLBACK[cls]) return MIL_CLASS_FALLBACK[cls] || null;
+  return null;
+}
+function getMilSprite(type, cls, rarity){
+  var key = milCanvasKey(type, cls);
+  if (!key) return null;
+  var ck = key + '|' + (rarity || '') + '|' + (cls || '');
+  var e = milSpriteCache[ck];
+  if (e) return e;
+  e = { ready:false, size:(MIL_CLASS_SIZE[cls] || 42), canvas:null };
+  milSpriteCache[ck] = e;
+  try {
+    var col = MIL_RARITY_COL[rarity] || '#9ca3af';
+    var svg = '<svg xmlns="http://www.w3.org/2000/svg" width="' + e.size + '" height="' + e.size + '" viewBox="0 0 240 240">'
+            + '<g transform="translate(0,240) scale(0.1,-0.1)" fill="' + col + '"><path d="' + MIL_PATHS[key] + '"/></g></svg>';
+    var sz = e.size, dpr = window.devicePixelRatio || 1, img = new Image();
+    img.onload = function(){
+      var c = document.createElement('canvas');
+      c.width = Math.round(sz*dpr); c.height = Math.round(sz*dpr);
+      c.getContext('2d').drawImage(img, 0, 0, sz*dpr, sz*dpr);
+      e.canvas = c; e.ready = true;
+      if (window.aircraftLayer) aircraftLayer.redraw();
+    };
+    img.src = 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(svg);
+  } catch(err){ /* leave not-ready — the normal sprite is drawn instead */ }
+  return e;
+}
+
 // ── INLINE ICONS ─────────────────────────────────────────
 // SVG aircraft icons for use in non-map contexts: sidebar entries,
 // cinematic-card photo placeholder, anywhere we want a consistent
@@ -5049,6 +5133,7 @@ function updateFlights(){
     });
     if(window.aircraftLayer) aircraftLayer.redraw();
     updateEmergencyPulses();
+    if(typeof updateWatchlistPulses==='function') updateWatchlistPulses();
     var list=document.getElementById('flightList');
     if(!ac.length){list.innerHTML='<div class="no-flights">No aircraft found</div>';return;}
     // Sort sidebar by sort mode (distance default, phase optional)
@@ -5630,7 +5715,10 @@ function openCinematicCard(cs, auto) {
   if (a.t) meta.push(a.t);
   if (a.r) meta.push(a.r);
   var cat = getCat(a.t, a.category);
-  meta.push(getCatDisplay(cat));
+  // A military airframe isn't an airliner class — an RNZAF C-130J used to read
+  // "Narrow-body" here. Say what it is instead (v1.5.22).
+  if (a.is_military) meta.push(a.mil_class ? 'Military · ' + a.mil_class.replace('_', '-').replace(/^./, function(c){ return c.toUpperCase(); }) : 'Military');
+  else meta.push(getCatDisplay(cat));
   if (a.squawk) meta.push('SQK ' + a.squawk);
   document.getElementById('ccMeta').innerHTML = meta.map(function(m){
     return '<span class="cc-tag">'+m+'</span>';
@@ -5733,6 +5821,7 @@ function openCinematicCard(cs, auto) {
     document.getElementById('ccAddPhotoBtn').style.display = 'none';
     document.getElementById('cc3dBtn').style.display = 'none';
   }
+  if (typeof ccCapsuleButtons === 'function') ccCapsuleButtons();
 
   // ── MILITARY LOOKUP (Phase 3) ─────────────────────────────
   // Hide the section immediately to avoid flicker, then fetch.
@@ -6212,6 +6301,120 @@ function updateEmergencyPulses(){
     if(!seen[cs]){ map.removeLayer(emergMarkers[cs]); delete emergMarkers[cs]; }
   });
 }
+
+// ── WATCHLIST ALERTS (#123 — pilnk.io watch hits on the node dash) ─────────
+// Opt-in, default off (config.json "watchlist_notify"). The node proxies the
+// owner's server-side watch hits via /api/watchlist_alerts — the verify_code
+// stays on the Pi. Two tiers, matching the pilnk.io surface (#91): squawk /
+// callsign / aircraft_type / operator / registration / hex POP a card; ghost
+// is a badge-only count (a card per unidentified ghost would be noise). The
+// ring reuses the emergency-pulse overlay and appears ONLY for an alert whose
+// hex is in THIS node's live feed — alerts carry no node_id, so a card can
+// exist for an aircraft this antenna cannot hear; only the audible ones ring.
+// Ageing uses the client clock (first-seen in THIS browser), never the alert's
+// server created_at — that parse is timezone-dependent and cost an hour on the
+// pilnk.io side (#91).
+var WATCH_META = {
+  squawk:        { label:'SQUAWK',   color:'#dc2626' },
+  callsign:      { label:'CALLSIGN', color:'#38bdf8' },
+  aircraft_type: { label:'TYPE',     color:'#a855f7' },
+  operator:      { label:'OPERATOR', color:'#22c55e' },
+  registration:  { label:'REG',      color:'#38bdf8' },
+  hex:           { label:'HEX',      color:'#38bdf8' },
+  ghost:         { label:'GHOST',    color:'#94a3b8' }
+};
+var watchAlerts = [];
+var watchFirstSeen = {};                 // alert id -> client Date.now() first seen
+var WATCH_CARD_WINDOW = 30 * 60 * 1000;  // keep a card ~30 min (client clock)
+function watchEsc(s){ return String(s==null?'':s).replace(/[&<>"']/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c];}); }
+
+function loadWatchAlerts(){
+  fetch('/api/watchlist_alerts').then(function(r){return r.json();}).then(function(d){
+    if(!d || !d.enabled){ watchAlerts = []; renderWatchPanel(); if(typeof updateWatchlistPulses==='function') updateWatchlistPulses(); return; }
+    var now = Date.now();
+    (d.alerts||[]).forEach(function(al){ if(!(al.id in watchFirstSeen)) watchFirstSeen[al.id] = now; });
+    watchAlerts = d.alerts || [];
+    renderWatchPanel();
+    updateWatchlistPulses();
+  }).catch(function(){ /* fail-soft: leave the last panel state as-is */ });
+}
+
+function watchActive(){
+  var now = Date.now();
+  return watchAlerts.filter(function(al){ return (now - (watchFirstSeen[al.id] || now)) < WATCH_CARD_WINDOW; });
+}
+
+function watchIsLive(hex){
+  if(!hex) return false;
+  hex = hex.toUpperCase();
+  return Object.keys(lastAircraft).some(function(cs){
+    var a = lastAircraft[cs];
+    return a && (a.hex||'').toUpperCase() === hex && a.lat != null && a.lon != null;
+  });
+}
+
+function renderWatchPanel(){
+  var panel = document.getElementById('watchAlertPanel');
+  var content = document.getElementById('watchAlertContent');
+  if(!panel || !content) return;
+  var active = watchActive();
+  var cards  = active.filter(function(a){ return a.watch_type !== 'ghost'; });
+  var ghosts = active.filter(function(a){ return a.watch_type === 'ghost'; });
+  if(!cards.length && !ghosts.length){ panel.style.display = 'none'; return; }
+  panel.style.display = 'block';
+  var html = cards.map(function(a){
+    var m = WATCH_META[a.watch_type] || { label:String(a.watch_type||'WATCH').toUpperCase(), color:'#38bdf8' };
+    var id = ((a.aircraft_flight||'').trim()) || a.aircraft_hex || '?';
+    var live = watchIsLive(a.aircraft_hex);
+    var sub = [a.aircraft_type, a.aircraft_squawk ? ('sq ' + a.aircraft_squawk) : '', a.altitude ? (Math.round(a.altitude).toLocaleString() + 'ft') : ''].filter(Boolean).join(' · ');
+    return '<div class="squawk-alert" style="border-left:3px solid ' + m.color + ';">' +
+      '<div class="squawk-cs" style="color:' + m.color + ';">' + watchEsc(a.watch_label || m.label) + ' — ' + watchEsc(id) +
+        (live ? ' <span style="opacity:.7;font-weight:400;">· overhead</span>' : '') + '</div>' +
+      (sub ? '<div class="squawk-code">' + watchEsc(sub) + '</div>' : '') +
+      '</div>';
+  }).join('');
+  if(ghosts.length){
+    html += '<div class="squawk-alert" style="border-left:3px solid ' + WATCH_META.ghost.color + ';">' +
+      '<div class="squawk-cs" style="color:' + WATCH_META.ghost.color + ';">GHOST — ' + ghosts.length + ' unidentified</div></div>';
+  }
+  content.innerHTML = html;
+}
+
+// ── Watchlist map pulse (reuses the emergency-pulse overlay, cyan) ─────────
+var watchMarkers = {}; // hex -> L.marker
+function updateWatchlistPulses(){
+  if(typeof map === 'undefined' || !map) return;
+  var wantHex = {};
+  watchActive().forEach(function(a){ if(a.watch_type !== 'ghost' && a.aircraft_hex) wantHex[a.aircraft_hex.toUpperCase()] = 1; });
+  var seen = {};
+  Object.keys(lastAircraft).forEach(function(cs){
+    var a = lastAircraft[cs];
+    if(!a || a.lat == null || a.lon == null) return;
+    var hx = (a.hex||'').toUpperCase();
+    if(!wantHex[hx]) return;
+    if(a.alt_baro === 'ground') return;   // only airborne, like the emergency ring
+    seen[hx] = 1;
+    if(!watchMarkers[hx]){
+      watchMarkers[hx] = L.marker([a.lat,a.lon], {
+        icon: L.divIcon({className:'',html:'<div class="emerg-pulse" style="--ep:#38bdf8;"></div>',iconSize:[0,0],iconAnchor:[0,0]}),
+        interactive:false, keyboard:false
+      }).addTo(map);
+    } else {
+      watchMarkers[hx].setLatLng([a.lat,a.lon]);
+    }
+  });
+  Object.keys(watchMarkers).forEach(function(hx){
+    if(!seen[hx]){ map.removeLayer(watchMarkers[hx]); delete watchMarkers[hx]; }
+  });
+}
+
+setInterval(loadWatchAlerts, 20000);
+loadWatchAlerts();
+
+// Flight Capsules UI (v1.5.22) lives in static/capsules.js. Loaded dynamically
+// so it runs AFTER this script has defined map / lastAircraft / the card state
+// it hooks into. ?v= busts the browser cache on each release.
+(function(){ var s = document.createElement('script'); s.src = '/static/capsules.js?v=1.5.22'; document.body.appendChild(s); })();
 
 // ── METAR ──────────────────────────────────────────────────
 var metarData = null;

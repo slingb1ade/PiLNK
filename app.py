@@ -446,9 +446,20 @@ def load_aircraft_db():
                     continue
                 reg = (row[1] or '').strip()
                 typ = (row[2] or '').strip()
+                # Column 4 is tar1090-db's POSITIONAL flag string, and char 0 is
+                # MILITARY (tar1090-db toJson.py sets it from ADS-B Exchange's
+                # 'mil': e['f'] = '1' + f[1:]). Until v1.5.22 this column was
+                # thrown away, so the node could only call an aircraft military
+                # if its hex sat in a reserved military block — and air arms
+                # like the RNZAF/RAAF have none (they share their nation's civil
+                # block). Kept only when set: ~20k airframes pay for one key.
+                mil = len(row) > 3 and (row[3] or '')[:1] == '1'
                 # Only store if we have at least a type or a registration
                 if typ or reg:
-                    new_db[hex_code] = {'t': typ, 'r': reg}
+                    e = {'t': typ, 'r': reg}
+                    if mil:
+                        e['m'] = 1
+                    new_db[hex_code] = e
         AIRCRAFT_DB = new_db
         logging.info(f'Aircraft DB loaded: {len(AIRCRAFT_DB)} entries from {path}')
         return len(AIRCRAFT_DB)
@@ -493,10 +504,17 @@ def _merge_overlay_file(path, label):
                 if not (reg or typ):
                     continue
                 existing = AIRCRAFT_DB.get(hex_code, {})
-                AIRCRAFT_DB[hex_code] = {
+                merged_entry = {
                     't': typ or existing.get('t', ''),
                     'r': reg or existing.get('r', ''),
                 }
+                # Carry the primary DB's military flag across. The overlays only
+                # correct reg/type — rebuilding the entry without this silently
+                # un-militaried every NZ 'C8' hex the national overlay touches,
+                # i.e. exactly the RNZAF airframes the flag exists for.
+                if existing.get('m'):
+                    merged_entry['m'] = 1
+                AIRCRAFT_DB[hex_code] = merged_entry
                 merged += 1
         logging.info(f'Aircraft overlay merged: {merged} entries from {path} ({label})')
         return merged
@@ -2034,6 +2052,458 @@ def api_badges():
             return jsonify(out)
         return jsonify({'error': 'badge sync unavailable', 'detail': type(e).__name__}), 503
 
+# ── Watchlist alert proxy (#123, node-side proxy — 23 Sep 2026) ─────────
+# The pilnk.io watchlist (RNZAF/USAF/squawk/ghost/type/callsign) fires alerts
+# on the SERVER. This surfaces the OWNER's recent hits on the node dashboard,
+# the same way the Badges tab does: server-to-server with the node's
+# verify_code, so the secret never reaches a browser, there is no CORS /
+# SameSite involvement, and any LAN viewer sees it with no pilnk.io login.
+# See api/node_alerts.php and pilnk-tasks/watchlist-on-node-dash.md.
+#
+# OPT-IN, DEFAULT OFF. Not a privacy wall — a node is a home LAN, not a public
+# kiosk — but the owner's call to make, like Remote Assist. One line in
+# config.json ("watchlist_notify": true) turns it on, read FRESH each call so
+# it toggles without a restart.
+_WATCH_ALERT_CACHE = {'ts': 0.0, 'data': None}
+_WATCH_ALERT_TTL = 45   # seconds; watch hits run ~5/day so this is plenty
+
+def _watchlist_notify_enabled():
+    """Fresh-read config.json so the owner can toggle without restarting."""
+    try:
+        with open(CONFIG_PATH, 'r') as f:
+            return bool(json.load(f).get('watchlist_notify', False))
+    except Exception:
+        return False
+
+@app.route('/api/watchlist_alerts', methods=['GET'])
+def api_watchlist_alerts():
+    # Off by default: report disabled so the dashboard renders nothing at all.
+    if not _watchlist_notify_enabled():
+        return jsonify({'enabled': False, 'alerts': [], 'unseen': 0})
+    if not NODE_VERIFY_CODE:
+        return jsonify({'enabled': True, 'alerts': [], 'unseen': 0, 'error': 'unpaired'})
+
+    now = time.time()
+    if _WATCH_ALERT_CACHE['data'] is not None and (now - _WATCH_ALERT_CACHE['ts']) < _WATCH_ALERT_TTL:
+        out = dict(_WATCH_ALERT_CACHE['data']); out['cached'] = True
+        return jsonify(out)
+    try:
+        r = requests.post(
+            'https://pilnk.io/api/node_alerts.php',
+            json={'verify_code': NODE_VERIFY_CODE, 'limit': 50},
+            headers={'User-Agent': 'PiLNK/1.0'}, timeout=10)
+        data = r.json()
+        if not isinstance(data, dict) or not data.get('ok'):
+            raise ValueError('unexpected payload: ' + str(data)[:120])
+        out = {
+            'enabled':    True,
+            'alerts':     data.get('alerts', []),
+            'unseen':     int(data.get('unseen', 0) or 0),
+            'fetched_at': int(now),
+        }
+        _WATCH_ALERT_CACHE['ts'] = now
+        _WATCH_ALERT_CACHE['data'] = out
+        return jsonify(out)
+    except Exception as e:
+        # Fail-soft, but NEVER silent — record the reason (standing lesson: no
+        # bare except:pass). Serve the last good copy marked stale if we have one.
+        logging.warning('[watchlist] alert fetch failed (serving cache if any): %s', e)
+        if _WATCH_ALERT_CACHE['data'] is not None:
+            out = dict(_WATCH_ALERT_CACHE['data']); out['stale'] = True
+            return jsonify(out)
+        return jsonify({'enabled': True, 'alerts': [], 'unseen': 0, 'error': type(e).__name__}), 503
+
+# ── Flight capsules — Ship 1: track recorder (23 Sep 2026) ─────────────────
+# Click a plane → ● REC on the cinematic card, or mark it ⟳ AUTO ("always
+# record") → the node records that airframe every CAPSULE_INTERVAL seconds —
+# position, altitude, speed, heading, vertical rate, squawk, callsign — to
+# disk, until it has been out of coverage for CAPSULE_GAP seconds. Replayable
+# on the dashboard (full track, playback, screenshot mode), exportable as KML.
+# Built for AJ's use case: Auckland police helicopter orbits, recorded whether
+# or not anyone is watching the dashboard at the time.
+#
+# Why its own recorder instead of TRAIL_HISTORY: that samples every 10 s (too
+# coarse for a helicopter orbit), caps each aircraft at 500 points (~83 min —
+# a loitering helicopter silently loses its oldest track), keeps no speed /
+# heading / squawk, and is lost on every restart. Capsules are keyed by HEX,
+# not callsign, so an aircraft that changes or drops its callsign stays ONE
+# recording.
+#
+# On disk (folder is gitignored):
+#   capsules/<id>.jsonl   one point per line, appended as it flies
+#   capsules/<id>.json    meta, rewritten on start/finish
+#   capsules/active.json  what is recording now — survives a restart
+#   capsules/rules.json   auto-record rules [{hex|callsign, label, added}]
+# ~220 KB per recorded hour; total bounded by CAPSULE_MAX_MB, oldest finished
+# capsules pruned first.
+CAPSULE_DIR      = os.path.join(PILNK_DIR, 'capsules')
+CAPSULE_INTERVAL = 2           # seconds between samples
+CAPSULE_GAP      = 600         # out of coverage this long -> capsule ends
+CAPSULE_MAX_SEC  = 6 * 3600    # hard cap per capsule (an auto rule starts a fresh one)
+CAPSULE_MAX_MB   = 500         # disk budget for all capsules
+CAPSULE_LOCK     = threading.Lock()
+CAPSULE_ACTIVE   = {}          # hex -> {id, started, last_seen, auto, points, flight}
+CAPSULE_SUPPRESS = {}          # hex -> last_seen; manually stopped, so auto must not re-arm until it leaves
+_CAPSULE_ID_RE   = re.compile(r'^[0-9A-F]{6}-\d{8}-\d{6}$')
+_CAPSULE_HEX_RE  = re.compile(r'^[0-9A-F]{6}$')
+
+def _cap_path(name):
+    return os.path.join(CAPSULE_DIR, name)
+
+def _cap_valid_id(cid):
+    return bool(_CAPSULE_ID_RE.match(cid or ''))
+
+def _cap_load_json(name, default):
+    try:
+        with open(_cap_path(name), 'r') as f:
+            return json.load(f)
+    except Exception:
+        return default
+
+def _cap_save_json(name, data):
+    # Atomic write: a power cut mid-write can never leave half a file behind.
+    os.makedirs(CAPSULE_DIR, exist_ok=True)
+    tmp = _cap_path(name + '.tmp')
+    with open(tmp, 'w') as f:
+        json.dump(data, f)
+    os.replace(tmp, _cap_path(name))
+
+def _cap_rules():
+    r = _cap_load_json('rules.json', [])
+    return r if isinstance(r, list) else []
+
+def _cap_rule_match(rules, hx, flight):
+    fl = (flight or '').upper()
+    for r in rules:
+        if (r.get('hex') or '').upper() == hx:
+            return True
+        cs = (r.get('callsign') or '').upper()
+        if cs and fl.startswith(cs):
+            return True
+    return False
+
+def _cap_read_points(cid):
+    pts = []
+    try:
+        with open(_cap_path(cid + '.jsonl'), 'r') as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    pts.append(json.loads(line))
+                except ValueError:
+                    continue   # a torn final line after a power cut — skip it, keep the rest
+    except FileNotFoundError:
+        pass
+    return pts
+
+def _cap_save_active():
+    _cap_save_json('active.json', CAPSULE_ACTIVE)
+
+def _cap_start(hx, auto=False, flight=''):
+    """Begin a capsule. Caller holds CAPSULE_LOCK."""
+    now = time.time()
+    cid = hx + '-' + time.strftime('%Y%m%d-%H%M%S', time.gmtime(now))
+    db = AIRCRAFT_DB.get(hx, {}) if isinstance(AIRCRAFT_DB, dict) else {}
+    _cap_save_json(cid + '.json', {
+        'id': cid, 'hex': hx, 'started': now, 'ended': None, 'status': 'recording',
+        'auto': bool(auto), 'flight': flight, 'reg': db.get('r', ''), 'type': db.get('t', ''),
+        'points': 0,
+    })
+    CAPSULE_ACTIVE[hx] = {'id': cid, 'started': now, 'last_seen': now, 'auto': bool(auto),
+                          'points': 0, 'flight': flight}
+    _cap_save_active()
+    logging.info('[capsule] started %s (%s)', cid, 'auto' if auto else 'manual')
+    return CAPSULE_ACTIVE[hx]
+
+def _cap_finish(hx, reason):
+    """Close a capsule and summarise its track into the meta file. Caller holds CAPSULE_LOCK."""
+    c = CAPSULE_ACTIVE.pop(hx, None)
+    if not c:
+        return None
+    cid = c['id']
+    pts = _cap_read_points(cid)
+    if len(pts) < 2:
+        # A blip, not a flight — don't clutter the library with it.
+        for ext in ('.json', '.jsonl'):
+            try:
+                os.remove(_cap_path(cid + ext))
+            except OSError:
+                pass
+        _cap_save_active()
+        logging.info('[capsule] discarded %s (%d point(s), %s)', cid, len(pts), reason)
+        return None
+    meta = _cap_load_json(cid + '.json', {'id': cid, 'hex': hx})
+    alts = [p['alt'] for p in pts if isinstance(p.get('alt'), (int, float))]
+    lats = [p['lat'] for p in pts]
+    lons = [p['lon'] for p in pts]
+    fls = []
+    for p in pts:
+        f = p.get('fl') or ''
+        if f and f not in fls:
+            fls.append(f)
+    try:
+        size = os.path.getsize(_cap_path(cid + '.jsonl'))
+    except OSError:
+        size = 0
+    meta.update({
+        'status': 'done', 'ended': pts[-1]['t'], 'end_reason': reason,
+        'points': len(pts), 'duration': int(round(pts[-1]['t'] - pts[0]['t'])),
+        'max_alt': max(alts) if alts else None, 'min_alt': min(alts) if alts else None,
+        'bbox': [min(lats), min(lons), max(lats), max(lons)],
+        'callsigns': fls[:10], 'flight': fls[0] if fls else meta.get('flight', ''),
+        'size': size,
+    })
+    _cap_save_json(cid + '.json', meta)
+    _cap_save_active()
+    _cap_prune()
+    logging.info('[capsule] finished %s: %d points, %ds (%s)', cid, len(pts), meta['duration'], reason)
+    return meta
+
+def _cap_prune():
+    """Keep all capsules inside CAPSULE_MAX_MB — oldest FINISHED capsules go first."""
+    try:
+        budget = CAPSULE_MAX_MB * 1024 * 1024
+        total = sum(os.path.getsize(_cap_path(fn)) for fn in os.listdir(CAPSULE_DIR) if fn.endswith('.jsonl'))
+        if total <= budget:
+            return
+        active_ids = {c['id'] for c in CAPSULE_ACTIVE.values()}
+        done = [fn[:-5] for fn in os.listdir(CAPSULE_DIR)
+                if fn.endswith('.json') and _cap_valid_id(fn[:-5]) and fn[:-5] not in active_ids]
+        done.sort(key=lambda cid: cid.split('-', 1)[1])   # YYYYmmdd-HHMMSS = chronological
+        for cid in done:
+            if total <= budget:
+                break
+            p = _cap_path(cid + '.jsonl')
+            sz = os.path.getsize(p) if os.path.exists(p) else 0
+            for ext in ('.json', '.jsonl'):
+                try:
+                    os.remove(_cap_path(cid + ext))
+                except OSError:
+                    pass
+            total -= sz
+            logging.warning('[capsule] pruned %s to stay under %d MB', cid, CAPSULE_MAX_MB)
+    except Exception as e:
+        logging.warning('[capsule] prune failed: %s', e)
+
+def capsule_recorder():
+    # Resume after a restart: a capsule still marked as recording either carries
+    # on (its aircraft was seen within the gap) or is closed out using the time
+    # of its last recorded point — never silently abandoned.
+    with CAPSULE_LOCK:
+        saved = _cap_load_json('active.json', {})
+        if isinstance(saved, dict):
+            for hx, c in saved.items():
+                if isinstance(c, dict) and _cap_valid_id(c.get('id', '')):
+                    pts = _cap_read_points(c['id'])
+                    c['last_seen'] = pts[-1]['t'] if pts else c.get('started', time.time())
+                    c['points'] = len(pts)
+                    CAPSULE_ACTIVE[hx] = c
+            for hx in list(CAPSULE_ACTIVE):
+                if time.time() - CAPSULE_ACTIVE[hx]['last_seen'] > CAPSULE_GAP:
+                    _cap_finish(hx, 'left coverage (across restart)')
+    last_err = 0.0
+    while True:
+        try:
+            raw = read_aircraft_json()
+            ac = (json.loads(raw).get('aircraft') or []) if raw else []
+            rules = _cap_rules()
+            now = time.time()
+            with CAPSULE_LOCK:
+                seen_now = set()
+                for a in ac:
+                    hx = (a.get('hex') or '').upper().strip()
+                    if not _CAPSULE_HEX_RE.match(hx):
+                        continue                      # skips ~ non-ICAO TIS-B/MLAT ids
+                    lat, lon = a.get('lat'), a.get('lon')
+                    if lat is None or lon is None:
+                        continue
+                    if (a.get('seen_pos') or 0) > 5:
+                        continue                      # stale position, not a fresh fix
+                    flight = (a.get('flight') or '').strip()
+                    if hx in CAPSULE_SUPPRESS:
+                        CAPSULE_SUPPRESS[hx] = now    # still overhead after a manual stop
+                    if hx not in CAPSULE_ACTIVE:
+                        if hx not in CAPSULE_SUPPRESS and rules and _cap_rule_match(rules, hx, flight):
+                            _cap_start(hx, auto=True, flight=flight)
+                        else:
+                            continue
+                    c = CAPSULE_ACTIVE[hx]
+                    alt = a.get('alt_baro')
+                    pt = {'t': round(now, 1), 'lat': round(lat, 5), 'lon': round(lon, 5),
+                          'alt': 0 if alt == 'ground' else alt,
+                          'gs': a.get('gs'), 'trk': a.get('track'), 'vr': a.get('baro_rate'),
+                          'sq': a.get('squawk'), 'fl': flight}
+                    if alt == 'ground':
+                        pt['gnd'] = 1
+                    with open(_cap_path(c['id'] + '.jsonl'), 'a') as f:
+                        f.write(json.dumps(pt, separators=(',', ':')) + '\n')
+                    c['last_seen'] = now
+                    c['points'] += 1
+                    if flight:
+                        c['flight'] = flight
+                    seen_now.add(hx)
+                for hx in list(CAPSULE_ACTIVE):
+                    c = CAPSULE_ACTIVE[hx]
+                    if hx not in seen_now and now - c['last_seen'] > CAPSULE_GAP:
+                        _cap_finish(hx, 'left coverage')
+                    elif now - c['started'] > CAPSULE_MAX_SEC:
+                        _cap_finish(hx, 'max length')
+                for hx in list(CAPSULE_SUPPRESS):
+                    if now - CAPSULE_SUPPRESS[hx] > CAPSULE_GAP:
+                        del CAPSULE_SUPPRESS[hx]      # it has left — auto may record its next visit
+        except Exception as e:
+            if time.time() - last_err > 300:          # say it, but not every 2 s
+                logging.warning('[capsule] recorder pass failed: %s', e)
+                last_err = time.time()
+        time.sleep(CAPSULE_INTERVAL)
+
+def _cap_public(hx, c):
+    return {'hex': hx, 'id': c['id'], 'started': c['started'], 'last_seen': c['last_seen'],
+            'auto': c['auto'], 'points': c['points'], 'flight': c.get('flight', '')}
+
+@app.route('/api/capsules', methods=['GET'])
+def api_capsules():
+    with CAPSULE_LOCK:
+        active = [_cap_public(h, c) for h, c in CAPSULE_ACTIVE.items()]
+        active_ids = {c['id'] for c in CAPSULE_ACTIVE.values()}
+    done = []
+    try:
+        for fn in os.listdir(CAPSULE_DIR):
+            if fn.endswith('.json') and _cap_valid_id(fn[:-5]) and fn[:-5] not in active_ids:
+                m = _cap_load_json(fn, None)
+                if isinstance(m, dict) and m.get('status') == 'done':
+                    done.append(m)
+    except FileNotFoundError:
+        pass
+    done.sort(key=lambda m: m.get('started') or 0, reverse=True)
+    # 'now' lets the dashboard compute elapsed time against the PI's clock, not
+    # the viewing device's (a phone with a skewed clock would otherwise show nonsense).
+    return jsonify({'active': active, 'capsules': done[:300], 'rules': _cap_rules(),
+                    'now': time.time(), 'gap_sec': CAPSULE_GAP, 'interval_sec': CAPSULE_INTERVAL})
+
+@app.route('/api/capsules/start', methods=['POST'])
+def api_capsule_start():
+    body = request.get_json(silent=True) or {}
+    hx = str(body.get('hex') or '').upper().strip()
+    if not _CAPSULE_HEX_RE.match(hx):
+        return jsonify({'ok': False, 'error': 'bad hex'}), 400
+    with CAPSULE_LOCK:
+        CAPSULE_SUPPRESS.pop(hx, None)
+        if hx in CAPSULE_ACTIVE:
+            return jsonify({'ok': True, 'already': True, 'capsule': _cap_public(hx, CAPSULE_ACTIVE[hx])})
+        c = _cap_start(hx, auto=False, flight=str(body.get('flight') or '').strip()[:10])
+        return jsonify({'ok': True, 'capsule': _cap_public(hx, c)})
+
+@app.route('/api/capsules/stop', methods=['POST'])
+def api_capsule_stop():
+    body = request.get_json(silent=True) or {}
+    hx = str(body.get('hex') or '').upper().strip()
+    with CAPSULE_LOCK:
+        if hx not in CAPSULE_ACTIVE:
+            return jsonify({'ok': False, 'error': 'not recording'}), 404
+        meta = _cap_finish(hx, 'stopped')
+        CAPSULE_SUPPRESS[hx] = time.time()   # don't let an auto rule re-arm it on the next pass
+    return jsonify({'ok': True, 'capsule': meta})
+
+@app.route('/api/capsules/rules', methods=['POST'])
+def api_capsule_rules():
+    body = request.get_json(silent=True) or {}
+    action = body.get('action')
+    hx = str(body.get('hex') or '').upper().strip()
+    cs = str(body.get('callsign') or '').upper().strip()
+    label = str(body.get('label') or '').strip()[:40]
+    if hx and not _CAPSULE_HEX_RE.match(hx):
+        return jsonify({'ok': False, 'error': 'bad hex'}), 400
+    if cs and not re.match(r'^[A-Z0-9]{2,8}$', cs):
+        return jsonify({'ok': False, 'error': 'bad callsign'}), 400
+    if not hx and not cs:
+        return jsonify({'ok': False, 'error': 'hex or callsign required'}), 400
+    if action not in ('add', 'remove'):
+        return jsonify({'ok': False, 'error': 'action must be add or remove'}), 400
+    with CAPSULE_LOCK:
+        rules = [r for r in _cap_rules()
+                 if not ((hx and (r.get('hex') or '').upper() == hx) or
+                         (cs and (r.get('callsign') or '').upper() == cs))]
+        if action == 'add':
+            rule = {'label': label, 'added': time.time()}
+            if hx:
+                rule['hex'] = hx
+            if cs:
+                rule['callsign'] = cs
+            rules.append(rule)
+        _cap_save_json('rules.json', rules)
+    return jsonify({'ok': True, 'rules': rules})
+
+@app.route('/api/capsules/<cid>', methods=['GET'])
+def api_capsule_get(cid):
+    cid = cid.upper()
+    if not _cap_valid_id(cid):
+        return jsonify({'error': 'bad id'}), 400
+    meta = _cap_load_json(cid + '.json', None)
+    if not isinstance(meta, dict):
+        return jsonify({'error': 'not found'}), 404
+    return jsonify({'meta': meta, 'points': _cap_read_points(cid)})
+
+@app.route('/api/capsules/<cid>/delete', methods=['POST'])
+def api_capsule_delete(cid):
+    cid = cid.upper()
+    if not _cap_valid_id(cid):
+        return jsonify({'ok': False, 'error': 'bad id'}), 400
+    with CAPSULE_LOCK:
+        if cid in {c['id'] for c in CAPSULE_ACTIVE.values()}:
+            return jsonify({'ok': False, 'error': 'still recording — stop it first'}), 409
+        removed = 0
+        for ext in ('.json', '.jsonl'):
+            try:
+                os.remove(_cap_path(cid + ext))
+                removed += 1
+            except OSError:
+                pass
+    return jsonify({'ok': removed > 0})
+
+@app.route('/api/capsules/<cid>/kml', methods=['GET'])
+def api_capsule_kml(cid):
+    # Google Earth export: a static path (LineString) plus a timed gx:Track, so
+    # Earth's time slider can fly it. Altitudes are barometric feet -> metres,
+    # absolute — close enough for screenshots, not survey-grade.
+    from xml.sax.saxutils import escape
+    cid = cid.upper()
+    if not _cap_valid_id(cid):
+        return jsonify({'error': 'bad id'}), 400
+    meta = _cap_load_json(cid + '.json', None)
+    pts = _cap_read_points(cid)
+    if not isinstance(meta, dict) or len(pts) < 2:
+        return jsonify({'error': 'not found'}), 404
+    title = escape(' '.join(x for x in [meta.get('flight') or '', meta.get('reg') or '', meta.get('type') or ''] if x)
+                   or meta.get('hex', cid))
+    title += ' — ' + time.strftime('%Y-%m-%d %H:%M UTC', time.gmtime(meta.get('started') or pts[0]['t']))
+    line, whens, coords = [], [], []
+    for p in pts:
+        alt = p.get('alt')
+        alt_m = round(alt * 0.3048, 1) if isinstance(alt, (int, float)) else 0
+        line.append('%s,%s,%s' % (p['lon'], p['lat'], alt_m))
+        whens.append('<when>%s</when>' % time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime(p['t'])))
+        coords.append('<gx:coord>%s %s %s</gx:coord>' % (p['lon'], p['lat'], alt_m))
+    kml = ('<?xml version="1.0" encoding="UTF-8"?>\n'
+           '<kml xmlns="http://www.opengis.net/kml/2.2" xmlns:gx="http://www.google.com/kml/ext/2.2">\n'
+           '<Document><name>' + title + '</name>\n'
+           '<Style id="trk"><LineStyle><color>ff00c8ff</color><width>3</width></LineStyle></Style>\n'
+           '<Placemark><name>' + title + ' (path)</name><styleUrl>#trk</styleUrl>'
+           '<LineString><altitudeMode>absolute</altitudeMode><tessellate>1</tessellate><coordinates>'
+           + ' '.join(line) + '</coordinates></LineString></Placemark>\n'
+           '<Placemark><name>' + title + ' (flight)</name><styleUrl>#trk</styleUrl>'
+           '<gx:Track><altitudeMode>absolute</altitudeMode>' + ''.join(whens) + ''.join(coords)
+           + '</gx:Track></Placemark>\n'
+           '</Document></kml>\n')
+    resp = Response(kml, mimetype='application/vnd.google-earth.kml+xml')
+    resp.headers['Content-Disposition'] = 'attachment; filename="pilnk-capsule-%s.kml"' % cid
+    return resp
+
+capsule_thread = threading.Thread(target=capsule_recorder, daemon=True)
+capsule_thread.start()
+
 # Start OTA checker thread
 ota_thread = threading.Thread(target=ota_checker, daemon=True)
 ota_thread.start()
@@ -2634,9 +3104,13 @@ def flights():
                     ac['r'] = entry['r']
             # Mode S Comm-B enrichment — additive, no-op without fresh cache
             _merge_bds(ac, hex_code)
-            # Military overlay — fast in-memory hex-range + type classification
+            # Military overlay — a reserved national military hex block, OR the
+            # aircraft DB's own per-airframe military flag (v1.5.22). Hex blocks
+            # alone missed every air arm that shares its nation's civil block:
+            # an RNZAF C-130J drew as a narrow-body airliner with no card data.
             _mil = classify_icao(hex_code)
-            if _mil:
+            _dbmil = bool(entry and entry.get('m'))
+            if _mil or _dbmil:
                 ac['is_military'] = True
                 _cat = match_aircraft_type(ac.get('t'))
                 if _cat:
@@ -2644,11 +3118,18 @@ def flights():
                     ac['mil_rarity'] = _cat['rarity']
                     ac['mil_emoji'] = _cat['emoji']
                     ac['mil_class'] = _cat['class']
-                    ac['mil_branch'] = _cat['branch']
-                    ac['mil_country'] = _cat.get('cc', '')
+                if _mil:
+                    # Inside a military block: unchanged behaviour — the catalog's
+                    # type-specific branch (USAF vs USN) beats the block's label.
+                    ac['mil_branch'] = _cat['branch'] if _cat else _mil.get('branch', '')
+                    ac['mil_country'] = _cat.get('cc', '') if _cat else _mil.get('cc', '')
                 else:
-                    ac['mil_branch'] = _mil.get('branch', '')
-                    ac['mil_country'] = _mil.get('cc', '')
+                    # Flagged by the DB alone: the air arm is NOT known here, and
+                    # the catalog branch is per TYPE (its C-130J row says USAF even
+                    # on an RNZAF airframe). Blank beats wrong; the cinematic card
+                    # resolves the real operator via pilnk.io's mil-lookup.
+                    ac['mil_branch'] = ''
+                    ac['mil_country'] = ''
                 _track_mil(hex_code, ac)
             # 7777 = military intercept squawk (in some regions). Flag it on ANY
             # aircraft — an active intercept is notable whether or not the hex is
@@ -2711,7 +3192,49 @@ def gone_dark():
 # failure we serve stale cache if we have any — an hour-old NAVAID
 # list beats an empty map for data that barely moves.
 _OPENAIP_CACHE = {}
-_OPENAIP_TTL = 900          # 15 minutes
+# 6 h (was 15 min). Airspaces and NAVAIDs change on 28-day AIRAC cycles, and
+# every upstream call spends quota on a key the WHOLE FLEET shares.
+_OPENAIP_TTL = 6 * 3600
+#
+# PERSISTED TO DISK + 429 BACKOFF, 23 Sep 2026. The cache lived only in memory,
+# so every restart emptied it — and a release restarts every node at once. That
+# night three restarts in an hour, each followed by a dashboard reload, sent
+# fresh airspace+navaid requests upstream on the shared key until OpenAIP
+# answered 429, and with nothing cached the overlay had nothing to fall back
+# on: "airspace isn't loading", 502 in the console. Now a restart comes back
+# with its data, and after a 429 the node stops asking for a while instead of
+# spending another request on every reload.
+_OPENAIP_CACHE_FILE = os.path.join(PILNK_DIR, 'openaip_cache.json')
+_OPENAIP_LOCK = threading.Lock()
+_OPENAIP_BACKOFF = {'until': 0.0}
+_OPENAIP_BACKOFF_SECS = 600
+_OPENAIP_DISK_MAX = 20      # entries kept on disk (a node asks for ~2)
+
+def _openaip_load_disk():
+    try:
+        with open(_OPENAIP_CACHE_FILE, 'r') as f:
+            d = json.load(f)
+        for k, v in (d or {}).items():
+            if isinstance(v, list) and len(v) == 2:
+                _OPENAIP_CACHE[k] = (float(v[0]), v[1])
+        logging.info('[openaip] loaded %d cached layer(s) from disk', len(_OPENAIP_CACHE))
+    except FileNotFoundError:
+        pass
+    except Exception as e:
+        logging.warning('[openaip] disk cache unreadable, starting empty: %s', e)
+
+def _openaip_save_disk():
+    try:
+        with _OPENAIP_LOCK:
+            newest = sorted(_OPENAIP_CACHE.items(), key=lambda kv: kv[1][0], reverse=True)[:_OPENAIP_DISK_MAX]
+            tmp = _OPENAIP_CACHE_FILE + '.tmp'
+            with open(tmp, 'w') as f:
+                json.dump({k: [t, d] for k, (t, d) in newest}, f)
+            os.replace(tmp, _OPENAIP_CACHE_FILE)
+    except Exception as e:
+        logging.warning('[openaip] could not persist cache: %s', e)
+
+_openaip_load_disk()
 
 
 def _openaip_cache_key(endpoint, params):
@@ -2754,6 +3277,14 @@ def openaip_proxy(endpoint):
     if hit and (time.time() - hit[0]) < _OPENAIP_TTL:
         return jsonify(hit[1])
 
+    # Rate-limited recently? Don't ask again yet — each refused call during a
+    # 429 window digs the hole deeper for every node on the shared key. Stale
+    # data if we have it; otherwise an honest rate-limited error.
+    if time.time() < _OPENAIP_BACKOFF['until']:
+        if hit:
+            return jsonify(hit[1])
+        return jsonify({'error': 'upstream HTTP 429 (backing off)', 'rate_limited': True}), 502
+
     params['apiKey'] = OPENAIP_KEY
     url = f'https://api.core.openaip.net/api/{endpoint}'
 
@@ -2764,11 +3295,14 @@ def openaip_proxy(endpoint):
             if r.status_code == 200:
                 data = r.json()
                 _OPENAIP_CACHE[cache_key] = (time.time(), data)
+                _openaip_save_disk()
                 return jsonify(data)
             last_err = 'upstream HTTP %s' % r.status_code
             # 429 is rate limiting, not a blip. Retrying 1.5s later just spends
-            # another request on a refusal and digs the hole deeper.
+            # another request on a refusal and digs the hole deeper — and so
+            # does the NEXT reload, so back off for a while too.
             if r.status_code == 429:
+                _OPENAIP_BACKOFF['until'] = time.time() + _OPENAIP_BACKOFF_SECS
                 break
         except Exception as e:
             last_err = str(e)
