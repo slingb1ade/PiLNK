@@ -244,6 +244,30 @@ fi
 # (or no decoder runs here) — otherwise the "available" one may be the
 # decoder's own stick published via --device-index instead of a serial.
 DECODER_ACTIVE=$(systemctl is-active dump1090-fa readsb 2>/dev/null | grep -cx active || true)
+
+# #101: on the PiAware image (and any decoder whose serial is not in /etc/default),
+# CLAIMED comes back EMPTY, so the decoder's OWN dongle appears "available" and a
+# serial pinned to it can only crash-loop against the decoder. If a decoder is
+# active but we could NOT read its serial, we cannot prove any present dongle is
+# free — drop them all as candidates rather than risk picking the decoder's stick.
+if [ "$DECODER_ACTIVE" -gt 0 ] && [ -z "$CLAIMED" ] && [ ${#CANDIDATES[@]} -gt 0 ]; then
+    warn "a decoder is active but its dongle serial could not be read (PiAware-style image?) —"
+    warn "not auto-picking a dongle on the bus; pinning the radio to the decoder's stick is the crash-loop MME1 hit."
+    CANDIDATES=()
+fi
+
+# A placeholder serial the engine WAITS for — chosen NOT to match any dongle on the
+# bus right now, so it can never collide with the decoder's stick. MME1's decoder
+# held 00000002; writing that literal pinned the radio to it -> crash-loop. (#101)
+_present_serials="$(printf '%s\n' "${ALL[@]:-}" | cut -f1 || true)"
+WAIT_SERIAL=00000002
+for _c in 00000002 00000009 00000042 00000077 00000099; do
+    case $'\n'"$_present_serials"$'\n' in
+        *$'\n'"$_c"$'\n'*) ;;
+        *) WAIT_SERIAL="$_c"; break ;;
+    esac
+done
+
 SERIAL=""
 # PILNKRADIO_SERIAL / PILNKRADIO_NONINTERACTIVE let this run unattended, which
 # is how the OTA and install.sh now call it. A human running it by hand gets
@@ -260,7 +284,7 @@ elif [ -n "${PILNKRADIO_NONINTERACTIVE:-}" ]; then
     # it exits and retries every 5s until a matching dongle appears, and the
     # udev rule wakes it the moment one is plugged in. A node with no radio
     # dongle today should still be ready the day its owner buys one.
-    SERIAL="${CANDIDATES[0]:-00000002}"
+    SERIAL="${CANDIDATES[0]:-$WAIT_SERIAL}"
     info "unattended: engine will wait for serial $SERIAL (retries every 5s until it appears)"
 else
     # How many RTL dongles are on the bus at all, whoever is holding them.
@@ -307,7 +331,7 @@ else
     if [ ${#CANDIDATES[@]} -ge 1 ] && { [ "$TOTAL" -gt 1 ] || [ "$DECODER_ACTIVE" -eq 0 ]; }; then
         DEFSER="${CANDIDATES[0]}"
     else
-        DEFSER="00000002"
+        DEFSER="$WAIT_SERIAL"
     fi
     printf "Radio dongle serial [default %s]: " "$DEFSER" > "$TTY"
     read -r SERIAL < "$TTY" || true
@@ -370,12 +394,22 @@ else
     HZ=$(awk -v m="$FREQ" 'BEGIN{printf "%.1f", m*1e6}')
     # dashboard origins allowed to control the radio (audit M3 gate);
     # no-Origin (curl) and localhost are always allowed by the daemon itself
-    ORIGINS="\"http://localhost:5000\""
+    # #100: the dashboard port is NOT always 5000. It moved into config.json in
+    # v1.3.2 (so the updater can't reset it), and a PiAware image pushes PiLNK to
+    # 5001+. Hardcoding 5000 here installs a radio engine whose CORS allowlist
+    # rejects its own dashboard's control requests. Read the real port (default 5000).
+    DASH_PORT="$(python3 -c 'import json,sys
+try:
+ print(int(json.load(open(sys.argv[1])).get("dashboard_port",5000)))
+except Exception:
+ print(5000)' "$HOME/pilnk/config.json" 2>/dev/null || echo 5000)"
+    case "$DASH_PORT" in ''|*[!0-9]*) DASH_PORT=5000 ;; esac
+    ORIGINS="\"http://localhost:$DASH_PORT\""
     for ip in $(hostname -I 2>/dev/null); do
-        case "$ip" in *:*) ;; *) ORIGINS="$ORIGINS, \"http://$ip:5000\"" ;; esac
+        case "$ip" in *:*) ;; *) ORIGINS="$ORIGINS, \"http://$ip:$DASH_PORT\"" ;; esac
     done
     HN=$(hostname 2>/dev/null || true)
-    [ -n "$HN" ] && ORIGINS="$ORIGINS, \"http://$HN:5000\", \"http://$HN.local:5000\""
+    [ -n "$HN" ] && ORIGINS="$ORIGINS, \"http://$HN:$DASH_PORT\", \"http://$HN.local:$DASH_PORT\""
     sudo mkdir -p /etc/pilnkradio
     sudo tee "$CFG" >/dev/null <<EOF
 {
