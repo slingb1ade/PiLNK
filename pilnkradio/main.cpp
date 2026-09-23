@@ -403,10 +403,8 @@ public:
     bool start() {
         if (!startServer()) return false;
         logLoadedRtlsdr();
-        if (!rtl.open(cfg.serial, cfg.ppm, SAMPLE_RATE)) {
-            stopServer(); // leave no joinable threads behind: exit clean, not abort
-            return false;
-        }
+        // Device-independent setup, safe with or without a dongle. onIq/onFatal are
+        // only ever invoked while streaming, which cannot happen without a device.
         rtl.onFatal = [](const char* why) {
             logE("FATAL: %s — exiting so systemd restarts us", why);
             exit(2);
@@ -414,19 +412,58 @@ public:
         rtl.onIq = [this](const uint8_t* d, size_t n) { iqHandler(d, n); };
         initFFT();
         initDsp();
-        applyTuning();
-        rtl.setGainIndex(cfg.gainIndex);
-        rtl.setAgc(cfg.agc);
-        controlThread = std::thread(&PilnkRadioDaemon::controlLoop, this);
-        if (cfg.playing) {
-            logI("consent was on (persisted) — resuming playback");
-            rtl.startStream();
+        // #114 BIND-FIRST, ACQUIRE-LATER. A node with no radio dongle used to EXIT
+        // here ("serial not found"), so systemd crash-looped it every 5s and the
+        // state was indistinguishable from a broken engine (not_listening). Now: if
+        // the dongle is present, wire it up; if not, keep serving /sdr/status with
+        // an empty rfGainSteps list — which app.py reports as the honest 'no_device'
+        // — and wait for the dongle in the background. "No dongle fitted" is a calm,
+        // truthful state, not a fault and not a crash-loop.
+        if (rtl.open(cfg.serial, cfg.ppm, SAMPLE_RATE)) {
+            wireDevice();
+        } else {
+            logW("rtl: dongle serial %s not present — serving as no_device, waiting for it (retry every 5s)", cfg.serial.c_str());
+            acquireThread = std::thread(&PilnkRadioDaemon::acquireLoop, this);
         }
         return true;
     }
 
+    // Everything that needs an OPEN device. Called once the dongle is in hand — at
+    // startup if it was already there, or from acquireLoop the moment it appears.
+    void wireDevice() {
+        applyTuning();
+        rtl.setGainIndex(cfg.gainIndex);
+        rtl.setAgc(cfg.agc);
+        // controlThread refreshes /sdr/status (rfGainSteps etc.). It starts ONLY
+        // here, after open() has finished populating the gain list, so it can never
+        // race open() for gainStepsDb. Guarded so a future reopen can't double-start.
+        if (!controlThread.joinable())
+            controlThread = std::thread(&PilnkRadioDaemon::controlLoop, this);
+        if (cfg.playing) {
+            logI("consent was on (persisted) — resuming playback");
+            rtl.startStream();
+        }
+    }
+
+    // Background retry: open the configured dongle whenever it appears. This is the
+    // whole point of #114 — the engine stays up as no_device and simply waits,
+    // instead of exiting and being crash-looped by systemd.
+    void acquireLoop() {
+        while (!stopping) {
+            for (int i = 0; i < 50 && !stopping; i++)   // ~5s, but wake fast on shutdown
+                std::this_thread::sleep_for(std::chrono::milliseconds(100));
+            if (stopping) break;
+            if (rtl.open(cfg.serial, cfg.ppm, SAMPLE_RATE)) {
+                logI("rtl: dongle serial %s appeared — wiring up", cfg.serial.c_str());
+                wireDevice();
+                return;
+            }
+        }
+    }
+
     void stop() {
         stopping = true;
+        if (acquireThread.joinable()) acquireThread.join();
         if (controlThread.joinable()) controlThread.join();
         rtl.closeDev();
         stopServer();
@@ -742,6 +779,7 @@ private:
 
     // -------- control thread: drain commands, refresh status, sample flow --------
     std::thread controlThread;
+    std::thread acquireThread;   // #114: background wait-for-dongle when none is present at startup
 
     void controlLoop() {
         while (!stopping) {
