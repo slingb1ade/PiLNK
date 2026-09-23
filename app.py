@@ -3800,14 +3800,83 @@ def _act_restart_pilnk(params):
         return {'ok': False, 'error': f'restart_pilnk failed to schedule: {e}'}
 
 
+def _act_restart_service(unit):
+    """Restart a sibling systemd unit (NOT app.py itself), synchronously. Needs the
+    matching NOPASSWD grant (bootstrap-selfheal.sh installs them)."""
+    try:
+        r = subprocess.run(['sudo', '-n', 'systemctl', 'restart', unit],
+                           capture_output=True, text=True, timeout=30)
+        if r.returncode == 0:
+            return {'ok': True, 'action': 'restart:' + unit, 'detail': unit + ' restarted'}
+        return {'ok': False, 'error': (r.stderr or r.stdout or 'restart failed').strip()[:200]}
+    except Exception as e:
+        return {'ok': False, 'error': str(e)}
+
+
+def _act_restart_audio(params):
+    """Restart the ATC audio engine (pilnkradio)."""
+    return _act_restart_service('pilnkradio')
+
+
+def _act_restart_decoder(params):
+    """Restart the ADS-B decoder — whichever of readsb / dump1090-fa is active, or the
+    one named in params['unit']."""
+    unit = params.get('unit') if params.get('unit') in ('readsb', 'dump1090-fa') else None
+    if not unit:
+        for u in ('readsb', 'dump1090-fa'):
+            try:
+                a = subprocess.run(['systemctl', 'is-active', u],
+                                   capture_output=True, text=True, timeout=5)
+                if a.stdout.strip() == 'active':
+                    unit = u
+                    break
+            except Exception:
+                pass
+    if not unit:
+        return {'ok': False, 'error': 'no active decoder (readsb / dump1090-fa) found'}
+    return _act_restart_service(unit)
+
+
+def _act_ota_apply(params):
+    """Pull the latest release now instead of waiting for the OTA timer. Runs update.sh
+    DETACHED (it restarts pilnk at the end, which would kill us), so we return at once
+    and the update proceeds on its own. Uses update.sh's own existing sudo grant."""
+    try:
+        upd = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'update.sh')
+        subprocess.Popen(['bash', '-c', 'sleep 1; exec bash "$0"', upd],
+                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                         start_new_session=True)
+        return {'ok': True, 'action': 'ota_apply',
+                'detail': 'update started — the node will pull the latest release and restart'}
+    except Exception as e:
+        return {'ok': False, 'error': f'ota_apply failed to start: {e}'}
+
+
+def _act_reboot(params):
+    """Reboot the whole Pi. DESTRUCTIVE — the dispatcher requires params['confirm'] is
+    True. Deferred + detached so the result posts before we go down. Needs the NOPASSWD
+    'systemctl reboot' grant (bootstrap-selfheal.sh installs it)."""
+    try:
+        subprocess.Popen(['bash', '-c', 'sleep 2; sudo -n systemctl reboot'],
+                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                         start_new_session=True)
+        return {'ok': True, 'action': 'reboot',
+                'detail': 'reboot scheduled (~2s) — the node will go down and come back'}
+    except Exception as e:
+        return {'ok': False, 'error': f'reboot failed to schedule: {e}'}
+
+
 ASSIST_ACTIONS = {
-    'restart_pilnk': _act_restart_pilnk,
+    'restart_pilnk':    _act_restart_pilnk,
+    'restart_audio':    _act_restart_audio,
+    'restart_decoder':  _act_restart_decoder,
+    'ota_apply':        _act_ota_apply,
+    'reboot':           _act_reboot,
 }
 
-# Destructive actions require an explicit params['confirm'] is True — a guard against
-# a blind sweep of the request queue. restart_* are non-destructive and need none.
-# 'reboot' will join this set when it lands.
-ASSIST_ACTIONS_DESTRUCTIVE = set()
+# Destructive actions require an explicit params['confirm'] is True — a guard against a
+# blind sweep of the request queue. restart_* / ota_apply are non-destructive.
+ASSIST_ACTIONS_DESTRUCTIVE = {'reboot'}
 
 # Node-local, owner-visible audit of operator actions (Prong B3). A file, not memory,
 # so the owner sees even the restart that just ran once the node comes back.

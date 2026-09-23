@@ -101,7 +101,7 @@ SUDOERS_WANT="# PiLNK OTA — passwordless pilnk restart for $SVC_USER (added by
 # else. Granting 'start' on that specific unit is what lets the OTA build the ATC
 # audio engine detached and with root, WITHOUT granting passwordless systemd-run
 # (which would be full root, since it can launch anything).
-$SVC_USER ALL=(root) NOPASSWD: $SYSTEMCTL_BIN restart pilnk, $SYSTEMCTL_BIN start pilnk, $SYSTEMCTL_BIN stop pilnk, $SYSTEMCTL_BIN daemon-reload, $SYSTEMCTL_BIN start pilnk-audio-build"
+$SVC_USER ALL=(root) NOPASSWD: $SYSTEMCTL_BIN restart pilnk, $SYSTEMCTL_BIN start pilnk, $SYSTEMCTL_BIN stop pilnk, $SYSTEMCTL_BIN daemon-reload, $SYSTEMCTL_BIN start pilnk-audio-build, $SYSTEMCTL_BIN restart pilnkradio, $SYSTEMCTL_BIN restart readsb, $SYSTEMCTL_BIN restart dump1090-fa, $SYSTEMCTL_BIN reboot"
 if [ -n "$SVC_USER" ]; then
   if [ ! -f "$SUDOERS_FILE" ] || [ "$SUDOERS_WANT" != "$(cat "$SUDOERS_FILE" 2>/dev/null)" ]; then
     SU_TMP="$(mktemp)"
