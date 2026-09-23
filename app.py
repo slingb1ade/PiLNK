@@ -3774,6 +3774,42 @@ ASSIST_CAPABILITIES = {
 }
 
 
+# ── ACTION / WRITE tier (Prong B2) ───────────────────────────────────────────
+# SEPARATE from the read whitelist ON PURPOSE. The read tier's safety is "worst
+# case you read your own node"; writes need more (see the B2 security review in
+# pilnk-tasks/node-management-plane.md). An action runs ONLY when a session is live,
+# which happens ONLY under standing consent (kind=maintenance, re-checked at
+# dispatch) or owner presence (kind=owner). Every action is a FIXED function; params
+# only ever pick a bool/enum, never a command or path. Destructive actions require
+# params['confirm'] is True. Each returns {'ok': bool, ...}; the dispatcher keys
+# is_err on ok. MUST match the server action allowlist in api/assist.php.
+def _act_restart_pilnk(params):
+    """Restart the pilnk service. DEFERRED + DETACHED: this very process is what
+    systemd restarts, so a synchronous restart would kill us before the result can
+    post. A start_new_session child waits ~2s then runs the restart (the same
+    passwordless grant update.sh relies on), so we return + post the result first."""
+    try:
+        subprocess.Popen(
+            ['bash', '-c', 'sleep 2; sudo -n systemctl restart pilnk'],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            start_new_session=True,
+        )
+        return {'ok': True, 'action': 'restart_pilnk',
+                'detail': 'restart scheduled (~2s) — the node will drop briefly and return'}
+    except Exception as e:
+        return {'ok': False, 'error': f'restart_pilnk failed to schedule: {e}'}
+
+
+ASSIST_ACTIONS = {
+    'restart_pilnk': _act_restart_pilnk,
+}
+
+# Destructive actions require an explicit params['confirm'] is True — a guard against
+# a blind sweep of the request queue. restart_* are non-destructive and need none.
+# 'reboot' will join this set when it lands.
+ASSIST_ACTIONS_DESTRUCTIVE = set()
+
+
 def _assist_post(action, payload):
     payload['action'] = action
     payload['verify_code'] = NODE_VERIFY_CODE
@@ -3877,17 +3913,34 @@ def assist_poller():
             req = r.get('request')
             if req:
                 cap = req.get('capability')
-                fn = ASSIST_CAPABILITIES.get(cap)
-                if fn:
-                    try:
-                        result = fn(req.get('params') or {})
-                        is_err = isinstance(result, dict) and 'error' in result
-                    except Exception as e:
-                        result = {'error': f'capability {cap} failed: {e}'}
+                params = req.get('params') or {}
+                if cap in ASSIST_ACTIONS:
+                    # WRITE tier. Gate on live consent / owner presence, then confirm.
+                    if kind == 'maintenance' and not _remote_maintenance_enabled():
+                        result = {'ok': False, 'error': 'remote maintenance consent withdrawn'}
                         is_err = True
+                    elif cap in ASSIST_ACTIONS_DESTRUCTIVE and params.get('confirm') is not True:
+                        result = {'ok': False, 'error': f'{cap} requires confirm=true'}
+                        is_err = True
+                    else:
+                        try:
+                            result = ASSIST_ACTIONS[cap](params)
+                            is_err = not (isinstance(result, dict) and result.get('ok'))
+                        except Exception as e:
+                            result = {'ok': False, 'error': f'action {cap} failed: {e}'}
+                            is_err = True
                 else:
-                    result = {'error': f'unknown capability: {cap}'}
-                    is_err = True
+                    fn = ASSIST_CAPABILITIES.get(cap)
+                    if fn:
+                        try:
+                            result = fn(params)
+                            is_err = isinstance(result, dict) and 'error' in result
+                        except Exception as e:
+                            result = {'error': f'capability {cap} failed: {e}'}
+                            is_err = True
+                    else:
+                        result = {'error': f'unknown capability: {cap}'}
+                        is_err = True
                 _assist_post('result', {
                     'request_id': req['request_id'],
                     'result': result,
