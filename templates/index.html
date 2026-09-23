@@ -94,6 +94,14 @@
   .ra-active-label{font-family:'Orbitron',sans-serif;font-size:0.58rem;letter-spacing:0.08em;text-transform:uppercase;color:#2fd98a;}
   .ra-msg{font-size:0.66rem;color:var(--text-dim);margin-top:8px;min-height:1em;}
   .ra-msg.err{color:#ff8a92;}
+  .ra-maint{display:none;align-items:center;gap:8px;margin:10px 0;padding:8px 10px;border-radius:8px;background:rgba(47,217,138,0.1);border:1px solid rgba(47,217,138,0.3);}
+  .ra-maint-label{font-size:0.6rem;color:#2fd98a;letter-spacing:0.04em;line-height:1.4;}
+  .ra-log{margin-top:14px;}
+  .ra-log-title{font-family:'Orbitron',sans-serif;font-size:0.54rem;letter-spacing:0.08em;text-transform:uppercase;color:var(--text-dim);margin-bottom:6px;}
+  .ra-log-row{font-size:0.62rem;color:var(--text-dim);padding:5px 0;border-top:1px solid var(--border);display:flex;flex-wrap:wrap;gap:2px 10px;}
+  .ra-log-act{color:var(--text);font-family:'Share Tech Mono',monospace;}
+  .ra-log-when{color:var(--text-dim);opacity:0.7;}
+  .ra-log-detail{flex-basis:100%;opacity:0.85;}
 
   /* Leaflet scale legend — 10px buffer from map left+bottom (and from LH navbar/sidebar by extension, since map starts at sidebar's right edge) */
   .leaflet-bottom.leaflet-left .leaflet-control-scale{ margin:0 0 10px 10px !important; }
@@ -1826,6 +1834,14 @@
 
           <div class="panel">
             <div class="panel-title">Remote Assist</div>
+          <div class="toggle-row" title="When ON, PiLNK support can read diagnostics AND restart PiLNK on this node without you present, to fix a problem fast. Turn it OFF any time to revoke - it takes effect within seconds. Every action is listed below.">
+            <span>Allow remote maintenance</span>
+            <label class="toggle-switch"><input type="checkbox" id="ra-consent" onchange="raConsent(this.checked)"/><span class="toggle-slider"></span></label>
+          </div>
+          <div id="ra-maint" class="ra-maint">
+            <span class="ra-dot"></span>
+            <span class="ra-maint-label">Maintenance access ON - support can read &amp; restart this node. Toggle off to revoke.</span>
+          </div>
             <div class="ra-intro">Lets PiLNK support read diagnostics from your node to help fix an issue — only while you choose. Read-only, time-limited, and you can end it any time.</div>
             <div id="ra-idle">
               <button class="ra-btn" id="ra-open-btn" onclick="raOpen()">Request Assist</button>
@@ -1840,6 +1856,7 @@
               <button class="ra-btn ra-btn-end" id="ra-end-btn" onclick="raEnd()">End session</button>
             </div>
             <div id="ra-msg" class="ra-msg"></div>
+          <div id="ra-log" class="ra-log" style="display:none;"></div>
           </div>
 
         </div>
@@ -8386,11 +8403,47 @@ function raPoll(){
   fetch('/api/assist/status', {cache:'no-store'})
     .then(function(r){ return r.json(); })
     .then(function(j){
-      if(j && j.active){
+      if(!j) return;
+      var maint = !!j.remote_maintenance;
+      var cb = document.getElementById('ra-consent'); if(cb) cb.checked = maint;
+      var mb = document.getElementById('ra-maint'); if(mb) mb.style.display = maint ? 'flex' : 'none';
+      var ownerSession = !!(j.active && j.kind === 'owner');
+      if(ownerSession){
         raRender(true, j.human_code, j.expires_in_sec);
       } else {
         raRender(false);
       }
+      var idle = document.getElementById('ra-idle');
+      if(idle && !ownerSession){ idle.style.display = maint ? 'none' : 'block'; }
+      raLoadLog();
+    })
+    .catch(function(){});
+}
+function raConsent(on){
+  fetch('/api/assist/consent', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({on: !!on})})
+    .then(function(r){ return r.json(); })
+    .then(function(j){
+      if(j && j.ok){ raMsg(on ? 'Remote maintenance ON - support can read + restart this node.' : 'Remote maintenance OFF.'); }
+      else { raMsg((j && j.error) ? j.error : 'Could not change setting', true); var c=document.getElementById('ra-consent'); if(c) c.checked=!on; }
+    })
+    .catch(function(){ raMsg('Network error - try again', true); var c=document.getElementById('ra-consent'); if(c) c.checked=!on; });
+}
+function raEsc(s){ return String(s==null?'':s).replace(/[&<>]/g,function(c){return c==='&'?'&amp;':c==='<'?'&lt;':'&gt;';}); }
+function raLoadLog(){
+  fetch('/api/assist/log', {cache:'no-store'})
+    .then(function(r){ return r.json(); })
+    .then(function(j){
+      var el = document.getElementById('ra-log'); if(!el) return;
+      var acts = (j && j.actions) || [];
+      if(!acts.length){ el.style.display='none'; el.innerHTML=''; return; }
+      var rows = acts.map(function(a){
+        var when = a.ts ? new Date(a.ts*1000).toLocaleString() : '';
+        var ok = a.ok ? 'ok' : 'failed';
+        var d = a.detail ? (' - ' + raEsc(a.detail)) : '';
+        return '<div class="ra-log-row"><span class="ra-log-act">'+ok+' '+raEsc(a.action)+'</span><span class="ra-log-when">'+raEsc(when)+'</span><span class="ra-log-detail">'+d+'</span></div>';
+      }).join('');
+      el.innerHTML = '<div class="ra-log-title">Recent support actions</div>' + rows;
+      el.style.display = 'block';
     })
     .catch(function(){});
 }

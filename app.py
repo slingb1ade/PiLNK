@@ -3809,6 +3809,30 @@ ASSIST_ACTIONS = {
 # 'reboot' will join this set when it lands.
 ASSIST_ACTIONS_DESTRUCTIVE = set()
 
+# Node-local, owner-visible audit of operator actions (Prong B3). A file, not memory,
+# so the owner sees even the restart that just ran once the node comes back.
+ASSIST_ACTION_LOG = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'assist_actions.log')
+
+def _assist_log_action(action, ok, detail):
+    """Append one operator action to the node-local audit log. Capped, best-effort."""
+    try:
+        rec = {'ts': int(time.time()), 'action': str(action),
+               'ok': bool(ok), 'detail': str(detail)[:200]}
+        lines = []
+        try:
+            with open(ASSIST_ACTION_LOG, 'r') as f:
+                lines = f.read().splitlines()
+        except Exception:
+            pass
+        lines.append(json.dumps(rec))
+        lines = lines[-50:]
+        tmp = ASSIST_ACTION_LOG + '.tmp'
+        with open(tmp, 'w') as f:
+            f.write('\n'.join(lines) + '\n')
+        os.replace(tmp, ASSIST_ACTION_LOG)
+    except Exception:
+        pass
+
 
 def _assist_post(action, payload):
     payload['action'] = action
@@ -3929,6 +3953,9 @@ def assist_poller():
                         except Exception as e:
                             result = {'ok': False, 'error': f'action {cap} failed: {e}'}
                             is_err = True
+                    _assist_log_action(cap, not is_err,
+                                       (isinstance(result, dict) and
+                                        (result.get('detail') or result.get('error'))) or '')
                 else:
                     fn = ASSIST_CAPABILITIES.get(cap)
                     if fn:
@@ -3979,6 +4006,49 @@ def api_assist_status():
 def api_assist_end():
     assist_close_session('owner')
     return jsonify({'ok': True})
+
+
+@app.route('/api/assist/consent', methods=['POST'])
+def api_assist_consent():
+    """Owner grants or revokes standing remote-maintenance consent from their own
+    dashboard. Writes remote_maintenance to config.json atomically; the poller reads
+    it fresh each cycle, so a revoke takes effect within one cycle."""
+    global _config
+    body = request.get_json(silent=True) or {}
+    want = bool(body.get('on'))
+    try:
+        cfg = {}
+        try:
+            with open(CONFIG_PATH, 'r') as f:
+                cfg = json.load(f)
+        except Exception:
+            pass
+        cfg['remote_maintenance'] = want
+        tmp = CONFIG_PATH + '.tmp'
+        with open(tmp, 'w') as f:
+            json.dump(cfg, f, indent=2)
+        os.replace(tmp, CONFIG_PATH)
+        _config = cfg
+        _assist_log_action('consent', True, 'granted' if want else 'revoked')
+        return jsonify({'ok': True, 'remote_maintenance': want})
+    except Exception as e:
+        return jsonify({'ok': False, 'error': str(e)}), 500
+
+
+@app.route('/api/assist/log')
+def api_assist_log():
+    """Recent operator actions run on this node — owner-visible audit (Prong B3)."""
+    out = []
+    try:
+        with open(ASSIST_ACTION_LOG, 'r') as f:
+            for line in f.read().splitlines()[-20:]:
+                try:
+                    out.append(json.loads(line))
+                except Exception:
+                    pass
+    except Exception:
+        pass
+    return jsonify({'actions': list(reversed(out))})
 
 
 # Launch the assist poller (idle until the owner opens a session).
