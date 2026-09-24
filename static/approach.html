@@ -157,7 +157,10 @@ function integrate(){   // predict where the aircraft is *now* from the last fix
   else { dE=fix.vE*dt; dN=fix.vN*dt; pHdg=fix.hdg; }
   const pLon=fix.lon+dE/mPerLon, pLat=fix.lat+dN/mPerLat, pAlt=fix.gnd?SITE.elev:Math.max(SITE.elev,fix.altM+fix.vU*dt);   // real metres; VE is applied at draw time
   const now=performance.now();
-  if(!aircraft||aircraft.key!==fix.key||document.hidden){ aircraft={lon:pLon,lat:pLat,altM:pAlt,hdg:pHdg,roll:fix.roll,pitch:fix.pitch,dist:fix.dist,gnd:fix.gnd,key:fix.key,fixT:fix.t}; corr=null; return; }
+  /* AUDIT FIX #4 (24 Sep 2026): `bias` — the retained cross-track offset — belongs to one aircraft and
+     must be dropped with `corr`. It wasn't: the next subject was drawn correctly for one frame, then
+     jumped sideways by whatever the last one had left (measured 37.5 m) until its first fix. */
+  if(!aircraft||aircraft.key!==fix.key||document.hidden){ aircraft={lon:pLon,lat:pLat,altM:pAlt,hdg:pHdg,roll:fix.roll,pitch:fix.pitch,dist:fix.dist,gnd:fix.gnd,key:fix.key,fixT:fix.t}; corr=null; bias.e=0; bias.n=0; return; }
   /* When a new fix lands, the prediction restarts from it — typically 10-30 m from where the old guess
      had the aircraft drawn (ordinary ADS-B noise). Snapping that closed, even over half a second, is a
      visible nudge every two seconds at chase range. Instead the gap is captured as an offset and faded
@@ -195,7 +198,9 @@ const st=(t)=>document.getElementById('st').textContent=t;
    the same source the dashboard's glideslope view uses, so the two agree about which runway is which.
    Drawn only at night, because that is when the real ones are the useful thing to look for. */
 const LIGHTS_ON=(_q.get('lights')!=null)?(_q.get('lights')!=='0'):true;
+const RABBIT=12;      // sequenced-flasher steps per second — see the note where it is used
 let RWY_ENDS=[], rwyActive=null;
+let APT_ELEV=null;    // published field elevation (m) — fallback only, see sampleElev
 async function loadRunways(){
   if(!LIGHTS_ON||SITE.lat==null) return;
   try{
@@ -203,14 +208,21 @@ async function loadRunways(){
     if(!j||!j.ok||!j.airports) return;
     const apt=(SITE.icao&&j.airports.find(a=>a.icao===SITE.icao))||j.airports[0];
     if(!apt) return;
+    const mine=!!(SITE.icao&&apt.icao===SITE.icao), els=[];
     for(const r of apt.runways||[]){
       if(r.le_lat==null||r.he_lat==null) continue;
       const len=(r.length_ft||0)*0.3048;
+      /* AUDIT FIX #7 (24 Sep 2026): a missing threshold elevation used to become 0 m, so that end's
+         lights were drawn at sea level — under the ground (NZWP 08L/26R comes back null). Borrow the
+         other end's figure; if neither is known, null, and the render falls back to the field. */
+      const eL=(r.le_elev_ft!=null)?r.le_elev_ft:r.he_elev_ft, eH=(r.he_elev_ft!=null)?r.he_elev_ft:r.le_elev_ft;
+      if(eL!=null) els.push(eL*0.3048); if(eH!=null) els.push(eH*0.3048);
       // each physical runway gives two landing directions; the aircraft picks one
-      RWY_ENDS.push({ident:r.le_ident, lat:r.le_lat, lon:r.le_lon, land:r.le_hdg, len, elev:(r.le_elev_ft||0)*0.3048});
-      RWY_ENDS.push({ident:r.he_ident, lat:r.he_lat, lon:r.he_lon, land:r.he_hdg, len, elev:(r.he_elev_ft||0)*0.3048});
+      RWY_ENDS.push({ident:r.le_ident, lat:r.le_lat, lon:r.le_lon, land:r.le_hdg, len, elev:eL!=null?eL*0.3048:null});
+      RWY_ENDS.push({ident:r.he_ident, lat:r.he_lat, lon:r.he_lon, land:r.he_hdg, len, elev:eH!=null?eH*0.3048:null});
     }
-  }catch(e){}
+    if(mine&&els.length) APT_ELEV=els.reduce((s,v)=>s+v,0)/els.length;
+  }catch(e){ console.warn('3D: runway data unavailable (no approach lights):', e); }
 }
 /* Which end is in use: the one whose landing direction the aircraft is actually flying, and which it
    is still short of. Falls back to the site heading when nothing is inbound, so the lights are lit
@@ -231,31 +243,72 @@ function pickEnd(a){
   }
   return bestScore<70?best:null;
 }
+/* AUDIT FIX #3 (24 Sep 2026): Three.js never frees GPU memory on its own — removing an object from the
+   scene only stops drawing it. Every model switch left the old aircraft's geometry and textures on the
+   GPU (measured: 202 → 1,135 live geometries over 7 switches), and a Pi left on Director mode for hours
+   eventually lost its WebGL context. Everything that is replaced is now disposed. Skin textures are
+   keyed by the SOURCE texture's uuid, which a reload never reuses, so the outgoing model's entries are
+   dead weight: they are disposed and dropped from the cache too. */
+function disposeTree(root){
+  root.traverse(o=>{
+    if(o.geometry) o.geometry.dispose();
+    if(!o.material) return;
+    for(const mt of (Array.isArray(o.material)?o.material:[o.material])){
+      const src=mt.userData&&mt.userData._origMap;
+      if(src){ for(const p of ['d:','n:']){ const k=p+(src.uuid||''), t=_skinCache.get(k); if(t){ t.dispose(); _skinCache.delete(k); } } src.dispose(); }
+      for(const k in mt){ const v=mt[k]; if(v&&v.isTexture) v.dispose(); }
+      mt.dispose();
+    }
+  });
+}
 function buildLights(end,scene){
-  while(scene.children.length) scene.remove(scene.children[0]);
+  while(scene.children.length){ const old=scene.children[0]; scene.remove(old); disposeTree(old); }
   if(!end) return null;
   const h=end.land*D2R, sh=Math.sin(h), ch=Math.cos(h);
   const P=(along,lat,up)=>[ (sh*along+ch*lat), up, -(ch*along-sh*lat) ];   // local: x east, y up, -z north
-  const pos=[], col=[], flashIdx=[];
-  const white=[1,1,1], green=[0.25,1,0.45], red=[1,0.25,0.2];
-  const push=(p,c)=>{ pos.push(p[0],p[1],p[2]); col.push(c[0],c[1],c[2]); };
-  // centreline bars, 30 m spacing out to 900 m — the standard geometry
+  /* Two separate point clouds, and the split is the whole point. The approach lights are what a pilot
+     picks up first and they stay bright; the runway's own lights are directional in reality and stay
+     modest until short final. Drawing both at one brightness made the runway the loudest thing on the
+     screen from 10 km out, which is backwards, and its long twin rows of edge lights pulled the glare
+     off to one side of the approach path. */
+  const aPos=[], aCol=[], rPos=[], rCol=[], flashIdx=[];
+  const white=[1,1,1], green=[0.3,1,0.5], red=[1,0.22,0.18], edge=[0.8,0.72,0.5];
+  const pushA=(p,c)=>{ aPos.push(p[0],p[1],p[2]); aCol.push(c[0],c[1],c[2]); };
+  const pushR=(p,c)=>{ rPos.push(p[0],p[1],p[2]); rCol.push(c[0],c[1],c[2]); };
+  /* Centreline BARRETTES — five lights across, not one dot. This is what gives the approach its
+     ladder look from the air; a single line of points reads as a road at any distance. */
   for(let d=30; d<=900; d+=30){
-    for(const lat of [-3,0,3]) push(P(-d,lat,3), white);
-    if(d%60===0) flashIdx.push((pos.length/3)-2);        // every other bar carries a sequenced flasher
+    for(let i=-2;i<=2;i++) pushA(P(-d,i*1.5,3), white);
+    if(d>=300) flashIdx.push((aPos.length/3)-3);      // the flasher takes the centre light of the barrette
+  }
+  /* Red side rows, inner 300 m only. In the real system these are the warning that the threshold is
+     close, and they are the one element that makes the picture unmistakably an approach. */
+  for(let d=30; d<=300; d+=30){
+    for(let i=0;i<3;i++){ pushA(P(-d,-(6.5+i*1.5),3), red); pushA(P(-d,6.5+i*1.5,3), red); }
+  }
+  /* Crossbars, widest at 300 m and shortening outward, so the array tapers toward the far end and
+     gives a sense of distance run rather than a uniform corridor. */
+  for(const bar of [[300,15],[450,12],[600,10.5],[750,9],[900,7.5]]){
+    for(let y=-bar[1]; y<=bar[1]; y+=1.5){ if(Math.abs(y)>3.6) pushA(P(-bar[0],y,3), white); }
   }
   // threshold bar, green, across the full width
-  for(let lat=-22; lat<=22; lat+=4) push(P(0,lat,1.5), green);
-  // runway edge lights down both sides
-  for(let d=0; d<=end.len; d+=60){ push(P(d,-22,1), white); push(P(d,22,1), white); }
-  // PAPI, four lights abeam the touchdown zone
-  for(let i=0;i<4;i++) push(P(300,-30-i*3,2), i<2?white:red);
-  const g=new THREE.BufferGeometry();
-  g.setAttribute('position',new THREE.Float32BufferAttribute(pos,3));
-  g.setAttribute('color',new THREE.Float32BufferAttribute(col,3));
-  const m=new THREE.PointsMaterial({size:9,sizeAttenuation:true,vertexColors:true,transparent:true,opacity:0.95,depthWrite:false,blending:THREE.AdditiveBlending});
-  const pts=new THREE.Points(g,m); scene.add(pts);
-  return {pts,flashIdx,baseCol:col.slice()};
+  for(let lat=-22; lat<=22; lat+=3) pushA(P(0,lat,1.5), green);
+  // PAPI, four lights abeam the touchdown zone, outside the runway edge
+  for(let i=0;i<4;i++) pushA(P(300,-32-i*3,2), i<2?white:red);
+  // runway edge lights — dimmer, wider spaced, and in their own object so range can fade them
+  for(let d=0; d<=end.len; d+=60){ pushR(P(d,-22,1), edge); pushR(P(d,22,1), edge); }
+
+  const mk=(pos,col,size,opacity)=>{
+    const g=new THREE.BufferGeometry();
+    g.setAttribute('position',new THREE.Float32BufferAttribute(pos,3));
+    g.setAttribute('color',new THREE.Float32BufferAttribute(col,3));
+    const m=new THREE.PointsMaterial({size:size,sizeAttenuation:true,vertexColors:true,transparent:true,
+      opacity:opacity,depthWrite:false,blending:THREE.AdditiveBlending});
+    const p=new THREE.Points(g,m); scene.add(p); return p;
+  };
+  const pts=mk(aPos,aCol,8,0.95);
+  const rwy=rPos.length?mk(rPos,rCol,6,0.15):null;
+  return {pts,rwy,flashIdx,baseCol:aCol.slice()};
 }
 
 /* ---------- Three.js custom layer: the aircraft ---------- */
@@ -280,7 +333,9 @@ function modelFor(t){ t=(t||'').toUpperCase();
      point of recognising it. The rotodome does not turn: that model is merged by material, not by
      part, so there is no dome node to rotate. */
   if(/^B52/.test(t))return'b52.glb';
-  if(/^E3/.test(t))return'e3.glb';
+  /* AUDIT FIX #5 (24 Sep 2026): was /^E3/, which also caught E35L (Embraer Legacy 600/650, a common
+     business jet) and E390 (KC-390) and drew them with a rotodome. The Sentry's designators only. */
+  if(['E3TF','E3CF','E3'].includes(t))return'e3.glb';
   if(/^K46/.test(t))return'kc46.glb';
   if(/^(K35|C135|R135|W135|O135|E8)/.test(t))return'kc135.glb';
   const SETP=['C208','C206','C210','PC12','PC6','TBM7','TBM8','TBM9','P46T','EPIC','K100','AT802','AT502','AT504','C295','GA8','CC19','DHC2','DHC3','U206','C207'];
@@ -289,7 +344,9 @@ function modelFor(t){ t=(t||'').toUpperCase();
   /* Light singles and twins. Drawn as a C172 — at the size these appear, a 172, a 152, a Cherokee and
      a Robin are the same silhouette: single prop, fixed gear, high or low wing. Before this they fell
      through to the airliner default and every Cessna was drawn as a Boeing 737. */
-  const GA=['C172','C152','C150','C162','C182','C177','C180','C185','C206','C210','P28A','P28B','P28R','P28T','PA18','PA22','PA24','PA25','PA28','PA32','PA38','R200','R22','DR40','DV20','DA40','DA20','AA5','BE33','BE35','BE36','BE23','M20P','M20T','SR20','SR22','RV6','RV7','RV8','RV9','RV10','RV12','CH70','TOBA','TB20','G115','AT3','C42','EUPA','P28S','ZLIN','YK52','SF25','S22T'];
+  /* AUDIT FIX #5: 'R22' removed — it is the Robinson R22 helicopter, and because GA is checked before
+     HELI it was drawn as a Cessna. It is in HELI below. (The Robin R2000 is 'R200', kept.) */
+  const GA=['C172','C152','C150','C162','C182','C177','C180','C185','C206','C210','P28A','P28B','P28R','P28T','PA18','PA22','PA24','PA25','PA28','PA32','PA38','R200','DR40','DV20','DA40','DA20','AA5','BE33','BE35','BE36','BE23','M20P','M20T','SR20','SR22','RV6','RV7','RV8','RV9','RV10','RV12','CH70','TOBA','TB20','G115','AT3','C42','EUPA','P28S','ZLIN','YK52','SF25','S22T'];
   if(GA.includes(t))return'c172.glb';
   /* Helicopters. Six EC30s and two B429s a day over Auckland alone, all of them drawn as airliners
      until now. One twin-engine light helicopter stands in for the lot — at this range a 429, an H130
@@ -305,13 +362,46 @@ function modelFor(t){ t=(t||'').toUpperCase();
   if(/^B7(3|1|2|5)/.test(t))return'b737_800.glb';
   return t[0]==='A'?'a320_v2.glb':'b738_v2.glb';
 }
-const _whiteCache=new Map();
-function whiten(mt,renderer){
-  if(mt.map&&mt.map.image&&mt.map.image.width){ try{
-    if(!_whiteCache.has(mt.map)){ const c=document.createElement('canvas');c.width=mt.map.image.width;c.height=mt.map.image.height;const x=c.getContext('2d');x.drawImage(mt.map.image,0,0);
-      const id=x.getImageData(0,0,c.width,c.height),d=id.data;for(let i=0;i<d.length;i+=4){const l=0.3*d[i]+0.59*d[i+1]+0.11*d[i+2];const v=255-(255-l)*0.55;d[i]=d[i+1]=d[i+2]=v;}x.putImageData(id,0,0);
-      const t=new THREE.CanvasTexture(c);t.flipY=mt.map.flipY;t.encoding=mt.map.encoding;_whiteCache.set(mt.map,t);} mt.map=_whiteCache.get(mt.map); }catch(e){} }
-  if(mt.color){const c=mt.color,l=0.3*c.r+0.59*c.g+0.11*c.b,v=1-(1-l)*0.55;c.setRGB(v,v,v);} if(mt.emissive)mt.emissive.setRGB(0,0,0); mt.needsUpdate=true;
+/* ---------- aircraft skin ----------
+   Every model is repainted neutral rather than shown in its own livery: the fleet mixes airline
+   schemes with military camouflage, and a 777 in KLM orange beside a grey Hercules reads as two
+   different products. It also hides the seams where a texture was stripped out of a model.
+   SKIN is the range the grey may span, and it is the only thing to tune. It used to be a fixed
+   0.45–1.00, which put most of an airframe at or near white — invisible against Liberty's near-white
+   buildings, which is what Caroline ran into. Day now sits clearly below the building tone; night
+   stays bright, because there the ground is dark and the aircraft has to carry the frame.
+   Lower `hi` to darken the aircraft, raise `lo` to flatten its shading. */
+const SKIN={ day:[0.24,0.62], night:[0.30,0.88] };
+const _skinCache=new Map();
+function tintMaterial(mt){
+  const band=NIGHT_ON?SKIN.night:SKIN.day, lo=band[0], hi=band[1];
+  /* The ORIGINAL map and colour are stashed on first use. Without that, a second pass would tint an
+     already-tinted material and the aircraft would march darker on every theme change. */
+  if(mt.userData._origMap===undefined) mt.userData._origMap=mt.map||null;
+  if(mt.userData._origCol===undefined && mt.color) mt.userData._origCol=mt.color.clone();
+  const src=mt.userData._origMap;
+  if(src&&src.image&&src.image.width){ try{
+    const ck=(NIGHT_ON?'n:':'d:')+(src.uuid||'');
+    if(!_skinCache.has(ck)){
+      const c=document.createElement('canvas'); c.width=src.image.width; c.height=src.image.height;
+      const x=c.getContext('2d'); x.drawImage(src.image,0,0);
+      const id=x.getImageData(0,0,c.width,c.height), d=id.data;
+      for(let i=0;i<d.length;i+=4){
+        const l=(0.3*d[i]+0.59*d[i+1]+0.11*d[i+2])/255, v=(lo+(hi-lo)*l)*255;
+        d[i]=d[i+1]=d[i+2]=v;
+      }
+      x.putImageData(id,0,0);
+      const t=new THREE.CanvasTexture(c); t.flipY=src.flipY; t.encoding=src.encoding; _skinCache.set(ck,t);
+    }
+    mt.map=_skinCache.get(ck);
+  }catch(e){} }
+  if(mt.color){ const o=mt.userData._origCol||mt.color, l=0.3*o.r+0.59*o.g+0.11*o.b, v=lo+(hi-lo)*l; mt.color.setRGB(v,v,v); }
+  if(mt.emissive) mt.emissive.setRGB(0,0,0);
+  mt.needsUpdate=true;
+}
+function retintModel(){
+  const h=(typeof acLayer!=='undefined')&&acLayer.holder; if(!h) return;
+  h.traverse(o=>{ if(o.isMesh&&o.material){ (Array.isArray(o.material)?o.material:[o.material]).forEach(tintMaterial); } });
 }
 const acLayer={
   id:'pilnk-aircraft', type:'custom', renderingMode:'3d',
@@ -336,7 +426,7 @@ const acLayer={
   },
   ensureModel(t){
     const key=_q.get('force')||modelFor(t); if(!this.loader||key===this.key||this.loading)return; this.loading=true;   // no loader until the layer is on the map
-    this.loader.load('/static/'+key,(g)=>{ while(this.holder.children.length)this.holder.remove(this.holder.children[0]); this.props=[];
+    this.loader.load('/static/'+key,(g)=>{ while(this.holder.children.length){ const old=this.holder.children[0]; this.holder.remove(old); disposeTree(old); } this.props=[];
       const mm=g.scene,box=new THREE.Box3().setFromObject(mm),size=new THREE.Vector3(),c=new THREE.Vector3(); box.getSize(size);box.getCenter(c);
       acSpan=MODEL_SPAN[key]||this.targetSpan;   // the cameras frame by this
       const k=acSpan/(Math.max(size.x,size.z)||1);
@@ -345,7 +435,7 @@ const acLayer={
          centre×(k−1). Harmless while every model happened to be built around its own origin; the C-130
          is not, and was drawn 109 m below and 72 m aside from the aircraft it was meant to be. */
       mm.scale.setScalar(k); mm.position.set(-c.x*k,-c.y*k,-c.z*k);
-      mm.traverse(o=>{if(o.isMesh&&o.material){(Array.isArray(o.material)?o.material:[o.material]).forEach(mt=>{mt.metalness=0.25;mt.roughness=0.6;whiten(mt);});}});
+      mm.traverse(o=>{if(o.isMesh&&o.material){(Array.isArray(o.material)?o.material:[o.material]).forEach(mt=>{mt.metalness=0.25;mt.roughness=0.6;tintMaterial(mt);});}});
       const or=MODEL_ORIENT[key]||{}; this.holder.rotation.set((or.pitch||0)*D2R,(or.yaw||0)*D2R,(or.roll||0)*D2R);
       this.holder.add(mm); this.props=findProps(mm); this.key=key; this.loading=false; },undefined,()=>{this.loading=false;});
   },
@@ -362,13 +452,29 @@ const acLayer={
         // the sequenced flasher — "the rabbit" — runs from the outermost bar in toward the threshold
         const col=this.lightData.pts.geometry.getAttribute('color');
         const base=this.lightData.baseCol, idx=this.lightData.flashIdx;
-        const step=Math.floor((t*2.5)%(idx.length+6));   // a pause after each run, as the real ones have
+        /* RABBIT is steps per second, not runs per second. The real thing completes about two runs
+           every second — roughly 40 here — which at 60 fps is close to one step per frame and reads as
+           a smear rather than a light running in. This is a deliberate slow-down, same trade as the
+           propeller speed: accuracy and legibility are not the same goal. Raise it for realism. */
+        const step=Math.floor((t*RABBIT)%(idx.length+6));   // a pause after each run, as the real ones have
         for(let k=0;k<idx.length;k++){
           const i=idx[k], on=(k===idx.length-1-step);
           col.array[i*3]=on?2.5:base[i*3]; col.array[i*3+1]=on?2.5:base[i*3+1]; col.array[i*3+2]=on?2.5:base[i*3+2];
         }
         col.needsUpdate=true;
-        const mc=maplibregl.MercatorCoordinate.fromLngLat([end.lon,end.lat], end.elev*VE);
+        /* The runway's own lights come up as the aircraft closes, rather than burning at full strength
+           from the far end of the approach. Real edge lights are directional and modest; what a pilot
+           has from 10 km is the approach array, and the runway resolves later. Faint when nothing is
+           inbound, so the airport still reads as lit. */
+        if(this.lightData.rwy){
+          let rng=1e9;
+          if(aircraft&&aircraft.lat!=null){
+            const rE=(aircraft.lon-end.lon)*mPerLon, rN=(aircraft.lat-end.lat)*mPerLat;
+            rng=Math.sqrt(rE*rE+rN*rN);
+          }
+          this.lightData.rwy.material.opacity=Math.max(0.12,Math.min(0.9,(9000-rng)/6000));
+        }
+        const mc=maplibregl.MercatorCoordinate.fromLngLat([end.lon,end.lat], (end.elev!=null?end.elev:SITE.elev)*VE);
         const s=mc.meterInMercatorCoordinateUnits();
         const L=new THREE.Matrix4().makeTranslation(mc.x,mc.y,mc.z).scale(new THREE.Vector3(s,-s,s)).multiply(new THREE.Matrix4().makeRotationX(Math.PI/2));
         this.camera.projectionMatrix=new THREE.Matrix4().fromArray(M0).multiply(L);
@@ -630,8 +736,59 @@ function nightOps(l){
   }
   return [];
 }
+/* ---------- day palette ----------
+   Liberty is deliberately pale: it is built as a backdrop for somebody else's data, and from a chase
+   camera at 300 m it reads as washed out. Only what covers real area is touched — water, waterways,
+   vegetation and buildings — so the map keeps its own colour coding for roads, land use and labels,
+   and nothing is flattened. Buildings also come down a shade, which is half the reason a grey
+   aircraft now reads against them. ?vivid=0 restores the stock Liberty colours. */
+const DAY={ water:'#6ba7d6', stream:'#5f9ecb',
+  wood:'rgba(124,170,99,0.78)', grass:'#a3cc85', park:'#9fca82', parkEdge:'#8bbd6e', turf:'#c2d7a6',
+  bldg:'#d5cbbd' };
+const VIVID=_q.get('vivid')!=='0';
+/* Named layers rather than a regex over ids. The first cut matched on words and produced exactly the
+   patchiness AJ saw: Liberty merges most OSM vegetation classes into three layers by filter, so
+   `landcover_grass` and `park` recoloured while `landuse_track`, `landuse_cemetery` and the wetland
+   pattern did not — neighbouring fields ended up different greens. These are the real ids, read from
+   the style itself. Two traps in here worth leaving written down:
+   `landcover_wood` was `hsla(98,61%,72%,0.7)`, with its transparency inside the colour rather than in
+   fill-opacity, so replacing it with an opaque hex makes woodland jump to full strength — it keeps an
+   alpha. And `landuse_school`, `landuse_hospital` and `landuse_residential` are deliberately NOT here:
+   they are institutional and suburban land, not vegetation, and greening them would say something
+   about the ground that is not true. */
+function vividOps(l){
+  if(!VIVID) return [];
+  let c=null;
+  switch(l.id){
+    case 'water':            c=DAY.water; break;
+    case 'waterway_river': case 'waterway_other': case 'waterway_tunnel': c=DAY.stream; break;
+    case 'landcover_wood':   c=DAY.wood; break;
+    case 'landcover_grass':  c=DAY.grass; break;
+    case 'park':             c=DAY.park; break;
+    case 'park_outline':     c=DAY.parkEdge; break;
+    case 'landuse_pitch': case 'landuse_track': case 'landuse_cemetery': c=DAY.turf; break;
+    case 'building': case 'building-3d': c=DAY.bldg; break;
+    default: return [];
+  }
+  /* Only the primary colour. Liberty's outlines are left alone on purpose: the park edge is a bright
+     green that gives parks their shape from above, and the building outline is a zoom interpolation
+     that would be flattened to a constant if it were overwritten. The night painter does replace
+     outlines, because at night everything collapses to one dark tone anyway. */
+  switch(l.type){
+    case 'fill':           return [['fill-color',c]];
+    case 'line':           return [['line-color',c]];
+    case 'fill-extrusion': return [['fill-extrusion-color',c]];
+  }
+  return [];
+}
+function paintVivid(style){
+  for(const l of style.layers){ const ops=vividOps(l); if(!ops.length) continue;
+    const p=l.paint=l.paint||{}; for(const [prop,val] of ops) p[prop]=val; }
+  return style;
+}
 /* The daytime value of every property the night painter touches, captured before anything is changed,
-   so the toggle can put it back exactly rather than guessing at a "day palette". */
+   so the toggle can put it back exactly rather than guessing at a "day palette". Capture happens
+   before the vivid pass as well, so ?vivid=0 and the night toggle both restore stock Liberty. */
 const DAY_PAINT={};
 function captureDayPaint(style){
   for(const l of style.layers){
@@ -656,20 +813,40 @@ function applyTheme(night){
     const ops=night?nightOps(l):null;
     if(night){ for(const [prop,val] of ops) try{ map.setPaintProperty(id,prop,val); }catch(e){} }
     else { const day=DAY_PAINT[id];
-      for(const prop in day) try{ map.setPaintProperty(id,prop,day[prop]===null?undefined:day[prop]); }catch(e){} }
+      for(const prop in day) try{ map.setPaintProperty(id,prop,day[prop]===null?undefined:day[prop]); }catch(e){}
+      for(const [prop,val] of vividOps(l)) try{ map.setPaintProperty(id,prop,val); }catch(e){} }
   }
   try{ map.setPaintProperty('aeroway_runway','line-color',night?NIGHT.runway:'#3a3a3a');
-       map.setPaintProperty('aeroway_runway','line-opacity',night?0.95:0.9); }catch(e){}
+       // same zoom ramp as paintRunway — the two must not drift, or the toggle re-brightens it
+       map.setPaintProperty('aeroway_runway','line-opacity',
+         night?['interpolate',['linear'],['zoom'],10,0.28,12,0.5,14,0.95]:0.9); }catch(e){}
   try{ map.setSky(night
     ? {'sky-color':'#03060e','horizon-color':'#0a1830','fog-color':'#04070f','sky-horizon-blend':0.5,'horizon-fog-blend':0.5,'fog-ground-blend':0.7}
     : {'sky-color':'#7fb2e5','horizon-color':'#cfe3f5','fog-color':'#dde8f2','sky-horizon-blend':0.7,'horizon-fog-blend':0.6,'fog-ground-blend':0.5}); }catch(e){}
   if(acLayer.relight) acLayer.relight();
+  retintModel();       // the skin band differs day to night, and the model is already loaded
   const b=document.getElementById('themebtn'); if(b) b.textContent=night?'☾':'☀';
   map.triggerRepaint();
 }
 function setTheme(mode){   // 'day' | 'night' | 'auto'
   try{ localStorage.setItem('pilnk3d:theme',mode); }catch(e){}
   applyTheme(mode==='auto'?(sunElevation(SITE.lat,SITE.lon)<0):(mode==='night'));
+}
+/* ---------- road-name labels ----------
+   These are the "distance markers on the road" first reported in the opening week, and the reason
+   they were never found is that they are not markings and they are not on the road. Liberty draws
+   road names as LINE-PLACED glyphs in #666, with a text-halo-width and text-halo-blur set but no
+   text-halo-color — which defaults to transparent, so they have no halo at all. From a cockpit view
+   the text baseline lies almost edge-on to the camera, and an entire street name foreshortens into a
+   single short dark horizontal bar lying along the road. They flicker because MapLibre re-runs label
+   placement and collision every frame as the camera moves, so each bar appears and disappears.
+   Nothing here could be read at this pitch, so they are dropped rather than restyled. Place names are
+   billboarded upright and are unaffected — they stay. ?labels=1 puts them back for comparison. */
+const STREET_LABELS=['highway-name-major','highway-name-minor','highway-name-path'];
+function dropStreetLabels(style){
+  if(_q.get('labels')==='1') return style;
+  style.layers=style.layers.filter(l=>STREET_LABELS.indexOf(l.id)<0);
+  return style;
 }
 /* The runway is drawn by the map in near-white on a near-white background (#f0ede9 on #f8f4f0), which
    is why a newcomer could not find the airport from 10 km out. Paint it and widen it, in both themes. */
@@ -679,7 +856,11 @@ function paintRunway(style,night){
     l.paint=l.paint||{};
     l.paint['line-color']=night?NIGHT.runway:'#3a3a3a';
     l.paint['line-width']=['interpolate',['linear'],['zoom'],10,2.2,12,4,14,9,16,22,18,60];
-    l.paint['line-opacity']=night?0.95:0.9;
+    /* At night the painted runway is amber and was at full strength from the moment it appeared, so
+       from 10 km it was the brightest thing in frame — ahead of the approach lights, which is the
+       wrong way round. It now comes up with zoom, so distance reveals the approach array first and the
+       runway afterwards. Daytime is unchanged: there it is a dark stripe and needs to be readable. */
+    l.paint['line-opacity']=night?['interpolate',['linear'],['zoom'],10,0.28,12,0.5,14,0.95]:0.9;
     l.minzoom=Math.min(l.minzoom!=null?l.minzoom:11,9);   // visible from further out
   }
   return style;
@@ -700,8 +881,9 @@ async function boot(){
       if(!src.tiles&&src.url){ const tj=await fetch(src.url).then(r=>r.json()); src.tiles=tj.tiles; if(tj.minzoom!=null)src.minzoom=tj.minzoom; if(tj.maxzoom!=null)src.maxzoom=tj.maxzoom; if(tj.attribution)src.attribution=tj.attribution; delete src.url; }
       if(src.tiles) src.tiles=src.tiles.map(t=>t.replace(/^https:\/\//,'pilnk://')); }
     NIGHT_ON=isNight();
+    dropStreetLabels(s);           // before the capture, so the painters never see layers that are gone
     captureDayPaint(s);            // before anything is repainted, so the toggle can restore exactly
-    if(NIGHT_ON) paintNight(s);
+    if(NIGHT_ON) paintNight(s); else paintVivid(s);
     paintRunway(s,NIGHT_ON);
     // handed over as a blob URL rather than an object: MapLibre applies an inline style object on the next
     // animation frame, which a background tab never gets; a URL loads on fetch completion regardless
@@ -715,13 +897,26 @@ async function boot(){
     centerClampedToGround:false });   // with terrain on, MapLibre otherwise snaps the look-at point back to ground every frame — the chase camera would sink to 100 m AGL
   map.on('load',()=>{
     map.addSource('dem',{type:'raster-dem', tiles:['pilnk://s3.amazonaws.com/elevation-tiles-prod/terrarium/{z}/{x}/{y}.png'], encoding:'terrarium', tileSize:256, maxzoom:DEM_MAX, attribution:'Elevation: AWS Terrain Tiles'});
-    /* DEM maxzoom 12 = what approach.html uses; z14 quadrupled the S3 fetches (no CDN, us-east) for no visible gain at approach heights */
+    /* DEM maxzoom is DEM_MAX (15 by default — see its declaration for why lower is not cheaper). */
     if(TERRAIN) map.setTerrain({source:'dem', exaggeration:VE}); else terrainReady=true;
-    /* field elevation, sampled from the same terrain the aircraft is drawn against (queryTerrainElevation
-       returns exaggerated metres, so divide by VE to get real ones). Retried until the DEM tile is in. */
-    (function sampleElev(n){ if(!TERRAIN)return; const e=map.queryTerrainElevation(new maplibregl.LngLat(SITE.lon,SITE.lat));
+    /* Field elevation, sampled from the same terrain the aircraft is drawn against (queryTerrainElevation
+       returns exaggerated metres — measured, 603 at KICT for 402 m real — so divide by VE).
+       AUDIT FIX #1 (main, 24 Sep 2026): this used to accept the FIRST answer. It runs in the same tick
+       the DEM source is added, so that answer was always MapLibre's 0 for a tile that has not arrived,
+       and 0 is a finite number — every site on every load was treated as sea level. At KICT (406 m) that
+       drew ground traffic 603 m inside the terrain, and the GNSS datum then absorbed the whole field
+       elevation, so every approach was drawn 406 m low and saved that way. A reading now counts only
+       once the DEM is actually loaded for the view. A genuine 0 (a sea-level field, or one the sea
+       clamp flattened) is still accepted — it just has to come from a loaded tile.
+       If the DEM never arrives, the airport's published threshold elevation is used rather than
+       nothing, but only when runways.php returned THIS airport (not merely the nearest one). */
+    (function sampleElev(n){ if(!TERRAIN)return;
+      const e=map.isSourceLoaded('dem')?map.queryTerrainElevation(new maplibregl.LngLat(SITE.lon,SITE.lat)):null;
       if(typeof e==='number'&&isFinite(e)){ SITE.elev=Math.max(0,e/VE); terrainReady=true; rebaseCal(); }
-      else if(n<40) setTimeout(()=>sampleElev(n+1),500); })(0);
+      else if(n<40) setTimeout(()=>sampleElev(n+1),500);
+      else if(APT_ELEV!=null){ SITE.elev=APT_ELEV; terrainReady=true; rebaseCal();
+        console.warn('3D: terrain never loaded at the field — using the published elevation', APT_ELEV.toFixed(1), 'm'); }
+      else console.warn('3D: terrain never loaded at the field — field elevation unknown, datum learning off'); })(0);
     const layers=map.getStyle().layers;
     if(BASE==='sat'){
       // Hybrid (comparison only): Esri satellite under OpenFreeMap's roads/labels/buildings
@@ -780,7 +975,9 @@ let terrainReady=false;
 const gSamples=[], gSeen=new Set();
 function learnDatum(list){ if(!terrainReady)return;
   for(const a of list){ if(a.alt_baro==='ground'&&typeof a.alt_geom==='number'&&posOf(a)&&distNm(a)<4){
-    const k=(a.hex||'')+':'+Math.round(a.alt_geom); if(gSeen.has(k))continue; gSeen.add(k);
+    const k=(a.hex||'')+':'+Math.round(a.alt_geom); if(gSeen.has(k))continue;
+    if(gSeen.size>5000) gSeen.clear();   // audit nit: bounded — it lived for the whole page before
+    gSeen.add(k);
     gSamples.push(a.alt_geom*0.3048-SITE.elev); if(gSamples.length>60)gSamples.shift(); } }
 }
 /* Tile prefetch. MapLibre only requests a tile once it enters the frustum, so at 130 kt the ground
@@ -842,6 +1039,8 @@ const mvS=[]; function median(a){const s=a.slice().sort((x,y)=>x-y),m=s.length>>
 async function poll(){
   try{
     const j=await fetch('/flights',{cache:'no-store'}).then(r=>r.json()); const list=j.aircraft||[];
+    if(_pollFails>=3) st('live data back');
+    _pollFails=0;
     learnDatum(list);
     let a=null;
     if(target!=='__auto__') a=list.find(x=>(x.hex||'').toLowerCase()===target)||null;
@@ -928,9 +1127,17 @@ async function poll(){
         :(mvStored!=null?'mag var '+fmtSigned(mvStored)+'° (remembered) · refining n='+mvS.length:'mag var: calibrating from traffic…')));
       prefetchAhead();
     } else { fix=null; aircraft=null; document.getElementById('d_cs').textContent='— no arrivals —'; }
-  }catch(e){}
+  }catch(e){
+    /* AUDIT FIX #6 (24 Sep 2026): this was catch(e){} — any failure froze the view on its last fix with
+       nothing said anywhere. Now it is logged (first time, then every 30th, so a dead link doesn't flood
+       the console) and, after three misses in a row, the viewer is told. */
+    _pollFails++;
+    if(_pollFails===1||_pollFails%30===0) console.warn('3D: live data poll failed ('+_pollFails+'×):', e);
+    if(_pollFails>=3) st('live data unavailable — '+((e&&e.message)||'no response')+' · retrying');
+  }
   finally{ setTimeout(poll,2000); }
 }
+let _pollFails=0;
 
 /* ---------- cameras (MapLibre free camera) ---------- */
 let camMode='director', shot='chase', towerZoom=1;
@@ -1036,7 +1243,11 @@ function tick(){
     map.setVerticalFieldOfView(fov); camS=null;   // re-seed the chase smoothing on the way back
     // MapLibre clamps pitch at 85, so the camera can never sit below the aircraft's eye line; it is
     // lifted only as far as that limit demands, which keeps it as close to the cab as the engine allows.
-    const camAlt=Math.max(SITE.tower.h+17, acAlt+dH*Math.tan(MIN_DEP*D2R));
+    /* AUDIT FIX #2 (24 Sep 2026): the cab floor was tower.h + 17 in absolute metres — right at a
+       sea-level field, 480 m under the ground at KICT (terrain there draws at 602 m). The cab now sits
+       on the field: the ground in the same exaggerated frame the terrain and the aircraft use, plus
+       the tower's own height. At NZAA that is +10 m on the old figure, so the familiar shot holds. */
+    const camAlt=Math.max(SITE.elev*VE+SITE.tower.h+17, acAlt+dH*Math.tan(MIN_DEP*D2R));
     aimCamera(SITE.tower.lon,SITE.tower.lat,camAlt, a.lon,a.lat,acAlt);
   } else {
     if(map.getVerticalFieldOfView()!==FOV_DEFAULT) map.setVerticalFieldOfView(FOV_DEFAULT);
