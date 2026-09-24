@@ -437,7 +437,7 @@ const acLayer={
       mm.scale.setScalar(k); mm.position.set(-c.x*k,-c.y*k,-c.z*k);
       mm.traverse(o=>{if(o.isMesh&&o.material){(Array.isArray(o.material)?o.material:[o.material]).forEach(mt=>{mt.metalness=0.25;mt.roughness=0.6;tintMaterial(mt);});}});
       const or=MODEL_ORIENT[key]||{}; this.holder.rotation.set((or.pitch||0)*D2R,(or.yaw||0)*D2R,(or.roll||0)*D2R);
-      this.holder.add(mm); this.props=findProps(mm); this.key=key; this.loading=false; },undefined,()=>{this.loading=false;});
+      this.holder.add(mm); this.props=findProps(mm).concat(splitRotor(mm,key)); this.key=key; this.loading=false; },undefined,()=>{this.loading=false;});
   },
   render(gl,args){
     const M0=(args&&args.defaultProjectionData)?args.defaultProjectionData.mainMatrix:args;
@@ -678,6 +678,58 @@ function findProps(root){
     out.push({p:p, axis:['x','y','z'][ax]});
   }
   return out;
+}
+
+/* ---------- turning main rotors (main, 24 Sep 2026) ----------
+   The 429 is merged by material, so there is no rotor node to turn (see above) — but the rotor is still
+   there in the geometry, and it can be recognised: it is the only thing near the top of the model that
+   is wider than the mast. Measured on b429.glb in its own model units (read in a live browser, not
+   assumed): everything above y = 4.3 is either the blade disc or the tail fin; the blade tips sit
+   11.19 units from the mast in every direction; the mast is at x 0, z −0.94 (the middle of the blades
+   that stick out sideways — NOT the model's highest point, which is the fin top at z −16.7, and which a
+   first guess got wrong). So: a triangle is rotor if all three corners are above MIN_Y and within R of
+   the mast. Those triangles are cut into their own mesh, pivoted on the mast, and handed to the same
+   spinner the ATR and Hercules propellers use. The fin (136 high vertices outside the disc) stays put.
+   Numbers are per model, like MODEL_ORIENT and MODEL_SPAN: a new helicopter model needs its own entry,
+   measured the same way. The tail rotor is not attempted — it is too small to isolate cleanly. */
+const ROTOR={ 'b429.glb':{ minY:4.3, mastX:0, mastZ:-0.942, R:11.6 } };
+function splitRotor(root,key){
+  const spec=ROTOR[key]; if(!spec) return [];
+  root.updateMatrixWorld(true);
+  const inv=new THREE.Matrix4().copy(root.matrixWorld).invert();
+  const rel=new THREE.Matrix4(), nm=new THREE.Matrix3(), A=new THREE.Vector3(), N=new THREE.Vector3();
+  const pos=[], nor=[], uvs=[]; let mat=null, hasUV=false, ySum=0, yN=0;
+  const meshes=[]; root.traverse(o=>{ if(o.isMesh&&o.geometry&&o.geometry.attributes.position) meshes.push(o); });
+  for(const o of meshes){
+    const g=o.geometry, P=g.attributes.position, Nn=g.attributes.normal, U=g.attributes.uv, idx=g.index;
+    rel.multiplyMatrices(inv,o.matrixWorld); nm.getNormalMatrix(rel);
+    const n=idx?idx.count:P.count, keep=[], take=[];
+    const at=i=>idx?idx.getX(i):i;
+    for(let t=0;t<n;t+=3){
+      let rotor=true;
+      for(let k=0;k<3&&rotor;k++){ A.fromBufferAttribute(P,at(t+k)).applyMatrix4(rel);
+        if(A.y<=spec.minY||Math.hypot(A.x-spec.mastX,A.z-spec.mastZ)>spec.R) rotor=false; }
+      (rotor?take:keep).push(at(t),at(t+1),at(t+2));
+    }
+    if(!take.length) continue;
+    mat=mat||o.material; if(U) hasUV=true;
+    for(const i of take){
+      A.fromBufferAttribute(P,i).applyMatrix4(rel); pos.push(A.x-spec.mastX,A.y,A.z-spec.mastZ); ySum+=A.y; yN++;
+      if(Nn){ N.fromBufferAttribute(Nn,i).applyMatrix3(nm).normalize(); nor.push(N.x,N.y,N.z); }
+      if(U) uvs.push(U.getX(i),U.getY(i));
+    }
+    g.setIndex(keep);    // the rest of this mesh keeps its own vertices; only the rotor's triangles leave
+  }
+  if(!pos.length) return [];
+  const yMid=ySum/yN;
+  for(let i=1;i<pos.length;i+=3) pos[i]-=yMid;
+  const rg=new THREE.BufferGeometry();
+  rg.setAttribute('position',new THREE.Float32BufferAttribute(pos,3));
+  if(nor.length===pos.length) rg.setAttribute('normal',new THREE.Float32BufferAttribute(nor,3)); else rg.computeVertexNormals();
+  if(hasUV&&uvs.length*3===pos.length*2) rg.setAttribute('uv',new THREE.Float32BufferAttribute(uvs,2));
+  const pivot=new THREE.Group(); pivot.position.set(spec.mastX,yMid,spec.mastZ);
+  pivot.add(new THREE.Mesh(rg,Array.isArray(mat)?mat[0]:mat)); root.add(pivot);
+  return [{p:pivot, axis:'y'}];
 }
 
 /* ---------- day / night ----------
