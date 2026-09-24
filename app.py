@@ -2266,7 +2266,8 @@ def api_mil_catch():
 #   capsules/<id>.jsonl   one point per line, appended as it flies
 #   capsules/<id>.json    meta, rewritten on start/finish
 #   capsules/active.json  what is recording now — survives a restart
-#   capsules/rules.json   auto-record rules [{hex|callsign, label, added}]
+#   capsules/rules.json   auto-record rules [{hex|callsign, label, added, wake?}]
+#   capsules/radio_wake.json  set while a capsule has the radio switched on (v1.5.26)
 # ~220 KB per recorded hour; total bounded by CAPSULE_MAX_MB, oldest finished
 # capsules pruned first.
 CAPSULE_DIR      = os.path.join(PILNK_DIR, 'capsules')
@@ -2277,6 +2278,9 @@ CAPSULE_MAX_MB   = 500         # disk budget for all capsules
 CAPSULE_LOCK     = threading.Lock()
 CAPSULE_ACTIVE   = {}          # hex -> {id, started, last_seen, auto, points, flight}
 CAPSULE_SUPPRESS = {}          # hex -> last_seen; manually stopped, so auto must not re-arm until it leaves
+CAPSULE_RESUMED  = threading.Event()   # set once active.json is reloaded — the audio tap waits for it,
+                                       # or it would see "nothing recording" after a restart and
+                                       # switch off a radio a resumed capsule still needs
 _CAPSULE_ID_RE   = re.compile(r'^[0-9A-F]{6}-\d{8}-\d{6}$')
 _CAPSULE_HEX_RE  = re.compile(r'^[0-9A-F]{6}$')
 
@@ -2306,14 +2310,16 @@ def _cap_rules():
     return r if isinstance(r, list) else []
 
 def _cap_rule_match(rules, hx, flight):
+    """The first rule that matches this aircraft, or None. Returns the RULE (not
+    True) so the caller can read its options — `wake` since v1.5.26."""
     fl = (flight or '').upper()
     for r in rules:
         if (r.get('hex') or '').upper() == hx:
-            return True
+            return r
         cs = (r.get('callsign') or '').upper()
         if cs and fl.startswith(cs):
-            return True
-    return False
+            return r
+    return None
 
 def _cap_read_points(cid):
     pts = []
@@ -2334,18 +2340,19 @@ def _cap_read_points(cid):
 def _cap_save_active():
     _cap_save_json('active.json', CAPSULE_ACTIVE)
 
-def _cap_start(hx, auto=False, flight=''):
-    """Begin a capsule. Caller holds CAPSULE_LOCK."""
+def _cap_start(hx, auto=False, flight='', wake=False):
+    """Begin a capsule. Caller holds CAPSULE_LOCK. `wake`: the rule that started it
+    lets it switch the radio on (v1.5.26, opt-in per rule)."""
     now = time.time()
     cid = hx + '-' + time.strftime('%Y%m%d-%H%M%S', time.gmtime(now))
     db = AIRCRAFT_DB.get(hx, {}) if isinstance(AIRCRAFT_DB, dict) else {}
     _cap_save_json(cid + '.json', {
         'id': cid, 'hex': hx, 'started': now, 'ended': None, 'status': 'recording',
         'auto': bool(auto), 'flight': flight, 'reg': db.get('r', ''), 'type': db.get('t', ''),
-        'points': 0,
+        'points': 0, 'wake': bool(wake),
     })
     CAPSULE_ACTIVE[hx] = {'id': cid, 'started': now, 'last_seen': now, 'auto': bool(auto),
-                          'points': 0, 'flight': flight}
+                          'points': 0, 'flight': flight, 'wake': bool(wake)}
     _cap_save_active()
     logging.info('[capsule] started %s (%s)', cid, 'auto' if auto else 'manual')
     return CAPSULE_ACTIVE[hx]
@@ -2453,6 +2460,7 @@ def capsule_recorder():
             for hx in list(CAPSULE_ACTIVE):
                 if time.time() - CAPSULE_ACTIVE[hx]['last_seen'] > CAPSULE_GAP:
                     _cap_finish(hx, 'left coverage (across restart)')
+    CAPSULE_RESUMED.set()
     last_err = 0.0
     while True:
         try:
@@ -2475,8 +2483,9 @@ def capsule_recorder():
                     if hx in CAPSULE_SUPPRESS:
                         CAPSULE_SUPPRESS[hx] = now    # still overhead after a manual stop
                     if hx not in CAPSULE_ACTIVE:
-                        if hx not in CAPSULE_SUPPRESS and rules and _cap_rule_match(rules, hx, flight):
-                            _cap_start(hx, auto=True, flight=flight)
+                        rule = _cap_rule_match(rules, hx, flight) if (rules and hx not in CAPSULE_SUPPRESS) else None
+                        if rule:
+                            _cap_start(hx, auto=True, flight=flight, wake=bool(rule.get('wake')))
                         else:
                             continue
                     c = CAPSULE_ACTIVE[hx]
@@ -2516,7 +2525,7 @@ def capsule_recorder():
 def _cap_public(hx, c):
     return {'hex': hx, 'id': c['id'], 'started': c['started'], 'last_seen': c['last_seen'],
             'auto': c['auto'], 'points': c['points'], 'flight': c.get('flight', ''),
-            'audio': CAPSULE_AUDIO_STATE.get('state', 'idle')}
+            'audio': CAPSULE_AUDIO_STATE.get('state', 'idle'), 'wake': bool(c.get('wake'))}
 
 @app.route('/api/capsules', methods=['GET'])
 def api_capsules():
@@ -2536,7 +2545,8 @@ def api_capsules():
     # 'now' lets the dashboard compute elapsed time against the PI's clock, not
     # the viewing device's (a phone with a skewed clock would otherwise show nonsense).
     return jsonify({'active': active, 'capsules': done[:300], 'rules': _cap_rules(),
-                    'now': time.time(), 'gap_sec': CAPSULE_GAP, 'interval_sec': CAPSULE_INTERVAL})
+                    'now': time.time(), 'gap_sec': CAPSULE_GAP, 'interval_sec': CAPSULE_INTERVAL,
+                    'radio_woken': bool(CAPSULE_WAKE.get('woke'))})
 
 @app.route('/api/capsules/start', methods=['POST'])
 def api_capsule_start():
@@ -2575,18 +2585,41 @@ def api_capsule_rules():
         return jsonify({'ok': False, 'error': 'bad callsign'}), 400
     if not hx and not cs:
         return jsonify({'ok': False, 'error': 'hex or callsign required'}), 400
-    if action not in ('add', 'remove'):
-        return jsonify({'ok': False, 'error': 'action must be add or remove'}), 400
+    if action not in ('add', 'remove', 'wake'):
+        return jsonify({'ok': False, 'error': 'action must be add, remove or wake'}), 400
+    def _same(r):
+        return (hx and (r.get('hex') or '').upper() == hx) or (cs and (r.get('callsign') or '').upper() == cs)
     with CAPSULE_LOCK:
-        rules = [r for r in _cap_rules()
-                 if not ((hx and (r.get('hex') or '').upper() == hx) or
-                         (cs and (r.get('callsign') or '').upper() == cs))]
+        if action == 'wake':
+            # v1.5.26 (MME1, AJ: opt-in per rule): may a capsule started by THIS rule
+            # switch the radio on? Off unless the owner ticks it, rule by rule.
+            rules = _cap_rules()
+            hit = [r for r in rules if _same(r)]
+            if not hit:
+                return jsonify({'ok': False, 'error': 'no such rule'}), 404
+            for r in hit:
+                if body.get('on'):
+                    r['wake'] = True
+                else:
+                    r.pop('wake', None)
+            _cap_save_json('rules.json', rules)
+            # An aircraft already being recorded under this rule follows the change now,
+            # not on its next visit — unticking must stop it holding the radio on.
+            for ahx, c in CAPSULE_ACTIVE.items():
+                if c.get('auto') and _cap_rule_match(hit, ahx, c.get('flight')):
+                    c['wake'] = bool(body.get('on'))
+            _cap_save_active()
+            return jsonify({'ok': True, 'rules': rules})
+        old = [r for r in _cap_rules() if _same(r)]
+        rules = [r for r in _cap_rules() if not _same(r)]
         if action == 'add':
             rule = {'label': label, 'added': time.time()}
             if hx:
                 rule['hex'] = hx
             if cs:
                 rule['callsign'] = cs
+            if body.get('wake') or any(r.get('wake') for r in old):
+                rule['wake'] = True     # re-adding a rule must not quietly drop its radio opt-in
             rules.append(rule)
         _cap_save_json('rules.json', rules)
     return jsonify({'ok': True, 'rules': rules})
@@ -2666,9 +2699,22 @@ def api_capsule_kml(cid):
 # 48 kHz, 512-sample frames; no-Origin local clients are allowed) and encodes
 # it to Opus through ffmpeg, beside the track.
 #
-# AJ's rule (24 Sep): a capsule NEVER touches the radio. The engine's `playing`
+# AJ's rule (24 Sep): a capsule does not touch the radio. The engine's `playing`
 # flag is operator consent and it is shared with every dashboard; if it is off,
-# the capsule is track-only and says so. Nothing here ever POSTs to the engine.
+# the capsule is track-only and says so.
+#
+# ONE exception, v1.5.26 (MME1 asked; AJ chose opt-in PER RULE, 25 Sep): an
+# auto-record rule the owner has ticked "wake the radio" on may switch `playing`
+# on for its capsule. Ticking it IS the consent, given in advance, rule by rule.
+# The limits that keep it consent and not a backdoor:
+#   - only a ticked rule's capsule can wake it; manual REC and unticked rules never do;
+#   - dashboards stay silent — each browser plays only after its own LISTEN (P1-B);
+#   - if the radio goes OFF while we hold it on, someone pressed STOP: that capsule
+#     is vetoed and never wakes it again (the watchdog's never-auto-resume rule);
+#   - when nothing is recording any more we switch it back off — unless a person
+#     pressed LISTEN meanwhile (/api/capsules/radio_claim), then it is theirs;
+#   - held-on state is saved (radio_wake.json): the engine persists `playing`, so a
+#     restart mid-flight must still end with the radio switched back off.
 #
 # SEGMENTS, not one file. Audio exists only in stretches: the radio can be
 # switched off and on mid-flight, the service can restart, the frequency can
@@ -2960,6 +3006,98 @@ def _cap_sdr_status():
     except Exception:
         return None
 
+# ── v1.5.26: "wake the radio" for opted-in auto rules (see the header above) ──
+CAPSULE_WAKE = {'woke': False, 'at': None, 'vetoed': []}   # vetoed: capsule ids a person stopped
+
+def _cap_wake_load():
+    d = _cap_load_json('radio_wake.json', {})
+    if isinstance(d, dict):
+        CAPSULE_WAKE['woke'] = bool(d.get('woke'))
+        CAPSULE_WAKE['at'] = d.get('at')
+        CAPSULE_WAKE['vetoed'] = [v for v in (d.get('vetoed') or []) if _cap_valid_id(str(v))]
+
+def _cap_wake_save():
+    try:
+        _cap_save_json('radio_wake.json', CAPSULE_WAKE)
+    except Exception as e:
+        logging.warning('[capsule-audio] could not save radio_wake.json: %s', e)
+
+def _cap_wake_wanted():
+    """Ids of recording capsules that may wake the radio and have not been vetoed."""
+    with CAPSULE_LOCK:
+        return [c['id'] for c in CAPSULE_ACTIVE.values()
+                if c.get('wake') and c['id'] not in CAPSULE_WAKE['vetoed']]
+
+def _cap_sdr_post(path, body):
+    """POST a control command to the local radio engine. No Origin header, so the
+    engine's M3 origin gate lets it through (same as the watchdog). If the owner has
+    set the engine's optional token, send it."""
+    hdrs = {}
+    try:
+        with open('/etc/pilnkradio/config.json') as f:
+            tok = (json.load(f) or {}).get('token') or ''
+        if tok:
+            hdrs['X-PiLNK-Token'] = tok
+    except Exception:
+        pass
+    try:
+        r = requests.post('http://127.0.0.1:5656' + path, json=body, headers=hdrs, timeout=3)
+        return r.status_code == 200 and bool((r.json() or {}).get('ok'))
+    except Exception:
+        return False
+
+def _cap_radio_wake(ids):
+    """Switch the radio on for these capsules. True only once the engine SAYS it is
+    playing — the command is queued inside the engine, so the reply alone proves nothing."""
+    if not _cap_sdr_post('/sdr/playing', {'on': True}):
+        return False
+    # Remember BEFORE confirming: from here on we owe the radio an OFF.
+    CAPSULE_WAKE.update({'woke': True, 'at': time.time()})
+    _cap_wake_save()
+    for _ in range(10):
+        time.sleep(0.5)
+        st = _cap_sdr_status()
+        if isinstance(st, dict) and st.get('playing'):
+            logging.info('[capsule-audio] radio switched ON for %s (rule opted in)', ', '.join(ids))
+            return True
+    # Never came on. Take the request back, so it cannot come on later with nobody
+    # remembering to switch it off.
+    _cap_sdr_post('/sdr/playing', {'on': False})
+    CAPSULE_WAKE.update({'woke': False, 'at': None})
+    _cap_wake_save()
+    return False
+
+def _cap_radio_sleep():
+    """Nothing is recording any more. If a capsule switched the radio on and no person
+    has claimed it since, switch it back off. Always forget the vetoes."""
+    changed = bool(CAPSULE_WAKE['vetoed'])
+    CAPSULE_WAKE['vetoed'] = []
+    if CAPSULE_WAKE['woke']:
+        st = _cap_sdr_status()
+        if not isinstance(st, dict):
+            if changed:
+                _cap_wake_save()
+            return                          # engine not answering — it persists `playing`, so keep
+                                            # remembering we owe it an OFF and retry next pass
+        if st.get('playing'):
+            if not _cap_sdr_post('/sdr/playing', {'on': False}):
+                return                      # engine busy — try again on the next idle pass
+            logging.info('[capsule-audio] radio switched back OFF (capsule finished, nobody claimed it)')
+        CAPSULE_WAKE.update({'woke': False, 'at': None})
+        changed = True
+    if changed:
+        _cap_wake_save()
+
+@app.route('/api/capsules/radio_claim', methods=['POST'])
+def api_capsule_radio_claim():
+    """The dashboard calls this when a person presses LISTEN. From then on the radio
+    is theirs: a capsule that switched it on must not switch it off under them."""
+    if CAPSULE_WAKE.get('woke'):
+        CAPSULE_WAKE.update({'woke': False, 'at': None})
+        _cap_wake_save()
+        logging.info('[capsule-audio] radio claimed by a listener — capsules will leave it on')
+    return jsonify({'ok': True})
+
 def _cap_audio_next_n(cid):
     """Next free segment number. Not len(files): recovery can delete a file in
     the middle of the sequence, and a count would then reuse a live number."""
@@ -2975,10 +3113,14 @@ def capsule_audio_tap():
     segs = {}                                    # cid -> open _CapAudioSeg
     ffmpeg_ok = _cap_shutil.which('ffmpeg') is not None
     last_err = 0.0
+    wake_retry_at = 0.0                          # back-off after a wake the engine refused
+    off_since = 0.0                              # when a radio we switched on was first seen off
     try:
         _cap_audio_recover()
     except Exception as e:
         logging.warning('[capsule-audio] recovery pass failed: %s', e)
+    _cap_wake_load()
+    CAPSULE_RESUMED.wait(60)                     # let the recorder reload active.json first
 
     def wanted():
         with CAPSULE_LOCK:
@@ -2999,6 +3141,8 @@ def capsule_audio_tap():
             for cid in [c for c in segs if c not in want]:
                 close(cid)
             if not want:
+                _cap_radio_sleep()               # v1.5.26: hand back a radio we switched on
+                off_since = 0.0
                 _cap_audio_set('idle')
                 time.sleep(2)
                 continue
@@ -3013,10 +3157,42 @@ def capsule_audio_tap():
                 time.sleep(10)
                 continue
             if not st.get('playing'):
-                _cap_audio_set('radio_off')          # AJ's rule: never switch it on ourselves
+                if CAPSULE_WAKE['woke'] and not off_since:
+                    # Off while we hold it on. Wait before calling it a STOP: the radio
+                    # watchdog restarts a stalled engine and resumes it a few seconds
+                    # later, and that must not read as a person withdrawing consent.
+                    off_since = time.time()
+                    _cap_audio_set('radio_off')
+                    time.sleep(5)
+                    continue
+                if CAPSULE_WAKE['woke'] and time.time() - off_since < 20:
+                    time.sleep(5)
+                    continue
+                off_since = 0.0
+                if CAPSULE_WAKE['woke']:
+                    # We switched it on and it has stayed off: a person pressed STOP.
+                    # That withdraws consent for these capsules — never re-wake them.
+                    with CAPSULE_LOCK:
+                        stopped = [c['id'] for c in CAPSULE_ACTIVE.values() if c.get('wake')]
+                    CAPSULE_WAKE['vetoed'] = sorted(set(CAPSULE_WAKE['vetoed']) | set(stopped))
+                    CAPSULE_WAKE.update({'woke': False, 'at': None})
+                    _cap_wake_save()
+                    logging.info('[capsule-audio] radio was stopped by hand — not waking it again for %s',
+                                 ', '.join(stopped) or 'these capsules')
+                ids = _cap_wake_wanted()
+                if ids and time.time() >= wake_retry_at:
+                    if _cap_radio_wake(ids):
+                        continue                     # on now — start recording on the next pass
+                    wake_retry_at = time.time() + 60
+                    logging.warning('[capsule-audio] could not switch the radio on (engine refused or did not respond)')
+                    _cap_audio_set('wake_failed')
+                    time.sleep(5)
+                    continue
+                _cap_audio_set('wake_failed' if ids else 'radio_off')   # unticked rules: AJ's rule stands
                 time.sleep(5)
                 continue
 
+            off_since = 0.0                          # it is on: any earlier "off" was a blip
             hz, mode = st.get('vfoHz'), st.get('mode')
             s, buf = _cap_ws_open('/sdr/audio')
             s.settimeout(1.0)

@@ -1,6 +1,7 @@
 
 // ── FLIGHT CAPSULES (v1.5.22 Ship 1: track recorder, auto-record, replay;
-//    v1.5.23 Ship 2: synced ATC audio, recorded only when the radio is already on) ──
+//    v1.5.23 Ship 2: synced ATC audio, recorded only when the radio is already on;
+//    v1.5.26: an auto rule the owner ticks 📻 may switch the radio on for its capsule) ──
 // The node records chosen aircraft SERVER-SIDE (app.py capsule_recorder) every
 // 2 s until they have been out of coverage for 10 min, so a capsule keeps
 // going with this page closed. This block is only the UI: ● REC / ⟳ AUTO on
@@ -8,7 +9,7 @@
 // with a screenshot mode. Keyed by HEX throughout, so a helicopter that
 // changes or drops its callsign stays one track. Elapsed times use the Pi's
 // clock (capState.skew), never this device's — same lesson as #91.
-var capState = { active: {}, rules: [], list: [], skew: 0 };
+var capState = { active: {}, rules: [], list: [], skew: 0, woken: false };
 
 (function(){
   var s = document.createElement('style');
@@ -41,9 +42,11 @@ function capFmtDur(s){
 }
 function capNow(){ return Date.now() / 1000 + capState.skew; }   // the Pi's clock
 // Ship 2 (v1.5.23): what the node's audio tap is doing for live capsules. A
-// capsule never switches the radio on (AJ, 24 Sep) — if it's off, say so.
+// capsule leaves the radio alone (AJ, 24 Sep) — unless its auto rule has 📻
+// ticked (v1.5.26), and then the row says the radio was switched on for it.
 function capAudioTag(st){
-  return st === 'recording' ? ' · 🔊 audio'
+  return st === 'recording' ? (capState.woken ? ' · 🔊 audio (📻 radio switched on for this)' : ' · 🔊 audio')
+       : st === 'wake_failed' ? ' · track only (📻 could not switch the radio on)'
        : st === 'radio_off' ? ' · track only (radio off)'
        : st === 'no_radio'  ? ' · track only (no radio)'
        : st === 'no_ffmpeg' ? ' · track only (ffmpeg missing)' : '';
@@ -61,6 +64,7 @@ function loadCapsules(){
     (d.active || []).forEach(function(c){ capState.active[c.hex] = c; });
     capState.rules = d.rules || [];
     capState.list  = d.capsules || [];
+    capState.woken = !!d.radio_woken;
     if (typeof d.now === 'number') capState.skew = d.now - Date.now() / 1000;
     ccCapsuleButtons();
     renderCapsulePanel();
@@ -137,13 +141,22 @@ function renderCapsulePanel(){
   }).join('') : '<div class="cap-empty">No capsules yet. Open a plane and hit ● REC, or tap ⟳ AUTO to record it every time it flies.</div>';
   rl.innerHTML = capState.rules.length ? capState.rules.map(function(r){
     var key = r.hex ? r.hex : ('callsign ' + (r.callsign || ''));
+    var hxA = capEsc(r.hex || ''), csA = capEsc(r.callsign || '');
+    // v1.5.26 (MME1): per-rule opt-in. Off by default; the tooltip says exactly what it does.
+    var wakeTip = r.wake
+      ? 'ON: when this aircraft arrives, the radio is switched on to record ATC with it, and switched back off afterwards (unless you pressed LISTEN meanwhile). Pressing STOP cancels it for that visit. Click to turn off.'
+      : 'OFF: audio is recorded only if the radio is already on. Click to let this rule switch the radio on for its recordings. Nothing plays out loud unless you press LISTEN.';
     return '<div class="cap-row"><b>' + capEsc(r.label || key) + '</b><span class="cap-dim">' + capEsc(key) + '</span>' +
-      '<span class="cap-right"><button onclick="capRuleRemove(\'' + capEsc(r.hex || '') + '\',\'' + capEsc(r.callsign || '') + '\')">✕ Remove</button></span></div>';
+      '<span class="cap-right">' +
+      '<button title="' + capEsc(wakeTip) + '" style="opacity:' + (r.wake ? '1' : '0.6') + '" ' +
+        'onclick="capRuleWake(\'' + hxA + '\',\'' + csA + '\',' + (r.wake ? 'false' : 'true') + ')">📻 ' + (r.wake ? 'Wakes radio ✓' : 'Wake radio') + '</button>' +
+      '<button onclick="capRuleRemove(\'' + hxA + '\',\'' + csA + '\')">✕ Remove</button></span></div>';
   }).join('') : '<div class="cap-empty">Nothing on auto. Open a plane’s card and tap ⟳ AUTO.</div>';
   if (sum) sum.textContent = capState.list.length + ' saved' + (hxs.length ? ' · ' + hxs.length + ' recording' : '');
 }
 function capStop(hx){ capPost('/api/capsules/stop', {hex: hx}).then(loadCapsules).catch(function(){}); }
 function capRuleRemove(hx, cs){ capPost('/api/capsules/rules', {action: 'remove', hex: hx, callsign: cs}).then(loadCapsules).catch(function(){}); }
+function capRuleWake(hx, cs, on){ capPost('/api/capsules/rules', {action: 'wake', hex: hx, callsign: cs, on: !!on}).then(loadCapsules).catch(function(){}); }
 function capDelete(id){
   if (!confirm('Delete this capsule? This cannot be undone.')) return;
   capPost('/api/capsules/' + id + '/delete', {}).then(loadCapsules).catch(function(){});

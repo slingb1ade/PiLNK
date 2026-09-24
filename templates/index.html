@@ -1627,6 +1627,12 @@
               <button class="tile-btn"        id="tileSat"  onclick="setTileLayer('sat')">Satellite</button>
               <button class="tile-btn"        id="tileTopo" onclick="setTileLayer('topo')">Topo</button>
             </div>
+            <!-- v1.5.26 (MME1): map brightness, for whichever map and theme is showing. Deliberately
+                 NOT class wx-opacity-row: PilnkOptions finds the weather slider by that class, first match. -->
+            <div style="margin-top:8px;" title="Dim a bright map or lift a dark one. This browser only; remembered after a refresh. Aircraft are not affected.">
+              <div style="display:flex;justify-content:space-between;font-size:0.62rem;color:var(--text-dim);margin-bottom:4px;"><span>Brightness</span><span id="mapBrightVal">100%</span></div>
+              <input type="range" id="mapBrightSlider" min="40" max="130" step="5" value="100" oninput="setMapBrightness(this.value)" style="width:100%;"/>
+            </div>
           </div>
           <div class="panel">
             <div class="panel-title">Weather Radar</div>
@@ -1688,6 +1694,7 @@
             <div class="panel-title" style="margin-top:8px;">Extras</div>
             <div class="toggle-row"><span>Flight Trails</span><label class="toggle-switch"><input type="checkbox" id="trailToggle" checked onchange="toggleTrails(this.checked)"/><span class="toggle-slider"></span></label></div>
             <div class="toggle-row"><span>Distance Rings</span><label class="toggle-switch"><input type="checkbox" id="ringToggle" checked onchange="toggleRings(this.checked)"/><span class="toggle-slider"></span></label></div>
+            <div class="toggle-row" title="The 📡 marker at your receiver's position. Hiding it only changes this browser, and it stays hidden after a refresh. The distance rings still centre on your receiver."><span>Receiver Marker</span><label class="toggle-switch"><input type="checkbox" id="rxMarkerToggle" checked onchange="toggleRxMarker(this.checked)"/><span class="toggle-slider"></span></label></div>
             <div class="toggle-row"><span>Aircraft Labels</span><label class="toggle-switch"><input type="checkbox" id="labelToggle" onchange="toggleLabels(this.checked)"/><span class="toggle-slider"></span></label></div>
             <div class="toggle-row"><span>Auto Day/Night</span><label class="toggle-switch"><input type="checkbox" id="autoThemeToggle" onchange="toggleAutoTheme(this.checked)"/><span class="toggle-slider"></span></label></div>
             <div class="toggle-row"><span>Day/Night Terminator</span><label class="toggle-switch"><input type="checkbox" id="terminatorToggle" onchange="toggleTerminator(this.checked)"/><span class="toggle-slider"></span></label></div>
@@ -3148,30 +3155,53 @@ map.on('mousemove', function(e){
 map.on('move', function(){ if(typeof positionTooltipOnMarker==='function') positionTooltipOnMarker(); });
 map.on('zoom', function(){ if(typeof positionTooltipOnMarker==='function') positionTooltipOnMarker(); });
 
+// v1.5.26 (MME1, thread 53): map brightness. "The light map is too bright, the dark
+// one too dark." One slider, 40–130 %, stacked on top of whatever the theme/layer
+// recipe below already does, so it works for every map. Per browser, kept in
+// localStorage the moment it moves (like the ring unit), not only on SAVE.
+var mapBright = (function(){
+  try { var v = parseInt(localStorage.getItem('pilnk-map-brightness'), 10); return (v >= 40 && v <= 130) ? v : 100; }
+  catch (e) { return 100; }
+})();
+function setMapBrightness(v){
+  v = parseInt(v, 10); if (!(v >= 40 && v <= 130)) v = 100;
+  mapBright = v;
+  try { localStorage.setItem('pilnk-map-brightness', String(v)); } catch (e) {}
+  var lab = document.getElementById('mapBrightVal'); if (lab) lab.textContent = v + '%';
+  var sl = document.getElementById('mapBrightSlider'); if (sl && String(sl.value) !== String(v)) sl.value = v;
+  applyTileFilter();
+}
+window.addEventListener('DOMContentLoaded', function(){
+  var lab = document.getElementById('mapBrightVal'); if (lab) lab.textContent = mapBright + '%';
+  var sl = document.getElementById('mapBrightSlider'); if (sl) sl.value = mapBright;
+});
+
 function applyTileFilter() {
   var dark = document.documentElement.getAttribute('data-theme') === 'dark';
   var pane = map.getPanes().tilePane;
+  var f;
   if (!dark) {
     // Light mode: mute the bright OSM street base so aircraft + weather pop
     // (UI polish prototype). Sat/topo keep their natural colours.
-    pane.style.filter = (currentTileLayerName === 'osm' || currentTileLayerName === 'wx')
-      ? 'saturate(0.78)' : '';
-    return;
-  }
-  // Per-layer dark-mode treatment. OSM uses an invert+hue-rotate
-  // recipe (street maps look dramatic and clean inverted). Topo
-  // earth-tones look unnatural inverted, so we darken instead —
-  // preserves contour lines, hill shading and terrain colours
-  // while making the map readable in low-light cockpit/night use.
-  if (currentTileLayerName === 'osm') {
-    pane.style.filter = 'invert(1) hue-rotate(180deg) brightness(0.65) saturate(1.4)';
+    f = (currentTileLayerName === 'osm' || currentTileLayerName === 'wx') ? 'saturate(0.78)' : '';
+  } else if (currentTileLayerName === 'osm') {
+    // Per-layer dark-mode treatment. OSM uses an invert+hue-rotate
+    // recipe (street maps look dramatic and clean inverted). Topo
+    // earth-tones look unnatural inverted, so we darken instead —
+    // preserves contour lines, hill shading and terrain colours
+    // while making the map readable in low-light cockpit/night use.
+    f = 'invert(1) hue-rotate(180deg) brightness(0.65) saturate(1.4)';
   } else if (currentTileLayerName === 'topo') {
-    pane.style.filter = 'brightness(0.45) contrast(1.15) saturate(0.85)';
+    f = 'brightness(0.45) contrast(1.15) saturate(0.85)';
   } else {
     // sat (Esri imagery) looks fine
     // as-is in dark mode — no filter needed.
-    pane.style.filter = '';
+    f = '';
   }
+  // Guarded: this can run before the `var mapBright` line above has executed.
+  var b = (typeof mapBright === 'number') ? mapBright : 100;
+  if (b !== 100) f = (f ? f + ' ' : '') + 'brightness(' + (b / 100) + ')';
+  pane.style.filter = f;
 }
 
 function setTileLayer(name) {
@@ -4062,6 +4092,17 @@ var ringUnit=(function(){
   catch(e){ return 'nm'; }
 })();
 var ringLayers={}, rxMarker=null;
+// v1.5.26 (MME1, thread 53): the receiver marker can be hidden. Per browser, remembered
+// at once in localStorage. Rings are unaffected: they still centre on RX_LAT/RX_LON.
+var rxMarkerOn=(function(){ try{ return localStorage.getItem('pilnk-rx-marker')!=='0'; }catch(e){ return true; } })();
+function toggleRxMarker(on){
+  rxMarkerOn=!!on;
+  try{ localStorage.setItem('pilnk-rx-marker', rxMarkerOn?'1':'0'); }catch(e){}
+  drawRxMarker();
+}
+window.addEventListener('DOMContentLoaded',function(){
+  var t=document.getElementById('rxMarkerToggle'); if(t) t.checked=rxMarkerOn;
+});
 
 function buildRingChips(){
   var wrap=document.getElementById('ringOptions');wrap.innerHTML='';
@@ -4095,8 +4136,10 @@ window.addEventListener('DOMContentLoaded',function(){
 function toggleRings(on){ringsOn=on;document.getElementById('ringSettings').style.opacity=on?'1':'0.4';if(on)drawRings();else{Object.values(ringLayers).forEach(function(l){map.removeLayer(l);});Object.keys(ringLayers).forEach(function(k){delete ringLayers[k];});}}
 
 function drawRxMarker(){
-  // Node receiver marker — ALWAYS drawn, independent of the rings toggle.
+  // Node receiver marker — drawn independent of the rings toggle, unless the
+  // viewer has switched it off (v1.5.26, Receiver Marker in Map Options).
   if(rxMarker){map.removeLayer(rxMarker);rxMarker=null;}
+  if(rxMarkerOn===false) return;
   // No location yet: draw nothing rather than throwing on L.latLng(null,null),
   // which would abort whatever call chain we're in. loadRxLocation() calls us
   // again the moment the node reports its position.
@@ -6422,7 +6465,7 @@ loadWatchAlerts();
 // Flight Capsules UI (v1.5.22) lives in static/capsules.js. Loaded dynamically
 // so it runs AFTER this script has defined map / lastAircraft / the card state
 // it hooks into. ?v= busts the browser cache on each release.
-(function(){ var s = document.createElement('script'); s.src = '/static/capsules.js?v=1.5.23b'; document.body.appendChild(s); })();
+(function(){ var s = document.createElement('script'); s.src = '/static/capsules.js?v=1.5.26'; document.body.appendChild(s); })();
 
 // ── METAR ──────────────────────────────────────────────────
 var metarData = null;
@@ -9159,6 +9202,9 @@ setInterval(raPoll, 5000);
     }
     st.playing = target; updateUI();
     post('/sdr/playing',{on:target});
+    // v1.5.26: a person is listening now. If a capsule had switched the radio on
+    // for a recording, it is theirs from here — the capsule must not switch it off.
+    if(target){ fetch('/api/capsules/radio_claim',{method:'POST'}).catch(function(){}); }
   };
   window.saSetFreq = function(freqHz){ ensureAudio(); doTune(parseInt(freqHz,10)); };
   window.saSetFreqMhz = function(mhz){ window.saSetFreq(Math.round(parseFloat(mhz)*1e6)); };
