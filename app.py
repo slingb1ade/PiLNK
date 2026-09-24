@@ -2579,12 +2579,52 @@ def api_capsule_rules():
     hx = str(body.get('hex') or '').upper().strip()
     cs = str(body.get('callsign') or '').upper().strip()
     label = str(body.get('label') or '').strip()[:40]
+    # v1.5.27 (MME1, thread 75): add an aircraft BEFORE it ever shows up, by its
+    # registration. Resolved to a hex here, against this node's aircraft database,
+    # because hex is what a rule matches on (it survives callsign changes). Compared
+    # with punctuation stripped, so G-ABCD, GABCD and g abcd are the same aircraft.
+    reg_in = re.sub(r'[^A-Z0-9]', '', str(body.get('reg') or '').upper())
+    reg_found = ''
+    if reg_in and not hx and action == 'add':
+        if not (2 <= len(reg_in) <= 10):
+            return jsonify({'ok': False, 'error': 'bad registration'}), 400
+        hits = []
+        db = AIRCRAFT_DB if isinstance(AIRCRAFT_DB, dict) else {}
+        try:
+            # Walk the dict itself, no copy: it is ~570k entries and a Pi 4 has RAM to spare
+            # for neither. The weekly reload swaps in a new dict (safe); an overlay merge
+            # mutates in place, and if that races us we say so rather than half-answer.
+            for h, e in db.items():
+                r = e.get('r') or ''
+                if r and r.replace('-', '').replace(' ', '').upper() == reg_in:   # str ops, not a regex: ~570k rows
+                    hits.append({'hex': h, 'reg': r, 'type': e.get('t', '')})
+                    if len(hits) > 10:
+                        break
+        except RuntimeError:
+            return jsonify({'ok': False, 'error': 'busy',
+                            'message': 'The aircraft database is reloading. Try again in a moment.'}), 503
+        if not hits:
+            return jsonify({'ok': False, 'error': 'not_found',
+                            'message': 'Not in this node\'s aircraft database. Add it by hex code instead.'}), 404
+        if len(hits) > 1:
+            # A registration can be re-used, or sit on two airframes in the data. Never
+            # guess which one: hand the choice back to the person.
+            return jsonify({'ok': False, 'error': 'several', 'candidates': hits[:10]}), 409
+        hx, reg_found = hits[0]['hex'], hits[0]['reg']
+        if not label:
+            label = ' '.join(x for x in (reg_found, hits[0]['type']) if x)[:40]
     if hx and not _CAPSULE_HEX_RE.match(hx):
         return jsonify({'ok': False, 'error': 'bad hex'}), 400
     if cs and not re.match(r'^[A-Z0-9]{2,8}$', cs):
         return jsonify({'ok': False, 'error': 'bad callsign'}), 400
     if not hx and not cs:
         return jsonify({'ok': False, 'error': 'hex or callsign required'}), 400
+    if action == 'add' and hx and not label:
+        # Typed in by hex (v1.5.27): name it from the database so the list reads
+        # "ZK-IPC B429", not a bare code — the card's ⟳ AUTO always sends a label.
+        e = AIRCRAFT_DB.get(hx, {}) if isinstance(AIRCRAFT_DB, dict) else {}
+        reg_found = reg_found or e.get('r', '')
+        label = ' '.join(x for x in (e.get('r', ''), e.get('t', '')) if x)[:40] or hx
     if action not in ('add', 'remove', 'wake'):
         return jsonify({'ok': False, 'error': 'action must be add, remove or wake'}), 400
     def _same(r):
@@ -2618,6 +2658,8 @@ def api_capsule_rules():
                 rule['hex'] = hx
             if cs:
                 rule['callsign'] = cs
+            if reg_found:
+                rule['reg'] = reg_found
             if body.get('wake') or any(r.get('wake') for r in old):
                 rule['wake'] = True     # re-adding a rule must not quietly drop its radio opt-in
             rules.append(rule)

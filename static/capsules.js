@@ -29,7 +29,11 @@ var capState = { active: {}, rules: [], list: [], skew: 0, woken: false };
     '.cap-legend-bar{display:inline-block;width:90px;height:6px;border-radius:3px;vertical-align:middle;margin:0 4px;background:linear-gradient(90deg,hsl(20,90%,55%),hsl(80,90%,55%),hsl(140,90%,55%),hsl(200,90%,55%),hsl(260,90%,55%));}',
     '#capShotExit{position:fixed;top:10px;right:10px;z-index:100001;background:rgba(8,14,26,0.85);border:1px solid #334155;border-radius:6px;color:#e2e8f0;font-family:"Share Tech Mono",monospace;font-size:0.65rem;padding:4px 10px;cursor:pointer;opacity:.2;transition:opacity .2s;}',
     '#capShotExit:hover{opacity:1;}',
-    '.cap-plane svg{filter:drop-shadow(0 0 3px rgba(0,0,0,.85));}'
+    '.cap-plane svg{filter:drop-shadow(0 0 3px rgba(0,0,0,.85));}',
+    '#capAddForm select,#capAddForm input[type=text]{background:var(--bg-deep);border:1px solid var(--border);border-radius:4px;color:var(--text);font-family:inherit;font-size:0.6rem;padding:3px 5px;}',
+    '#capAddForm input[type=text]{flex:1;min-width:90px;text-transform:uppercase;}',
+    '#capAddMsg{font-size:0.6rem;padding:2px 4px 6px;min-height:0.8rem;}',
+    '#capAddMsg button{background:var(--bg-deep);border:1px solid var(--border);border-radius:4px;color:var(--text);font-family:inherit;font-size:0.58rem;padding:2px 6px;margin:2px 4px 0 0;cursor:pointer;}'
   ].join('\n');
   document.head.appendChild(s);
 })();
@@ -139,8 +143,9 @@ function renderCapsulePanel(){
       '<a href="/api/capsules/' + m.id + '/kml" download>KML</a>' +
       '<button onclick="capDelete(\'' + m.id + '\')" title="Delete this capsule">✕</button></span></div>';
   }).join('') : '<div class="cap-empty">No capsules yet. Open a plane and hit ● REC, or tap ⟳ AUTO to record it every time it flies.</div>';
+  capEnsureAddForm(rl);
   rl.innerHTML = capState.rules.length ? capState.rules.map(function(r){
-    var key = r.hex ? r.hex : ('callsign ' + (r.callsign || ''));
+    var key = r.hex ? r.hex : ('callsign ' + (r.callsign || '') + '…');
     var hxA = capEsc(r.hex || ''), csA = capEsc(r.callsign || '');
     // v1.5.26 (MME1): per-rule opt-in. Off by default; the tooltip says exactly what it does.
     var wakeTip = r.wake
@@ -151,12 +156,84 @@ function renderCapsulePanel(){
       '<button title="' + capEsc(wakeTip) + '" style="opacity:' + (r.wake ? '1' : '0.6') + '" ' +
         'onclick="capRuleWake(\'' + hxA + '\',\'' + csA + '\',' + (r.wake ? 'false' : 'true') + ')">📻 ' + (r.wake ? 'Wakes radio ✓' : 'Wake radio') + '</button>' +
       '<button onclick="capRuleRemove(\'' + hxA + '\',\'' + csA + '\')">✕ Remove</button></span></div>';
-  }).join('') : '<div class="cap-empty">Nothing on auto. Open a plane’s card and tap ⟳ AUTO.</div>';
+  }).join('') : '<div class="cap-empty">Nothing on auto. Add an aircraft above, or open a plane’s card and tap ⟳ AUTO.</div>';
   if (sum) sum.textContent = capState.list.length + ' saved' + (hxs.length ? ' · ' + hxs.length + ' recording' : '');
 }
 function capStop(hx){ capPost('/api/capsules/stop', {hex: hx}).then(loadCapsules).catch(function(){}); }
 function capRuleRemove(hx, cs){ capPost('/api/capsules/rules', {action: 'remove', hex: hx, callsign: cs}).then(loadCapsules).catch(function(){}); }
 function capRuleWake(hx, cs, on){ capPost('/api/capsules/rules', {action: 'wake', hex: hx, callsign: cs, on: !!on}).then(loadCapsules).catch(function(){}); }
+
+// ── Add an aircraft before it shows up (v1.5.27, MME1 thread 75) ─────────────
+// ⟳ AUTO on a card needs the aircraft on screen. This adds it by registration
+// (looked up to a hex on the node), by hex, or by callsign prefix. Built once and
+// placed above the rules list; renderCapsulePanel only rewrites the list itself,
+// so whatever is being typed survives the 10 s refresh.
+var CAP_ADD_HINT = { reg: 'e.g. ZK-IPC or G-ABCD', hex: 'e.g. C81D5A', callsign: 'e.g. PLC (matches PLC1, PLC2…)' };
+function capEnsureAddForm(rl){
+  if (document.getElementById('capAddForm')) return;
+  var f = document.createElement('div');
+  f.id = 'capAddForm'; f.className = 'cap-row'; f.style.borderBottom = 'none';
+  f.innerHTML =
+    '<select id="capAddKind" onchange="capAddKindChanged()" title="What you are typing in">' +
+      '<option value="reg">Registration</option><option value="hex">Hex code</option><option value="callsign">Callsign</option></select>' +
+    '<input type="text" id="capAddVal" maxlength="12" placeholder="' + CAP_ADD_HINT.reg + '" ' +
+      'onkeydown="if(event.key===\'Enter\')capRuleAddManual()">' +
+    '<label title="Also switch the radio on to record ATC when it arrives (see 📻 on each rule)" style="display:flex;align-items:center;gap:2px;cursor:pointer;">' +
+      '<input type="checkbox" id="capAddWake">📻</label>' +
+    '<button onclick="capRuleAddManual()">+ Add</button>';
+  var m = document.createElement('div'); m.id = 'capAddMsg'; m.className = 'cap-dim';
+  rl.parentNode.insertBefore(f, rl);
+  rl.parentNode.insertBefore(m, rl);
+}
+function capAddKindChanged(){
+  var k = document.getElementById('capAddKind').value, v = document.getElementById('capAddVal');
+  if (v) v.placeholder = CAP_ADD_HINT[k] || '';
+  capAddMsg('');
+}
+function capAddMsg(html){ var m = document.getElementById('capAddMsg'); if (m) m.innerHTML = html; }
+function capRuleAddManual(pick){
+  var kind = document.getElementById('capAddKind').value;
+  var inp = document.getElementById('capAddVal');
+  var v = (inp.value || '').trim().toUpperCase();
+  var body = { action: 'add', wake: !!document.getElementById('capAddWake').checked };
+  if (pick) {
+    body.hex = pick.hex;
+    body.label = [pick.reg, pick.type].filter(Boolean).join(' ');
+  } else if (!v) {
+    return capAddMsg('Type a ' + ({reg:'registration', hex:'hex code', callsign:'callsign'}[kind]) + ' first.');
+  } else if (kind === 'reg') {
+    body.reg = v;
+  } else if (kind === 'hex') {
+    if (!/^[0-9A-F]{6}$/.test(v)) return capAddMsg('A hex code is 6 characters, 0–9 and A–F.');
+    body.hex = v;
+  } else {
+    v = v.replace(/[^A-Z0-9]/g, '');
+    if (!/^[A-Z0-9]{2,8}$/.test(v)) return capAddMsg('A callsign is 2–8 letters and numbers.');
+    body.callsign = v; body.label = 'Callsign ' + v + '…';
+  }
+  capAddMsg('Adding…');
+  fetch('/api/capsules/rules', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body)})
+    .then(function(r){ return r.json().then(function(j){ return {code: r.status, j: j}; }); })
+    .then(function(res){
+      var j = res.j || {};
+      if (j.ok) {
+        inp.value = ''; capState.addCands = null;
+        capAddMsg('Added. It will be recorded the next time it is in range.');
+        return loadCapsules();
+      }
+      if (j.error === 'several' && j.candidates) {
+        // Never guess between airframes that share a registration: show them, let the person pick.
+        capState.addCands = j.candidates;
+        return capAddMsg('That registration matches ' + j.candidates.length + ' aircraft. Pick one:<br>' +
+          j.candidates.map(function(c, i){
+            return '<button onclick="capRuleAddManual(capState.addCands[' + i + '])">' +
+              capEsc(c.reg) + ' · ' + capEsc(c.hex) + (c.type ? ' · ' + capEsc(c.type) : '') + '</button>';
+          }).join(''));
+      }
+      capAddMsg(capEsc(j.message || (j.error === 'not_found' ? 'Not found.' : ('Could not add: ' + (j.error || res.code)))));
+    })
+    .catch(function(){ capAddMsg('Could not reach the node. Try again.'); });
+}
 function capDelete(id){
   if (!confirm('Delete this capsule? This cannot be undone.')) return;
   capPost('/api/capsules/' + id + '/delete', {}).then(loadCapsules).catch(function(){});
