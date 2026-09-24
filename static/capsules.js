@@ -155,6 +155,12 @@ function renderCapsulePanel(){
       '<span class="cap-right">' +
       '<button title="' + capEsc(wakeTip) + '" style="opacity:' + (r.wake ? '1' : '0.6') + '" ' +
         'onclick="capRuleWake(\'' + hxA + '\',\'' + csA + '\',' + (r.wake ? 'false' : 'true') + ')">📻 ' + (r.wake ? 'Wakes radio ✓' : 'Wake radio') + '</button>' +
+      // v1.5.28: the frequency a 📻 rule tunes to when IT switches the radio on (only then).
+      (r.wake ? '<button title="' + capEsc(r.freq_hz
+            ? 'When this rule switches the radio on, it tunes to ' + capMHz(r.freq_hz) + ' first, and puts the old frequency back when it switches off. If someone is already listening it never retunes. Click to change or clear.'
+            : 'Records whatever frequency the radio is on. Click to set one for this aircraft, e.g. the Tower frequency it talks on.') +
+          '" onclick="capRuleFreq(\'' + hxA + '\',\'' + csA + '\',' + (r.freq_hz || 0) + ')">📡 ' +
+          (r.freq_hz ? capMHz(r.freq_hz) : 'any freq') + '</button>' : '') +
       '<button onclick="capRuleRemove(\'' + hxA + '\',\'' + csA + '\')">✕ Remove</button></span></div>';
   }).join('') : '<div class="cap-empty">Nothing on auto. Add an aircraft above, or open a plane’s card and tap ⟳ AUTO.</div>';
   if (sum) sum.textContent = capState.list.length + ' saved' + (hxs.length ? ' · ' + hxs.length + ' recording' : '');
@@ -162,6 +168,15 @@ function renderCapsulePanel(){
 function capStop(hx){ capPost('/api/capsules/stop', {hex: hx}).then(loadCapsules).catch(function(){}); }
 function capRuleRemove(hx, cs){ capPost('/api/capsules/rules', {action: 'remove', hex: hx, callsign: cs}).then(loadCapsules).catch(function(){}); }
 function capRuleWake(hx, cs, on){ capPost('/api/capsules/rules', {action: 'wake', hex: hx, callsign: cs, on: !!on}).then(loadCapsules).catch(function(){}); }
+function capRuleFreq(hx, cs, curHz){
+  var cur = curHz ? (curHz / 1e6).toFixed(3) : '';
+  var v = prompt('Frequency for this aircraft, in MHz (e.g. 118.7 for Auckland Tower).\n' +
+                 'Used only when this rule switches the radio on itself. Leave blank to record whatever the radio is on.', cur);
+  if (v === null) return;                                   // cancelled
+  capPost('/api/capsules/rules', {action: 'freq', hex: hx, callsign: cs, mhz: v.trim()})
+    .then(function(j){ if (j && j.ok === false) alert(j.error || 'Could not set the frequency'); loadCapsules(); })
+    .catch(function(){});
+}
 
 // ── Add an aircraft before it shows up (v1.5.27, MME1 thread 75) ─────────────
 // ⟳ AUTO on a card needs the aircraft on screen. This adds it by registration

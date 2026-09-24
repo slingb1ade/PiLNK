@@ -2340,9 +2340,10 @@ def _cap_read_points(cid):
 def _cap_save_active():
     _cap_save_json('active.json', CAPSULE_ACTIVE)
 
-def _cap_start(hx, auto=False, flight='', wake=False):
+def _cap_start(hx, auto=False, flight='', wake=False, freq_hz=None):
     """Begin a capsule. Caller holds CAPSULE_LOCK. `wake`: the rule that started it
-    lets it switch the radio on (v1.5.26, opt-in per rule)."""
+    lets it switch the radio on (v1.5.26, opt-in per rule). `freq_hz`: the frequency
+    that rule wants when it is the one switching the radio on (v1.5.28)."""
     now = time.time()
     cid = hx + '-' + time.strftime('%Y%m%d-%H%M%S', time.gmtime(now))
     db = AIRCRAFT_DB.get(hx, {}) if isinstance(AIRCRAFT_DB, dict) else {}
@@ -2352,7 +2353,8 @@ def _cap_start(hx, auto=False, flight='', wake=False):
         'points': 0, 'wake': bool(wake),
     })
     CAPSULE_ACTIVE[hx] = {'id': cid, 'started': now, 'last_seen': now, 'auto': bool(auto),
-                          'points': 0, 'flight': flight, 'wake': bool(wake)}
+                          'points': 0, 'flight': flight, 'wake': bool(wake),
+                          'freq_hz': int(freq_hz) if freq_hz else None}
     _cap_save_active()
     logging.info('[capsule] started %s (%s)', cid, 'auto' if auto else 'manual')
     return CAPSULE_ACTIVE[hx]
@@ -2485,7 +2487,8 @@ def capsule_recorder():
                     if hx not in CAPSULE_ACTIVE:
                         rule = _cap_rule_match(rules, hx, flight) if (rules and hx not in CAPSULE_SUPPRESS) else None
                         if rule:
-                            _cap_start(hx, auto=True, flight=flight, wake=bool(rule.get('wake')))
+                            _cap_start(hx, auto=True, flight=flight, wake=bool(rule.get('wake')),
+                                       freq_hz=rule.get('freq_hz'))
                         else:
                             continue
                     c = CAPSULE_ACTIVE[hx]
@@ -2625,11 +2628,41 @@ def api_capsule_rules():
         e = AIRCRAFT_DB.get(hx, {}) if isinstance(AIRCRAFT_DB, dict) else {}
         reg_found = reg_found or e.get('r', '')
         label = ' '.join(x for x in (e.get('r', ''), e.get('t', '')) if x)[:40] or hx
-    if action not in ('add', 'remove', 'wake'):
-        return jsonify({'ok': False, 'error': 'action must be add, remove or wake'}), 400
+    if action not in ('add', 'remove', 'wake', 'freq'):
+        return jsonify({'ok': False, 'error': 'action must be add, remove, wake or freq'}), 400
+    freq_hz = None
+    if action == 'freq':
+        # v1.5.28 (AJ: PLC1 talks to Tower on 118.7 while the radio sat on Approach
+        # 124.3): the frequency a 📻 rule tunes to WHEN IT IS THE ONE SWITCHING THE RADIO
+        # ON. Blank clears it (= whatever the radio is tuned to). Airband only.
+        raw = str(body.get('mhz') if body.get('mhz') is not None else '').strip()
+        if raw:
+            try:
+                mhz = float(raw)
+            except ValueError:
+                return jsonify({'ok': False, 'error': 'bad frequency'}), 400
+            if not (118.0 <= mhz <= 137.0):
+                return jsonify({'ok': False, 'error': 'airband is 118.000 to 137.000 MHz'}), 400
+            freq_hz = int(round(mhz * 1e6))
     def _same(r):
         return (hx and (r.get('hex') or '').upper() == hx) or (cs and (r.get('callsign') or '').upper() == cs)
     with CAPSULE_LOCK:
+        if action == 'freq':
+            rules = _cap_rules()
+            hit = [r for r in rules if _same(r)]
+            if not hit:
+                return jsonify({'ok': False, 'error': 'no such rule'}), 404
+            for r in hit:
+                if freq_hz:
+                    r['freq_hz'] = freq_hz
+                else:
+                    r.pop('freq_hz', None)
+            _cap_save_json('rules.json', rules)
+            for ahx, c in CAPSULE_ACTIVE.items():
+                if c.get('auto') and _cap_rule_match(hit, ahx, c.get('flight')):
+                    c['freq_hz'] = freq_hz
+            _cap_save_active()
+            return jsonify({'ok': True, 'rules': rules})
         if action == 'wake':
             # v1.5.26 (MME1, AJ: opt-in per rule): may a capsule started by THIS rule
             # switch the radio on? Off unless the owner ticks it, rule by rule.
@@ -2662,6 +2695,9 @@ def api_capsule_rules():
                 rule['reg'] = reg_found
             if body.get('wake') or any(r.get('wake') for r in old):
                 rule['wake'] = True     # re-adding a rule must not quietly drop its radio opt-in
+            old_fh = next((r.get('freq_hz') for r in old if r.get('freq_hz')), None)
+            if old_fh:
+                rule['freq_hz'] = old_fh   # ...nor its frequency (v1.5.28)
             rules.append(rule)
         _cap_save_json('rules.json', rules)
     return jsonify({'ok': True, 'rules': rules})
@@ -3049,7 +3085,8 @@ def _cap_sdr_status():
         return None
 
 # ── v1.5.26: "wake the radio" for opted-in auto rules (see the header above) ──
-CAPSULE_WAKE = {'woke': False, 'at': None, 'vetoed': []}   # vetoed: capsule ids a person stopped
+CAPSULE_WAKE = {'woke': False, 'at': None, 'vetoed': [],   # vetoed: capsule ids a person stopped
+                'prev_hz': None}   # v1.5.28: the frequency we retuned AWAY from, owed back
 
 def _cap_wake_load():
     d = _cap_load_json('radio_wake.json', {})
@@ -3057,6 +3094,28 @@ def _cap_wake_load():
         CAPSULE_WAKE['woke'] = bool(d.get('woke'))
         CAPSULE_WAKE['at'] = d.get('at')
         CAPSULE_WAKE['vetoed'] = [v for v in (d.get('vetoed') or []) if _cap_valid_id(str(v))]
+        p = d.get('prev_hz')
+        CAPSULE_WAKE['prev_hz'] = int(p) if isinstance(p, (int, float)) and 118e6 <= p <= 137e6 else None
+
+def _cap_wake_freq():
+    """v1.5.28: the frequency the first waking capsule's rule asked for, or None."""
+    with CAPSULE_LOCK:
+        for c in CAPSULE_ACTIVE.values():
+            if c.get('wake') and c.get('freq_hz') and c['id'] not in CAPSULE_WAKE['vetoed']:
+                return int(c['freq_hz'])
+    return None
+
+def _cap_restore_freq():
+    """Put back the frequency a wake retuned away from. Only ever called with the radio
+    off or about to be handed back — never under a person who is listening."""
+    p = CAPSULE_WAKE.get('prev_hz')
+    if not p:
+        return True
+    if _cap_sdr_post('/sdr/frequency', {'hz': float(p)}):
+        logging.info('[capsule-audio] radio retuned back to %.3f MHz', p / 1e6)
+        CAPSULE_WAKE['prev_hz'] = None
+        return True
+    return False
 
 def _cap_wake_save():
     try:
@@ -3091,7 +3150,23 @@ def _cap_sdr_post(path, body):
 def _cap_radio_wake(ids):
     """Switch the radio on for these capsules. True only once the engine SAYS it is
     playing — the command is queued inside the engine, so the reply alone proves nothing."""
+    # v1.5.28: the rule may want a particular frequency (PLC1 → Tower 118.7 while the
+    # radio sat on Approach 124.3). Retune BEFORE switching on — the radio is off, so
+    # nobody hears it move — and remember where it was, so it can be put back.
+    want_hz = _cap_wake_freq()
+    if want_hz:
+        st = _cap_sdr_status()
+        cur = st.get('vfoHz') if isinstance(st, dict) else None
+        if isinstance(cur, (int, float)) and abs(cur - want_hz) > 500:
+            if _cap_sdr_post('/sdr/frequency', {'hz': float(want_hz)}):
+                if not CAPSULE_WAKE.get('prev_hz'):   # an earlier, unreturned retune keeps
+                    CAPSULE_WAKE['prev_hz'] = int(cur)  # the ORIGINAL frequency as the one owed
+                _cap_wake_save()
+                logging.info('[capsule-audio] radio retuned %.3f -> %.3f MHz for %s',
+                             cur / 1e6, want_hz / 1e6, ', '.join(ids))
     if not _cap_sdr_post('/sdr/playing', {'on': True}):
+        _cap_restore_freq()
+        _cap_wake_save()
         return False
     # Remember BEFORE confirming: from here on we owe the radio an OFF.
     CAPSULE_WAKE.update({'woke': True, 'at': time.time()})
@@ -3105,6 +3180,7 @@ def _cap_radio_wake(ids):
     # Never came on. Take the request back, so it cannot come on later with nobody
     # remembering to switch it off.
     _cap_sdr_post('/sdr/playing', {'on': False})
+    _cap_restore_freq()
     CAPSULE_WAKE.update({'woke': False, 'at': None})
     _cap_wake_save()
     return False
@@ -3125,8 +3201,19 @@ def _cap_radio_sleep():
             if not _cap_sdr_post('/sdr/playing', {'on': False}):
                 return                      # engine busy — try again on the next idle pass
             logging.info('[capsule-audio] radio switched back OFF (capsule finished, nobody claimed it)')
+        _cap_restore_freq()                 # v1.5.28: and back to the frequency it was on
         CAPSULE_WAKE.update({'woke': False, 'at': None})
         changed = True
+    elif CAPSULE_WAKE.get('prev_hz'):
+        # A frequency still owed from a retune whose put-back failed. Only while the radio
+        # is OFF: if a person has switched it on since, it is theirs, tuning and all.
+        st = _cap_sdr_status()
+        if isinstance(st, dict):
+            if st.get('playing'):
+                CAPSULE_WAKE['prev_hz'] = None
+            else:
+                _cap_restore_freq()
+            changed = True
     if changed:
         _cap_wake_save()
 
@@ -3135,7 +3222,9 @@ def api_capsule_radio_claim():
     """The dashboard calls this when a person presses LISTEN. From then on the radio
     is theirs: a capsule that switched it on must not switch it off under them."""
     if CAPSULE_WAKE.get('woke'):
-        CAPSULE_WAKE.update({'woke': False, 'at': None})
+        # prev_hz is dropped too: the person is listening on the frequency they can
+        # see in the SDR tab, and it is theirs to change — we never retune under them.
+        CAPSULE_WAKE.update({'woke': False, 'at': None, 'prev_hz': None})
         _cap_wake_save()
         logging.info('[capsule-audio] radio claimed by a listener — capsules will leave it on')
     return jsonify({'ok': True})
@@ -3218,6 +3307,7 @@ def capsule_audio_tap():
                         stopped = [c['id'] for c in CAPSULE_ACTIVE.values() if c.get('wake')]
                     CAPSULE_WAKE['vetoed'] = sorted(set(CAPSULE_WAKE['vetoed']) | set(stopped))
                     CAPSULE_WAKE.update({'woke': False, 'at': None})
+                    _cap_restore_freq()              # v1.5.28: it is off now — put their frequency back
                     _cap_wake_save()
                     logging.info('[capsule-audio] radio was stopped by hand — not waking it again for %s',
                                  ', '.join(stopped) or 'these capsules')
