@@ -616,6 +616,77 @@ TRAIL_LOCK = threading.Lock()
 MAX_TRAIL_AGE = 24 * 3600  # 24 hours in seconds
 _TRAIL_ERR = {'last': 0.0}   # throttle for the recorder's error line (Pass 2)
 
+# ── History-tab day store (24 Sep 2026) ─────────────────────────────────────
+# AJ: "My hourly graph looks very empty. During the day there is always
+# something flying in Auckland." Two causes, both in how /api/history used to
+# read TRAIL_HISTORY:
+#   1. It lives only in memory — every service restart (OTA, a fix, a reboot)
+#      wiped the day. On 24 Sep three restarts left one bar at 17:00.
+#   2. Each aircraft's trail is capped at 500 points (~83 min at 10 s), so a
+#      regional ATR flying rotations all day silently fell out of the morning
+#      bars even with no restart at all.
+# This keeps what the History tab actually needs — which aircraft were seen in
+# each hour, and a one-line summary per aircraft — small (~100 KB for a busy
+# day), uncapped per aircraft, saved every HIST_SAVE_EVERY seconds and
+# reloaded on start. A restart now costs at most those few minutes.
+# TRAIL_HISTORY is untouched: it still feeds the map trails.
+# NOT PILNK_DIR: that is defined ~900 lines further down, and this runs at import.
+HIST_FILE       = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'history_day.json')
+HIST_SAVE_EVERY = 300          # seconds between disk writes (SD-card friendly)
+HIST_NEW_VISIT  = 1800         # unseen this long, then back = a new visit (first_seen resets)
+HIST_HOURS = {}                # epoch hour (int) -> set(hex)
+HIST_AC    = {}                # hex -> {first, last, max_alt, cs, n, lat, lon}
+_HIST_SAVED = {'t': time.time()}
+
+def _hist_load():
+    try:
+        with open(HIST_FILE, 'r') as f:
+            d = json.load(f)
+        cutoff = time.time() - MAX_TRAIL_AGE
+        for k, v in (d.get('hours') or {}).items():
+            h = int(k)
+            if (h + 1) * 3600 > cutoff and isinstance(v, list):
+                HIST_HOURS[h] = set(v)
+        for hx, a in (d.get('ac') or {}).items():
+            if isinstance(a, dict) and (a.get('last') or 0) >= cutoff:
+                HIST_AC[hx] = a
+        logging.info('[history] restored %d aircraft over %d hours from %s', len(HIST_AC), len(HIST_HOURS), HIST_FILE)
+    except FileNotFoundError:
+        pass
+    except Exception as e:
+        logging.warning('[history] could not restore %s (starting empty): %s', HIST_FILE, e)
+
+def _hist_save():
+    """Caller holds TRAIL_LOCK. Atomic, so a power cut never leaves half a file."""
+    tmp = HIST_FILE + '.tmp'
+    with open(tmp, 'w') as f:
+        json.dump({'hours': {str(h): sorted(s) for h, s in HIST_HOURS.items()}, 'ac': HIST_AC},
+                  f, separators=(',', ':'))
+    os.replace(tmp, HIST_FILE)
+
+def _hist_note(a, now):
+    """Record one aircraft sighting. Caller holds TRAIL_LOCK."""
+    hx = a['hex']
+    HIST_HOURS.setdefault(int(now // 3600), set()).add(hx)
+    alt = a.get('alt_baro', 0)
+    alt = alt if isinstance(alt, (int, float)) else 0
+    fl = (a.get('flight') or '').strip()
+    e = HIST_AC.get(hx)
+    if e is None or now - (e.get('last') or 0) > HIST_NEW_VISIT:
+        # A fresh visit: the row describes THIS visit (start, length, top altitude).
+        # The earlier visit still counts in its own hours of the graph.
+        HIST_AC[hx] = e = {'first': now, 'last': now, 'max_alt': alt, 'cs': fl, 'n': 0,
+                           'lat': a.get('lat'), 'lon': a.get('lon')}
+    e['last'] = now
+    e['n'] = e.get('n', 0) + 1
+    e['lat'], e['lon'] = a.get('lat'), a.get('lon')
+    if alt > (e.get('max_alt') or 0):
+        e['max_alt'] = alt
+    if fl:
+        e['cs'] = fl
+
+_hist_load()
+
 def record_trails():
     while True:
         try:
@@ -634,6 +705,7 @@ def record_trails():
                                 'flight': a.get('flight', '').strip(),
                                 't': now
                             })
+                            _hist_note(a, now)
                     # Clean old entries
                     cutoff = now - MAX_TRAIL_AGE
                     for hex in list(TRAIL_HISTORY.keys()):
@@ -641,6 +713,16 @@ def record_trails():
                             TRAIL_HISTORY[hex].popleft()
                         if not TRAIL_HISTORY[hex]:
                             del TRAIL_HISTORY[hex]
+                    for h in [h for h in HIST_HOURS if (h + 1) * 3600 <= cutoff]:
+                        del HIST_HOURS[h]
+                    for hx in [hx for hx, e in HIST_AC.items() if (e.get('last') or 0) < cutoff]:
+                        del HIST_AC[hx]
+                    if now - _HIST_SAVED['t'] >= HIST_SAVE_EVERY:
+                        _HIST_SAVED['t'] = now
+                        try:
+                            _hist_save()
+                        except Exception as e:
+                            logging.warning('[history] save failed: %s', e)
         except Exception as e:
             # Fail-soft is right — one bad iteration must never kill the
             # recorder. Eternal silence wasn't: a persistent failure here
@@ -2113,6 +2195,57 @@ def api_watchlist_alerts():
             return jsonify(out)
         return jsonify({'enabled': True, 'alerts': [], 'unseen': 0, 'error': type(e).__name__}), 503
 
+# ── Military card proxies (24 Sep 2026) ─────────────────────────────────────
+# The cinematic card's military section called pilnk.io straight from the
+# browser with credentials:'include'. From a dashboard on the Pi's LAN address
+# that is a cross-site request, and the pilnk.io session cookie is
+# SameSite=Lax — the browser never sends it. So "📒 LOG THIS CATCH" answered
+# "Not logged in" on every press (no manual catch has ever landed), and the
+# card could never see what the owner had already caught.
+#
+# Same cure as the Badges tab and the watchlist panel: the node makes the call
+# server-to-server with its verify_code, so the secret never reaches a browser
+# and no login is involved. The catch is credited to the node's owner, from
+# this node, in this node's country pool (mil-catch.php), matching the
+# automatic catch path.
+_MIL_CATCH_FIELDS = ('hex', 'icao_type', 'callsign', 'country')
+
+@app.route('/api/mil_lookup', methods=['GET'])
+def api_mil_lookup():
+    hx = str(request.args.get('hex') or '').upper().strip()
+    ty = str(request.args.get('type') or '').upper().strip()
+    if not re.match(r'^[0-9A-F]{6}$', hx):
+        return jsonify({'is_military': False, 'catalog': None, 'user_catch': None, 'country_serials_used': 0})
+    try:
+        # verify_code travels in the POST body, never the URL (URLs get logged).
+        r = requests.post('https://pilnk.io/api/mil-lookup.php',
+                          params={'hex': hx, 'type': ty[:8]},
+                          json={'verify_code': NODE_VERIFY_CODE} if NODE_VERIFY_CODE else {},
+                          headers={'User-Agent': 'PiLNK/1.0'}, timeout=8)
+        return jsonify(r.json())
+    except Exception as e:
+        logging.warning('[mil] lookup proxy failed for %s: %s', hx, e)
+        return jsonify({'error': 'pilnk.io unreachable'}), 503
+
+@app.route('/api/mil_catch', methods=['POST'])
+def api_mil_catch():
+    if not NODE_VERIFY_CODE:
+        return jsonify({'error': 'This node is not paired with a pilnk.io account yet, so catches have nowhere to go.'}), 400
+    body = request.get_json(silent=True) or {}
+    payload = {k: str(body.get(k) or '')[:20] for k in _MIL_CATCH_FIELDS}
+    payload['verify_code'] = NODE_VERIFY_CODE
+    try:
+        r = requests.post('https://pilnk.io/api/mil-catch.php?action=log_catch', json=payload,
+                          headers={'User-Agent': 'PiLNK/1.0'}, timeout=10)
+        try:
+            data = r.json()
+        except ValueError:
+            data = {'error': 'pilnk.io answered HTTP %d' % r.status_code}
+        return jsonify(data), r.status_code
+    except Exception as e:
+        logging.warning('[mil] catch proxy failed: %s', e)
+        return jsonify({'error': 'pilnk.io unreachable, try again in a moment'}), 503
+
 # ── Flight capsules — Ship 1: track recorder (23 Sep 2026) ─────────────────
 # Click a plane → ● REC on the cinematic card, or mark it ⟳ AUTO ("always
 # record") → the node records that airframe every CAPSULE_INTERVAL seconds —
@@ -2226,9 +2359,9 @@ def _cap_finish(hx, reason):
     pts = _cap_read_points(cid)
     if len(pts) < 2:
         # A blip, not a flight — don't clutter the library with it.
-        for ext in ('.json', '.jsonl'):
+        for fn in [cid + '.json', cid + '.jsonl'] + _cap_audio_files(cid):
             try:
-                os.remove(_cap_path(cid + ext))
+                os.remove(_cap_path(fn))
             except OSError:
                 pass
         _cap_save_active()
@@ -2253,7 +2386,7 @@ def _cap_finish(hx, reason):
         'max_alt': max(alts) if alts else None, 'min_alt': min(alts) if alts else None,
         'bbox': [min(lats), min(lons), max(lats), max(lons)],
         'callsigns': fls[:10], 'flight': fls[0] if fls else meta.get('flight', ''),
-        'size': size,
+        'size': size, 'cat': c.get('cat') or meta.get('cat', ''),
     })
     _cap_save_json(cid + '.json', meta)
     _cap_save_active()
@@ -2261,11 +2394,28 @@ def _cap_finish(hx, reason):
     logging.info('[capsule] finished %s: %d points, %ds (%s)', cid, len(pts), meta['duration'], reason)
     return meta
 
+def _cap_audio_files(cid):
+    """This capsule's audio segments (<id>.a<N>.ogg), in recording order."""
+    try:
+        names = [fn for fn in os.listdir(CAPSULE_DIR)
+                 if fn.startswith(cid + '.a') and fn.endswith('.ogg')]
+    except FileNotFoundError:
+        return []
+    def _n(fn):
+        try:
+            return int(fn[len(cid) + 2:-4])
+        except ValueError:
+            return 0
+    return sorted(names, key=_n)
+
 def _cap_prune():
-    """Keep all capsules inside CAPSULE_MAX_MB — oldest FINISHED capsules go first."""
+    """Keep all capsules inside CAPSULE_MAX_MB — oldest FINISHED capsules go first.
+    Audio counts against the same budget (v1.5.23): ~9 MB per recorded hour of
+    Opus against ~0.2 MB of track, so it is the part that actually fills a disk."""
     try:
         budget = CAPSULE_MAX_MB * 1024 * 1024
-        total = sum(os.path.getsize(_cap_path(fn)) for fn in os.listdir(CAPSULE_DIR) if fn.endswith('.jsonl'))
+        total = sum(os.path.getsize(_cap_path(fn)) for fn in os.listdir(CAPSULE_DIR)
+                    if fn.endswith('.jsonl') or fn.endswith('.ogg'))
         if total <= budget:
             return
         active_ids = {c['id'] for c in CAPSULE_ACTIVE.values()}
@@ -2275,11 +2425,11 @@ def _cap_prune():
         for cid in done:
             if total <= budget:
                 break
-            p = _cap_path(cid + '.jsonl')
-            sz = os.path.getsize(p) if os.path.exists(p) else 0
-            for ext in ('.json', '.jsonl'):
+            files = [cid + '.jsonl'] + _cap_audio_files(cid)
+            sz = sum(os.path.getsize(_cap_path(fn)) for fn in files if os.path.exists(_cap_path(fn)))
+            for fn in [cid + '.json'] + files:
                 try:
-                    os.remove(_cap_path(cid + ext))
+                    os.remove(_cap_path(fn))
                 except OSError:
                     pass
             total -= sz
@@ -2343,6 +2493,10 @@ def capsule_recorder():
                     c['points'] += 1
                     if flight:
                         c['flight'] = flight
+                    # ADS-B emitter category (A7 = rotorcraft…) so replay can draw the
+                    # right silhouette — the type alone left the police Bell 429 a jet.
+                    if a.get('category') and not c.get('cat'):
+                        c['cat'] = str(a.get('category'))[:3]
                     seen_now.add(hx)
                 for hx in list(CAPSULE_ACTIVE):
                     c = CAPSULE_ACTIVE[hx]
@@ -2361,7 +2515,8 @@ def capsule_recorder():
 
 def _cap_public(hx, c):
     return {'hex': hx, 'id': c['id'], 'started': c['started'], 'last_seen': c['last_seen'],
-            'auto': c['auto'], 'points': c['points'], 'flight': c.get('flight', '')}
+            'auto': c['auto'], 'points': c['points'], 'flight': c.get('flight', ''),
+            'audio': CAPSULE_AUDIO_STATE.get('state', 'idle')}
 
 @app.route('/api/capsules', methods=['GET'])
 def api_capsules():
@@ -2444,6 +2599,10 @@ def api_capsule_get(cid):
     meta = _cap_load_json(cid + '.json', None)
     if not isinstance(meta, dict):
         return jsonify({'error': 'not found'}), 404
+    with CAPSULE_LOCK:                       # a live capsule's category is only in memory until it finishes
+        for c in CAPSULE_ACTIVE.values():
+            if c.get('id') == cid and c.get('cat') and not meta.get('cat'):
+                meta = dict(meta, cat=c['cat'])
     return jsonify({'meta': meta, 'points': _cap_read_points(cid)})
 
 @app.route('/api/capsules/<cid>/delete', methods=['POST'])
@@ -2455,9 +2614,9 @@ def api_capsule_delete(cid):
         if cid in {c['id'] for c in CAPSULE_ACTIVE.values()}:
             return jsonify({'ok': False, 'error': 'still recording — stop it first'}), 409
         removed = 0
-        for ext in ('.json', '.jsonl'):
+        for fn in [cid + '.json', cid + '.jsonl'] + _cap_audio_files(cid):
             try:
-                os.remove(_cap_path(cid + ext))
+                os.remove(_cap_path(fn))
                 removed += 1
             except OSError:
                 pass
@@ -2501,8 +2660,453 @@ def api_capsule_kml(cid):
     resp.headers['Content-Disposition'] = 'attachment; filename="pilnk-capsule-%s.kml"' % cid
     return resp
 
+# ── Flight capsules — Ship 2: synced ATC audio (24 Sep 2026) ─────────────
+# While any capsule is recording AND the radio is already playing, the node
+# taps pilnkradio's audio stream (ws://127.0.0.1:5656/sdr/audio — float32 mono
+# 48 kHz, 512-sample frames; no-Origin local clients are allowed) and encodes
+# it to Opus through ffmpeg, beside the track.
+#
+# AJ's rule (24 Sep): a capsule NEVER touches the radio. The engine's `playing`
+# flag is operator consent and it is shared with every dashboard; if it is off,
+# the capsule is track-only and says so. Nothing here ever POSTs to the engine.
+#
+# SEGMENTS, not one file. Audio exists only in stretches: the radio can be
+# switched off and on mid-flight, the service can restart, the frequency can
+# change. Each stretch is its own file, capsules/<id>.a<N>.ogg, and the meta
+# records {n, file, t0, dur, hz, mode} for it — so sync is a plain offset
+# (t - t0) and a gap in the audio is simply a stretch with no segment, never
+# silence pretending to be a recording. Ogg because a file cut short by a power
+# cut or restart is still playable up to where it stopped (MP4 would not be).
+#
+# Within a segment the audio is anchored to WALL CLOCK: if the stream falls
+# more than CAPSULE_AUDIO_SLACK behind (a USB hiccup), zeros are padded; if it
+# runs ahead, a chunk is dropped. Replay can then trust t0 + position.
+#
+# Honest limit, shown in the UI: this is everything on the TUNED frequency
+# while the aircraft was recorded, not that aircraft's own calls.
+#
+# No new Python dependency: the WebSocket client is ~40 lines of stdlib, the
+# same approach as tools/controller_watch.py, with the gaps closed (64-bit
+# lengths, ping/pong, close frames, a proper 101 check). ffmpeg is installed by
+# install.sh with `|| true`, so it can be missing; then capsules stay track-only
+# and /api/capsules says 'no_ffmpeg'.
+import base64 as _cap_b64
+import shutil as _cap_shutil
+import struct as _cap_struct
+
+CAPSULE_AUDIO_RATE  = 48000
+CAPSULE_AUDIO_KBPS  = 20        # Opus voip; ~9 MB per recorded hour, squelched silence is nearly free
+CAPSULE_AUDIO_SLACK = 0.5       # seconds of drift tolerated before re-anchoring to wall clock
+CAPSULE_AUDIO_STALL = 4         # no audio this long -> the segment ends (radio off, dongle gone)
+CAPSULE_AUDIO_MIN   = 1.0       # a segment shorter than this is discarded
+CAPSULE_AUDIO_STATE = {'state': 'idle', 'hz': None, 'mode': None, 'since': time.time()}
+
+def _cap_audio_set(state, hz=None, mode=None):
+    if CAPSULE_AUDIO_STATE.get('state') != state or CAPSULE_AUDIO_STATE.get('hz') != hz:
+        CAPSULE_AUDIO_STATE.update({'state': state, 'hz': hz, 'mode': mode, 'since': time.time()})
+        logging.info('[capsule-audio] %s%s', state, (' @ %.3f MHz' % (hz / 1e6)) if hz else '')
+
+def _cap_ws_open(path):
+    s = socket.create_connection(('127.0.0.1', 5656), timeout=5)
+    key = _cap_b64.b64encode(os.urandom(16)).decode()
+    s.sendall(('GET %s HTTP/1.1\r\nHost: 127.0.0.1:5656\r\nUpgrade: websocket\r\n'
+               'Connection: Upgrade\r\nSec-WebSocket-Key: %s\r\nSec-WebSocket-Version: 13\r\n\r\n'
+               % (path, key)).encode())
+    resp = b''
+    while b'\r\n\r\n' not in resp:
+        chunk = s.recv(4096)
+        if not chunk:
+            s.close()
+            raise ConnectionError('closed during handshake')
+        resp += chunk
+        if len(resp) > 16384:
+            s.close()
+            raise ConnectionError('oversized handshake')
+    head, _, rest = resp.partition(b'\r\n\r\n')
+    if b' 101 ' not in head.split(b'\r\n', 1)[0] + b' ':
+        s.close()
+        raise ConnectionError('upgrade refused: %r' % head[:60])
+    return s, bytearray(rest)
+
+def _cap_ws_send(s, opcode, payload=b''):
+    # Client-to-server frames must be masked (RFC 6455 5.3).
+    mask = os.urandom(4)
+    n = len(payload)
+    hdr = bytes([0x80 | opcode])
+    if n < 126:
+        hdr += bytes([0x80 | n])
+    elif n < 65536:
+        hdr += bytes([0x80 | 126]) + _cap_struct.pack('>H', n)
+    else:
+        hdr += bytes([0x80 | 127]) + _cap_struct.pack('>Q', n)
+    s.sendall(hdr + mask + bytes(b ^ mask[i % 4] for i, b in enumerate(payload)))
+
+def _cap_ws_frames(buf):
+    """Pop complete frames off `buf` (a bytearray); yields (opcode, payload)."""
+    while len(buf) >= 2:
+        op = buf[0] & 0x0F
+        masked = buf[1] & 0x80
+        ln = buf[1] & 0x7F
+        off = 2
+        if ln == 126:
+            if len(buf) < 4:
+                return
+            ln = _cap_struct.unpack('>H', bytes(buf[2:4]))[0]
+            off = 4
+        elif ln == 127:
+            if len(buf) < 10:
+                return
+            ln = _cap_struct.unpack('>Q', bytes(buf[2:10]))[0]
+            off = 10
+        mk = None
+        if masked:
+            if len(buf) < off + 4:
+                return
+            mk = bytes(buf[off:off + 4])
+            off += 4
+        if len(buf) < off + ln:
+            return
+        payload = bytes(buf[off:off + ln])
+        del buf[:off + ln]
+        if mk:
+            payload = bytes(b ^ mk[i % 4] for i, b in enumerate(payload))
+        yield op, payload
+
+class _CapAudioSeg:
+    """One stretch of audio for one capsule: an ffmpeg process fed raw f32le."""
+    def __init__(self, cid, n, hz, mode):
+        self.cid, self.n, self.hz, self.mode = cid, n, hz, mode
+        self.name = '%s.a%d.ogg' % (cid, n)
+        self.t0 = None
+        self.samples = 0
+        self.dead = False
+        self.registered = False     # in the capsule meta yet? (see _cap_audio_register)
+        self.proc = subprocess.Popen(
+            # Write-through (24 Sep, after the 17:11 restart lost a whole stretch):
+            # by default ffmpeg probes its input and then holds ~32 KB of output
+            # before touching disk — several MINUTES of squelched radio — so a
+            # restart left a 0-byte file. No probing, a flush per packet and
+            # half-second Ogg pages: measured, a hard kill now keeps all but the
+            # last ~1 s.
+            ['ffmpeg', '-hide_banner', '-loglevel', 'error', '-y',
+             '-probesize', '32', '-analyzeduration', '0', '-fflags', '+nobuffer',
+             '-f', 'f32le', '-ar', str(CAPSULE_AUDIO_RATE), '-ac', '1', '-i', 'pipe:0',
+             '-c:a', 'libopus', '-b:a', '%dk' % CAPSULE_AUDIO_KBPS, '-application', 'voip',
+             '-flush_packets', '1', '-page_duration', '500000',
+             '-f', 'ogg', _cap_path(self.name)],
+            # stderr to DEVNULL, not PIPE: nothing drains a pipe while recording,
+            # and a chatty ffmpeg filling 64 KB of stderr would block mid-flight.
+            stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+    def write(self, pcm, now):
+        n = len(pcm) // 4
+        if not n or self.dead:
+            return
+        if self.t0 is None:
+            self.t0 = now - n / CAPSULE_AUDIO_RATE     # the chunk's first sample is n samples old
+        expected = (now - self.t0) * CAPSULE_AUDIO_RATE
+        slack = CAPSULE_AUDIO_SLACK * CAPSULE_AUDIO_RATE
+        try:
+            behind = expected - (self.samples + n)
+            if behind > slack:                          # stream stalled briefly: keep the clock honest
+                pad = int(behind)
+                self.proc.stdin.write(b'\x00' * (4 * pad))
+                self.samples += pad
+            elif (self.samples + n) - expected > slack:
+                return                                  # running ahead: drop this chunk
+            self.proc.stdin.write(pcm)
+            self.samples += n
+        except (BrokenPipeError, OSError, ValueError) as e:
+            self.dead = True
+            logging.warning('[capsule-audio] encoder for %s died: %s', self.name, e)
+
+    def close(self):
+        """Finish the file. Returns its meta entry, or None if too short / failed."""
+        # EOF on stdin is ffmpeg's signal to flush and finish the Ogg file. Close it,
+        # then wait — NOT communicate(), which flushes stdin and raises on a pipe
+        # that is already closed (caught in the sandbox test: every segment was
+        # being killed and deleted).
+        try:
+            if self.proc.stdin and not self.proc.stdin.closed:
+                self.proc.stdin.close()
+        except Exception:
+            pass
+        try:
+            self.proc.wait(timeout=15)
+        except Exception:
+            try:
+                self.proc.kill()
+                self.proc.wait(timeout=5)
+            except Exception:
+                pass
+        dur = self.samples / CAPSULE_AUDIO_RATE
+        ok = (self.t0 is not None and dur >= CAPSULE_AUDIO_MIN and self.proc.returncode == 0
+              and os.path.exists(_cap_path(self.name)))
+        if not ok:
+            if self.proc.returncode not in (0, None):
+                logging.warning('[capsule-audio] ffmpeg exit %s for %s', self.proc.returncode, self.name)
+            try:
+                os.remove(_cap_path(self.name))
+            except OSError:
+                pass
+            return None
+        return {'n': self.n, 'file': self.name, 't0': round(self.t0, 3), 'dur': round(dur, 1),
+                'hz': self.hz, 'mode': self.mode}
+
+def _cap_audio_register(seg):
+    """Record a stretch in the capsule meta the moment its start time is known,
+    marked open (dur None). If the service stops before the stretch closes,
+    restart recovery finds it, measures what reached disk, and keeps it — the
+    17:11 restart on 24 Sep left an orphan file nothing could place in time."""
+    seg.registered = True
+    with CAPSULE_LOCK:
+        if not os.path.exists(_cap_path(seg.cid + '.json')):
+            return
+        meta = _cap_load_json(seg.cid + '.json', {})
+        segs = [a for a in (meta.get('audio') or []) if a.get('n') != seg.n]
+        segs.append({'n': seg.n, 'file': seg.name, 't0': round(seg.t0, 3), 'dur': None,
+                     'hz': seg.hz, 'mode': seg.mode, 'open': True})
+        segs.sort(key=lambda a: a.get('t0') or 0)
+        meta['audio'] = segs
+        _cap_save_json(seg.cid + '.json', meta)
+
+def _cap_probe_dur(path):
+    """Duration of an Ogg file on disk, or None. ffprobe ships with ffmpeg."""
+    try:
+        out = subprocess.run(['ffprobe', '-v', 'error', '-show_entries', 'format=duration',
+                              '-of', 'default=nw=1:nk=1', path],
+                             capture_output=True, text=True, timeout=20).stdout.strip()
+        return float(out)
+    except Exception:
+        return None
+
+def _cap_audio_recover():
+    """Runs once when the tap starts, before any stretch is open in this process.
+    Open stretches left by a stop/crash are measured and closed out; files no
+    meta knows about (no start time, so they can never be placed) are removed."""
+    try:
+        names = os.listdir(CAPSULE_DIR)
+    except FileNotFoundError:
+        return
+    with CAPSULE_LOCK:
+        for fn in names:
+            if not (fn.endswith('.json') and _cap_valid_id(fn[:-5])):
+                continue
+            cid = fn[:-5]
+            meta = _cap_load_json(fn, None)
+            if not isinstance(meta, dict):
+                continue
+            keep, changed = [], False
+            for a in (meta.get('audio') or []):
+                if a.get('open') or a.get('dur') is None:
+                    changed = True
+                    d = _cap_probe_dur(_cap_path(a.get('file', '')))
+                    if d is not None and d >= CAPSULE_AUDIO_MIN:
+                        a = dict(a, dur=round(d, 1))
+                        a.pop('open', None)
+                        keep.append(a)
+                        logging.info('[capsule-audio] recovered %s (%.0fs) after a stop', a['file'], d)
+                    else:
+                        try:
+                            os.remove(_cap_path(a.get('file', '')))
+                        except OSError:
+                            pass
+                else:
+                    keep.append(a)
+            if changed:
+                meta['audio'] = keep
+                _cap_save_json(fn, meta)
+            known = {a.get('file') for a in keep}
+            for af in _cap_audio_files(cid):
+                if af not in known:
+                    try:
+                        os.remove(_cap_path(af))
+                        logging.info('[capsule-audio] removed unplaceable orphan %s', af)
+                    except OSError:
+                        pass
+
+def _cap_audio_close(seg):
+    """Finish a segment OUTSIDE the lock (ffmpeg can take a moment to flush), then
+    record it in the capsule's meta under the lock."""
+    info = seg.close()
+    if not info:
+        if seg.registered:                      # drop the open entry it left behind
+            with CAPSULE_LOCK:
+                if os.path.exists(_cap_path(seg.cid + '.json')):
+                    meta = _cap_load_json(seg.cid + '.json', {})
+                    meta['audio'] = [a for a in (meta.get('audio') or []) if a.get('n') != seg.n]
+                    _cap_save_json(seg.cid + '.json', meta)
+        return
+    with CAPSULE_LOCK:
+        if not os.path.exists(_cap_path(seg.cid + '.json')):
+            # The capsule was discarded as a blip (or deleted) while this segment
+            # was open. Its audio goes with it.
+            try:
+                os.remove(_cap_path(seg.name))
+            except OSError:
+                pass
+            return
+        meta = _cap_load_json(seg.cid + '.json', {})
+        segs = [a for a in (meta.get('audio') or []) if a.get('n') != info['n']]
+        segs.append(info)
+        segs.sort(key=lambda a: a.get('t0') or 0)
+        meta['audio'] = segs
+        _cap_save_json(seg.cid + '.json', meta)
+    logging.info('[capsule-audio] saved %s (%.0fs)', seg.name, info['dur'])
+
+def _cap_sdr_status():
+    try:
+        return requests.get('http://127.0.0.1:5656/sdr/status', timeout=1.5).json()
+    except Exception:
+        return None
+
+def _cap_audio_next_n(cid):
+    """Next free segment number. Not len(files): recovery can delete a file in
+    the middle of the sequence, and a count would then reuse a live number."""
+    ns = []
+    for fn in _cap_audio_files(cid):
+        try:
+            ns.append(int(fn[len(cid) + 2:-4]))
+        except ValueError:
+            pass
+    return (max(ns) + 1) if ns else 0
+
+def capsule_audio_tap():
+    segs = {}                                    # cid -> open _CapAudioSeg
+    ffmpeg_ok = _cap_shutil.which('ffmpeg') is not None
+    last_err = 0.0
+    try:
+        _cap_audio_recover()
+    except Exception as e:
+        logging.warning('[capsule-audio] recovery pass failed: %s', e)
+
+    def wanted():
+        with CAPSULE_LOCK:
+            return {c['id'] for c in CAPSULE_ACTIVE.values()}
+
+    def close(cid):
+        seg = segs.pop(cid, None)
+        if seg:
+            _cap_audio_close(seg)
+
+    def close_all():
+        for cid in list(segs):
+            close(cid)
+
+    while True:
+        try:
+            want = wanted()
+            for cid in [c for c in segs if c not in want]:
+                close(cid)
+            if not want:
+                _cap_audio_set('idle')
+                time.sleep(2)
+                continue
+            if not ffmpeg_ok:
+                _cap_audio_set('no_ffmpeg')
+                time.sleep(30)
+                ffmpeg_ok = _cap_shutil.which('ffmpeg') is not None
+                continue
+            st = _cap_sdr_status()
+            if not isinstance(st, dict):
+                _cap_audio_set('no_radio')           # no second dongle / engine not answering
+                time.sleep(10)
+                continue
+            if not st.get('playing'):
+                _cap_audio_set('radio_off')          # AJ's rule: never switch it on ourselves
+                time.sleep(5)
+                continue
+
+            hz, mode = st.get('vfoHz'), st.get('mode')
+            s, buf = _cap_ws_open('/sdr/audio')
+            s.settimeout(1.0)
+            _cap_audio_set('recording', hz, mode)
+            rem = b''
+            now = time.time()
+            last_audio = last_want = last_poll = now
+            try:
+                while True:
+                    try:
+                        chunk = s.recv(65536)
+                        if not chunk:
+                            raise ConnectionError('audio stream closed')
+                    except socket.timeout:
+                        chunk = b''
+                    now = time.time()
+                    if now - last_want >= 1.0:
+                        want = wanted()
+                        last_want = now
+                        for cid in [c for c in segs if c not in want]:
+                            close(cid)
+                        if not want:
+                            break
+                    if chunk:
+                        buf.extend(chunk)
+                        pcm = bytearray()
+                        for op, pl in _cap_ws_frames(buf):
+                            if op == 0x8:
+                                raise ConnectionError('closed by engine')
+                            if op == 0x9:
+                                _cap_ws_send(s, 0xA, pl)
+                            elif op in (0x0, 0x2):
+                                pcm.extend(pl)
+                        if pcm:
+                            data = rem + bytes(pcm)
+                            cut = len(data) - (len(data) % 4)
+                            rem, data = data[cut:], data[:cut]
+                            last_audio = now
+                            for cid in want:
+                                seg = segs.get(cid)
+                                if seg is None or seg.dead:
+                                    if seg is not None:
+                                        close(cid)
+                                    seg = segs[cid] = _CapAudioSeg(cid, _cap_audio_next_n(cid), hz, mode)
+                                seg.write(data, now)
+                                if seg.t0 is not None and not seg.registered:
+                                    _cap_audio_register(seg)
+                    if now - last_audio > CAPSULE_AUDIO_STALL:
+                        break                        # radio switched off, or the dongle stopped
+                    if now - last_poll >= 10:
+                        last_poll = now
+                        st = _cap_sdr_status()
+                        if not isinstance(st, dict) or not st.get('playing'):
+                            break
+                        if st.get('vfoHz') != hz or st.get('mode') != mode:
+                            # Retuned mid-flight: close this stretch so every segment
+                            # is labelled with the one frequency it actually holds.
+                            close_all()
+                            hz, mode = st.get('vfoHz'), st.get('mode')
+                            _cap_audio_set('recording', hz, mode)
+            finally:
+                try:
+                    s.close()
+                except Exception:
+                    pass
+            close_all()
+        except Exception as e:
+            close_all()
+            _cap_audio_set('error')
+            if time.time() - last_err > 300:
+                logging.warning('[capsule-audio] tap failed: %s', e)
+                last_err = time.time()
+            time.sleep(5)
+
+@app.route('/api/capsules/<cid>/audio/<int:n>', methods=['GET'])
+def api_capsule_audio(cid, n):
+    from flask import send_file
+    cid = cid.upper()
+    if not _cap_valid_id(cid) or n < 0 or n > 999:
+        return jsonify({'error': 'bad id'}), 400
+    p = _cap_path('%s.a%d.ogg' % (cid, n))
+    if not os.path.isfile(p):
+        return jsonify({'error': 'not found'}), 404
+    # conditional=True answers Range requests, which is what lets the browser seek.
+    return send_file(p, mimetype='audio/ogg', conditional=True, max_age=0)
+
 capsule_thread = threading.Thread(target=capsule_recorder, daemon=True)
 capsule_thread.start()
+capsule_audio_thread = threading.Thread(target=capsule_audio_tap, daemon=True)
+capsule_audio_thread.start()
 
 # Start OTA checker thread
 ota_thread = threading.Thread(target=ota_checker, daemon=True)
@@ -3829,44 +4433,32 @@ def history_summary():
 
     aircraft = []
     hour_counts = {}
+    import datetime
 
+    # Reads the persisted day store (HIST_*), not TRAIL_HISTORY — see the
+    # comment above _hist_load() for why the graph used to look empty.
     with TRAIL_LOCK:
-        for hex_code, pts in TRAIL_HISTORY.items():
-            filtered = [p for p in pts if p['t'] >= cutoff]
-            if not filtered:
+        for h, hexes in HIST_HOURS.items():
+            if (h + 1) * 3600 <= cutoff:
                 continue
+            label = datetime.datetime.fromtimestamp(h * 3600).strftime('%H')
+            hour_counts.setdefault(label, set()).update(hexes)
 
-            first_seen = min(p['t'] for p in filtered)
-            last_seen = max(p['t'] for p in filtered)
-            # alt_baro can be the string 'ground' from dump1090 when an aircraft
-            # is on the runway — coerce non-numeric values to 0 so max() works
-            def _alt_int(p):
-                a = p.get('alt_baro', 0)
-                return a if isinstance(a, (int, float)) else 0
-            max_alt = max(_alt_int(p) for p in filtered)
-            callsign = ''
-            for p in reversed(filtered):
-                if p.get('flight', '').strip():
-                    callsign = p['flight'].strip()
-                    break
-
-            # Count by hour
-            for p in filtered:
-                import datetime
-                h = datetime.datetime.fromtimestamp(p['t']).strftime('%H')
-                hour_counts[h] = hour_counts.get(h, set())
-                hour_counts[h].add(hex_code)
-
+        for hex_code, e in HIST_AC.items():
+            last_seen = e.get('last') or 0
+            if last_seen < cutoff:
+                continue
+            first_seen = max(e.get('first') or last_seen, cutoff)
             aircraft.append({
                 'hex': hex_code,
-                'callsign': callsign,
+                'callsign': e.get('cs') or '',
                 'first_seen': first_seen,
                 'last_seen': last_seen,
                 'duration': round(last_seen - first_seen),
-                'max_alt': max_alt,
-                'positions': len(filtered),
-                'last_lat': filtered[-1].get('lat', 0),
-                'last_lon': filtered[-1].get('lon', 0),
+                'max_alt': e.get('max_alt') or 0,
+                'positions': e.get('n') or 0,
+                'last_lat': e.get('lat') or 0,
+                'last_lon': e.get('lon') or 0,
                 # Enrich with type/registration so the dashboard history search
                 # can filter by aircraft type (e.g. "AN-124", "A380") — added v1.0.18
                 't': AIRCRAFT_DB.get(hex_code.upper(), {}).get('t', ''),

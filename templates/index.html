@@ -5274,11 +5274,15 @@ function fetchMilInfo(hex, type, callback) {
   if (!hex) { callback(null); return; }
   var key = hex + '|' + (type || '');
   if (milInfoCache[key] !== undefined) { callback(milInfoCache[key]); return; }
-  var url = 'https://pilnk.io/api/mil-lookup.php?hex=' + encodeURIComponent(hex)
+  // Via the node's own proxy (24 Sep 2026), not pilnk.io direct: a direct call
+  // from this LAN page can never carry the pilnk.io login (SameSite), so the
+  // card could never tell the owner what they had already caught.
+  var url = '/api/mil_lookup?hex=' + encodeURIComponent(hex)
           + (type ? '&type=' + encodeURIComponent(type) : '');
-  fetch(url, { credentials: 'include' })
+  fetch(url)
     .then(function(r) { return r.json(); })
     .then(function(d) {
+      if (d && d.error) { callback(null); return; }   // pilnk.io blip: don't cache it for the session
       milInfoCache[key] = d;
       callback(d);
     })
@@ -5377,10 +5381,12 @@ function logMilCatch() {
   var btn = document.getElementById('ccMilCatchBtn');
   if (!p || !p.hex || !p.icao_type) return;
   if (btn) { btn.disabled = true; btn.textContent = '… logging'; }
-  fetch('https://pilnk.io/api/mil-catch.php?action=log_catch', {
+  // Via the node (24 Sep 2026): the Pi logs the catch for its owner with its
+  // pairing code. Calling pilnk.io straight from here always answered
+  // "Not logged in" — the login cookie is never sent from a LAN page.
+  fetch('/api/mil_catch', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    credentials: 'include',
     body: JSON.stringify(p)
   })
   .then(function(r){ return r.json(); })
@@ -5393,6 +5399,8 @@ function logMilCatch() {
     }
     // Success — update the status line in place + hide the button.
     if (btn) btn.style.display = 'none';
+    // Forget the cached lookup so the next open of this card shows it as caught.
+    Object.keys(milInfoCache).forEach(function(k){ if (k.indexOf(p.hex + '|') === 0) delete milInfoCache[k]; });
     var status = document.getElementById('ccMilStatus');
     if (status) {
       status.classList.remove('not-yet');
@@ -6414,7 +6422,7 @@ loadWatchAlerts();
 // Flight Capsules UI (v1.5.22) lives in static/capsules.js. Loaded dynamically
 // so it runs AFTER this script has defined map / lastAircraft / the card state
 // it hooks into. ?v= busts the browser cache on each release.
-(function(){ var s = document.createElement('script'); s.src = '/static/capsules.js?v=1.5.22'; document.body.appendChild(s); })();
+(function(){ var s = document.createElement('script'); s.src = '/static/capsules.js?v=1.5.23b'; document.body.appendChild(s); })();
 
 // ── METAR ──────────────────────────────────────────────────
 var metarData = null;

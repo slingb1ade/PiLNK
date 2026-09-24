@@ -38,6 +38,9 @@ capsules/
 # OpenAIP airspace/navaid cache — persisted so a restart doesn't empty it (v1.5.22).
 openaip_cache.json
 openaip_cache.json.tmp
+# History-tab day store — survives restarts (v1.5.23).
+history_day.json
+history_day.json.tmp
 # Remote-maintenance action log — per-node runtime record, never committed.
 assist_actions.log
 

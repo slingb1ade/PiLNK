@@ -1,5 +1,6 @@
 
-// ── FLIGHT CAPSULES (v1.5.22 — Ship 1: track recorder, auto-record, replay) ──
+// ── FLIGHT CAPSULES (v1.5.22 Ship 1: track recorder, auto-record, replay;
+//    v1.5.23 Ship 2: synced ATC audio, recorded only when the radio is already on) ──
 // The node records chosen aircraft SERVER-SIDE (app.py capsule_recorder) every
 // 2 s until they have been out of coverage for 10 min, so a capsule keeps
 // going with this page closed. This block is only the UI: ● REC / ⟳ AUTO on
@@ -39,6 +40,15 @@ function capFmtDur(s){
   return (h ? h + ':' + String(m).padStart(2, '0') : m) + ':' + String(x).padStart(2, '0');
 }
 function capNow(){ return Date.now() / 1000 + capState.skew; }   // the Pi's clock
+// Ship 2 (v1.5.23): what the node's audio tap is doing for live capsules. A
+// capsule never switches the radio on (AJ, 24 Sep) — if it's off, say so.
+function capAudioTag(st){
+  return st === 'recording' ? ' · 🔊 audio'
+       : st === 'radio_off' ? ' · track only (radio off)'
+       : st === 'no_radio'  ? ' · track only (no radio)'
+       : st === 'no_ffmpeg' ? ' · track only (ffmpeg missing)' : '';
+}
+function capMHz(hz){ return (typeof hz === 'number' && hz > 0) ? (hz / 1e6).toFixed(3) + ' MHz' : '?'; }
 function capAltTxt(v){ return (typeof v === 'number') ? Math.round(v).toLocaleString() + 'ft' : '—'; }
 function capPost(url, body){
   return fetch(url, {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body || {})})
@@ -108,7 +118,7 @@ function renderCapsulePanel(){
   act.innerHTML = hxs.map(function(hx){
     var c = capState.active[hx];
     return '<div class="cap-row"><span class="cap-dot"></span><b>' + capEsc(c.flight || hx) + '</b>' +
-      '<span class="cap-dim">' + capEsc(hx) + (c.auto ? ' · auto' : '') + '</span>' +
+      '<span class="cap-dim">' + capEsc(hx) + (c.auto ? ' · auto' : '') + capAudioTag(c.audio) + '</span>' +
       '<span class="cap-right"><span class="cap-dim cap-el" data-st="' + c.started + '" data-pts="' + c.points + '">' +
         capFmtDur(capNow() - c.started) + ' · ' + c.points + ' pts</span>' +
       '<button onclick="capReplay(\'' + c.id + '\')">▶ View</button>' +
@@ -119,7 +129,8 @@ function renderCapsulePanel(){
     var when = new Date((m.started || 0) * 1000);
     return '<div class="cap-row"><b>' + capEsc(name) + '</b>' +
       '<span class="cap-dim">' + when.toLocaleDateString() + ' ' + when.toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'}) +
-      ' · ' + capFmtDur(m.duration) + ' · ' + capAltTxt(m.min_alt) + '–' + capAltTxt(m.max_alt) + (m.auto ? ' · auto' : '') + '</span>' +
+      ' · ' + capFmtDur(m.duration) + ' · ' + capAltTxt(m.min_alt) + '–' + capAltTxt(m.max_alt) + (m.auto ? ' · auto' : '') +
+      ((m.audio && m.audio.length) ? ' · 🔊' : '') + '</span>' +
       '<span class="cap-right"><button onclick="capReplay(\'' + m.id + '\')">▶ Replay</button>' +
       '<a href="/api/capsules/' + m.id + '/kml" download>KML</a>' +
       '<button onclick="capDelete(\'' + m.id + '\')" title="Delete this capsule">✕</button></span></div>';
@@ -150,6 +161,39 @@ function capEnsurePanes(){
 function capHue(frac){ return 'hsl(' + Math.round(20 + Math.max(0, Math.min(1, frac)) * 240) + ',90%,55%)'; }
 function capArrow(){
   return '<svg width="22" height="22" viewBox="0 0 24 24"><path d="M12 2 L19 21 L12 17 L5 21 Z" fill="#fde047" stroke="#111" stroke-width="1.3" stroke-linejoin="round"/></svg>';
+}
+// The replay marker is the SAME silhouette the live map draws for this type
+// (AJ, 24 Sep): a military shape when one exists (C-130, F-16…), else the
+// per-type civil shape, else the category shape — drawn in replay yellow so it
+// stands out on the dimmed map. The arrow is only the last-resort fallback if
+// the dashboard's icon code isn't available.
+var CAP_PLANE_COL = '#fde047';
+// Capsules recorded before the ADS-B category was stored (pre-v1.5.23) only
+// know the type, and a type alone can't say "helicopter". Common rotorcraft
+// types, so the police Bell 429 in those capsules is still drawn as one.
+var CAP_HELI_TYPES = /^(B06T?|B212|B230|B222|B407|B412|B427|B429|B505|BK17|EC(20|30|35|45|55|75)|H(125|130|135|145|160|175|500)|AS(32|3B|50|55|65)|A1(09|19|39|69|89)|AW09|R22|R44|R66|S76|S92|MD(52|60)|UH1|H60|NH90|EH10|KA32|MI(8|17))$/;
+function capPlaneIcon(meta){
+  var t = String((meta && meta.type) || '').toUpperCase().trim();
+  var cat = (meta && meta.cat) || (CAP_HELI_TYPES.test(t) ? 'A7' : '');
+  try {
+    if (t && typeof milCanvasKey === 'function' && typeof MIL_PATHS !== 'undefined') {
+      var mk = milCanvasKey(t, '');
+      if (mk && MIL_PATHS[mk]) {
+        // 54, not the live map's 42: the military silhouettes fill less of their
+        // box, and at 42 the C-130 read smaller than an A320 beside it.
+        return {size: 54, html: '<svg xmlns="http://www.w3.org/2000/svg" width="54" height="54" viewBox="0 0 240 240">' +
+          '<g transform="translate(0,240) scale(0.1,-0.1)" fill="' + CAP_PLANE_COL + '" stroke="#111" stroke-width="12">' +
+          '<path d="' + MIL_PATHS[mk] + '"/></g></svg>'};
+      }
+    }
+    if (typeof makeIcon === 'function' && typeof getCat === 'function') {
+      var hasShape = t && (window.AIRCRAFT_SHAPES || {})[t];
+      var ic = makeIcon('', getCat(t, cat), 0, CAP_PLANE_COL, false, hasShape ? t : undefined);
+      var m = ((ic && ic.options && ic.options.html) || '').match(/<svg[\s\S]*?<\/svg>/);
+      if (m) return {size: (ic.options.iconSize && ic.options.iconSize[0]) || 38, html: m[0]};
+    }
+  } catch (e) { /* fall through to the arrow */ }
+  return {size: 22, html: capArrow()};
 }
 // Fade (or hide) every map layer that isn't the base tiles or the capsule.
 // level === null restores what was there before.
@@ -202,12 +246,18 @@ function capReplay(id){
       prev = p;
     });
     flush(segBucket);
+    // Wrapped in a div so capUpdate can rotate one element whatever the icon's own markup.
+    var pi = capPlaneIcon(m);
     var mk = L.marker([pts[0].lat, pts[0].lon], {pane: 'capsuleMarker', interactive: false, keyboard: false,
-      icon: L.divIcon({className: 'cap-plane', html: capArrow(), iconSize: [22, 22], iconAnchor: [11, 11]})}).addTo(layer);
+      icon: L.divIcon({className: 'cap-plane', iconSize: [pi.size, pi.size], iconAnchor: [pi.size / 2, pi.size / 2],
+        html: '<div style="width:' + pi.size + 'px;height:' + pi.size + 'px;transform-origin:50% 50%;">' + pi.html + '</div>'})}).addTo(layer);
     capRP = {id: id, meta: m, pts: pts, t0: pts[0].t, t1: pts[pts.length - 1].t, t: pts[0].t, i: 0,
              playing: false, speed: 16, layer: layer, rend: rend, marker: mk,
              bounds: L.latLngBounds(pts.map(function(p){ return [p.lat, p.lon]; })),
-             aMin: aMin, aMax: aMax, timer: null, shot: false};
+             aMin: aMin, aMax: aMax, timer: null, shot: false,
+             // Ship 2: audio stretches {n, t0, dur, hz, mode}, played in sync at 1×.
+             audio: (m.audio || []).slice().sort(function(x, y){ return x.t0 - y.t0; }),
+             aud: null, audSeg: null, audOn: true};
     capDimOthers(0.25);
     capBuildBar();
     capFit();
@@ -223,12 +273,19 @@ function capBuildBar(){
     '<div><b>' + capEsc(name) + '</b> <span style="color:#94a3b8;">' + capEsc(m.hex || '') + ' · ' +
       new Date(R.t0 * 1000).toLocaleString() + (m.status === 'recording' ? ' · still recording' : '') + '</span></div>' +
     '<div class="cap-bar-row"><button id="capPlay" onclick="capPlayToggle()">▶</button>' +
-      '<select id="capSpeed" onchange="if(capRP)capRP.speed=+this.value">' +
+      '<select id="capSpeed" onchange="if(capRP){capRP.speed=+this.value;capUpdate();}">' +
         [1, 4, 16, 60, 120].map(function(s){ return '<option value="' + s + '"' + (s === 16 ? ' selected' : '') + '>' + s + '×</option>'; }).join('') +
       '</select><input type="range" id="capScrub" min="0" max="1000" value="0" oninput="capScrubTo(this.value)">' +
       '<span id="capClock"></span></div>' +
     '<div class="cap-bar-row"><span id="capInfo" style="flex:1;"></span>' +
       '<span style="color:#94a3b8;">' + capAltTxt(R.aMin) + '<span class="cap-legend-bar"></span>' + capAltTxt(R.aMax) + '</span></div>' +
+    (R.audio.length ?
+      // Honest labelling: the tap records the TUNED FREQUENCY, not this aircraft's
+      // own calls, and speech only makes sense at real speed.
+      '<div class="cap-bar-row"><button id="capAudBtn" onclick="capAudToggle()">🔊 Audio on</button>' +
+      '<span style="color:#94a3b8;flex:1;">ATC audio · ' +
+        R.audio.map(function(s){ return capMHz(s.hz); }).filter(function(v, k, a){ return a.indexOf(v) === k; }).join(', ') +
+        ' · plays at 1× · everything heard on that frequency, not only this aircraft</span></div>' : '') +
     '<div class="cap-bar-row"><button onclick="capFit()">⤢ Fit</button>' +
       '<button onclick="capShot(true)">📷 Screenshot mode</button>' +
       '<a href="/api/capsules/' + R.id + '/kml" download>⬇ KML</a>' +
@@ -250,7 +307,14 @@ function capScrubTo(v){
 }
 function capTick(){
   var R = capRP; if (!R || !R.playing) return;
-  R.t += 0.1 * R.speed;
+  // While a stretch of audio is actually playing, the AUDIO is the clock: the
+  // marker follows the sound, so the two can never drift apart. Everywhere
+  // else (no audio, gaps, faster speeds) the 100 ms timer drives as before.
+  if (R.audSeg && R.aud && !R.aud.paused && R.speed === 1 && R.aud.readyState >= 2) {
+    R.t = R.audSeg.t0 + R.aud.currentTime;
+  } else {
+    R.t += 0.1 * R.speed;
+  }
   if (R.t >= R.t1) { R.t = R.t1; R.playing = false; }
   capUpdate();
 }
@@ -280,6 +344,55 @@ function capUpdate(fromScrub){
     (typeof p.trk === 'number' ? Math.round(p.trk) + '°' : ''),
     (typeof p.vr === 'number' && p.vr ? (p.vr > 0 ? '+' : '') + Math.round(p.vr) + 'fpm' : ''),
     p.sq ? 'sq ' + p.sq : '', p.fl || ''].filter(Boolean).join(' · ');
+  capSyncAudio();
+}
+// ── Ship 2: audio playback ───────────────────────────────────
+// Each stretch is its own file with its own start time, so the position inside
+// it is simply (t - t0). A moment with no stretch is genuine silence in the
+// record (radio off, restart) and plays as nothing.
+function capSegAt(R, t){
+  for (var k = 0; k < R.audio.length; k++) {
+    var s = R.audio[k];
+    if (t >= s.t0 && t < s.t0 + s.dur) return s;
+  }
+  return null;
+}
+function capSyncAudio(){
+  var R = capRP; if (!R || !R.audio.length) return;
+  var btn = document.getElementById('capAudBtn');
+  if (btn) btn.textContent = R.audOn ? (R.speed === 1 ? '🔊 Audio on' : '🔊 Audio (1× only)') : '🔇 Audio off';
+  var s = (R.playing && R.speed === 1 && R.audOn) ? capSegAt(R, R.t) : null;
+  if (!s) {
+    if (R.aud && !R.aud.paused) R.aud.pause();
+    R.audSeg = null;
+    return;
+  }
+  if (!R.aud) { R.aud = new Audio(); R.aud.preload = 'auto'; }
+  var a = R.aud;
+  if (R.audSeg !== s) {
+    R.audSeg = s;
+    a.src = '/api/capsules/' + R.id + '/audio/' + s.n;
+    // Seeking before metadata has loaded throws in some browsers — wait for it.
+    a.addEventListener('loadedmetadata', function once(){
+      a.removeEventListener('loadedmetadata', once);
+      if (capRP === R && R.audSeg === s) { try { a.currentTime = Math.max(0, R.t - s.t0); } catch (e) {} }
+    });
+    a.play().catch(function(){});
+    return;
+  }
+  if (a.readyState >= 1 && Math.abs(a.currentTime - (R.t - s.t0)) > 0.8) {
+    try { a.currentTime = Math.max(0, R.t - s.t0); } catch (e) {}   // after a scrub
+  }
+  if (a.paused && !a.ended) a.play().catch(function(){});
+}
+function capAudToggle(){
+  var R = capRP; if (!R) return;
+  R.audOn = !R.audOn;
+  if (R.audOn && R.speed !== 1) {                // turning audio on means "let me hear it"
+    R.speed = 1;
+    var sel = document.getElementById('capSpeed'); if (sel) sel.value = '1';
+  }
+  capUpdate();
 }
 // Screenshot mode: the map goes full-window with ONLY the base map and the
 // capsule on it — no aircraft, rings, weather, zoom buttons or panels. The
@@ -313,6 +426,7 @@ function capExit(){
   var R = capRP; if (!R) return;
   if (R.shot) capShot(false);
   clearInterval(R.timer);
+  if (R.aud) { try { R.aud.pause(); R.aud.removeAttribute('src'); R.aud.load(); } catch (e) {} }
   map.removeLayer(R.layer);
   if (R.rend) map.removeLayer(R.rend);
   capDimOthers(null);
