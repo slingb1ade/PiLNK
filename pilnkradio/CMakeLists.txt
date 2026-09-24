@@ -28,6 +28,10 @@ find_library(FFTW3F_LIB fftw3f REQUIRED)
 
 target_include_directories(pilnkradio PRIVATE ${RTLSDR_INCLUDE})
 target_link_libraries(pilnkradio PRIVATE Threads::Threads ${RTLSDR_LIB} ${FFTW3F_LIB})
+# v2.1.0: dlopen() for the OPTIONAL listener denoise library. Only libdl is linked —
+# never libdf itself — so a node without DeepFilterNet builds and runs exactly as before.
+# (glibc 2.34+ has dlopen in libc and CMAKE_DL_LIBS is harmless there.)
+target_link_libraries(pilnkradio PRIVATE ${CMAKE_DL_LIBS})
 
 # 8-byte atomics: native instructions on aarch64/x86_64, but 32-bit ARM
 # (armv7l — the PiAware SD-card image) has none, so GCC lowers

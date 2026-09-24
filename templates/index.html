@@ -1454,6 +1454,12 @@
             <div style="padding:0 12px 8px;">
               <button id="saListenBtn" onclick="saToggle()" style="width:100%;padding:12px;border:1px solid var(--green);background:transparent;border-radius:8px;color:var(--green);font-family:'Orbitron',sans-serif;font-size:0.7rem;font-weight:700;letter-spacing:0.15em;cursor:pointer;transition:all 0.2s;">▶ LISTEN</button>
             </div>
+            <!-- v1.5.29: live denoise for THIS browser (DeepFilterNet in the radio engine). Hidden
+                 unless the node's engine reports it available. Recordings and ATC transcripts
+                 always use the raw audio. -->
+            <div id="saDenoiseRow" style="display:none;padding:0 12px 8px;">
+              <button id="saDenoiseBtn" onclick="saDenoiseToggle()" title="Cleans up the hiss and static in what YOU hear. Flight capsule recordings and ATC transcripts always keep the original audio. Up to 2 listeners at a time; anyone past that hears the plain audio." style="width:100%;padding:7px;border:1px solid var(--border);background:transparent;border-radius:8px;color:var(--text-dim);font-family:'Share Tech Mono',monospace;font-size:0.62rem;letter-spacing:0.1em;cursor:pointer;">✨ DENOISE: OFF</button>
+            </div>
 
             <!-- Signal Meter -->
             <div style="padding:0 12px 8px;">
@@ -8844,9 +8850,40 @@ setInterval(raPoll, 5000);
   function pollStatus(){
     if(!wantConn) return;
     fetch(base()+'/sdr/status').then(function(r){return r.json();}).then(function(s){
-      st = s; syncCaps(); updateUI();
+      st = s; syncCaps(); updateUI(); syncDenoise();
     }).catch(function(){});
   }
+
+  // ---- Live denoise (v1.5.29) ----
+  // The engine keeps /sdr/audio raw (STT and capsules read it); a browser that wants the
+  // cleaned-up version opens /sdr/audio?denoise=1 instead and gets its own filtered copy.
+  // Default ON where the engine offers it; remembered per browser.
+  var dnWant = (function(){ try{ return localStorage.getItem('pilnk-sdr-denoise') !== '0'; }catch(e){ return true; } })();
+  var dnActive = false;   // is the CURRENT audio socket the denoised one?
+  function dnAvailable(){ return !!(st && st.denoise && st.denoise.available); }
+  function openAudio(denoised){
+    try{ audioWs && audioWs.close(); }catch(e){}
+    audioWs = new WebSocket(wsbase() + '/sdr/audio' + (denoised ? '?denoise=1' : ''));
+    audioWs.binaryType = 'arraybuffer';
+    audioWs.onmessage = function(ev){ onAudio(ev.data); };
+    dnActive = !!denoised;
+  }
+  function syncDenoise(){
+    var want = dnWant && dnAvailable();
+    if (connected && want !== dnActive) openAudio(want);   // swap sockets only on a real change
+    var row = $('saDenoiseRow'), btn = $('saDenoiseBtn');
+    if (row) row.style.display = dnAvailable() ? 'block' : 'none';
+    if (btn) {
+      btn.textContent = dnWant ? '✨ DENOISE: ON' : '✨ DENOISE: OFF';
+      btn.style.color = dnWant ? 'var(--green)' : 'var(--text-dim)';
+      btn.style.borderColor = dnWant ? 'var(--green)' : 'var(--border)';
+    }
+  }
+  window.saDenoiseToggle = function(){
+    dnWant = !dnWant;
+    try{ localStorage.setItem('pilnk-sdr-denoise', dnWant ? '1' : '0'); }catch(e){}
+    syncDenoise();
+  };
 
   // ---- WebSocket streams ----
   function connect(){
@@ -8861,9 +8898,9 @@ setInterval(raPoll, 5000);
     fftWs.onmessage = function(ev){ onFFT(ev.data); };
     fftWs.onclose = function(){ connected=false; updateUI(); scheduleRetry(); };
     fftWs.onerror = function(){};
-    audioWs = new WebSocket(wsbase()+'/sdr/audio');
-    audioWs.binaryType='arraybuffer';
-    audioWs.onmessage = function(ev){ onAudio(ev.data); };
+    // Raw first: whether this engine offers denoise is only known once /sdr/status answers,
+    // and syncDenoise() then swaps to the denoised socket if this browser wants it.
+    openAudio(false);
     if(!statusT) statusT = setInterval(pollStatus, 2000);
     if(!rendering){ rendering=true; requestAnimationFrame(render); }
   }
@@ -8948,7 +8985,10 @@ setInterval(raPoll, 5000);
     // QUIETS the demod noise. Track the static floor and open the gate when
     // the level DROPS below it — mutes inter-transmission static while
     // keeping weak voices the RF squelch physically cannot separate.
-    if(rms>1e-6){
+    // v1.5.29: NOT while denoised. This detector keys on static, and static is exactly
+    // what DeepFilterNet removes — it would read clean speech as "loud" and close on it.
+    // Frozen (not reset) meanwhile, so switching DENOISE off picks up where it left off.
+    if(rms>1e-6 && !dnActive){
         afsqSmooth=(afsqSmooth===null)?rms:afsqSmooth+0.15*(rms-afsqSmooth);   // fast ~70ms — catches deep pilot quieting
         afsqSlow=(afsqSlow===null)?rms:afsqSlow+0.02*(rms-afsqSlow);           // slow ~0.5s — resolves the controller's ~1% dip
         if(afsqFloor===null||afsqSlow>=afsqFloor) afsqFloor=afsqSlow;          // static is the loudest state: track up instantly
@@ -8961,7 +9001,7 @@ setInterval(raPoll, 5000);
         if(afsqSmooth!==null && afsqSmooth<afsqFloor*0.96) afsqHold=Math.max(afsqHold,t0+(n/sr)+0.5);
         if(afsqSlow!==null && afsqSlow<afsqFloor*0.99) afsqHold=Math.max(afsqHold,t0+(n/sr)+1.0);
     }
-    var afsqPass=(!afsqOn)||afsqFloor===null||t0<afsqHold;
+    var afsqPass=(!afsqOn)||dnActive||afsqFloor===null||t0<afsqHold;   // denoised: the filter is the gate
     var afsqTgt=afsqPass?1:0.02;                                      // closed = -34 dB, not dead air
     if(gateNode && afsqTgt!==afsqLast){
         gateNode.gain.setTargetAtTime(afsqTgt,t0,0.012);              // clickless, aligned to chunk
@@ -8969,13 +9009,17 @@ setInterval(raPoll, 5000);
         var gd=$('sdrAfSqDot'); if(gd) gd.classList.toggle('open',afsqPass);
     }
     src.start(t0); nextTime=t0+n/sr;
-    var open=rms>0.004;
+    // Squelch light. The engine sends exact zeros while its squelch is shut, so "any
+    // sound at all" = open. Plain audio keeps the old 0.004 threshold untouched; denoised
+    // audio is far quieter (the hiss is gone), so there anything above ~silence counts (v1.5.29).
+    var open=rms>(dnActive?1e-4:0.004);
     if(open) audioOpenUntil=now+0.25;
     var lit=open||now<audioOpenUntil;
     if(lit!==sqLastOpen){ sqLastOpen=lit; var d=$('sdrSqDot'); if(d) d.classList.toggle('open',lit); }
     if(recording){
       var take=true;
-      if(skipSilence){ if(rms>REC_THRESH) recHold=now+REC_TAIL; take=rms>REC_THRESH||now<recHold; }
+      var recT=dnActive?1e-4:REC_THRESH;   // same reason as the squelch light: denoised silence is ~0
+      if(skipSilence){ if(rms>recT) recHold=now+REC_TAIL; take=rms>recT||now<recHold; }
       if(take){ recChunks.push(samples.slice()); recSamples+=n; }
     }
   }

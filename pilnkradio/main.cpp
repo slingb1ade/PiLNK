@@ -52,10 +52,13 @@
 #include <netinet/tcp.h>
 #include <arpa/inet.h>
 #include <unistd.h>
+#include <dlfcn.h>        // v2.1.0: optional DeepFilterNet (loaded at runtime, never linked)
+#include <sys/wait.h>
+#include <memory>
 
 using nlohmann::json;
 
-#define PILNKRADIO_VERSION "2.0.0-m1"
+#define PILNKRADIO_VERSION "2.1.0"
 #define PILNK_FFT_SIZE     1024
 #define PILNK_FFT_RATE     25.0
 
@@ -392,6 +395,107 @@ private:
     std::vector<float> taps, hist, work;
 };
 
+// ======================= live denoise (optional, v2.1.0) =======================
+// AJ, 25 Sep 2026, after hearing DeepFilterNet3 on labelled clips: "almost crystal
+// clear". The STT session measured it on EpsomPi — 1.36 ms mean per 10 ms frame,
+// 14% of one Pi 5 core per listener, 0 of 5,987 frames late with STT running.
+//
+// ONE HARD RULE: LISTENERS ONLY. Denoised audio HALVES atc-stt's callsign accuracy
+// (measured, 1,254 clips). So this never touches /sdr/audio itself — the stream the
+// STT tap and flight capsules read stays exactly as it was. A browser opts in with
+// /sdr/audio?denoise=1 and gets its OWN filtered copy, on its own worker thread.
+//
+// FAIL-SOFT, like everything else in this engine:
+//   - the library is dlopen'd at runtime, never linked — a node without it builds
+//     and runs exactly as before, and simply never offers denoise;
+//   - before the engine loads it, a CHILD PROCESS loads it, builds a filter and
+//     runs 20 frames. A wrong build for the CPU (the published binaries SIGBUS on
+//     a Pi 5's 16 KB pages) kills the child, not the radio;
+//   - a listener who asks when it is unavailable or full gets plain audio.
+// Files (per node, per architecture — see atc-stt deploy/deepfilter-pi5.md):
+//   /usr/local/lib/pilnk/libdf.so, /usr/local/share/pilnk/DeepFilterNet3_onnx.tar.gz
+// (PILNK_DF_LIB / PILNK_DF_MODEL override, for testing.)
+namespace dfn {
+    typedef void*  (*create_t)(const char*, float, const char*);
+    typedef size_t (*framelen_t)(void*);
+    typedef float  (*process_t)(void*, float*, float*);
+    typedef void   (*free_t)(void*);
+    typedef char*  (*nextlog_t)(void*);
+    typedef void   (*freelog_t)(char*);
+
+    static const char* DEFAULT_LIB   = "/usr/local/lib/pilnk/libdf.so";
+    static const char* DEFAULT_MODEL = "/usr/local/share/pilnk/DeepFilterNet3_onnx.tar.gz";
+    static const float ATTEN_LIM_DB  = 100.0f;   // DFN's own default: no limit on suppression
+
+    struct Api {
+        std::string lib, model, why = "not probed";
+        void* h = nullptr;
+        create_t create = nullptr; framelen_t frameLen = nullptr;
+        process_t process = nullptr; free_t destroy = nullptr;
+        nextlog_t nextLog = nullptr; freelog_t freeLog = nullptr;   // optional
+        bool ok = false;
+    };
+    static Api api;
+
+    static bool fileExists(const std::string& p) {
+        struct stat st;
+        return !p.empty() && stat(p.c_str(), &st) == 0 && S_ISREG(st.st_mode);
+    }
+
+    static bool bindSyms(Api& a) {
+        a.create   = (create_t)  dlsym(a.h, "df_create");
+        a.frameLen = (framelen_t)dlsym(a.h, "df_get_frame_length");
+        a.process  = (process_t) dlsym(a.h, "df_process_frame");
+        a.destroy  = (free_t)    dlsym(a.h, "df_free");
+        a.nextLog  = (nextlog_t) dlsym(a.h, "df_next_log_msg");
+        a.freeLog  = (freelog_t) dlsym(a.h, "df_free_log_msg");
+        return a.create && a.frameLen && a.process && a.destroy;
+    }
+
+    // The whole life of a filter, end to end. Run in the probe CHILD only.
+    static int exercise(const std::string& lib, const std::string& model) {
+        Api a;
+        a.h = dlopen(lib.c_str(), RTLD_NOW | RTLD_LOCAL);
+        if (!a.h) return 10;
+        if (!bindSyms(a)) return 11;
+        void* st = a.create(model.c_str(), ATTEN_LIM_DB, "error");
+        if (!st) return 12;
+        size_t fl = a.frameLen(st);
+        if (fl == 0 || fl > 4096) return 13;
+        std::vector<float> in(fl, 0.0f), out(fl, 0.0f);
+        for (int i = 0; i < 20; i++) a.process(st, in.data(), out.data());
+        a.destroy(st);
+        return 0;
+    }
+
+    // Called from main() BEFORE any thread exists, so fork() is safe.
+    static void probe() {
+        const char* el = getenv("PILNK_DF_LIB");
+        const char* em = getenv("PILNK_DF_MODEL");
+        api.lib   = (el && *el) ? el : DEFAULT_LIB;
+        api.model = (em && *em) ? em : DEFAULT_MODEL;
+        if (!fileExists(api.lib))   { api.why = "no library at " + api.lib;  logI("denoise: off (%s)", api.why.c_str()); return; }
+        if (!fileExists(api.model)) { api.why = "no model at " + api.model; logI("denoise: off (%s)", api.why.c_str()); return; }
+        fflush(stdout);
+        pid_t pid = fork();
+        if (pid < 0) { api.why = "probe could not fork"; logW("denoise: off (%s)", api.why.c_str()); return; }
+        if (pid == 0) { alarm(40); _exit(exercise(api.lib, api.model)); }   // backstop only: the parent gives up at 30 s
+        int status = 0; pid_t r = 0;
+        for (int i = 0; i < 300 && (r = waitpid(pid, &status, WNOHANG)) == 0; i++) usleep(100000);
+        if (r == 0) { kill(pid, SIGKILL); waitpid(pid, &status, 0); api.why = "probe timed out after 30 s"; }
+        else if (WIFSIGNALED(status)) api.why = "probe crashed (signal " + std::to_string(WTERMSIG(status)) + ") - wrong build for this machine?";
+        else if (!WIFEXITED(status) || WEXITSTATUS(status) != 0) api.why = "probe failed (code " + std::to_string(WEXITSTATUS(status)) + ")";
+        else {
+            api.h = dlopen(api.lib.c_str(), RTLD_NOW | RTLD_LOCAL);
+            if (!api.h) { const char* e = dlerror(); api.why = std::string("dlopen: ") + (e ? e : "?"); }
+            else if (!bindSyms(api)) api.why = "library lacks the df_* C API";
+            else { api.ok = true; api.why = ""; }
+        }
+        if (api.ok) logI("denoise: available for listeners (%s)", api.lib.c_str());
+        else        logW("denoise: off - %s (the radio itself is unaffected)", api.why.c_str());
+    }
+}
+
 // ======================= daemon =======================
 class PilnkRadioDaemon {
 public:
@@ -472,7 +576,12 @@ public:
 
     // ---- WS broadcast (called by FFT/audio producers; producers arrive in M2/M3) ----
     void broadcastFFT(const uint8_t* data, size_t len)   { fftFrameAccum.fetch_add(1, std::memory_order_relaxed); broadcast(fftSubs, data, len); }
-    void broadcastAudio(const uint8_t* data, size_t len) { audioSampleAccum.fetch_add(len / sizeof(float), std::memory_order_relaxed); broadcast(audioSubs, data, len); }
+    void broadcastAudio(const uint8_t* data, size_t len) {
+        audioSampleAccum.fetch_add(len / sizeof(float), std::memory_order_relaxed);
+        broadcast(audioSubs, data, len);                 // the raw stream: STT, capsules, plain listeners
+        if (nDnSubs.load(std::memory_order_relaxed) > 0) // v2.1.0: a COPY for each denoised listener
+            feedDenoise((const float*)data, len / sizeof(float));
+    }
 
 private:
     Config& cfg;
@@ -885,6 +994,10 @@ private:
         // node running the current engine?" a single curl, fleet-wide.
         j["engine"]  = "pilnkradio";
         j["version"] = PILNKRADIO_VERSION;
+        // v2.1.0: whether a listener can ask for /sdr/audio?denoise=1, and if not, why.
+        json dn = { {"available", dfn::api.ok}, {"clients", nDnSubs.load()}, {"max", DN_MAX} };
+        if (!dfn::api.ok) dn["why"] = dfn::api.why;
+        j["denoise"] = dn;
         return j.dump();
     }
 
@@ -944,6 +1057,93 @@ private:
     std::vector<int> fftSubs;
     std::vector<int> audioSubs;
 
+    // -------- denoised listeners (v2.1.0, see dfn:: above) --------
+    // The DSP thread only COPIES each 512-sample chunk into a per-listener queue;
+    // the filtering (about 1.4 ms per 10 ms frame on a Pi 5) runs on that listener's
+    // own worker thread and is written to its socket there. A slow filter or a slow
+    // browser can therefore never stall the raw stream that STT and capsules read.
+    struct DnClient {
+        int fd = -1;
+        std::mutex wmx;                         // one writer at a time: filtered frames vs pongs
+        std::mutex qmx;
+        std::condition_variable qcv;
+        std::deque<std::vector<float>> q;
+        std::atomic<bool> dead{false};
+        std::thread worker;
+        // handleWS joins the worker before letting go; this only matters at process
+        // exit, where a still-joinable std::thread would otherwise call std::terminate.
+        ~DnClient() { if (worker.joinable()) worker.detach(); }
+    };
+    static constexpr int    DN_MAX  = 2;        // ~14% of a Pi 5 core each; STT runs alongside
+    static constexpr size_t DN_QMAX = 48;       // ~0.5 s: a listener further behind loses the oldest
+    std::mutex dnMtx;
+    std::vector<std::shared_ptr<DnClient>> dnSubs;
+    std::atomic<int> nDnSubs{0};
+
+    void feedDenoise(const float* s, size_t n) {       // DSP thread
+        std::lock_guard<std::mutex> lk(dnMtx);
+        for (auto& c : dnSubs) {
+            if (c->dead.load()) continue;
+            { std::lock_guard<std::mutex> ql(c->qmx);
+              if (c->q.size() >= DN_QMAX) c->q.pop_front();
+              c->q.emplace_back(s, s + n); }
+            c->qcv.notify_one();
+        }
+    }
+
+    static size_t wsHeader(uint8_t hdr[10], size_t len) {   // server->client binary frame, unmasked
+        hdr[0] = 0x82;
+        if (len < 126) { hdr[1] = (uint8_t)len; return 2; }
+        if (len <= 0xFFFF) { hdr[1] = 126; hdr[2] = (len >> 8) & 0xFF; hdr[3] = len & 0xFF; return 4; }
+        hdr[1] = 127; for (int i = 0; i < 8; i++) hdr[2+i] = (len >> (8 * (7 - i))) & 0xFF; return 10;
+    }
+
+    void dnWorker(std::shared_ptr<DnClient> c) {
+        void* st = dfn::api.create(dfn::api.model.c_str(), dfn::ATTEN_LIM_DB, "error");
+        if (!st) {
+            logW("denoise: could not build a filter for a listener - closing it");
+            c->dead = true; shutdown(c->fd, SHUT_RDWR); return;
+        }
+        const size_t fl = dfn::api.frameLen(st);           // 480 = 10 ms @ 48 kHz for DFN3
+        std::vector<float> in(fl), out(fl), pend, outBuf;
+        auto lastDrain = std::chrono::steady_clock::now();
+        while (!c->dead.load() && running) {
+            std::vector<float> chunk;
+            {
+                std::unique_lock<std::mutex> lk(c->qmx);
+                c->qcv.wait_for(lk, std::chrono::milliseconds(250),
+                                [&]{ return !c->q.empty() || c->dead.load(); });
+                if (c->q.empty()) continue;
+                chunk.swap(c->q.front()); c->q.pop_front();
+            }
+            // The engine packs 512-sample chunks, DFN wants 480-sample frames: re-frame.
+            pend.insert(pend.end(), chunk.begin(), chunk.end());
+            size_t off = 0;
+            while (pend.size() - off >= fl) {
+                std::memcpy(in.data(), pend.data() + off, fl * sizeof(float));
+                dfn::api.process(st, in.data(), out.data());
+                outBuf.insert(outBuf.end(), out.begin(), out.end());
+                off += fl;
+            }
+            if (off) pend.erase(pend.begin(), pend.begin() + off);
+            if (!outBuf.empty()) {
+                uint8_t hdr[10]; size_t len = outBuf.size() * sizeof(float);
+                size_t hl = wsHeader(hdr, len);
+                std::lock_guard<std::mutex> wl(c->wmx);
+                if (!sendAll(c->fd, hdr, hl) || !sendAll(c->fd, outBuf.data(), len)) { c->dead = true; break; }
+                outBuf.clear();
+            }
+            // "error"-level log lines queue inside the library until read: drain them.
+            auto now = std::chrono::steady_clock::now();
+            if (dfn::api.nextLog && dfn::api.freeLog && now - lastDrain > std::chrono::seconds(10)) {
+                for (char* m; (m = dfn::api.nextLog(st)) != nullptr; ) { logW("denoise: %s", m); dfn::api.freeLog(m); }
+                lastDrain = now;
+            }
+        }
+        dfn::api.destroy(st);
+        shutdown(c->fd, SHUT_RDWR);   // wakes handleWS's recv so it tidies up and closes the fd
+    }
+
     bool startServer() {
         listenFd = socket(AF_INET, SOCK_STREAM, 0);
         if (listenFd < 0) { logE("socket() failed"); return false; }
@@ -975,6 +1175,9 @@ private:
         for (int fd : fftSubs) close(fd);
         for (int fd : audioSubs) close(fd);
         fftSubs.clear(); audioSubs.clear();
+        // denoised listeners close themselves: flag them, wake them, unblock their sockets
+        std::lock_guard<std::mutex> dl(dnMtx);
+        for (auto& c : dnSubs) { c->dead = true; c->qcv.notify_all(); shutdown(c->fd, SHUT_RDWR); }
     }
 
     void acceptLoop() {
@@ -1184,9 +1387,27 @@ private:
             "Sec-WebSocket-Accept: " + accept + "\r\n\r\n";
         if (!sendAll(fd, resp.data(), resp.size())) { close(fd); return; }
 
+        // v2.1.0: split off a query string, so /sdr/audio?denoise=1 is still /sdr/audio.
+        std::string base = path, query;
+        size_t qpos = path.find('?');
+        if (qpos != std::string::npos) { base = path.substr(0, qpos); query = path.substr(qpos + 1); }
         std::vector<int>* subs = nullptr;
-        if (path == "/sdr/fft") subs = &fftSubs;
-        else if (path == "/sdr/audio") subs = &audioSubs;
+        std::shared_ptr<DnClient> dn;
+        bool dnAsked = false;
+        if (base == "/sdr/fft") subs = &fftSubs;
+        else if (base == "/sdr/audio") {
+            dnAsked = ("&" + query + "&").find("&denoise=1&") != std::string::npos;
+            if (dnAsked && dfn::api.ok) {
+                std::lock_guard<std::mutex> lk(dnMtx);
+                if ((int)dnSubs.size() < DN_MAX) {
+                    dn = std::make_shared<DnClient>();
+                    dn->fd = fd;
+                    dnSubs.push_back(dn);
+                    nDnSubs.store((int)dnSubs.size());
+                }
+            }
+            if (!dn) subs = &audioSubs;   // not asked, not available, or full: plain audio (fail-soft)
+        }
         else { close(fd); return; }
 
         // H2 fix (audit 2026-07-09): bound the send. broadcast() runs on the
@@ -1200,8 +1421,18 @@ private:
         // bad client before eviction.
         struct timeval sndto{0, 250000};
         setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &sndto, sizeof(sndto));
-        { std::lock_guard<std::mutex> lk(subsMtx); subs->push_back(fd); refreshSubCounts(); }
-        logI("WS client subscribed to %s", path.c_str());
+        if (dn) {
+            dn->worker = std::thread(&PilnkRadioDaemon::dnWorker, this, dn);
+            logI("WS client subscribed to %s (denoised, %d of %d)", base.c_str(), nDnSubs.load(), DN_MAX);
+        } else {
+            { std::lock_guard<std::mutex> lk(subsMtx); subs->push_back(fd); refreshSubCounts(); }
+            if (dnAsked) logI("WS client subscribed to %s (asked for denoise: %s - plain audio instead)",
+                              base.c_str(), dfn::api.ok ? "all denoise slots in use" : dfn::api.why.c_str());
+            else         logI("WS client subscribed to %s", base.c_str());
+        }
+        // Pongs must not interleave with data frames on the same socket. Plain listeners
+        // share subsMtx with broadcast(); a denoised listener's writer is its own worker.
+        std::mutex& wmx = dn ? dn->wmx : subsMtx;
 
         // keep alive: parse client frames properly (audit L2) — PONG the
         // PINGs so protocol-correct non-browser clients don't drop us, unmask
@@ -1244,17 +1475,28 @@ private:
             if (op == 0x8) break;         // close
             if (op == 0x9) {              // ping -> pong with same payload
                 uint8_t ph[2] = { 0x8A, (uint8_t)plen };
-                std::lock_guard<std::mutex> lk(subsMtx); // serialize with broadcast writes
+                std::lock_guard<std::mutex> lk(wmx); // serialize with this socket's data writes
                 if (!sendAll(fd, ph, 2) || (plen && !sendAll(fd, pay.data(), plen))) break;
             }
             // 0xA (pong), 0x1/0x2 (client data): ignored
         }
-        { std::lock_guard<std::mutex> lk(subsMtx);
-          auto it = std::find(subs->begin(), subs->end(), fd);
-          if (it != subs->end()) subs->erase(it);
-          refreshSubCounts(); }
+        if (dn) {
+            // Stop the worker BEFORE closing: it may be mid-send on this fd, and a
+            // closed fd number can be reused by the next connection within microseconds.
+            dn->dead = true; dn->qcv.notify_all();
+            if (dn->worker.joinable()) dn->worker.join();
+            std::lock_guard<std::mutex> lk(dnMtx);
+            auto it = std::find(dnSubs.begin(), dnSubs.end(), dn);
+            if (it != dnSubs.end()) dnSubs.erase(it);
+            nDnSubs.store((int)dnSubs.size());
+        } else {
+            std::lock_guard<std::mutex> lk(subsMtx);
+            auto it = std::find(subs->begin(), subs->end(), fd);
+            if (it != subs->end()) subs->erase(it);
+            refreshSubCounts();
+        }
         close(fd);
-        logI("WS client left %s", path.c_str());
+        logI("WS client left %s%s", base.c_str(), dn ? " (denoised)" : "");
     }
 
     void broadcast(std::vector<int>& subs, const uint8_t* data, size_t len) {
@@ -1303,6 +1545,10 @@ int main(int argc, char** argv) {
     logI("config: serial=%s vfo=%.0f mode=%s bw=%.0f gainIdx=%d ppm=%d squelch=%s@%.1f playing=%s port=%d",
          cfg.serial.c_str(), cfg.vfoHz, cfg.mode.c_str(), cfg.bandwidthHz, cfg.gainIndex, cfg.ppm,
          cfg.squelchEnabled ? "on" : "off", cfg.squelchLevel, cfg.playing ? "true" : "false", cfg.port);
+
+    // v2.1.0: optional listener denoise. Probed HERE, before any thread exists, because
+    // the probe forks — and a crash in a bad library must take down the child, not us.
+    dfn::probe();
 
     signal(SIGINT, onSignal);
     signal(SIGTERM, onSignal);
