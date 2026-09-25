@@ -1,3 +1,91 @@
+# ── Python dependency self-heal (v1.5.30, 25 Sep 2026) ──────────────────────
+# PiLNK runs on the SYSTEM python, and install.sh pip-installs its packages into
+# that interpreter's own folder. update.sh never runs pip. So an owner who does
+# an in-place Raspberry Pi OS upgrade (Bookworm -> Trixie: python 3.11 -> 3.13)
+# gets a python that cannot see ANY of those packages. Every start then dies on
+# the imports below; systemd and the dashboard watchdog restart it forever; and
+# nothing can repair it, because OTA runs inside the app that cannot start. The
+# node simply goes dark. Found while planning the Pi 5 OS update, BEFORE any node
+# hit it (pilnk-tasks/pi5-os-update-plan.md).
+#
+# So before importing anything third-party: if a package is missing, install it
+# for WHICHEVER python is running now (pip --user: this service runs as the node's
+# user, no root needed), then re-exec so the fresh packages load. Standard library
+# only in here. Rate-limited to one attempt per 10 min per python version, so a
+# node with no network doesn't hammer pip on every restart. The outcome lands in
+# deps_selfheal.json and rides the next ping (NODE_ENV['deps_heal']).
+def _pilnk_deps_selfheal():
+    import importlib.util, json, os, subprocess, sys, time
+    # module -> the same loose bounds install.sh uses. REQUIRED = the app cannot
+    # start without it; OPTIONAL = a feature degrades (BDS decoding, the STT bench).
+    required = {'flask': 'flask>=2,<4', 'flask_socketio': 'flask-socketio>=5,<6',
+                'flask_cors': 'flask-cors>=4,<7', 'requests': 'requests>=2,<3'}
+    optional = {'numpy': 'numpy>=1.24,<3', 'pyModeS': 'pyModeS>=2.13,<4'}
+    def _missing(d):
+        out = []
+        for m in d:
+            try:
+                if importlib.util.find_spec(m) is None:
+                    out.append(m)
+            except Exception:
+                out.append(m)
+        return out
+    miss_req = _missing(required)
+    if not miss_req:
+        # Optional-only gaps are left alone: some nodes have run without pyModeS for
+        # months (M0CRT), and blocking every start on a pip that may need to COMPILE
+        # numpy on a Pi would be worse than the gap. NODE_ENV already reports them.
+        return
+    miss_opt = _missing(optional)   # healed only alongside a required repair (the python-upgrade case)
+    here = os.path.dirname(os.path.abspath(__file__))
+    state_path = os.path.join(here, 'deps_selfheal.json')
+    try:
+        with open(state_path) as f:
+            state = json.load(f)
+    except Exception:
+        state = {}
+    py = '%d.%d.%d' % sys.version_info[:3]
+    now = time.time()
+    if state.get('python') == py and now - float(state.get('last_try', 0)) < 600:
+        print('[PILNK] python %s still missing %s; last repair attempt was under 10 min ago - not retrying yet'
+              % (py, ', '.join(miss_req + miss_opt)), flush=True)
+        return
+    def _pip(specs, timeout):
+        base = [sys.executable, '-m', 'pip', 'install', '--user', '-q']
+        try:
+            r = subprocess.run(base + ['--break-system-packages'] + specs,
+                               stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True, timeout=timeout)
+            if r.returncode != 0 and 'break-system-packages' in (r.stderr or ''):
+                # pip older than 23 (e.g. the PiAware image's) has no such option - and needs none
+                r = subprocess.run(base + specs, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                   universal_newlines=True, timeout=timeout)
+            return r.returncode == 0, (r.stderr or '')[-300:]
+        except Exception as e:
+            return False, str(e)[-300:]
+    print('[PILNK] python %s is missing %s - repairing with pip --user ...'
+          % (py, ', '.join(miss_req + miss_opt)), flush=True)
+    ok_req, err_req = _pip([required[m] for m in miss_req], 600)
+    ok_opt, err_opt = (True, '')
+    if ok_req and miss_opt:
+        ok_opt, err_opt = _pip([optional[m] for m in miss_opt], 300)   # best effort
+    state = {'python': py, 'last_try': now, 'missing': miss_req + miss_opt,
+             'ok': bool(ok_req and ok_opt), 'required_ok': bool(ok_req),
+             'err': (err_req or err_opt) if not (ok_req and ok_opt) else ''}
+    try:
+        with open(state_path + '.tmp', 'w') as f:
+            json.dump(state, f)
+        os.replace(state_path + '.tmp', state_path)
+    except Exception:
+        pass
+    if ok_req:
+        print('[PILNK] repaired%s - restarting on the new packages'
+              % ('' if ok_opt else ' (optional packages still missing: %s)' % ', '.join(miss_opt)), flush=True)
+        os.execv(sys.executable, [sys.executable] + sys.argv)
+    print('[PILNK] package repair FAILED - the imports below will fail and systemd will retry: %s'
+          % err_req.strip()[-200:], flush=True)
+
+_pilnk_deps_selfheal()
+
 from flask import Flask, render_template, Response, jsonify, request, make_response
 from flask_cors import CORS
 from flask_socketio import SocketIO
@@ -163,6 +251,32 @@ def _describe_environment():
     except Exception:
         env['pi_model'] = None
     env['dashboard_port'] = DASHBOARD_PORT
+    # v1.5.30: WHICH OS, not just which libc. "Did this owner do an in-place
+    # Bookworm -> Trixie upgrade?" was only answerable by inferring from libc and
+    # python versions. Now it is one field — plus the kernel, and whether the
+    # dependency self-heal at the top of this file ever had to run here.
+    try:
+        osr = {}
+        with open('/etc/os-release') as f:
+            for line in f:
+                if '=' in line:
+                    k, v = line.rstrip('\n').split('=', 1)
+                    osr[k] = v.strip().strip('"')
+        env['os'] = osr.get('VERSION_CODENAME') or osr.get('ID') or None
+        env['os_name'] = (osr.get('PRETTY_NAME') or '')[:60] or None
+    except Exception:
+        env['os'] = None
+    try:
+        env['kernel'] = platform.release()
+    except Exception:
+        pass
+    try:
+        with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), 'deps_selfheal.json')) as f:
+            dh = json.load(f)
+        env['deps_heal'] = {'python': dh.get('python'), 'ok': dh.get('ok'),
+                            'when': int(dh.get('last_try') or 0), 'missing': (dh.get('missing') or [])[:8]}
+    except Exception:
+        pass   # never needed = nothing to report
     return env
 
 NODE_ENV = _describe_environment()
