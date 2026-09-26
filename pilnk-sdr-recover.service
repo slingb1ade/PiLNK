@@ -7,4 +7,7 @@ After=multi-user.target
 Type=oneshot
 ExecStart=/home/PILNK_USER/pilnk/sdr-recover.sh
 # Recovery does its own internal sleeps; cap it so a wedged restart can't hang.
-TimeoutStartSec=60
+# 150 s (was 60): a run that lands in the 90 s cooldown now WAITS it out and
+# re-checks instead of giving up (sdr-recover.sh, 26 Sep 2026), then may do a
+# restart + 4 s settle. The script caps its own wait at 100 s.
+TimeoutStartSec=150

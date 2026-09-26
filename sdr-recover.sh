@@ -27,6 +27,17 @@
 #     cooldown gives the decoder room to actually come up and stabilise, so a
 #     marginal node degrades gracefully instead of strobing. Does NOT fix the
 #     underlying flap (that's hardware) — it stops us amplifying it.
+#   • RADIO DONGLE IS NEVER THE ADS-B DONGLE (26 Sep 2026). The serial reserved
+#     for the ATC audio engine (/etc/pilnkradio/config.json) is excluded when we
+#     count ADS-B dongles and when we re-pin. Before this, a two-dongle node
+#     whose ADS-B stick dropped saw "1 RTL present" (the radio) and restarted
+#     the decoder anyway; on a pinned readsb node it would have RE-PINNED readsb
+#     to the radio dongle. Found by AJ's live unplug test on EpsomPi.
+#   • COOLDOWN WAITS, IT DOESN'T DROP (26 Sep 2026). A replug that lands inside
+#     the cooldown used to be logged and discarded, leaving the pickup to the
+#     3-min timer. Now the run waits for the cooldown to end, re-checks, and
+#     only restarts if still stale. Restarts stay >= COOLDOWN_SECS apart; extra
+#     udev/timer starts merge into the waiting oneshot job.
 #
 # EXIT: always 0 (a watchdog must not fail its unit).
 # ─────────────────────────────────────────────────────────────────────────────
@@ -38,6 +49,7 @@ FRESH_SECS="${PILNK_FRESH_SECS:-30}"     # aircraft.json older than this = stale
 COOLDOWN_SECS="${PILNK_COOLDOWN_SECS:-90}"  # min seconds between restarts
 STAMP="/run/pilnk-sdr-recover.stamp"     # last-restart timestamp (tmpfs; clears on reboot)
 READSB_DEFAULT="/etc/default/readsb"
+RADIO_CFG="/etc/pilnkradio/config.json"   # ATC audio engine — holds the radio dongle's serial
 DUMP_JSON="/run/dump1090-fa/aircraft.json"
 READSB_JSON="/run/readsb/aircraft.json"
 AIRSPY_VID="1d50:60a1"
@@ -74,12 +86,51 @@ in_cooldown() {
 
 stamp_restart() { date +%s > "$STAMP" 2>/dev/null || true; }
 
+# Seconds of cooldown left (0 if none). Capped at 100 so a huge override can
+# never outlive the service's TimeoutStartSec (150).
+cooldown_left() {
+  local now last left
+  now=$(date +%s)
+  last=$(cat "$STAMP" 2>/dev/null || echo 0)
+  case "$last" in (*[!0-9]*|'') last=0 ;; esac
+  left=$(( COOLDOWN_SECS - (now - last) ))
+  [ "$left" -lt 0 ] && left=0
+  [ "$left" -gt 100 ] && left=100
+  echo "$left"
+}
+
 # Current RTL serials present on the USB bus (one per line).
 rtl_serials() {
   command -v rtl_test >/dev/null 2>&1 || return 0
   timeout 3 rtl_test 2>&1 \
     | grep -oE 'SN: [0-9A-Za-z]+' \
     | awk '{print $2}' | grep . | sort -u
+}
+
+# Serial the ATC audio engine has reserved for the radio dongle, if any.
+radio_serial() {
+  [ -f "$RADIO_CFG" ] || return 0
+  grep -oE '"serial"[[:space:]]*:[[:space:]]*"[^"]*"' "$RADIO_CFG" 2>/dev/null \
+    | head -n1 | sed -E 's/.*"([^"]*)"$/\1/'
+}
+
+# RTL serials that could be the ADS-B dongle: everything present MINUS the
+# radio dongle. Use this, never rtl_serials, for any ADS-B decision.
+adsb_rtl_serials() {
+  local radio
+  radio="$(radio_serial)"
+  if [ -n "$radio" ]; then
+    rtl_serials | grep -vx -- "$radio"
+  else
+    rtl_serials
+  fi
+}
+
+# For log lines: say when the radio dongle was left out of the count.
+radio_note() {
+  local radio
+  radio="$(radio_serial)"
+  [ -n "$radio" ] && printf ' (radio dongle SN %s not counted)' "$radio"
 }
 
 airspy_present() { lsusb 2>/dev/null | grep -iqE "airspy|$AIRSPY_VID"; }
@@ -91,9 +142,11 @@ readsb_pinned_serial() {
     | head -n1 | awk '{print $2}'
 }
 
+DID_RESTART=0
 restart_decoder() {
   local svc="$1"
   log "→ restarting $svc"
+  DID_RESTART=1
   stamp_restart
   systemctl restart "$svc" 2>/dev/null || log "  (restart $svc returned non-zero)"
 }
@@ -136,9 +189,20 @@ fi
 # We're stale. If we ALSO restarted very recently, the decoder may simply still
 # be coming up, OR a flapping dongle is firing udev repeatedly. Either way, hold
 # off — restarting again now would just re-empty the json and strobe the node.
+#
+# Hold, don't drop: wait out the rest of the cooldown, then look again. The
+# decoder often comes back by itself in that window (its own systemd restart
+# picks the replugged dongle up — seen on EpsomPi 26 Sep), and then we do
+# nothing. If it is still stale, we restart once, still >= COOLDOWN_SECS after
+# the last restart. udev/timer starts arriving meanwhile merge into this job.
 if in_cooldown; then
-  log "STALE but in cooldown (<${COOLDOWN_SECS}s since last restart) — holding, letting decoder settle"
-  exit 0
+  LEFT="$(cooldown_left)"
+  log "STALE but in cooldown — waiting ${LEFT}s for it to end, then re-checking"
+  sleep "$LEFT"
+  if json_fresh "$JSON"; then
+    log "✓ fresh again after the cooldown wait — decoder came back by itself, no restart needed"
+    exit 0
+  fi
 fi
 
 log "STALE: decoder=$DECODER_MODE json=$JSON not fresh (>${FRESH_SECS}s or empty) — recovering"
@@ -164,7 +228,9 @@ case "$DECODER_MODE" in
   readsb)
     # PiLNK's own readsb (rtlsdr) OR a consumed readsb. Check the serial pin.
     PINNED="$(readsb_pinned_serial)"
-    mapfile -t PRESENT < <(rtl_serials)
+    # adsb_rtl_serials, not rtl_serials: the radio dongle must never count as a
+    # candidate, or a dropped ADS-B stick would get readsb re-pinned to it.
+    mapfile -t PRESENT < <(adsb_rtl_serials)
     NPRESENT=${#PRESENT[@]}
 
     if [ -n "$PINNED" ]; then
@@ -189,7 +255,7 @@ case "$DECODER_MODE" in
           restart_decoder readsb
           log "re-pinned readsb → SN $NEW"
         elif [ "$NPRESENT" -eq 0 ]; then
-          log "pinned SN $PINNED gone and NO RTL dongle present — waiting for hardware"
+          log "pinned SN $PINNED gone and NO ADS-B RTL dongle present$(radio_note) — waiting for hardware"
         else
           log "pinned SN $PINNED gone; $NPRESENT dongles present (ambiguous) — NOT re-pinning, restarting readsb as-is"
           restart_decoder readsb
@@ -199,10 +265,10 @@ case "$DECODER_MODE" in
       # No explicit pin (readsb auto-selects). If any RTL present, a restart
       # is enough; readsb will grab device 0.
       if [ "$NPRESENT" -ge 1 ]; then
-        log "no serial pin; $NPRESENT RTL present — restarting readsb"
+        log "no serial pin; $NPRESENT ADS-B RTL present$(radio_note) — restarting readsb"
         restart_decoder readsb
       else
-        log "no serial pin and NO RTL present — waiting for hardware"
+        log "no serial pin and NO ADS-B RTL present$(radio_note) — waiting for hardware"
       fi
     fi
     ;;
@@ -211,16 +277,20 @@ case "$DECODER_MODE" in
     # dump1090-fa owns the dongle directly. We don't manage its serial pin
     # (that's the operator's FlightAware/PiAware setup). Safest recovery is a
     # plain restart if a dongle is present; never re-pin someone else's feeder.
-    mapfile -t PRESENT < <(rtl_serials)
+    mapfile -t PRESENT < <(adsb_rtl_serials)
     if [ "${#PRESENT[@]}" -ge 1 ]; then
-      log "dump1090-fa stale; ${#PRESENT[@]} RTL present — restarting dump1090-fa"
+      log "dump1090-fa stale; ${#PRESENT[@]} ADS-B RTL present$(radio_note) — restarting dump1090-fa"
       restart_decoder dump1090-fa
     else
-      log "dump1090-fa stale and NO RTL present — waiting for hardware"
+      log "dump1090-fa stale and NO ADS-B RTL present$(radio_note) — waiting for hardware (the replug will trigger us)"
     fi
     ;;
 
 esac
+
+# Nothing restarted (waiting for hardware) — nothing to report on. Without
+# this the log said "still not fresh after restart" when no restart happened.
+[ "$DID_RESTART" -eq 1 ] || exit 0
 
 # Give the decoder a moment, then report the outcome (don't loop/block).
 sleep 4
