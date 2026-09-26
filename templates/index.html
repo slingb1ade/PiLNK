@@ -270,6 +270,11 @@
      opacity changes in showWxFrame. Without this the frame swap is
      an instant flicker. */
   .wx-tile-layer{transition:opacity 350ms ease-out;}
+  /* Radar loop frames (26 Sep 2026): a slow crossfade so rain cells MORPH from
+     one 10-minute frame to the next instead of teleporting. A cell that sits
+     still is in both frames, so it stays solid through the fade. Keep in step
+     with WX_FADE_MS in the RainViewer block. */
+  .wx-frame-layer{transition:opacity 1000ms ease-in-out;}
   /* Traffic tab layout - full height flight list */
   #tab-traffic{overflow:hidden;}
   #flight-panel{flex:1;display:flex;flex-direction:column;overflow:hidden;padding:14px;min-height:0;}
@@ -3248,6 +3253,26 @@ var wxFrames     = [];   // {time, path} from API — never cleared except on fr
 var wxHost       = 'https://tilecache.rainviewer.com';
 var wxRefreshTimer = null;
 
+// ── Radar loop pacing (26 Sep 2026, AJ: "the speed it moves just looks fake") ──
+// Was: the last 2 hours of 10-minute frames at 0.9 s each with a hard cut, so
+// ~660x real time, cells teleporting 10 minutes per step, and a snap straight
+// from the newest frame back to 2 hours ago. It also started playing before the
+// frames' tiles had loaded (a tile takes ~1.2 s through the node proxy), so on
+// the first loops, and after every pan or zoom, whole frames were blank and
+// cells that were really sitting still blinked on and off.
+// Now: the last hour only, 1.6 s per frame with a 1 s crossfade (cells move
+// smoothly, a cell that stays put stays drawn), a 4 s hold on the newest frame
+// so "now" registers before it loops, and a frame is only shown once its tiles
+// are in. Forecast (nowcast) frames are never looped: they are extrapolations,
+// and sliding a model's guess into the loop is exactly what looks fake.
+var WX_LOOP_FRAMES = 7;      // newest 7 observed frames = the last 60 minutes
+var WX_STEP_MS     = 1600;   // time on each frame
+var WX_FADE_MS     = 1000;   // crossfade (matches .wx-frame-layer in the CSS)
+var WX_HOLD_MS     = 4000;   // extra pause on the newest frame
+var WX_WAIT_MAX_MS = 8000;   // give up waiting on a frame's tiles after this, move on
+var wxFadeTimer    = null;
+var wxWaitedMs     = 0;
+
 // Weather tile sources (RainViewer-format). The active one is chosen by the
 // node-region brain: rest-of-world -> RainViewer, EU -> LibreWXR (OPERA). Both
 // are proxied node-side (app.py) for same-origin canvas sampling. LibreWXR's
@@ -3294,18 +3319,21 @@ function loadRainViewer() {
     .then(function(r) { return r.json(); })
     .then(function(data) {
       wxHost = data.host || 'https://tilecache.rainviewer.com';
-      // Use all available frames for a smoother, longer loop:
-      //   - up to 12 past frames (covers ~2 hours of observation)
-      //   - up to 3 nowcast frames (10/20/30 min forecast)
-      // Each frame tagged with isForecast for status-text differentiation.
+      // Observed frames only, the last hour (WX_LOOP_FRAMES). No nowcast:
+      // forecast frames are extrapolated, not seen, and they are what made the
+      // loop look synthetic. See the pacing note at the top of this block.
       var past     = (data.radar && data.radar.past)     ? data.radar.past     : [];
-      var nowcast  = (data.radar && data.radar.nowcast)  ? data.radar.nowcast  : [];
+      var fresh = past.slice(-WX_LOOP_FRAMES);
+      // The 5-minute refresh used to tear down and rebuild every layer even when
+      // nothing had changed (RainViewer only adds a frame every 10 minutes),
+      // which restarted the loop mid-play. Same frames on screen = leave it be.
+      if (wxLayers.length && fresh.length === wxFrames.length &&
+          fresh.every(function(f, i) { return wxFrames[i] && wxFrames[i].path === f.path; })) {
+        return;
+      }
       wxFrames = [];
-      past.slice(-12).forEach(function(f) {
+      fresh.forEach(function(f) {
         wxFrames.push({ time: f.time, path: f.path, isForecast: false });
-      });
-      nowcast.slice(0, 3).forEach(function(f) {
-        wxFrames.push({ time: f.time, path: f.path, isForecast: true });
       });
       if (!wxFrames.length) {
         if (src !== WX_SOURCES.rainviewer) { wxSource = WX_SOURCES.rainviewer; loadRainViewer(); return; }
@@ -3338,7 +3366,7 @@ function buildWxLayers() {
     var url = src.tileProxy + frame.path + src.tileOpts;
     var layer = L.tileLayer(url, {
       opacity: 0.001,
-      className: 'wx-tile-layer',
+      className: 'wx-tile-layer wx-frame-layer',
       attribution: src.attribution,
       maxNativeZoom: 6,
       maxZoom: 20,
@@ -3363,22 +3391,66 @@ function buildWxLayers() {
 
 // Make one frame visible, fade all others to near-zero (not 0, so tiles
 // stay in the rendering pipeline ready for the next crossfade).
-function showWxFrame(idx) {
-  // Pi-friendly: hide non-visible frames with display:none so the GPU isn't
-  // compositing 14 stacked full-screen raster layers every frame. opacity:0.001
-  // STILL composites; display:none does not. Tiles stay loaded (img elements in a
-  // display:none container still preload), so frame switching is instant.
-  // Trade-off: hard frame swap instead of an opacity crossfade.
+function showWxFrame(idx, fade) {
+  // Pi-friendly: every frame except the one(s) on screen is display:none, so
+  // the GPU never composites a stack of full-screen raster layers (opacity
+  // 0.001 still composites; display:none does not). Tiles in a display:none
+  // container still load, so switching is instant.
+  //
+  // fade=true (the loop): at most TWO frames are live. The outgoing frame stays
+  // at full opacity underneath; the incoming one is lifted above it and fades
+  // in over WX_FADE_MS; then the outgoing one is hidden. Fading in ON TOP (not
+  // both fading at once) means rain never dips in strength mid-blend, and a
+  // cell present in both frames never flickers.
+  var prev = wxCurrentFrame;
+  if (wxFadeTimer) { clearTimeout(wxFadeTimer); wxFadeTimer = null; }
   wxLayers.forEach(function(l, i) {
     var c = l.getContainer ? l.getContainer() : null;
+    if (!c) return;
     if (i === idx) {
-      if (c) c.style.display = '';
+      var wasHidden = (c.style.display === 'none');
+      c.style.display = '';
+      if (fade && i !== prev) {
+        l.setZIndex(502);
+        if (wasHidden) { l.setOpacity(0.001); void c.offsetWidth; }  // reflow so the fade actually runs
+      } else {
+        l.setZIndex(500);
+      }
       l.setOpacity(wxOpacity);
-    } else if (c) {
+    } else if (fade && i === prev) {
+      l.setZIndex(501);            // stays solid underneath while the new frame fades in
+    } else {
       c.style.display = 'none';
+      l.setOpacity(0.001);
+      l.setZIndex(500);
     }
   });
   wxCurrentFrame = idx;
+  if (fade && prev !== idx && wxLayers[prev]) {
+    wxFadeTimer = setTimeout(function() {
+      wxFadeTimer = null;
+      var pl = wxLayers[prev], pc = pl && pl.getContainer ? pl.getContainer() : null;
+      if (pc && prev !== wxCurrentFrame) { pc.style.display = 'none'; pl.setOpacity(0.001); pl.setZIndex(500); }
+      var cl = wxLayers[wxCurrentFrame];
+      if (cl) cl.setZIndex(500);
+    }, WX_FADE_MS + 60);
+  }
+}
+
+// True once every tile this frame needs for the current view has finished
+// (loaded, or errored: an errored tile will not get any better by waiting).
+function wxLayerReady(l) {
+  var c = l && l.getContainer ? l.getContainer() : null;
+  if (!c) return false;
+  var imgs = c.querySelectorAll('img.leaflet-tile');
+  if (!imgs.length) return false;
+  for (var i = 0; i < imgs.length; i++) { if (!imgs[i].complete) return false; }
+  return true;
+}
+function wxReadyCount() {
+  var n = 0;
+  wxLayers.forEach(function(l) { if (wxLayerReady(l)) n++; });
+  return n;
 }
 
 // Format frame timestamp for display — marks forecast frames distinctly
@@ -3397,21 +3469,42 @@ function pinWxLatest() {   // Cloud Cover: freeze radar on the latest observed (
   if (window.CLOUD_COVER_ON && window.wxSampler && !wxSampler.isTest()) rebuildRainMosaic();
 }
 function startWxAnimation() {
-  if (wxAnimTimer) clearInterval(wxAnimTimer);
+  stopWxAnimation();
   if (!wxLayers.length) return;
   if (window.CLOUD_COVER_ON) { pinWxLatest(); return; }   // Cloud Cover pins the latest real frame — no time-lapse
-  // 900ms interval pairs with the 350ms crossfade for a smooth loop:
-  // ~350ms blend + ~550ms hold = readable but smooth
-  wxAnimTimer = setInterval(function() {
-    var next = (wxCurrentFrame + 1) % wxLayers.length;
-    showWxFrame(next);
-    document.getElementById('wxStatus').textContent =
-      'Radar: frame ' + (next+1) + '/' + wxLayers.length + ' — ' + wxFrameTime(next);
-  }, 900);
+  // Open on the newest frame and hold it, so the first thing you see is "now".
+  wxWaitedMs = 0;
+  wxAnimTimer = setTimeout(wxTick, WX_STEP_MS + WX_HOLD_MS);
+}
+
+// One step of the loop. setTimeout chain (not setInterval) so each step can
+// set its own delay: normal step, the long hold on the newest frame, or a
+// short retry while the next frame's tiles are still arriving.
+function wxTick() {
+  wxAnimTimer = null;
+  if (!wxOverlayOn || !wxAnimateOn || !wxLayers.length) return;
+  if (window.CLOUD_COVER_ON) { pinWxLatest(); return; }
+  var n = wxLayers.length;
+  var next = (wxCurrentFrame + 1) % n;
+  var status = document.getElementById('wxStatus');
+  if (!wxLayerReady(wxLayers[next]) && wxWaitedMs < WX_WAIT_MAX_MS) {
+    // Don't show a half-empty frame: that is what made still cells blink.
+    // Hold the current frame and look again shortly (first load, pan, zoom).
+    wxWaitedMs += 500;
+    if (status) status.textContent = 'Radar: loading loop ' + wxReadyCount() + '/' + n + ' — ' + wxFrameTime(wxCurrentFrame);
+    wxAnimTimer = setTimeout(wxTick, 500);
+    return;
+  }
+  wxWaitedMs = 0;
+  showWxFrame(next, true);
+  var newest = (next === n - 1);
+  if (status) status.textContent = 'Radar: last hour, ' + (next + 1) + '/' + n + ' — ' + wxFrameTime(next) + (newest ? ' (latest)' : '');
+  wxAnimTimer = setTimeout(wxTick, WX_STEP_MS + (newest ? WX_HOLD_MS : 0));
 }
 
 function stopWxAnimation() {
-  if (wxAnimTimer) { clearInterval(wxAnimTimer); wxAnimTimer = null; }
+  if (wxAnimTimer) { clearTimeout(wxAnimTimer); wxAnimTimer = null; }
+  if (wxFadeTimer) { clearTimeout(wxFadeTimer); wxFadeTimer = null; }
 }
 
 function toggleWxAnimation(on) {
