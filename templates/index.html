@@ -6461,9 +6461,14 @@ function updateEmergencyPulses(){
 // ring reuses the emergency-pulse overlay and appears ONLY for an alert whose
 // hex is in THIS node's live feed — alerts carry no node_id, so a card can
 // exist for an aircraft this antenna cannot hear; only the audible ones ring.
-// Ageing uses the client clock (first-seen in THIS browser), never the alert's
-// server created_at — that parse is timezone-dependent and cost an hour on the
-// pilnk.io side (#91).
+// Ageing: a card lives WATCH_CARD_WINDOW from when the watch actually FIRED
+// (the alert's created_at), not from when this page happened to load. Until
+// 26 Sep 2026 it aged from first-seen-in-this-browser, because created_at was a
+// bare NZ string that parses differently per timezone (#91). That made every
+// page load re-show up to 50 old hits (hours or weeks old) as brand-new cards
+// for 30 min, and ring any of them that were overhead. pilnk.io now sends
+// created_at as UTC with a Z, so it is used when it carries a zone; a bare
+// string still falls back to first-seen, as before.
 var WATCH_META = {
   squawk:        { label:'SQUAWK',   color:'#dc2626' },
   callsign:      { label:'CALLSIGN', color:'#38bdf8' },
@@ -6474,15 +6479,29 @@ var WATCH_META = {
   ghost:         { label:'GHOST',    color:'#94a3b8' }
 };
 var watchAlerts = [];
-var watchFirstSeen = {};                 // alert id -> client Date.now() first seen
-var WATCH_CARD_WINDOW = 30 * 60 * 1000;  // keep a card ~30 min (client clock)
+var watchFirstSeen = {};                 // alert id -> ms the watch fired (or first seen here)
+var WATCH_CARD_WINDOW = 30 * 60 * 1000;  // keep a card ~30 min after it fired
+// The alert's real creation time in ms, ONLY if the string says which clock it
+// is on (Z or +hh:mm). A bare "Y-m-d H:i:s" is read as this browser's local
+// time, which is wrong outside NZ, so it returns null and the caller falls back.
+function watchCreatedMs(al){
+  var s = (al && al.created_at) ? String(al.created_at) : '';
+  if(!/(Z|[+-]\d\d:?\d\d)$/.test(s)) return null;
+  var t = Date.parse(s);
+  return isNaN(t) ? null : t;
+}
 function watchEsc(s){ return String(s==null?'':s).replace(/[&<>"']/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c];}); }
 
 function loadWatchAlerts(){
   fetch('/api/watchlist_alerts').then(function(r){return r.json();}).then(function(d){
     if(!d || !d.enabled){ watchAlerts = []; renderWatchPanel(); if(typeof updateWatchlistPulses==='function') updateWatchlistPulses(); return; }
     var now = Date.now();
-    (d.alerts||[]).forEach(function(al){ if(!(al.id in watchFirstSeen)) watchFirstSeen[al.id] = now; });
+    (d.alerts||[]).forEach(function(al){
+      if(al.id in watchFirstSeen) return;
+      var t = watchCreatedMs(al);
+      // min(): a browser clock running slow can't put a card in the future.
+      watchFirstSeen[al.id] = (t === null) ? now : Math.min(t, now);
+    });
     watchAlerts = d.alerts || [];
     renderWatchPanel();
     updateWatchlistPulses();
