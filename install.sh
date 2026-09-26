@@ -734,6 +734,25 @@ else
   warn "If it fails: sudo journalctl -u pilnk -n 20"
 fi
 
+# ── Self-heal wiring ──────────────────────────────────────
+# bootstrap-selfheal.sh wires the node's self-repair into /etc: the SDR
+# recovery timer (every 3 min) + udev hotplug rule (dongle unplug/replug/swap),
+# the dashboard watchdog, and the scoped sudo grants. Its header has always said
+# it is called by update.sh AND install.sh, but until 26 Sep 2026 install.sh
+# never called it: a brand-new node had none of it until its FIRST OTA, so a
+# dongle knocked loose in week one needed a human. It runs here, after the
+# service is up (the watchdog judges a running dashboard, after a 60 s grace).
+# The operator's sudo is still warm, so the bootstrap's `sudo -n` works.
+# Idempotent, logs to update.log, and never fatal to the install.
+if [ -f "$PILNK_DIR/bootstrap-selfheal.sh" ]; then
+  PILNK_DIR="$PILNK_DIR" bash "$PILNK_DIR/bootstrap-selfheal.sh" 2>/dev/null || true
+  if systemctl is-enabled --quiet pilnk-sdr-recover.timer 2>/dev/null; then
+    ok "Self-heal wired (receiver unplug/replug recovery, 3-min safety check, dashboard watchdog)"
+  else
+    warn "Self-heal wiring did not complete — the first automatic update will retry it"
+  fi
+fi
+
 # ── Pi IP ─────────────────────────────────────────────────
 PI_IP=$(hostname -I | awk '{print $1}')
 
