@@ -87,7 +87,6 @@ def _pilnk_deps_selfheal():
 _pilnk_deps_selfheal()
 
 from flask import Flask, render_template, Response, jsonify, request, make_response
-from flask_cors import CORS
 from flask_socketio import SocketIO
 # from whisper_atc  # disabled until v2.0 import ATCWhisper
 import subprocess
@@ -102,6 +101,7 @@ import gzip
 import csv
 import logging
 import urllib.request
+import urllib.parse
 import socket
 
 logging.basicConfig(
@@ -112,7 +112,8 @@ logging.basicConfig(
 app = Flask(__name__)
 app.config['TEMPLATES_AUTO_RELOAD'] = True  # dev: reflect templates/index.html edits on a refresh (no restart needed)
 app.jinja_env.auto_reload = True
-CORS(app)
+# CORS(app) removed 27 Sep 2026: it let every website read every route. The
+# dashboard is same-origin and needs no CORS. See the same-origin guard below.
 app.config['SECRET_KEY'] = 'pilnk_secret'
 # async_mode pinned to 'threading' (v1.4.1, 3 Sep 2026). Left unset,
 # flask-socketio picks eventlet whenever it is importable — and the PiAware
@@ -123,6 +124,65 @@ app.config['SECRET_KEY'] = 'pilnk_secret'
 # not, map freezes mid-session. Threading is what every other node already
 # runs, so this changes nothing for them and fixes the outlier.
 socketio = SocketIO(app, cors_allowed_origins="*", async_mode='threading')
+
+# ── Same-origin guard (27 Sep 2026 — node security review, finding H1) ─────
+# The dashboard has no login on purpose: it is a household appliance on the
+# owner's LAN. But app.py also used to answer EVERY website. CORS(app) told
+# browsers that any origin may read any route, and nothing checked where a
+# write came from. So a web page the owner happened to open at home could read
+# /api/location (the exact receiver position pilnk.io deliberately blurs),
+# switch on Remote Assist consent, retune the radio, delete capsules or fire
+# the old OTA route, all through the owner's own browser.
+# Full write-up: pilnk-tasks/node-security-review-2026-09-27.md
+#
+# The dashboard only ever talks to itself, so the rule is simple:
+#  - Browsers label every request with Sec-Fetch-Site. 'same-origin' (the
+#    dashboard's own calls) and 'none' (typed URL, bookmark) pass. From
+#    anywhere else only a plain page load passes (GET navigation), so a link
+#    from pilnk.io or an iframe panel (e.g. Home Assistant) still opens the
+#    dashboard. Every other cross-site or same-site request gets a 403.
+#  - No Sec-Fetch-Site means curl, the watchdog, pilnkradio, scripts or an old
+#    browser. Reads pass. A write passes if it carries no Origin (not a
+#    browser) or an Origin whose host:port is this request's own Host.
+# Socket.IO is outside this guard (its middleware runs first), but the node
+# registers no Socket.IO handlers and emits nothing.
+_GUARD_LOGGED = {}
+
+
+def _guard_refuse(why):
+    now = time.time()
+    key = (why, request.path)
+    if now - _GUARD_LOGGED.get(key, 0) > 600:        # one line per path per 10 min
+        if len(_GUARD_LOGGED) > 500:
+            _GUARD_LOGGED.clear()
+        _GUARD_LOGGED[key] = now
+        logging.warning('[guard] refused %s %s (%s) origin=%r', request.method,
+                        request.path, why, request.headers.get('Origin'))
+    return jsonify({'error': 'cross-site request refused'}), 403
+
+
+@app.before_request
+def _pilnk_same_origin_guard():
+    site = (request.headers.get('Sec-Fetch-Site') or '').strip().lower()
+    if site:
+        if site in ('same-origin', 'none'):
+            return None
+        if request.method in ('GET', 'HEAD') and \
+                (request.headers.get('Sec-Fetch-Mode') or '').strip().lower() == 'navigate':
+            return None
+        return _guard_refuse(site)
+    if request.method in ('GET', 'HEAD', 'OPTIONS'):
+        return None
+    origin = request.headers.get('Origin')
+    if origin is None:
+        return None
+    try:
+        if origin != 'null' and \
+                urllib.parse.urlsplit(origin).netloc.lower() == (request.host or '').lower():
+            return None
+    except Exception:
+        pass
+    return _guard_refuse('origin mismatch')
 
 
 @app.after_request
