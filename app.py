@@ -103,6 +103,7 @@ import logging
 import urllib.request
 import urllib.parse
 import socket
+import shlex
 
 logging.basicConfig(
     level=logging.INFO,
@@ -1629,7 +1630,8 @@ def ping_server():
                 'aircraft_count': len(aircraft),
                 'aircraft': aircraft,
                 'node_stats': get_stats_payload(),
-                'version': _get_local_version(),
+                # What is RUNNING, not what is on disk (see _RUNNING_VERSION).
+                'version': _RUNNING_VERSION,
                 # Environment fingerprint + why self-hiding features are hidden.
                 # A feature that hides itself when its backend is missing looks
                 # identical to one nobody opened — that's how the audio engine
@@ -1889,6 +1891,8 @@ def _ota_ping_features():
                       version_unchanged | restart_blocked | service_dead |
                       restart_noop | exception | unknown
                       (WHY the last attempt failed — empty when it did not)
+      restart_pending:'' | <installed version>   (new code on disk, old running)
+      ota_restart:    ok | blocked | unknown     (can the next OTA restart us)
 
     ota_last_result says an attempt broke; ota_fail says where. update.sh has
     three separate exit-1 paths, so the exit code alone cannot tell them apart
@@ -1908,6 +1912,11 @@ def _ota_ping_features():
         'ota_check':       check,
         'ota_last_result': str(_load_ota_state().get('last_result', 'none'))[:40],
         'ota_fail':        str(_load_ota_state().get('last_fail', ''))[:24],
+        # '' normally; the INSTALLED version while this process still runs an
+        # older one (needs a restart). Low-cardinality: it's a release number.
+        'restart_pending': _restart_pending()[:16],
+        # ok | blocked | unknown: can the next OTA restart us unattended?
+        'ota_restart':     _ota_restart_probe(),
     }
 
 ota_last_update = _load_ota_last_update()
@@ -1919,6 +1928,54 @@ def _get_local_version():
             return f.read().strip()
     except:
         return '0.0.0'
+
+# ── Running vs installed (27 Sep 2026) ──
+# VERSION on disk says what the last OTA INSTALLED, not what this process is
+# RUNNING. When update.sh can't restart the service (no passwordless sudo, exit 4
+# restart_blocked) the new code sits on disk, the old code keeps running, and the
+# ping used to report the new version anyway. One node ran stale code for weeks
+# like that while the fleet view said it was current. So the version is captured
+# once, here, at import, and THAT is what gets reported. The disk version is
+# reported separately, and only while the two differ.
+_RUNNING_VERSION = _get_local_version()
+
+def _restart_pending():
+    """The installed (disk) version while it differs from the running one, else ''."""
+    disk = _get_local_version()
+    return disk if disk != _RUNNING_VERSION else ''
+
+# Can update.sh restart this service unattended? It runs
+# `sudo -n systemctl restart pilnk`; without a NOPASSWD rule that fails and the
+# OTA ends as restart_blocked. Asking sudo the same question up front means a node
+# that WILL get stuck shows up before a release strands it. Asked once per process
+# (a sudoers change takes effect for us at the next restart anyway), lazily, so
+# startup never waits on it. 'ok' | 'blocked' | 'unknown'.
+_OTA_RESTART_PROBE = None
+
+def _ota_restart_probe():
+    global _OTA_RESTART_PROBE
+    if _OTA_RESTART_PROBE is None:
+        try:
+            if os.geteuid() == 0:
+                _OTA_RESTART_PROBE = 'ok'
+            else:
+                r = subprocess.run(['sudo', '-n', '-l', 'systemctl', 'restart', 'pilnk'],
+                                   capture_output=True, text=True, timeout=5)
+                _OTA_RESTART_PROBE = 'ok' if r.returncode == 0 else 'blocked'
+        except Exception:
+            _OTA_RESTART_PROBE = 'unknown'
+    return _OTA_RESTART_PROBE
+
+def _restart_cmd():
+    """The exact command the operator should run to get onto the installed code.
+    A plain restart when OTA restarts already work; otherwise the one-time
+    bootstrap that installs the restart rule first, so the NEXT update doesn't
+    strand the node again. Paths quoted, because this is shown for copy-paste."""
+    if _ota_restart_probe() == 'blocked':
+        return ('sudo PILNK_DIR=%s bash %s && sudo systemctl restart pilnk'
+                % (shlex.quote(PILNK_DIR),
+                   shlex.quote(os.path.join(PILNK_DIR, 'bootstrap-selfheal.sh'))))
+    return 'sudo systemctl restart pilnk'
 
 _reconcile_pending_ota_result()
 
@@ -3619,8 +3676,13 @@ def api_ota_check():
 # and a flag the dashboard uses to render the "Install now" CTA.
 @app.route('/api/ota/status', methods=['GET'])
 def api_ota_status():
+    pending = _restart_pending()
     return jsonify({
-        'current':     _get_local_version(),
+        'current':     _get_local_version(),   # installed (disk) — unchanged meaning
+        'running':     _RUNNING_VERSION,       # what this process is actually running
+        'restart_pending': bool(pending),
+        # Only sent when needed: the exact command for the "Restart needed" banner.
+        'restart_cmd': _restart_cmd() if pending else '',
         'latest':      ota_status.get('latest', ''),
         'available':   bool(ota_status.get('available', False)),
         'updating':    bool(ota_status.get('updating', False)),
@@ -5144,7 +5206,8 @@ def _assist_read_file(path, cap=ASSIST_RESULT_CAP):
 # ── the capability functions (all read-only) ─────────────────────────────────
 
 def _cap_version(params):
-    out = {'version_file': _get_local_version()}
+    out = {'version_file': _get_local_version(), 'running': _RUNNING_VERSION,
+           'ota_restart': _ota_restart_probe()}
     out['git_head'] = _assist_run(['git', '-C', PILNK_DIR, 'rev-parse', 'HEAD']).strip()
     out['git_describe'] = _assist_run(['git', '-C', PILNK_DIR, 'log', '-1', '--oneline']).strip()
     return out

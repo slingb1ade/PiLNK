@@ -1113,7 +1113,16 @@
   <div style="flex:1;min-width:0;font-size:0.78rem;line-height:1.4;">
     <span id="otaBannerText">New PiLNK version available</span>
     <span id="otaBannerVersion" style="color:#60a5fa;font-weight:700;margin-left:6px;"></span>
+    <code id="otaRestartCmd" style="display:none;margin-top:4px;padding:3px 6px;
+      background:rgba(0,0,0,0.35);border:1px solid rgba(148,163,184,0.3);border-radius:4px;
+      color:#e2e8f0;user-select:all;-webkit-user-select:all;word-break:break-all;"></code>
   </div>
+  <button id="otaCopyBtn" onclick="otaCopyCmd()" style="
+    display:none;background:#f59e0b;border:none;border-radius:6px;color:#0f172a;
+    font-family:inherit;font-size:0.7rem;letter-spacing:0.08em;
+    padding:8px 14px;cursor:pointer;font-weight:700;flex-shrink:0;">
+    COPY
+  </button>
   <button id="otaInstallBtn" onclick="otaInstall()" style="
     background:#3b82f6;border:none;border-radius:6px;color:white;
     font-family:inherit;font-size:0.7rem;letter-spacing:0.08em;
@@ -1133,6 +1142,13 @@
   #otaBanner.installing #otaInstallBtn,
   #otaBanner.installing #otaLaterBtn { display:none; }
   #otaBanner.installing #otaBannerText { color:#fbbf24; }
+  /* Restart-needed mode: new code on disk, old code running. Nothing to install,
+     so INSTALL NOW goes; the command and a COPY button take its place. */
+  #otaBanner.restart { border-bottom-color:rgba(245,158,11,0.6); }
+  #otaBanner.restart #otaInstallBtn { display:none; }
+  #otaBanner.restart #otaBannerText { color:#fbbf24; }
+  #otaBanner.restart #otaRestartCmd { display:block !important; }
+  #otaBanner.restart #otaCopyBtn { display:inline-block !important; }
 </style>
 <div id="pilnk-splash" role="status" aria-label="PiLNK loading">
   <div class="ps-grid"></div>
@@ -8570,6 +8586,21 @@ var ota = (function () {
     el('otaBannerVersion').textContent = 'v' + latest;
     el('otaBannerText').textContent = 'New PiLNK version available';
     banner.classList.remove('installing');
+    banner.classList.remove('restart');
+    banner.style.display = 'flex';
+  }
+  // New code is on disk but this process is still the old one (the OTA could
+  // not restart the service). Nothing to install, just a restart to do, and
+  // the page can't do it for you, so it shows the exact command to run.
+  function showRestart(installed, running, cmd) {
+    var banner = el(BANNER_ID);
+    if (!banner) return;
+    el('otaBannerVersion').textContent = '';
+    el('otaBannerText').textContent = 'Restart needed: v' + installed +
+      ' is installed but v' + running + ' is still running. Run this on the node:';
+    el('otaRestartCmd').textContent = cmd;
+    banner.classList.remove('installing');
+    banner.classList.add('restart');
     banner.style.display = 'flex';
   }
   function hide() {
@@ -8580,6 +8611,7 @@ var ota = (function () {
     installing = true;
     var banner = el(BANNER_ID);
     if (!banner) return;
+    banner.classList.remove('restart');
     banner.classList.add('installing');
     el('otaBannerText').textContent =
       '⚙ Installing… service will restart. This page will reconnect automatically.';
@@ -8607,18 +8639,24 @@ var ota = (function () {
         // version. Reads from /api/ota/status.current which reads
         // the VERSION file. This means future version bumps reflect
         // automatically without re-touching the HTML.
-        if (s.current) {
+        // 27 Sep 2026: s.current is the INSTALLED (disk) version; s.running is
+        // what the service is actually running. They differ when an OTA pulled
+        // new code but couldn't restart. Show and compare the RUNNING one. The
+        // disk one used to raise a false "Updated to vX" toast after exactly
+        // that failure. Older node code has no s.running, so fall back.
+        var cur = s.running || s.current;
+        if (cur) {
           var lv = document.getElementById('logoVersion');
-          if (lv) lv.textContent = 'v' + s.current;
+          if (lv) lv.textContent = 'v' + cur;
         }
 
         // Detect successful install: we previously saw an update
-        // available, now current matches latest → service restarted
-        // with the new version.
-        if (lastKnownLatest && s.current === lastKnownLatest && installing) {
+        // available, now the RUNNING version matches latest → service
+        // restarted with the new version.
+        if (lastKnownLatest && cur === lastKnownLatest && installing) {
           installing = false;
           hide();
-          setSuccessToast(s.current);
+          setSuccessToast(cur);
           lastKnownLatest = null;
           return;
         }
@@ -8628,6 +8666,19 @@ var ota = (function () {
           if (!installing) setInstallingState();
           installing = true;
           el(BANNER_ID).style.display = 'flex';
+          return;
+        }
+
+        if (s.restart_pending) {
+          // Ahead of "update available": installing again can't help while
+          // the restart itself is what's failing.
+          installing = false;
+          lastKnownLatest = null;
+          if (!dismissedThisSession) {
+            showRestart(s.current, cur, s.restart_cmd || 'sudo systemctl restart pilnk');
+          } else {
+            hide();
+          }
           return;
         }
 
@@ -8703,13 +8754,43 @@ var ota = (function () {
       });
   }
 
-  return { install: install, dismiss: dismiss, poll: poll, checkNow: checkNow };
+  // The dashboard is usually plain http on the LAN, where navigator.clipboard
+  // doesn't exist (secure contexts only). So: try it, else select the command
+  // and use execCommand('copy'). If both fail the command is left selected
+  // (it's user-select:all) for a manual copy.
+  function copyCmd() {
+    var code = el('otaRestartCmd');
+    if (!code) return;
+    var text = code.textContent || '';
+    function selectIt() {
+      var r = document.createRange();
+      r.selectNodeContents(code);
+      var sel = window.getSelection();
+      sel.removeAllRanges();
+      sel.addRange(r);
+    }
+    function done(ok) {
+      showDashToast(ok ? 'Command copied' : 'Command selected, press Ctrl+C to copy', ok ? 'success' : 'info');
+    }
+    if (navigator.clipboard && window.isSecureContext) {
+      navigator.clipboard.writeText(text).then(function () { done(true); },
+        function () { selectIt(); done(false); });
+      return;
+    }
+    selectIt();
+    var ok = false;
+    try { ok = document.execCommand('copy'); } catch (e) { ok = false; }
+    done(ok);
+  }
+
+  return { install: install, dismiss: dismiss, poll: poll, checkNow: checkNow, copyCmd: copyCmd };
 })();
 
 // Expose for onclick handlers in the banner markup
 function otaInstall()  { ota.install(); }
 function otaDismiss()  { ota.dismiss(); }
 function otaCheckNow() { ota.checkNow(); }
+function otaCopyCmd()  { ota.copyCmd(); }
 
 // ── Remote Assist (owner panel) ──────────────────────────────────────────
 function raMsg(text, isErr){

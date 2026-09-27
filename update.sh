@@ -179,8 +179,11 @@ elif [ "$RC" -ne 0 ]; then
     log "No passwordless sudo for the restart on this host (Debian Trixie/Bookworm,"
     log "Ubuntu, amd64). New code is on disk (v$NEW_VERSION) but the SERVICE DID NOT"
     log "RESTART — still running the OLD code (PID ${PID_BEFORE:-unknown})."
-    log "Fix: run 'sudo systemctl restart pilnk' once, or re-run install.sh to install"
-    log "the NOPASSWD sudoers rule so future OTAs restart unattended."
+    # A bare restart only fixes THIS update; the next one strands the node again.
+    # The bootstrap installs the scoped restart rule first (needs the password once).
+    log "Fix (once, as the node's owner):"
+    log "  sudo PILNK_DIR=$PILNK_DIR bash $PILNK_DIR/bootstrap-selfheal.sh && sudo systemctl restart pilnk"
+    log "That installs the restart rule, so future OTAs restart unattended."
     log "=== OTA UPDATE FAILED — restart blocked (no passwordless sudo) ==="
     exit 4
 else
