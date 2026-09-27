@@ -3251,6 +3251,50 @@ def _cap_probe_dur(path):
     except Exception:
         return None
 
+# ── Transmission markers (28 Sep 2026; MME1 asked, forum thread 53) ──
+# Where in a capsule's audio someone was actually talking, so replay can mark it
+# on the playback bar and jump between calls. Found by ffmpeg's silencedetect
+# over the recorded file, so it works on recordings made before this existed
+# too. With squelch on (the default) the gaps between calls are silence and the
+# calls stand out; with squelch off the file is continuous noise and it can
+# come back as one long span, which the page explains. Worked out the first
+# time a capsule is opened, cached in its meta as 'act', never redone. Stays
+# on the node like the audio itself.
+CAPSULE_ACT_DB   = -45      # quieter than this counts as silence
+CAPSULE_ACT_GAP  = 0.8      # a pause shorter than this does not split a call
+CAPSULE_ACT_MIN  = 0.3      # blips shorter than this are dropped
+CAPSULE_ACT_MAX  = 2000     # spans kept per segment (sanity cap)
+CAPSULE_ACT_LOCK = threading.Lock()   # one scan at a time: it is CPU work on a Pi
+
+def _cap_activity_scan(path, dur):
+    """[[start, end], ...] in seconds from the segment start where there is
+    sound. [] for a silent file, None if the scan itself failed."""
+    try:
+        r = subprocess.run(['ffmpeg', '-hide_banner', '-nostats', '-i', path,
+                            '-af', 'silencedetect=noise=%ddB:d=%s' % (CAPSULE_ACT_DB, CAPSULE_ACT_GAP),
+                            '-f', 'null', '-'], capture_output=True, text=True, timeout=300)
+    except Exception:
+        return None
+    if r.returncode != 0:
+        return None
+    spans, pos, in_sil = [], 0.0, False
+    for line in r.stderr.splitlines():
+        m = re.search(r'silence_start: (-?[\d.]+)', line)
+        if m:
+            s = max(0.0, float(m.group(1)))
+            if s > pos:
+                spans.append([pos, s])
+            in_sil = True
+            continue
+        m = re.search(r'silence_end: ([\d.]+)', line)
+        if m:
+            pos = float(m.group(1))
+            in_sil = False
+    if not in_sil and dur and dur > pos:          # sound running to the end of the file
+        spans.append([pos, float(dur)])
+    out = [[round(a, 1), round(b, 1)] for a, b in spans if b - a >= CAPSULE_ACT_MIN]
+    return out[:CAPSULE_ACT_MAX]
+
 def _cap_audio_recover():
     """Runs once when the tap starts, before any stretch is open in this process.
     Open stretches left by a stop/crash are measured and closed out; files no
@@ -3657,6 +3701,41 @@ def api_capsule_audio(cid, n):
         return jsonify({'error': 'not found'}), 404
     # conditional=True answers Range requests, which is what lets the browser seek.
     return send_file(p, mimetype='audio/ogg', conditional=True, max_age=0)
+
+@app.route('/api/capsules/<cid>/activity', methods=['GET'])
+def api_capsule_activity(cid):
+    """Transmission markers for replay (see _cap_activity_scan). Scans any
+    finished stretch that hasn't been scanned yet, caches the result in the
+    capsule meta, and returns [{n, t0, dur, act: [[s, e], ...]}] per stretch.
+    A stretch still recording is left for later."""
+    cid = cid.upper()
+    if not _cap_valid_id(cid):
+        return jsonify({'error': 'bad id'}), 400
+    with CAPSULE_LOCK:
+        meta = _cap_load_json(cid + '.json', None)
+    if not isinstance(meta, dict):
+        return jsonify({'error': 'not found'}), 404
+    todo = [a for a in (meta.get('audio') or [])
+            if a.get('dur') and not a.get('open') and not isinstance(a.get('act'), list)
+            and str(a.get('file', '')).startswith(cid + '.a')]
+    if todo:
+        with CAPSULE_ACT_LOCK:
+            found = {}
+            for a in todo:
+                spans = _cap_activity_scan(_cap_path(a['file']), a.get('dur'))
+                if spans is not None:
+                    found[a.get('n')] = spans
+            if found:
+                with CAPSULE_LOCK:
+                    if os.path.exists(_cap_path(cid + '.json')):
+                        meta = _cap_load_json(cid + '.json', {})
+                        for a in (meta.get('audio') or []):
+                            if a.get('n') in found and not isinstance(a.get('act'), list):
+                                a['act'] = found[a['n']]
+                        _cap_save_json(cid + '.json', meta)
+    segs = [{'n': a.get('n'), 't0': a.get('t0'), 'dur': a.get('dur'), 'act': a['act']}
+            for a in (meta.get('audio') or []) if isinstance(a.get('act'), list)]
+    return jsonify({'segments': segs})
 
 capsule_thread = threading.Thread(target=capsule_recorder, daemon=True)
 capsule_thread.start()

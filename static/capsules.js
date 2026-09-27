@@ -26,6 +26,14 @@ var capState = { active: {}, rules: [], list: [], skew: 0, woken: false };
     '#capBar .cap-bar-row{display:flex;align-items:center;gap:8px;margin-top:6px;flex-wrap:wrap;}',
     '#capBar button,#capBar select,#capBar a{background:#0f172a;border:1px solid #334155;border-radius:4px;color:#e2e8f0;font-family:inherit;font-size:0.62rem;padding:3px 8px;cursor:pointer;text-decoration:none;}',
     '#capScrub{flex:1;min-width:120px;}',
+    // Transmission markers under the playback bar (v1.5.39, MME1). The strip is
+    // inset by roughly the slider thumb's radius so a tick lines up with the
+    // thumb position for the same moment.
+    '#capScrubWrap{flex:1;min-width:120px;display:flex;flex-direction:column;gap:2px;}',
+    '#capScrubWrap #capScrub{width:100%;}',
+    '#capMarks{position:relative;height:7px;margin:0 7px;}',
+    '#capMarks span{position:absolute;top:0;height:7px;min-width:3px;background:#f59e0b;border-radius:2px;cursor:pointer;}',
+    '#capMarks span:hover{background:#fde68a;}',
     '.cap-legend-bar{display:inline-block;width:90px;height:6px;border-radius:3px;vertical-align:middle;margin:0 4px;background:linear-gradient(90deg,hsl(20,90%,55%),hsl(80,90%,55%),hsl(140,90%,55%),hsl(200,90%,55%),hsl(260,90%,55%));}',
     '#capShotExit{position:fixed;top:10px;right:10px;z-index:100001;background:rgba(8,14,26,0.85);border:1px solid #334155;border-radius:6px;color:#e2e8f0;font-family:"Share Tech Mono",monospace;font-size:0.65rem;padding:4px 10px;cursor:pointer;opacity:.2;transition:opacity .2s;}',
     '#capShotExit:hover{opacity:1;}',
@@ -365,6 +373,7 @@ function capReplay(id){
              aud: null, audSeg: null, audOn: true};
     capDimOthers(0.25);
     capBuildBar();
+    capLoadMarks(capRP);
     capFit();
     capUpdate();
     capRP.timer = setInterval(capTick, 100);
@@ -380,7 +389,8 @@ function capBuildBar(){
     '<div class="cap-bar-row"><button id="capPlay" onclick="capPlayToggle()">▶</button>' +
       '<select id="capSpeed" onchange="if(capRP){capRP.speed=+this.value;capUpdate();}">' +
         [1, 4, 16, 60, 120].map(function(s){ return '<option value="' + s + '"' + (s === 16 ? ' selected' : '') + '>' + s + '×</option>'; }).join('') +
-      '</select><input type="range" id="capScrub" min="0" max="1000" value="0" oninput="capScrubTo(this.value)">' +
+      '</select><span id="capScrubWrap"><input type="range" id="capScrub" min="0" max="1000" value="0" oninput="capScrubTo(this.value)">' +
+      (R.audio.length ? '<span id="capMarks"></span>' : '') + '</span>' +
       '<span id="capClock"></span></div>' +
     '<div class="cap-bar-row"><span id="capInfo" style="flex:1;"></span>' +
       '<span style="color:#94a3b8;">' + capAltTxt(R.aMin) + '<span class="cap-legend-bar"></span>' + capAltTxt(R.aMax) + '</span></div>' +
@@ -390,7 +400,11 @@ function capBuildBar(){
       '<div class="cap-bar-row"><button id="capAudBtn" onclick="capAudToggle()">🔊 Audio on</button>' +
       '<span style="color:#94a3b8;flex:1;">ATC audio · ' +
         R.audio.map(function(s){ return capMHz(s.hz); }).filter(function(v, k, a){ return a.indexOf(v) === k; }).join(', ') +
-        ' · plays at 1× · everything heard on that frequency, not only this aircraft</span></div>' : '') +
+        ' · plays at 1× · everything heard on that frequency, not only this aircraft</span></div>' +
+      // Transmission markers (v1.5.39): jump between the calls marked on the bar.
+      '<div class="cap-bar-row"><button onclick="capJumpCall(-1)" title="Previous transmission">◀ call</button>' +
+      '<button onclick="capJumpCall(1)" title="Next transmission">call ▶</button>' +
+      '<span id="capMarksInfo" style="color:#94a3b8;flex:1;">Finding transmissions…</span></div>' : '') +
     '<div class="cap-bar-row"><button onclick="capFit()">⤢ Fit</button>' +
       '<button onclick="capShot(true)">📷 Screenshot mode</button>' +
       '<a href="/api/capsules/' + R.id + '/kml" download>⬇ KML</a>' +
@@ -498,6 +512,78 @@ function capAudToggle(){
     var sel = document.getElementById('capSpeed'); if (sel) sel.value = '1';
   }
   capUpdate();
+}
+// ── Transmission markers (v1.5.39; MME1 asked, forum thread 53) ──────────
+// The node finds where someone was talking in the recorded audio (silence
+// detection, cached after the first look) and returns spans per stretch. Here
+// they become amber ticks under the playback bar; clicking one, or ◀ call /
+// call ▶, jumps there at 1× so it can be heard. The first open of a long
+// capsule can take a little while on a Pi, hence "Finding transmissions…".
+function capLoadMarks(R){
+  if (!R || !R.audio.length) return;
+  R.marks = null;
+  fetch('/api/capsules/' + R.id + '/activity', {cache: 'no-store'})
+    .then(function(r){ return r.json(); })
+    .then(function(d){
+      if (capRP !== R) return;                     // closed or another capsule opened meanwhile
+      var marks = [], heard = 0, total = 0;
+      (d.segments || []).forEach(function(s){
+        total += s.dur || 0;
+        (s.act || []).forEach(function(a){
+          marks.push([s.t0 + a[0], s.t0 + a[1]]);
+          heard += a[1] - a[0];
+        });
+      });
+      marks.sort(function(x, y){ return x[0] - y[0]; });
+      R.marks = marks;
+      capRenderMarks(R, total ? heard / total : 0);
+    })
+    .catch(function(){
+      var inf = document.getElementById('capMarksInfo');
+      if (inf && capRP === R) inf.textContent = 'Could not find transmissions in this recording.';
+    });
+}
+function capRenderMarks(R, cover){
+  var box = document.getElementById('capMarks'), inf = document.getElementById('capMarksInfo');
+  if (!box) return;
+  var span = (R.t1 - R.t0) || 1;
+  box.innerHTML = '';
+  R.marks.forEach(function(m){
+    var a = Math.max(R.t0, m[0]), b = Math.min(R.t1, m[1]);
+    if (b <= a) return;                            // outside the track's time range
+    var el = document.createElement('span');
+    el.style.left = ((a - R.t0) / span * 100) + '%';
+    el.style.width = ((b - a) / span * 100) + '%';
+    el.title = new Date(a * 1000).toLocaleTimeString() + ' · ' + Math.max(1, Math.round(b - a)) + ' s';
+    el.onclick = function(){ capGoToCall(a); };
+    box.appendChild(el);
+  });
+  if (!inf) return;
+  var n = R.marks.length;
+  inf.textContent = !n ? 'No transmissions found in this recording.'
+    // Squelch off leaves one long stretch of noise, not separate calls.
+    : cover > 0.85 ? n + (n === 1 ? ' stretch' : ' stretches') + ' of sound · almost all of it, so squelch was probably off and single calls cannot be picked out'
+    : n + (n === 1 ? ' transmission' : ' transmissions') + ' · amber marks on the bar';
+}
+function capGoToCall(t){
+  var R = capRP; if (!R) return;
+  R.t = Math.max(R.t0, Math.min(R.t1, t - 0.5));   // half a second of lead-in
+  R.i = 0;
+  if (R.audOn && R.speed !== 1) {                   // a call is only intelligible at 1×
+    R.speed = 1;
+    var sel = document.getElementById('capSpeed'); if (sel) sel.value = '1';
+  }
+  capUpdate();
+}
+function capJumpCall(dir){
+  var R = capRP; if (!R || !R.marks || !R.marks.length) return;
+  var t = R.t, pick = null;
+  if (dir > 0) {
+    for (var k = 0; k < R.marks.length; k++) { if (R.marks[k][0] > t + 0.6) { pick = R.marks[k][0]; break; } }
+  } else {
+    for (var j = R.marks.length - 1; j >= 0; j--) { if (R.marks[j][0] < t - 1.5) { pick = R.marks[j][0]; break; } }
+  }
+  if (pick !== null) capGoToCall(pick);
 }
 // Screenshot mode: the map goes full-window with ONLY the base map and the
 // capsule on it — no aircraft, rings, weather, zoom buttons or panels. The
