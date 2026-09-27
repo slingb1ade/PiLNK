@@ -58,7 +58,7 @@
 
 using nlohmann::json;
 
-#define PILNKRADIO_VERSION "2.1.0"
+#define PILNKRADIO_VERSION "2.1.1"
 #define PILNK_FFT_SIZE     1024
 #define PILNK_FFT_RATE     25.0
 
@@ -1245,15 +1245,49 @@ private:
     // A no-cors POST from ANY website the operator visits (or DNS rebinding)
     // could otherwise flip playing:true. Rules:
     //  - no Origin header (curl, watchdog, scripts) => allowed
-    //  - localhost origins => allowed
+    //  - loopback origins (host EXACTLY localhost / 127.0.0.1 / [::1]) => allowed
     //  - otherwise the origin must be in config allowedOrigins (the fleet
     //    installer sets this to the node's dashboard origin)
     // Token (optional, config "token"): required on POST via X-PiLNK-Token.
+
+    // ":digits" (1-5 digits) — the port part of an Origin, if there is one.
+    static bool validPort(const std::string& s) {
+        if (s.size() < 2 || s.size() > 6 || s[0] != ':') return false;
+        for (size_t i = 1; i < s.size(); ++i) if (!isdigit((unsigned char)s[i])) return false;
+        return true;
+    }
+
+    // True only when an Origin names this machine by a loopback name: http or
+    // https, host EXACTLY localhost / 127.0.0.1 / [::1], any port or none.
+    // 27 Sep 2026 (node security review M3): this used to be a prefix match, so
+    // "http://localhost.evil.example" and "http://127.0.0.1.evil.example" (real
+    // hostnames anyone can register) counted as localhost and got straight in.
+    // Fixed in engine 2.1.1.
+    static bool isLoopbackOrigin(std::string origin) {
+        while (!origin.empty() && (origin.back() == ' ' || origin.back() == '\t')) origin.pop_back();
+        std::string host;
+        if (origin.rfind("http://", 0) == 0) host = origin.substr(7);
+        else if (origin.rfind("https://", 0) == 0) host = origin.substr(8);
+        else return false;
+        std::string port;
+        if (!host.empty() && host[0] == '[') {                  // IPv6 literal
+            size_t rb = host.find(']');
+            if (rb == std::string::npos) return false;
+            port = host.substr(rb + 1);
+            host = host.substr(0, rb + 1);
+        } else {
+            size_t colon = host.find(':');
+            if (colon != std::string::npos) { port = host.substr(colon); host = host.substr(0, colon); }
+        }
+        if (!port.empty() && !validPort(port)) return false;
+        for (auto& ch : host) ch = tolower((unsigned char)ch);
+        return host == "localhost" || host == "127.0.0.1" || host == "[::1]";
+    }
+
     bool originAllowed(const std::string& req) {
         std::string origin = header(req, "Origin");
         if (origin.empty()) return true;
-        if (origin.rfind("http://localhost", 0) == 0 || origin.rfind("http://127.0.0.1", 0) == 0 ||
-            origin.rfind("https://localhost", 0) == 0 || origin.rfind("https://127.0.0.1", 0) == 0) return true;
+        if (isLoopbackOrigin(origin)) return true;
         for (auto& a : cfg.allowedOrigins) if (origin == a) return true;
         logW("origin rejected: %s", origin.c_str());
         return false;
