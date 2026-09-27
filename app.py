@@ -5084,14 +5084,11 @@ def ota_get_status():
         'last_check': ota_status.get('last_check', 0)
     })
 
-@app.route('/api/ota/update', methods=['POST'])
-def ota_trigger_update():
-    if ota_status.get('updating', False):
-        return jsonify({'success': False, 'error': 'Update already in progress'})
-    # Run update in background thread
-    t = threading.Thread(target=_run_update, daemon=True)
-    t.start()
-    return jsonify({'success': True, 'message': 'Update started — node will restart shortly'})
+# /api/ota/update removed 27 Sep 2026 (node security review, finding M2). Nothing
+# called it: the dashboard installs through /api/ota/install, which first checks
+# that an update is actually available, and Remote Assist uses its own ota_apply
+# action. Left in place, it was a bare POST that ran update.sh (git reset --hard)
+# on demand, which on a node with uncommitted work (EpsomPi) throws that work away.
 
 # -- Favicon --────
 @app.route('/favicon.ico')
@@ -5153,9 +5150,56 @@ def _cap_version(params):
     return out
 
 
+# Remote Assist hands config.json to pilnk.io, where it is stored with the
+# session's results and shown in the admin panel and MCP transcripts. The file is
+# NOT secret-free, whatever an older comment here said. It holds the node's
+# verify_code (pilnk_code), the pairing poll_token while a pairing is open, and
+# the receiver's exact lat/lon. So config_read returns a redacted copy:
+# credentials become '[redacted]', a pending pairing is reduced to a flag, and
+# lat/lon are rounded to 1 decimal place (~11 km). That is enough to see the
+# location is set and roughly right without showing where someone lives.
+# Node security review, finding L1, 27 Sep 2026.
+_ASSIST_SECRET_KEYS = {'pilnk_code', 'verify_code', 'pairing_code', 'poll_token',
+                       'token', 'secret', 'password', 'api_key', 'key'}
+_ASSIST_SECRET_SUFFIXES = ('_token', '_key', '_secret', '_password', '_pass')
+_ASSIST_LOCATION_KEYS = {'lat', 'lon', 'lng', 'latitude', 'longitude'}
+
+
+def _assist_redact(obj):
+    if isinstance(obj, dict):
+        out = {}
+        for k, v in obj.items():
+            kl = str(k).lower()
+            if kl == 'pending':
+                out[k] = '[redacted: pairing in progress]' if v else v
+            elif kl in _ASSIST_LOCATION_KEYS:
+                try:
+                    out[k] = round(float(v), 1)
+                except (TypeError, ValueError):
+                    out[k] = v if v in (None, '') else '[redacted]'
+            elif kl in _ASSIST_SECRET_KEYS or kl.endswith(_ASSIST_SECRET_SUFFIXES):
+                out[k] = v if v in (None, '', [], {}) else '[redacted]'
+            else:
+                out[k] = _assist_redact(v)
+        return out
+    if isinstance(obj, list):
+        return [_assist_redact(x) for x in obj]
+    return obj
+
+
 def _cap_config_read(params):
-    # config.json holds no secrets (verified). Return it as-is.
-    return {'config': _assist_read_file(CONFIG_PATH)}
+    try:
+        with open(CONFIG_PATH, 'r', errors='replace') as f:
+            raw = f.read()
+    except Exception as e:
+        return {'config_error': 'cannot read config.json: %s' % e}
+    try:
+        cfg = json.loads(raw)
+    except Exception:
+        # Never fall back to the raw text: it could carry the very keys this
+        # function exists to hide.
+        return {'config_error': 'config.json is not valid JSON (%d bytes); contents withheld' % len(raw)}
+    return {'config': json.dumps(_assist_redact(cfg), indent=2)[:ASSIST_RESULT_CAP]}
 
 
 def _cap_pairing_status(params):
