@@ -8792,6 +8792,65 @@ function otaDismiss()  { ota.dismiss(); }
 function otaCheckNow() { ota.checkNow(); }
 function otaCopyCmd()  { ota.copyCmd(); }
 
+// ── pilnk.io inbox notice (27 Sep 2026) ─────────────────────────────────────
+// Operators live on THIS dashboard, not on pilnk.io, so a PiChat message could
+// sit unread for weeks. The node relays the owner's unread count from its ping
+// (/api/inbox). Shows a small card bottom-left with who the newest is from.
+// Closing it hides it until a NEWER message arrives. Never shows message text.
+(function () {
+  var KEY = 'pilnk-inbox-dismissed';
+  var card = null;
+  function dismissed() { try { return parseInt(localStorage.getItem(KEY) || '0', 10) || 0; } catch (e) { return 0; } }
+  function setDismissed(v) { try { localStorage.setItem(KEY, String(v)); } catch (e) {} }
+  function build() {
+    if (card) return card;
+    card = document.createElement('div');
+    card.id = 'inboxNotice';
+    card.setAttribute('role', 'status');
+    card.style.cssText = 'position:fixed;left:16px;bottom:16px;z-index:9000;display:none;align-items:center;gap:10px;'
+      + 'max-width:340px;padding:10px 12px;background:#0f172a;border:1px solid rgba(96,165,250,0.5);border-radius:10px;'
+      + 'box-shadow:0 8px 24px rgba(0,0,0,0.45);font-family:"Share Tech Mono",monospace;color:#e2e8f0;font-size:0.74rem;line-height:1.35;';
+    var icon = document.createElement('span'); icon.textContent = '📨'; icon.style.fontSize = '1.1rem';
+    var text = document.createElement('span'); text.id = 'inboxNoticeText'; text.style.flex = '1';
+    var open = document.createElement('a');
+    open.href = 'https://pilnk.io/#profile'; open.target = '_blank'; open.rel = 'noopener';
+    open.textContent = 'OPEN';
+    open.style.cssText = 'background:#3b82f6;color:#fff;text-decoration:none;font-weight:700;letter-spacing:0.08em;padding:6px 10px;border-radius:6px;font-size:0.66rem;';
+    var close = document.createElement('button');
+    close.type = 'button'; close.textContent = '✕'; close.setAttribute('aria-label', 'Dismiss');
+    close.style.cssText = 'background:none;border:1px solid rgba(148,163,184,0.4);color:#94a3b8;border-radius:6px;padding:4px 7px;cursor:pointer;font-size:0.7rem;';
+    function hideUntilNewer() { setDismissed(parseInt(card.getAttribute('data-latest') || '0', 10)); card.style.display = 'none'; }
+    open.addEventListener('click', hideUntilNewer);
+    close.addEventListener('click', hideUntilNewer);
+    card.appendChild(icon); card.appendChild(text); card.appendChild(open); card.appendChild(close);
+    document.body.appendChild(card);
+    return card;
+  }
+  function poll() {
+    fetch('/api/inbox', {cache: 'no-store'})
+      .then(function (r) { return r.json(); })
+      .then(function (d) {
+        var n = parseInt(d && d.unread, 10) || 0;
+        var latest = parseInt(d && d.latest_id, 10) || 0;
+        if (!d || d.stale || n <= 0) {
+          if (card) card.style.display = 'none';
+          if (d && !d.stale && n === 0) setDismissed(0);   // inbox cleared: arm for the next one
+          return;
+        }
+        if (latest <= dismissed()) { if (card) card.style.display = 'none'; return; }
+        build();
+        card.setAttribute('data-latest', String(latest));
+        var who = d.from ? (' from ' + d.from) : '';
+        document.getElementById('inboxNoticeText').textContent =
+          (n === 1 ? '1 new message' : n + ' new messages') + ' on pilnk.io' + who;
+        card.style.display = 'flex';
+      })
+      .catch(function () { /* node busy or restarting: try again next tick */ });
+  }
+  setTimeout(poll, 6000);
+  setInterval(poll, 60000);
+})();
+
 // ── Remote Assist (owner panel) ──────────────────────────────────────────
 function raMsg(text, isErr){
   var el = document.getElementById('ra-msg');

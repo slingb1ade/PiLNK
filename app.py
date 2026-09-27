@@ -1503,6 +1503,12 @@ PING_LAST_OK_TS = 0.0
 # fleet restarting at once would be worse). Watch the loop, not the ping.
 PING_LOOP_TS = 0.0
 
+# Unread PiChat messages for this node's owner, as pilnk.io reported them in the
+# last ping reply (27 Sep 2026). Operators live on this dashboard, not on
+# pilnk.io, so a DM could sit unseen for weeks. None until a reply carries it
+# (older pilnk.io, or no ping yet). Count + sender callsign only, never text.
+PILNK_INBOX = None
+
 # ── Spurious-empty suppression (v1.2.15.5) ───────────────────────────────────
 # On a busy node the decoder's aircraft.json is large and rewritten every ~1s.
 # We can still read it at a moment it reports zero/near-zero aircraft (a brief
@@ -1558,7 +1564,7 @@ _ping_loop_running = False
 _ping_loop_lock = threading.Lock()
 
 def ping_server():
-    global PING_LAST_OK_TS, PING_LOOP_TS, _ping_loop_running
+    global PING_LAST_OK_TS, PING_LOOP_TS, _ping_loop_running, PILNK_INBOX
     with _ping_loop_lock:
         if _ping_loop_running:
             print('[PILNK] ping_server already running — duplicate launch ignored')
@@ -1683,6 +1689,16 @@ def ping_server():
                             or abs(float(slat) - float(RX_LAT)) > 1e-6
                             or abs(float(slon) - float(RX_LON)) > 1e-6):
                         _adopt_server_location(float(slat), float(slon))
+                # Unread PiChat messages for the owner (see PILNK_INBOX).
+                # Only a dict counts; anything else leaves the last value alone.
+                ib = rj.get('inbox')
+                if isinstance(ib, dict):
+                    PILNK_INBOX = {
+                        'unread':    max(0, int(ib.get('unread') or 0)),
+                        'latest_id': max(0, int(ib.get('latest_id') or 0)),
+                        'from':      (str(ib['from'])[:24] if ib.get('from') else None),
+                        'ts':        time.time(),
+                    }
             except Exception as e:
                 print(f'[PILNK] Config adopt skipped: {e}')
 
@@ -3689,6 +3705,18 @@ def api_ota_status():
         'last_check':  ota_status.get('last_check', 0),
         'auto_update': _is_auto_update_enabled()
     })
+
+# Unread PiChat messages on pilnk.io for this node's owner, relayed from the
+# last ping reply (27 Sep 2026). Polled by the dashboard's inbox notice.
+# unread is null until pilnk.io has reported it; stale is true when the last
+# report is over 5 minutes old (pings failing), so the page can stay quiet.
+@app.route('/api/inbox', methods=['GET'])
+def api_inbox():
+    ib = PILNK_INBOX
+    if not ib:
+        return jsonify({'unread': None, 'latest_id': 0, 'from': None, 'stale': True})
+    return jsonify({'unread': ib['unread'], 'latest_id': ib['latest_id'],
+                    'from': ib['from'], 'stale': (time.time() - ib['ts']) > 300})
 
 # Manual install trigger — called when the user clicks "Install now"
 # on the dashboard banner. Runs update.sh in a background thread so
