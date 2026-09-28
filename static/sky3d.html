@@ -1,0 +1,600 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<title>PiLNK · 3D Sky</title>
+<!-- PiLNK 3D Sky — the dashboard's 4th map layer (Street · Satellite · Topo · 3D), also usable on its own.
+     Reuses the 3D Approach view's engine (MapLibre 5.24.0 + OpenFreeMap Liberty + AWS terrain + the same
+     aircraft models and tile cache). Reads only this node's own /flights and /api/trails. When embedded,
+     it talks to the dashboard by same-origin postMessage only. Nothing is sent anywhere. -->
+<link href="https://unpkg.com/maplibre-gl@5.24.0/dist/maplibre-gl.css" rel="stylesheet"/>
+<style>
+  :root{--purple:#7c3aed;--ink:#0b0f1a;--panel:rgba(10,14,26,.82);--line:#1f2a44;--txt:#dfe7f5;--dim:#8ea2c7;--amber:#ffb020;--good:#37d67a;}
+  *{box-sizing:border-box;margin:0;padding:0}
+  html,body{height:100%;background:var(--ink);color:var(--txt);font-family:ui-monospace,Menlo,Consolas,monospace;overflow:hidden}
+  #map{position:fixed;inset:0}
+  #labels{position:fixed;inset:0;pointer-events:none;z-index:5;overflow:hidden}
+  .lbl{position:absolute;left:0;top:0;font-size:10px;line-height:1.25;white-space:nowrap;color:#fff;
+       text-shadow:0 0 3px #000,0 0 2px #000,0 0 1px #000;pointer-events:none;will-change:transform;padding-left:3px;border-left:2px solid var(--c,#fff)}
+  .lbl b{font-weight:700}
+  .lbl i{font-style:normal;opacity:.85}
+  .lbl.emerg{color:#ff6677;font-weight:700}
+  .hud{position:fixed;z-index:10;font-size:12px;line-height:1.5}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:10px 12px;backdrop-filter:blur(6px)}
+  #tl{top:12px;left:12px;max-width:360px}
+  #tl .t{color:var(--purple);font-weight:700;letter-spacing:.06em;font-size:13px}
+  #tl .s{color:var(--dim);font-size:11px;margin-top:2px}
+  #perf{color:var(--good)!important}
+  #perf{display:none} body.debug #perf{display:block}
+  body.embed #tl{top:8px;left:8px;padding:6px 9px;max-width:300px}
+  body.embed #sub{display:none}
+  #btns{bottom:12px;left:50%;transform:translateX(-50%);display:flex;gap:6px;flex-wrap:wrap;justify-content:center;max-width:96vw}
+  .btn{font-family:inherit;font-size:11px;background:#0e1526;color:var(--dim);border:1px solid var(--line);border-radius:6px;padding:6px 10px;cursor:pointer}
+  .btn.on{color:var(--txt);border-color:var(--purple)}
+  #note{display:none;bottom:48px;left:12px;color:var(--dim);font-size:10px;max-width:340px}
+  #note.show{display:block}
+  .maplibregl-ctrl-attrib{font-size:10px}
+  @media (max-width:640px){
+    html,body{height:100dvh}
+    #tl{top:calc(8px + env(safe-area-inset-top));left:8px;max-width:70vw;padding:7px 9px}
+    #tl .t{font-size:11px} #tl .s{font-size:9px}
+    #btns{bottom:calc(10px + env(safe-area-inset-bottom));gap:4px}
+    .btn{font-size:10px;padding:6px 8px}
+  }
+</style>
+</head>
+<body>
+<div id="map"></div>
+<div id="labels"></div>
+<div class="hud card" id="tl">
+  <div class="t">PiLNK · 3D SKY</div>
+  <div class="s" id="sub">your receiver · OpenFreeMap 3D map + AWS terrain</div>
+  <div class="s" id="st">loading…</div>
+  <div class="s" id="perf"></div>
+</div>
+<div class="hud" id="btns">
+  <button class="btn" onclick="resetView()">Reset view</button>
+  <button class="btn" id="b_lbl" onclick="toggleLabels()">Labels</button>
+  <button class="btn" id="b_trl" onclick="toggleTrails()">Trails</button>
+  <button class="btn" id="b_mdl" onclick="toggleModels()">Models</button>
+  <button class="btn" onclick="document.getElementById('note').classList.toggle('show')">?</button>
+</div>
+<div class="hud card" id="note">Drag to pan · right-drag (or two fingers) to tilt and turn · wheel to zoom.
+Click an aircraft to open its 3D Approach view. Buildings appear once you zoom in.
+Options: <b>?ve=</b> terrain exaggeration (1.5), <b>?scale=</b> aircraft size (1), <b>?models=0</b> simple arrows,
+<b>?labels=0</b>, <b>?trails=0</b>, <b>?buildings=0</b>, <b>?terrain=0</b>, <b>?theme=day|night</b>, <b>?lat= ?lon=</b>.</div>
+
+<script src="https://unpkg.com/maplibre-gl@5.24.0/dist/maplibre-gl.js"></script>
+<script crossorigin="anonymous" src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script crossorigin="anonymous" src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/loaders/GLTFLoader.js"></script>
+<script>
+const _q=new URLSearchParams(location.search);
+const num=(k,d)=>{const v=_q.get(k);return (v!=null&&v!=='')?+v:d;};
+const D2R=Math.PI/180;
+const VE=num('ve',1.5), SCALE=num('scale',1);
+const SHOW_BLD=_q.get('buildings')!=='0', TERRAIN=_q.get('terrain')!=='0';
+let USE_MODELS=_q.get('models')!=='0', SHOW_LABELS=_q.get('labels')!=='0', SHOW_TRAILS=_q.get('trails')!=='0';
+const TRAIL_N=120;          // points kept per aircraft (one per poll, ~3 min)
+const POLL_MS=1500;
+const MAX_LABELS=60;        // nearest N aircraft get a label; the rest stay readable as models + trails
+/* Level of detail. Measured on the Pi4's own model files: 66–267 meshes and 25k–114k triangles EACH
+   (a320_200: 223 meshes / 114k tris). A full model on every aircraft is ~150 draw calls apiece —
+   100 aircraft would be ~15,000 per frame. Past a few km the model is scaled up and its detail is
+   invisible anyway, so only the nearest modelNear get the real model; the rest get the dart. */
+let modelNear=num('near',12);
+const EMERG=new Set(['7500','7600','7700']);   // hijack · radio failure · emergency — never hidden, always red
+const SITE={lat:null,lon:null};
+const st=t=>{document.getElementById('st').textContent=t;};
+let map=null, NIGHT_ON=false;
+const HOME={zoom:8.6,pitch:58,bearing:0};
+const EMBED=_q.get('embed')==='1' && window.parent!==window, DEBUG=_q.get('debug')==='1';
+if(EMBED) document.body.classList.add('embed'); if(DEBUG) document.body.classList.add('debug');
+/* The guards below (software GL, can't-keep-up) protect the dashboard, whose main thread this page shares
+   when embedded. Standalone (the fps page) they stay off; ?guard=0 turns them off embedded (test harness). */
+let GUARD=EMBED&&_q.get('guard')!=='0';
+let paused=false;
+/* The only channel to the dashboard. Same origin, both ways — the page is served by the node that
+   serves the dashboard, so nothing here ever leaves the node. Returns false when not embedded. */
+function toParent(msg){ if(!EMBED) return false;
+  try{ window.parent.postMessage(Object.assign({type:'pilnk-sky'},msg), location.origin); return true; }catch(e){ return false; } }
+window.addEventListener('message',e=>{
+  if(e.origin!==location.origin||e.source!==window.parent) return;
+  const d=e.data; if(!d||d.type!=='pilnk-sky') return;
+  if(d.action==='pause') paused=true;
+  else if(d.action==='resume'){ paused=false; _lastDrawAt=0; if(map) map.triggerRepaint(); }
+  else if(d.action==='theme') applyTheme(d.theme==='night');
+});
+
+/* ---------- aircraft models: the same set, spans and orientations as the 3D Approach view ---------- */
+const MODEL_ORIENT={ 'a320_200.glb':{yaw:-90}, 'atr72.glb':{yaw:90}, 'b777_klm.glb':{yaw:180}, 'b737_800.glb':{yaw:180}, 'c172.glb':{yaw:180}, 'b429.glb':{yaw:180}, 'c208.glb':{yaw:90}, 'c130.glb':{yaw:180},
+  'b52.glb':{yaw:180}, 'e3.glb':{yaw:90}, 'kc135.glb':{yaw:0}, 'kc46.glb':{yaw:0} };
+const MODEL_SPAN={ 'c172.glb':11.0, 'b429.glb':13.0, 'c208.glb':15.9, 'atr72.glb':27.1, 'c130.glb':40.4, 'a320_200.glb':35.8, 'a320_v2.glb':35.8,
+  'b737_800.glb':35.8, 'b738_v2.glb':35.8, 'a333_v2.glb':60.3, 'b747_100.glb':59.6,
+  'b777_klm.glb':64.8, 'a380_v2.glb':79.8,
+  'b52.glb':56.4, 'e3.glb':44.4, 'kc135.glb':39.9, 'kc46.glb':47.6 };
+function modelFor(t){ t=(t||'').toUpperCase();
+  if(['C130','C30J','L100','C130J','LMT1','C130H'].includes(t))return'c130.glb';
+  if(/^B52/.test(t))return'b52.glb';
+  if(['E3TF','E3CF','E3'].includes(t))return'e3.glb';
+  if(/^K46/.test(t))return'kc46.glb';
+  if(/^(K35|C135|R135|W135|O135|E8)/.test(t))return'kc135.glb';
+  const SETP=['C208','C206','C210','PC12','PC6','TBM7','TBM8','TBM9','P46T','EPIC','K100','AT802','AT502','AT504','C295','GA8','CC19','DHC2','DHC3','U206','C207'];
+  if(SETP.includes(t))return'c208.glb';
+  const TP=['AT72','AT73','AT75','AT76','AT43','AT45','AT46','DH8A','DH8B','DH8C','DH8D','SF34','SB20','JS31','JS32','JS41','B350','BE20','BE9L','E120','D228','DHC6','F50','ATP'];
+  const GA=['C172','C152','C150','C162','C182','C177','C180','C185','C206','C210','P28A','P28B','P28R','P28T','PA18','PA22','PA24','PA25','PA28','PA32','PA38','R200','DR40','DV20','DA40','DA20','AA5','BE33','BE35','BE36','BE23','M20P','M20T','SR20','SR22','RV6','RV7','RV8','RV9','RV10','RV12','CH70','TOBA','TB20','G115','AT3','C42','EUPA','P28S','ZLIN','YK52','SF25','S22T'];
+  if(GA.includes(t))return'c172.glb';
+  const HELI=['B429','B06','B06T','B407','B412','B427','B430','B505','EC20','EC25','EC30','EC35','EC45','EC55','EC75','H500','H125','H130','H135','H145','H155','H160','H175','AS32','AS50','AS55','AS65','A109','A119','A139','A169','A189','R22','R44','R66','S76','S92','S61','S64','MD52','MD60','MD90','EN28','GAZL','LYNX','PUMA','SK76','BK17','NH90','UH60','UH1','CH47'];
+  if(HELI.includes(t))return'b429.glb';
+  if(TP.includes(t))return'atr72.glb';
+  if(['A380','A388'].includes(t))return'a380_v2.glb';
+  if(/^A3[0-5]|^A3[0-9][0-9]$/.test(t)&&!['A318','A319','A320','A321'].includes(t))return'a333_v2.glb';
+  if(/^A(318|319|320|321|19N|20N|21N|221|223|220)$/.test(t)||/^BCS/.test(t))return'a320_200.glb';
+  if(/^B74/.test(t)||t==='BLCF')return'b747_100.glb';
+  if(/^B7(6|7|8)/.test(t))return'b777_klm.glb';
+  if(/^B7(3|1|2|5)/.test(t))return'b737_800.glb';
+  return t[0]==='A'?'a320_v2.glb':'b738_v2.glb';
+}
+/* neutral grey skin, same bands as the Approach view */
+const SKIN={ day:[0.24,0.62], night:[0.30,0.88] };
+const _skinCache=new Map();
+function tintMaterial(mt){
+  const band=NIGHT_ON?SKIN.night:SKIN.day, lo=band[0], hi=band[1];
+  if(mt.userData._origMap===undefined) mt.userData._origMap=mt.map||null;
+  if(mt.userData._origCol===undefined && mt.color) mt.userData._origCol=mt.color.clone();
+  const src=mt.userData._origMap;
+  if(src&&src.image&&src.image.width){ try{
+    const ck=(NIGHT_ON?'n:':'d:')+(src.uuid||'');
+    if(!_skinCache.has(ck)){
+      const c=document.createElement('canvas'); c.width=src.image.width; c.height=src.image.height;
+      const x=c.getContext('2d'); x.drawImage(src.image,0,0);
+      const id=x.getImageData(0,0,c.width,c.height), d=id.data;
+      for(let i=0;i<d.length;i+=4){ const l=(0.3*d[i]+0.59*d[i+1]+0.11*d[i+2])/255, v=(lo+(hi-lo)*l)*255; d[i]=d[i+1]=d[i+2]=v; }
+      x.putImageData(id,0,0);
+      const t=new THREE.CanvasTexture(c); t.flipY=src.flipY; t.encoding=src.encoding; _skinCache.set(ck,t);
+    }
+    mt.map=_skinCache.get(ck);
+  }catch(e){} }
+  if(mt.color){ const o=mt.userData._origCol||mt.color, l=0.3*o.r+0.59*o.g+0.11*o.b, v=lo+(hi-lo)*l; mt.color.setRGB(v,v,v); }
+  if(mt.emissive) mt.emissive.setRGB(0,0,0);
+  mt.needsUpdate=true;
+}
+
+/* ---------- theme: follows the sun at the receiver, like the Approach view ---------- */
+function sunElevation(lat,lon,when){
+  const d=when||new Date(), rad=Math.PI/180;
+  const t=(d.getTime()/86400000)+2440587.5-2451545.0;
+  const L=(280.460+0.9856474*t)%360, g=((357.528+0.9856003*t)%360)*rad;
+  const lam=(L+1.915*Math.sin(g)+0.020*Math.sin(2*g))*rad;
+  const eps=(23.439-0.0000004*t)*rad;
+  const dec=Math.asin(Math.sin(eps)*Math.sin(lam));
+  const gmst=(18.697374558+24.06570982441908*t)%24;
+  const ha=((gmst*15+lon)*rad)-Math.atan2(Math.cos(eps)*Math.sin(lam),Math.cos(lam));
+  return Math.asin(Math.sin(lat*rad)*Math.sin(dec)+Math.cos(lat*rad)*Math.cos(dec)*Math.cos(ha))/rad;
+}
+function isNight(){
+  const q=_q.get('theme'); if(q==='night')return true; if(q==='day')return false;
+  let pref=null; try{ pref=localStorage.getItem('pilnk3d:theme'); }catch(e){}
+  if(pref==='night')return true; if(pref==='day')return false;
+  return sunElevation(SITE.lat,SITE.lon)<0;
+}
+const NIGHT={ bg:'#060912', water:'#0a1526', green:'#0b1410', land:'#090d15',
+  bldg:'#161d2b', road:'#1b2332', roadMajor:'#2b3448', rail:'#171d29', text:'#7488a8', halo:'#04070e',
+  runway:'#ffd25e', taxi:'#3f5f86', apron:'#0e1420', boundary:'#2a3348' };
+function nightOps(l){
+  const id=l.id.toLowerCase(); let c=null;
+  if(/aeroway_runway/.test(id))        c=NIGHT.runway;
+  else if(/aeroway_taxiway/.test(id))  c=NIGHT.taxi;
+  else if(/aeroway/.test(id))          c=NIGHT.apron;
+  else if(/water|ocean|sea|river|lake/.test(id)) c=NIGHT.water;
+  else if(/park|grass|wood|forest|scrub|cemetery|pitch|golf|farm|garden/.test(id)) c=NIGHT.green;
+  else if(/building/.test(id))         c=NIGHT.bldg;
+  else if(/motorway|trunk|primary/.test(id)) c=NIGHT.roadMajor;
+  else if(/rail|transit|ferry|aerialway/.test(id)) c=NIGHT.rail;
+  else if(/boundary|admin/.test(id))   c=NIGHT.boundary;
+  else if(/highway|road|street|bridge|tunnel|path|track|service/.test(id)) c=NIGHT.road;
+  else if(/landuse|landcover|residential|industrial|hospital|school|university|sand|rock|glacier/.test(id)) c=NIGHT.land;
+  switch(l.type){
+    case 'background':     return [['background-color',NIGHT.bg]];
+    case 'fill':           return (l.paint&&l.paint['fill-outline-color']!=null)
+                             ? [['fill-color',c||NIGHT.land],['fill-outline-color',c||NIGHT.land]] : [['fill-color',c||NIGHT.land]];
+    case 'line':           return [['line-color',c||NIGHT.road]];
+    case 'fill-extrusion': return [['fill-extrusion-color',NIGHT.bldg],['fill-extrusion-opacity',0.95]];
+    case 'symbol':         return [['text-color',NIGHT.text],['text-halo-color',NIGHT.halo],['icon-opacity',0.55]];
+    case 'circle':         return [['circle-color',c||NIGHT.road]];
+  }
+  return [];
+}
+function paintNight(style){ for(const l of style.layers){ const p=l.paint=l.paint||{}; for(const [prop,val] of nightOps(l)) p[prop]=val; } return style; }
+const STREET_LABELS=['highway-name-major','highway-name-minor','highway-name-path'];
+/* Day values of every property the night painter touches, captured before any repaint, so the theme
+   can be switched on the LIVE map and back exactly — same approach as the Approach view. No
+   setStyle(): that re-fires 'load' and would build a second Three.js renderer. */
+const DAY_PAINT={}, NIGHT_PAINT={};   // both read from the style JSON: a live layer's .paint is MapLibre's internal store
+function captureDayPaint(style){ for(const l of style.layers){ const ops=nightOps(l); if(!ops.length) continue;
+  const rec={}; for(const [prop] of ops) rec[prop]=(l.paint&&l.paint[prop]!==undefined)?l.paint[prop]:null; DAY_PAINT[l.id]=rec; NIGHT_PAINT[l.id]=ops; } }
+const SKY_NIGHT={'sky-color':'#03060e','horizon-color':'#0a1830','fog-color':'#04070f','sky-horizon-blend':0.5,'horizon-fog-blend':0.5,'fog-ground-blend':0.7};
+const SKY_DAY={'sky-color':'#7fb2e5','horizon-color':'#cfe3f5','fog-color':'#dde8f2','sky-horizon-blend':0.7,'horizon-fog-blend':0.6,'fog-ground-blend':0.5};
+function ringColor(){ return NIGHT_ON?'#5b6f99':'#34507a'; }
+let _mapReady=false, _pendingNight=null;
+function applyTheme(night){
+  if(!_mapReady){ _pendingNight=night; return; }   // before 'load' the layers aren't there yet: applied the moment they are
+  if(night===NIGHT_ON) return;
+  NIGHT_ON=night;
+  for(const id in DAY_PAINT){ const l=map.getLayer(id); if(!l) continue;
+    if(night){ for(const [prop,val] of NIGHT_PAINT[id]) try{ map.setPaintProperty(id,prop,val); }catch(e){} }
+    else { const day=DAY_PAINT[id]; for(const prop in day) try{ map.setPaintProperty(id,prop,day[prop]===null?undefined:day[prop]); }catch(e){} } }
+  try{ map.setSky(NIGHT_ON?SKY_NIGHT:SKY_DAY); }catch(e){}
+  try{ map.setPaintProperty('rings','line-color',ringColor()); }catch(e){}
+  skyLayer.relight();
+  TPL.forEach(p=>p.then(t=>{ if(t) t.traverse(o=>{ if(o.isMesh&&o.material) (Array.isArray(o.material)?o.material:[o.material]).forEach(tintMaterial); }); }));
+  for(const s of AC.values()) if(s.dartMat) s.dartMat.color.copy(altColor(s.altFt,s.ground));
+  _trailsDirty=true; map.triggerRepaint();
+}
+/* The map is up: apply any theme that arrived early, then tell the dashboard — it re-sends what we may
+   have missed while the scripts were still loading (theme, and pause if the Approach view is covering us). */
+function onMapReady(){ _mapReady=true;
+  if(_pendingNight!==null){ const n=_pendingNight; _pendingNight=null; applyTheme(n); }
+  toParent({action:'ready'}); }
+
+/* ---------- local tile store + DEM clean-up (same store as the Approach view: they share tiles) ---------- */
+const SPIKE_M=100;
+const TILE_DB=(()=>{ let p=null; return ()=>p||(p=new Promise((res,rej)=>{ try{
+  const r=indexedDB.open('pilnk-tiles',1);
+  r.onupgradeneeded=()=>{ const s=r.result.createObjectStore('t'); s.createIndex('t','t'); };
+  r.onsuccess=()=>res(r.result); r.onerror=()=>rej(r.error); }catch(e){rej(e);} })); })();
+async function tileGet(key){ try{ const db=await TILE_DB(); return await new Promise(res=>{ const q=db.transaction('t','readonly').objectStore('t').get(key); q.onsuccess=()=>res(q.result?q.result.b:null); q.onerror=()=>res(null); }); }catch(e){ return null; } }
+let _tileCount=null;
+async function tilePut(key,buf){ try{ const db=await TILE_DB(); const tx=db.transaction('t','readwrite'), s=tx.objectStore('t'); s.put({b:buf,t:Date.now()},key);
+  if(_tileCount==null){ const c=s.count(); c.onsuccess=()=>{_tileCount=c.result;}; } else if(++_tileCount>5000){ _tileCount=null;
+    const cur=s.index('t').openCursor(); let n=0; cur.onsuccess=()=>{ const k=cur.result; if(k&&n++<800){ k.delete(); k.continue(); } }; }
+}catch(e){} }
+async function cleanDem(raw){
+  try{
+    const bmp=await createImageBitmap(new Blob([raw]),{premultiplyAlpha:'none',colorSpaceConversion:'none'});
+    const W=bmp.width,H=bmp.height,c=new OffscreenCanvas(W,H),x=c.getContext('2d',{willReadFrequently:true});
+    x.drawImage(bmp,0,0); const id=x.getImageData(0,0,W,H),d=id.data;
+    const h=new Float32Array(W*H); for(let i=0,p=0;i<d.length;i+=4,p++) h[p]=d[i]*256+d[i+1]+d[i+2]/256-32768;
+    const out=new Float32Array(h), nb=new Float32Array(8); let changed=false;
+    for(let y=1;y<H-1;y++){ const row=y*W;
+      for(let xx=1;xx<W-1;xx++){ const p=row+xx, v=h[p];
+        const est=(h[p-1]+h[p+1]+h[p-W]+h[p+W])*0.25;
+        if(v-est<SPIKE_M&&est-v<SPIKE_M) continue;
+        nb[0]=h[p-W-1];nb[1]=h[p-W];nb[2]=h[p-W+1];nb[3]=h[p-1];nb[4]=h[p+1];nb[5]=h[p+W-1];nb[6]=h[p+W];nb[7]=h[p+W+1];
+        for(let a=1;a<8;a++){ const t=nb[a]; let b=a-1; while(b>=0&&nb[b]>t){nb[b+1]=nb[b];b--;} nb[b+1]=t; }
+        const med=(nb[3]+nb[4])*0.5; if(Math.abs(v-med)>SPIKE_M){ out[p]=med; changed=true; } } }
+    for(let p=0;p<out.length;p++) if(out[p]<0){ changed=true; break; }
+    if(!changed) return raw;
+    for(let p=0,i=0;p<out.length;p++,i+=4){ const v=Math.max(0,out[p])+32768, r=Math.floor(v/256), g=Math.floor(v-r*256), b=Math.round((v-r*256-g)*256);
+      d[i]=r; d[i+1]=g; d[i+2]=Math.min(255,b); d[i+3]=255; }
+    x.putImageData(id,0,0);
+    return await (await c.convertToBlob({type:'image/png'})).arrayBuffer();
+  }catch(e){ return raw; }
+}
+async function tileFetch(url,signal){
+  const hit=await tileGet(url); if(hit) return hit;
+  const r=await fetch(url,{signal}); if(!r.ok) throw new Error('tile '+r.status);
+  let buf=await r.arrayBuffer(); if(/terrarium/.test(url)) buf=await cleanDem(buf);
+  tilePut(url,buf); return buf;
+}
+
+let _failed=false;
+function failSoft(why){ if(_failed)return; _failed=true; try{console.warn('3D sky unavailable:',why);}catch(e){}
+  st('3D view unavailable — '+why+'. The 2D map on the dashboard still works.');
+  toParent({action:'failed', reason:why}); }
+/* Which renderer the browser really draws with. Software GL (SwiftShader, llvmpipe, Microsoft Basic Render)
+   takes 1–3 s a frame here — embedded, that would freeze the whole dashboard, so it gets its 2D map back at once. */
+const SOFTWARE_GL=/swiftshader|llvmpipe|softpipe|software|basic render/i;
+function glRenderer(){ try{ const c=document.createElement('canvas'), gl=c.getContext('webgl2')||c.getContext('webgl'); if(!gl) return '';
+  const x=gl.getExtension('WEBGL_debug_renderer_info'); return String(gl.getParameter(x?x.UNMASKED_RENDERER_WEBGL:gl.RENDERER)||''); }catch(e){ return ''; } }
+function webglOK(){ try{ if(typeof maplibregl==='undefined')return false;
+  for(const t of ['webgl2','webgl','experimental-webgl']){ try{ if(document.createElement('canvas').getContext(t)) return true; }catch(e){} } return false; }catch(e){ return false; } }
+
+/* ---------- scene frame ----------
+   Every aircraft lives in ONE Three.js scene in local metres around the receiver: x = east, y = up,
+   z = south (MapLibre's Mercator y grows southward). One transform (Lref) maps that frame onto the
+   map, so a hundred aircraft cost one render pass, not a hundred. */
+let REF=null, SREF=1, LREF=null;
+function toScene(lon,lat){ const m=maplibregl.MercatorCoordinate.fromLngLat([lon,lat],0); return [(m.x-REF.x)/SREF,(m.y-REF.y)/SREF]; }
+function groundY(lon,lat){ if(!TERRAIN||!map) return 0; try{ const e=map.queryTerrainElevation(new maplibregl.LngLat(lon,lat)); return (typeof e==='number'&&isFinite(e))?Math.max(0,e):0; }catch(e){ return 0; } }   // already exaggerated
+function altColor(ft,ground){ const c=new THREE.Color(); if(ground){ c.setHSL(0,0,0.65); return c; }
+  const k=Math.max(0,Math.min(1,(ft||0)/40000)); c.setHSL(0.08+0.68*k,0.95,NIGHT_ON?0.62:0.5); return c; }
+function cssColor(c){ return '#'+c.getHexString(); }
+
+/* ---------- aircraft state ---------- */
+const AC=new Map();       // hex -> state
+let _trailsDirty=true;
+const labelsBox=document.getElementById('labels');
+
+/* model templates: loaded once per type, then cloned (clones share geometry and materials) */
+const TPL=new Map();      // key -> Promise<Group>
+let _gltf=null;
+function template(key){
+  if(TPL.has(key)) return TPL.get(key);
+  const p=new Promise((res)=>{
+    if(!_gltf) _gltf=new THREE.GLTFLoader();
+    _gltf.load('/static/'+key,(g)=>{
+      const mm=g.scene, box=new THREE.Box3().setFromObject(mm), size=new THREE.Vector3(), c=new THREE.Vector3(); box.getSize(size); box.getCenter(c);
+      const span=MODEL_SPAN[key]||40, k=span/(Math.max(size.x,size.z)||1);
+      mm.scale.setScalar(k); mm.position.set(-c.x*k,-c.y*k,-c.z*k);
+      mm.traverse(o=>{ if(o.isMesh&&o.material){ (Array.isArray(o.material)?o.material:[o.material]).forEach(mt=>{ mt.metalness=0.25; mt.roughness=0.6; tintMaterial(mt); }); } });
+      const holder=new THREE.Group(), or=MODEL_ORIENT[key]||{};
+      holder.rotation.set((or.pitch||0)*D2R,(or.yaw||0)*D2R,(or.roll||0)*D2R); holder.add(mm);
+      holder.userData.span=span; res(holder);
+    },undefined,()=>res(null));
+  });
+  TPL.set(key,p); return p;
+}
+/* the fallback / ?models=0 shape: a flat dart pointing north (-z), 1 m span, recoloured by altitude */
+let _dartGeo=null;
+function dartGeo(){
+  if(_dartGeo) return _dartGeo;
+  // tip at +y in the shape; rotateX(-90°) sends +y to -z (north) and the face normal +z to +y (up),
+  // so the lit face looks at the sky. (The first cut rotated the other way: nose south, face down, culled.)
+  const s=new THREE.Shape(); s.moveTo(0,0.6); s.lineTo(0.5,-0.45); s.lineTo(0,-0.22); s.lineTo(-0.5,-0.45); s.lineTo(0,0.6);
+  const g=new THREE.ExtrudeGeometry(s,{depth:0.08,bevelEnabled:false}); g.rotateX(-Math.PI/2); g.translate(0,-0.04,0);
+  return (_dartGeo=g);
+}
+function setBody(s){
+  if(s.body){ s.yaw.remove(s.body); s.body=null; }
+  if(USE_MODELS&&s.wantModel&&s.tpl){ s.body=s.tpl.clone(); s.span=s.tpl.userData.span; }
+  else { if(!s.dartMat) s.dartMat=new THREE.MeshLambertMaterial({color:altColor(s.altFt,s.ground),side:THREE.DoubleSide}); s.body=new THREE.Mesh(dartGeo(),s.dartMat); s.body.scale.setScalar(30); s.span=30; }   // dart geometry is 1 m; drawn as a 30 m aircraft
+  s.yaw.add(s.body);
+}
+function ensureVisual(s){
+  if(!skyLayer.root) return;
+  if(!s.yaw){ s.yaw=new THREE.Group(); skyLayer.root.add(s.yaw);
+    s.lbl=document.createElement('div'); s.lbl.className='lbl'; labelsBox.appendChild(s.lbl); }
+  const key=modelFor(s.t);
+  if(s.key!==key){ s.key=key; s.tpl=null; setBody(s); }
+  loadModel(s);
+}
+function loadModel(s){   // models load only while they are switched on — ?models=0 never fetches a GLB
+  if(!USE_MODELS||!s.wantModel||s.tpl||!s.key) return; const key=s.key;
+  template(key).then(t=>{ if(t&&s.key===key){ s.tpl=t; if(USE_MODELS&&s.wantModel) setBody(s); map&&map.triggerRepaint(); } });
+}
+function removeAc(hex){ const s=AC.get(hex); if(!s)return;
+  if(s.yaw&&skyLayer.root) skyLayer.root.remove(s.yaw);
+  if(s.dartMat) s.dartMat.dispose();
+  if(s.lbl&&s.lbl.parentNode) s.lbl.parentNode.removeChild(s.lbl);
+  AC.delete(hex); _trailsDirty=true; }
+
+/* ---------- live data: this node's own /flights, nothing leaves the node ---------- */
+async function seedTrails(){
+  try{ const j=await fetch('/api/trails?hours=0.05',{cache:'no-store'}).then(r=>r.json());
+    for(const hex in j){ const pts=j[hex]; if(!pts||pts.length<2) continue;
+      const s={hex:hex.toLowerCase(),trail:[],seeded:true};
+      for(const p of pts.slice(-TRAIL_N)){ const g=p.alt_baro==='ground'; const ft=g?0:(+p.alt_baro||0); s.trail.push([p.lat,p.lon,ft,g]); }
+      AC.set(s.hex,s); }
+  }catch(e){}
+}
+let _polls=0, _pollFail=0;
+async function poll(){
+  try{
+    const j=await fetch('/flights',{cache:'no-store'}).then(r=>r.json());
+    const now=performance.now(), seen=new Set();
+    for(const a of (j.aircraft||[])){
+      if(a.lat==null||a.lon==null) continue;
+      if(typeof a.seen_pos==='number'&&a.seen_pos>60) continue;
+      const hex=(a.hex||'').toLowerCase(); if(!hex) continue;
+      const ground=a.alt_baro==='ground';
+      const ft=ground?0:(typeof a.alt_baro==='number'?a.alt_baro:(typeof a.alt_geom==='number'?a.alt_geom:null));
+      if(ft==null) continue;
+      seen.add(hex);
+      let s=AC.get(hex); if(!s){ s={hex,trail:[]}; AC.set(hex,s); }
+      s.cs=(a.flight||'').trim(); s.t=a.t||''; s.reg=a.r||''; s.ground=ground; s.altFt=ft; s.mil=!!a.is_military;
+      s.sq=String(a.squawk||''); s.emerg=EMERG.has(s.sq);
+      s.lat=a.lat; s.lon=a.lon; s.gs=a.gs||0; s.trk=(typeof a.track==='number')?a.track:(s.trk||0);
+      s.fixT=now-((a.seen_pos||0)*1000); s.live=true; s.miss=0;
+      const lt=s.trail[s.trail.length-1];
+      if(!lt||Math.abs(lt[0]-a.lat)>1e-5||Math.abs(lt[1]-a.lon)>1e-5){ s.trail.push([a.lat,a.lon,ft,ground]); if(s.trail.length>TRAIL_N) s.trail.shift(); }
+      s.gnd=groundY(a.lon,a.lat);
+      if(s.dartMat) s.dartMat.color.copy(altColor(ft,ground));
+      ensureVisual(s);
+    }
+    for(const [hex,s] of AC){ if(!seen.has(hex)){ s.miss=(s.miss||0)+1; if(!s.live||s.miss>8) removeAc(hex); } }
+    // LOD: the nearest modelNear (by camera distance from the last frame) get real models
+    const live=[...AC.values()].filter(s=>s.yaw&&s.live).sort((a,b)=>(a.cd!=null?a.cd:1e12)-(b.cd!=null?b.cd:1e12));
+    live.forEach((s,i)=>{ const w=i<modelNear; if(s.wantModel!==w){ s.wantModel=w; setBody(s); if(w) loadModel(s); } });
+    _trailsDirty=true; _polls++; _pollFail=0;
+    if(_polls===1) st('live · '+seen.size+' aircraft with a position');
+  }catch(e){ if(++_pollFail>=3) st('live data unavailable — retrying'); }
+  setTimeout(poll,POLL_MS);
+}
+
+/* ---------- the custom layer ---------- */
+const skyLayer={
+  id:'pilnk-sky', type:'custom', renderingMode:'3d',
+  onAdd(m,gl){
+    this.camera=new THREE.Camera(); this.scene=new THREE.Scene();
+    this.hemi=new THREE.HemisphereLight(0xbcd4ff,0x24303f,1.0); this.scene.add(this.hemi);
+    this.sun=new THREE.DirectionalLight(0xfff2e0,1.2); this.sun.position.set(-1,2,1); this.scene.add(this.sun);
+    this.relight();
+    this.root=new THREE.Group(); this.scene.add(this.root);
+    this.trailMat=new THREE.LineBasicMaterial({vertexColors:true,transparent:true,opacity:0.9});
+    this.trails=new THREE.LineSegments(new THREE.BufferGeometry(),this.trailMat); this.trails.frustumCulled=false; this.scene.add(this.trails);
+    this.dropMat=new THREE.LineBasicMaterial({color:0xffffff,transparent:true,opacity:0.28});
+    this.drops=new THREE.LineSegments(new THREE.BufferGeometry(),this.dropMat); this.drops.frustumCulled=false; this.scene.add(this.drops);
+    this.emergMat=new THREE.LineBasicMaterial({color:0xff3344,transparent:true,opacity:0.95});
+    this.edrops=new THREE.LineSegments(new THREE.BufferGeometry(),this.emergMat); this.edrops.frustumCulled=false; this.scene.add(this.edrops);
+    this.headMat=new THREE.LineBasicMaterial({vertexColors:true,transparent:true,opacity:0.9});
+    this.heads=new THREE.LineSegments(new THREE.BufferGeometry(),this.headMat); this.heads.frustumCulled=false; this.scene.add(this.heads);
+    this.renderer=new THREE.WebGLRenderer({canvas:m.getCanvas(),context:gl,antialias:true});
+    this.renderer.autoClear=false; this.renderer.outputEncoding=THREE.sRGBEncoding;
+  },
+  relight(){ if(!this.hemi)return;
+    this.hemi.color.setHex(NIGHT_ON?0x3a4a68:0xbcd4ff); this.hemi.groundColor.setHex(NIGHT_ON?0x0a0f18:0x24303f); this.hemi.intensity=NIGHT_ON?0.9:1.0;
+    this.sun.color.setHex(NIGHT_ON?0x9fb4d8:0xfff2e0); this.sun.intensity=NIGHT_ON?0.6:1.2; },
+  rebuildTrails(){
+    const pos=[], col=[];
+    if(SHOW_TRAILS) for(const s of AC.values()){ const T=s.trail; if(!T||T.length<2) continue;
+      for(let i=1;i<T.length;i++){ const p=T[i-1], q=T[i];
+        const [x1,z1]=toScene(p[1],p[0]), [x2,z2]=toScene(q[1],q[0]);
+        const y1=p[3]?(s.gnd||0):p[2]*0.3048*VE, y2=q[3]?(s.gnd||0):q[2]*0.3048*VE;
+        pos.push(x1,y1,z1,x2,y2,z2); const c1=altColor(p[2],p[3]), c2=altColor(q[2],q[3]); col.push(c1.r,c1.g,c1.b,c2.r,c2.g,c2.b); } }
+    const g=new THREE.BufferGeometry(); g.setAttribute('position',new THREE.Float32BufferAttribute(pos,3)); g.setAttribute('color',new THREE.Float32BufferAttribute(col,3));
+    this.trails.geometry.dispose(); this.trails.geometry=g;
+  },
+  render(gl,args){
+    if(!REF) return;
+    noteDraw(performance.now());
+    const M=(args&&args.defaultProjectionData)?args.defaultProjectionData.mainMatrix:args;
+    const P=new THREE.Matrix4().fromArray(M).multiply(LREF);
+    this.camera.projectionMatrix=P;
+    if(_trailsDirty){ this.rebuildTrails(); _trailsDirty=false; }
+    // Camera position in the scene frame, for distance-based sizing and label order. MapLibre has no
+    // getFreeCameraOptions() (that is Mapbox — it threw here and every aircraft fell back to one size),
+    // so it is recovered from the projection itself: the eye is the one point P sends to x = y = w = 0,
+    // i.e. [eye,1] ∝ P⁻¹·(0,0,1,0).
+    let cam=null; try{ const v=new THREE.Vector4(0,0,1,0).applyMatrix4(P.clone().invert()); if(Math.abs(v.w)>1e-12) cam=[v.x/v.w,v.y/v.w,v.z/v.w]; }catch(e){}
+    const now=performance.now(), dropPos=[], edropPos=[], headPos=[], headCol=[], vis=[];
+    const W=map.getCanvas().clientWidth, H=map.getCanvas().clientHeight, v4=new THREE.Vector4();
+    for(const s of AC.values()){
+      if(!s.yaw||s.lat==null){ if(s.yaw) s.yaw.visible=false; continue; }
+      // dead reckoning from the last fix (capped), eased so a new fix never jumps the model
+      const dt=Math.max(0,Math.min(12,(now-s.fixT)/1000)), dist=s.ground&&s.gs<40?0:s.gs*0.514444*dt, tr=s.trk*D2R;
+      const lat=s.lat+dist*Math.cos(tr)/111320, lon=s.lon+dist*Math.sin(tr)/(111320*Math.cos(s.lat*D2R));
+      const [tx,tz]=toScene(lon,lat), ty=s.ground?(s.gnd||0):Math.max(s.altFt*0.3048*VE,s.gnd||0);
+      if(s.px==null||Math.hypot(tx-s.px,tz-s.pz)>3000){ s.px=tx; s.py=ty; s.pz=tz; s.hd=s.trk; }
+      else { const k=Math.min(1,(now-(s.lastT||now))/1000*3); s.px+=(tx-s.px)*k; s.py+=(ty-s.py)*k; s.pz+=(tz-s.pz)*k;
+        let dh=((s.trk-s.hd+540)%360)-180; s.hd=(s.hd+dh*k+360)%360; }
+      s.lastT=now;
+      s.yaw.visible=true; s.yaw.position.set(s.px,s.py,s.pz); s.yaw.rotation.y=-s.hd*D2R;
+      // size: real size up close, then grow with distance so an aircraft stays ~1.3° across on screen
+      let d=5000; if(cam) d=Math.hypot(s.px-cam[0],s.py-cam[1],s.pz-cam[2]);
+      const span=s.span||35, sc=Math.max(1,d*0.022*SCALE/span); s.yaw.scale.setScalar(sc);
+      if(!s.ground&&(s.py-(s.gnd||0))>30) (s.emerg?edropPos:dropPos).push(s.px,s.py,s.pz,s.px,s.gnd||0,s.pz);
+      if(SHOW_TRAILS&&s.trail&&s.trail.length){ const p=s.trail[s.trail.length-1], [hx,hz]=toScene(p[1],p[0]);
+        headPos.push(hx,p[3]?(s.gnd||0):p[2]*0.3048*VE,hz,s.px,s.py,s.pz); const c=altColor(s.altFt,s.ground); headCol.push(c.r,c.g,c.b,c.r,c.g,c.b); }
+      // screen position for the label and for clicks
+      v4.set(s.px,s.py+span*sc*0.9,s.pz,1).applyMatrix4(P);
+      if(v4.w>0){ const nx=v4.x/v4.w, ny=v4.y/v4.w; if(nx>-1.05&&nx<1.05&&ny>-1.05&&ny<1.05){ s.sx=(nx+1)/2*W; s.sy=(1-ny)/2*H; s.cd=d; vis.push(s); continue; } }
+      s.sx=null;
+    }
+    const setGeo=(obj,pos,col)=>{ const g=new THREE.BufferGeometry(); g.setAttribute('position',new THREE.Float32BufferAttribute(pos,3)); if(col) g.setAttribute('color',new THREE.Float32BufferAttribute(col,3)); obj.geometry.dispose(); obj.geometry=g; };
+    setGeo(this.drops,dropPos); setGeo(this.edrops,edropPos); setGeo(this.heads,headPos,headCol);
+    // labels: nearest first, at most MAX_LABELS, and never on top of one already placed
+    vis.sort((a,b)=>a.cd-b.cd);
+    const shown=new Set(), placed=[];
+    for(const s of vis) if(s.emerg){ shown.add(s); placed.push([s.sx,s.sy]); }   // emergencies first, always, even with labels off
+    if(SHOW_LABELS) for(const s of vis){ if(shown.size>=MAX_LABELS) break; if(shown.has(s)) continue;
+      let clash=false; for(const q of placed){ if(Math.abs(q[0]-s.sx)<92&&Math.abs(q[1]-s.sy)<13){ clash=true; break; } }
+      if(clash) continue; placed.push([s.sx,s.sy]); shown.add(s); }
+    for(const s of AC.values()){ if(!s.lbl) continue;
+      if(!shown.has(s)){ if(s.lbl.style.display!=='none') s.lbl.style.display='none'; continue; }
+      const txt=(s.emerg?'⚠ '+s.sq+' ':'')+(s.cs||s.reg||s.hex.toUpperCase())+'|'+(s.ground?'GND':('FL'+String(Math.round(s.altFt/100)).padStart(3,'0')))+'|'+(s.t||'');
+      if(s._txt!==txt){ s._txt=txt; const p=txt.split('|'); s.lbl.innerHTML='<b></b> <i></i>'; s.lbl.firstChild.textContent=p[0]; s.lbl.lastChild.textContent=p[1]+(p[2]?' · '+p[2]:''); }
+      s.lbl.classList.toggle('emerg',!!s.emerg);
+      s.lbl.style.setProperty('--c',s.emerg?'#ff3344':cssColor(altColor(s.altFt,s.ground)));
+      s.lbl.style.display=''; s.lbl.style.transform='translate('+Math.round(s.sx+6)+'px,'+Math.round(s.sy-8)+'px)';
+    }
+    this.renderer.resetState(); this.renderer.render(this.scene,this.camera); this.renderer.resetState();
+    if(gl.bindVertexArray) gl.bindVertexArray(null);
+    _frames++;
+  }
+};
+
+/* ---------- frame pacing + the measurement this spike exists for ---------- */
+let _frames=0, _lastFrameReq=0;
+const FRAME_MS=num('frame',30);   // ~33 fps cap, kind to a Pi's browser; ?frame=0 for uncapped (measuring headroom)
+function loop(t){ if(map&&!paused&&!_failed&&t-_lastFrameReq>=FRAME_MS){ _lastFrameReq=t; map.triggerRepaint(); } requestAnimationFrame(loop); }
+/* Busy-sky guard. Five consecutive seconds under 15 fps with models on → the nearest 4 only, said once.
+   Ignored for the first 10 s after load (tiles still streaming) and while paused or hidden. */
+let _slow=0, _degraded=false, _loadedAt=performance.now();
+function degradeCheck(fps){
+  if(_degraded||!USE_MODELS||paused||document.hidden||performance.now()-_loadedAt<10000){ _slow=0; return; }
+  _slow=fps<15?_slow+1:0;
+  if(_slow>=5){ _degraded=true; modelNear=Math.min(modelNear,4); st('Busy sky — showing fewer 3D models to keep it smooth'); }
+}
+/* Can't-keep-up guard. This page shares the dashboard's main thread (same-origin iframe), so a device
+   that draws under ~3 fps (software GL, no GPU) makes the WHOLE dashboard crawl — even the Street button
+   takes seconds to answer, and a saved "3D" setup would do that on every load. After the start-up grace
+   and the model cut, a run of slow frames (≥3, ≥5 s between them, each >350 ms apart) hands the map back
+   to 2D. Judged frame by frame on frames actually drawn: a hidden or throttled frame draws nothing, one
+   long stall (sleep, a busy tab) counts 3 s at most, and one smooth frame starts the run over. */
+let _lastDrawAt=0, _crawlMs=0, _crawlN=0;
+function noteDraw(t){
+  const g=_lastDrawAt?t-_lastDrawAt:0; _lastDrawAt=t;
+  if(!g||!GUARD||_failed||paused||document.hidden) return;
+  if(t-_loadedAt<15000){ _crawlMs=0; _crawlN=0; return; }       // start-up grace: tiles still streaming
+  if(g>350){ _crawlMs+=Math.min(g,3000); _crawlN++; } else { _crawlMs=0; _crawlN=0; }
+  if(_crawlN>=3&&_crawlMs>=5000) failSoft('this device is too slow to draw the 3D map smoothly');
+}
+document.addEventListener('visibilitychange',()=>{ _lastDrawAt=0; });   // time spent hidden is not a slow frame
+setInterval(()=>{ let n=0, m=0; for(const s of AC.values()) if(s.yaw&&s.yaw.visible){ n++; if(s.body&&s.body.type!=='Mesh') m++; }
+  document.getElementById('perf').textContent=n+' aircraft · '+_frames+' fps · '+(USE_MODELS?(m+' as 3D models'):'models off');
+  window.__sky={aircraft:n,fps:_frames,models:m}; degradeCheck(_frames); _frames=0; },1000);
+
+/* ---------- controls ---------- */
+function syncBtns(){ document.getElementById('b_lbl').classList.toggle('on',SHOW_LABELS); document.getElementById('b_trl').classList.toggle('on',SHOW_TRAILS); document.getElementById('b_mdl').classList.toggle('on',USE_MODELS); }
+function toggleLabels(){ SHOW_LABELS=!SHOW_LABELS; syncBtns(); }
+function toggleTrails(){ SHOW_TRAILS=!SHOW_TRAILS; _trailsDirty=true; syncBtns(); }
+function toggleModels(){ USE_MODELS=!USE_MODELS; for(const s of AC.values()) if(s.yaw){ setBody(s); loadModel(s); } syncBtns(); }
+function resetView(){ if(map) map.easeTo({center:[SITE.lon,SITE.lat],zoom:HOME.zoom,pitch:HOME.pitch,bearing:HOME.bearing,duration:900}); }
+syncBtns();
+
+function ringsGeoJSON(){ const f=[];
+  for(const nm of [25,50,100,150]){ const r=nm*1852, c=[]; for(let i=0;i<=128;i++){ const a=i/128*2*Math.PI;
+      c.push([SITE.lon+r*Math.sin(a)/(111320*Math.cos(SITE.lat*D2R)), SITE.lat+r*Math.cos(a)/111320]); }
+    f.push({type:'Feature',properties:{nm},geometry:{type:'LineString',coordinates:c}}); }
+  return {type:'FeatureCollection',features:f}; }
+
+/* ---------- map ---------- */
+async function boot(){
+  if(typeof maplibregl==='undefined'||typeof THREE==='undefined'||!THREE.GLTFLoader) return failSoft('3D libraries did not load');
+  if(!webglOK()) return failSoft('no WebGL in this browser');
+  if(GUARD&&SOFTWARE_GL.test(glRenderer())) return failSoft('this browser is drawing without graphics acceleration');
+  maplibregl.addProtocol('pilnk', async (params, abort) => ({data: await tileFetch(params.url.replace(/^pilnk:\/\//,'https://'), abort&&abort.signal)}));
+  if(_q.get('lat')&&_q.get('lon')){ SITE.lat=+_q.get('lat'); SITE.lon=+_q.get('lon'); }
+  else { try{ const d=await fetch('/api/location',{cache:'no-store'}).then(r=>r.json()); if(typeof d.lat==='number'){ SITE.lat=d.lat; SITE.lon=d.lon; } }catch(e){} }
+  if(SITE.lat==null) return failSoft('this node has no location set');
+  REF=maplibregl.MercatorCoordinate.fromLngLat([SITE.lon,SITE.lat],0); SREF=REF.meterInMercatorCoordinateUnits();
+  LREF=new THREE.Matrix4().makeTranslation(REF.x,REF.y,REF.z).scale(new THREE.Vector3(SREF,-SREF,SREF)).multiply(new THREE.Matrix4().makeRotationX(Math.PI/2));
+  let style='https://tiles.openfreemap.org/styles/liberty', styleOK=false;
+  try{
+    const s=await fetch(style).then(r=>r.json());
+    styleOK=!!(s&&s.layers&&s.layers.length);
+    for(const id in s.sources){ const src=s.sources[id]; if(src.type!=='vector')continue;
+      if(!src.tiles&&src.url){ const tj=await fetch(src.url).then(r=>r.json()); src.tiles=tj.tiles; if(tj.minzoom!=null)src.minzoom=tj.minzoom; if(tj.maxzoom!=null)src.maxzoom=tj.maxzoom; if(tj.attribution)src.attribution=tj.attribution; delete src.url; }
+      if(src.tiles) src.tiles=src.tiles.map(t=>t.replace(/^https:\/\//,'pilnk://')); }
+    NIGHT_ON=isNight();
+    s.layers=s.layers.filter(l=>STREET_LABELS.indexOf(l.id)<0);
+    captureDayPaint(s);            // before anything is repainted
+    if(NIGHT_ON) paintNight(s);
+    style=URL.createObjectURL(new Blob([JSON.stringify(s)],{type:'application/json'}));
+  }catch(e){}
+  if(!styleOK) return failSoft('map tiles unreachable');
+  await seedTrails();
+  map=new maplibregl.Map({ container:'map', style, center:[SITE.lon,SITE.lat], zoom:HOME.zoom, pitch:HOME.pitch, bearing:HOME.bearing,
+    maxPitch:85, antialias:true, attributionControl:{compact:false}, maxTileCacheSize:600 });
+  map.on('load',()=>{
+    map.addSource('dem',{type:'raster-dem', tiles:['pilnk://s3.amazonaws.com/elevation-tiles-prod/terrarium/{z}/{x}/{y}.png'], encoding:'terrarium', tileSize:256, maxzoom:15, attribution:'Elevation: AWS Terrain Tiles'});
+    if(TERRAIN) map.setTerrain({source:'dem', exaggeration:VE});
+    const layers=map.getStyle().layers;
+    layers.filter(l=>l.type==='symbol'&&l.layout&&l.layout['icon-image']!=null&&/line/.test(JSON.stringify(l.layout['symbol-placement']||'')))
+          .forEach(l=>map.setLayoutProperty(l.id,'visibility','none'));
+    layers.filter(l=>l.type==='fill-extrusion').forEach(l=>{ map.setLayoutProperty(l.id,'visibility',SHOW_BLD?'visible':'none'); if(SHOW_BLD) map.setLayerZoomRange(l.id,12,24); });
+    try{ map.setSky(NIGHT_ON?SKY_NIGHT:SKY_DAY); }catch(e){}
+    map.addSource('rings',{type:'geojson',data:ringsGeoJSON()});
+    map.addLayer({id:'rings',type:'line',source:'rings',paint:{'line-color':ringColor(),'line-opacity':0.55,'line-width':1.2,'line-dasharray':[3,3]}});
+    map.addSource('rx',{type:'geojson',data:{type:'Feature',properties:{},geometry:{type:'Point',coordinates:[SITE.lon,SITE.lat]}}});
+    map.addLayer({id:'rx',type:'circle',source:'rx',paint:{'circle-radius':6,'circle-color':'#7c3aed','circle-stroke-color':'#fff','circle-stroke-width':2,'circle-pitch-alignment':'map'}});
+    map.addLayer(skyLayer);
+    st('map loaded · waiting for aircraft');
+    _loadedAt=performance.now();
+    poll();
+    requestAnimationFrame(loop);
+    onMapReady();
+  });
+  map.on('click',e=>{ let best=null, bd=28;
+    for(const s of AC.values()){ if(s.sx==null) continue; const d=Math.hypot(s.sx-e.point.x,s.sy-e.point.y+14); if(d<bd){bd=d;best=s;} }
+    if(!best) return;
+    const title=(best.cs||best.reg||best.hex.toUpperCase())+' · '+best.hex.toUpperCase();
+    if(!toParent({action:'open-approach', hex:best.hex, title})) window.open('/static/approach.html?hex='+encodeURIComponent(best.hex),'_blank','noopener'); });
+  map.on('error',e=>{ const m=(e&&e.error&&e.error.message)||''; if(!/sprite|glyph|tile/i.test(m)) st('map error: '+m); });
+  map.on('webglcontextlost',()=>failSoft('the browser dropped the 3D context'));
+}
+boot().catch(e=>failSoft((e&&e.message)||'startup failed'));
+</script>
+</body>
+</html>
