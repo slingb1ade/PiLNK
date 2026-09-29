@@ -29,6 +29,7 @@
   #perf{display:none} body.debug #perf{display:block}
   body.embed #tl{top:8px;left:8px;padding:6px 9px;max-width:300px}
   body.embed #sub{display:none}
+  body.embed #b_lbl, body.embed #b_trl{display:none}   /* embedded, the dashboard's Options control labels and trails */
   #btns{bottom:12px;left:50%;transform:translateX(-50%);display:flex;gap:6px;flex-wrap:wrap;justify-content:center;max-width:96vw}
   .btn{font-family:inherit;font-size:11px;background:#0e1526;color:var(--dim);border:1px solid var(--line);border-radius:6px;padding:6px 10px;cursor:pointer}
   .btn.on{color:var(--txt);border-color:var(--purple)}
@@ -104,6 +105,7 @@ window.addEventListener('message',e=>{
   if(d.action==='pause') paused=true;
   else if(d.action==='resume'){ paused=false; _lastDrawAt=0; if(map) map.triggerRepaint(); }
   else if(d.action==='theme') applyTheme(d.theme==='night');
+  else if(d.action==='settings') applySettings(d);
 });
 
 /* ---------- aircraft models: the same set, spans and orientations as the 3D Approach view ---------- */
@@ -225,7 +227,9 @@ function applyTheme(night){
     if(night){ for(const [prop,val] of NIGHT_PAINT[id]) try{ map.setPaintProperty(id,prop,val); }catch(e){} }
     else { const day=DAY_PAINT[id]; for(const prop in day) try{ map.setPaintProperty(id,prop,day[prop]===null?undefined:day[prop]); }catch(e){} } }
   try{ map.setSky(NIGHT_ON?SKY_NIGHT:SKY_DAY); }catch(e){}
-  try{ map.setPaintProperty('rings','line-color',ringColor()); }catch(e){}
+  applyBaseNight();
+  try{ map.setPaintProperty('rings','line-color',ringColor()); map.setPaintProperty('rings-label','text-color',ringColor());
+       map.setPaintProperty('rings-label','text-halo-color',NIGHT_ON?'#04070e':'#ffffff'); }catch(e){}
   skyLayer.relight();
   TPL.forEach(p=>p.then(t=>{ if(t) t.traverse(o=>{ if(o.isMesh&&o.material) (Array.isArray(o.material)?o.material:[o.material]).forEach(tintMaterial); }); }));
   for(const s of AC.values()) if(s.dartMat) s.dartMat.color.copy(altColor(s.altFt,s.ground));
@@ -235,7 +239,59 @@ function applyTheme(night){
    have missed while the scripts were still loading (theme, and pause if the Approach view is covering us). */
 function onMapReady(){ _mapReady=true;
   if(_pendingNight!==null){ const n=_pendingNight; _pendingNight=null; applyTheme(n); }
+  if(_pendingSettings){ const s=_pendingSettings; _pendingSettings=null; applySettings(s); }
   toParent({action:'ready'}); }
+
+/* ---------- the dashboard's display settings (3D parity) ----------
+   The dashboard sends one 'settings' message on 'ready' and on every change; its Options controls are
+   the single source of truth. Standalone, these defaults (today's look) stand. Unknown or malformed
+   fields are ignored, never guessed. */
+const SETTINGS={ base:'osm', bright:100, trails:true, rings:true, ringList:[25,50,100,150], unit:'nm', rx:true, labels:true };
+let _pendingSettings=null;
+function cleanSettings(s){ const o={}; if(!s||typeof s!=='object') return o;
+  if(s.base==='osm'||s.base==='sat'||s.base==='topo') o.base=s.base;
+  if(typeof s.bright==='number'&&isFinite(s.bright)) o.bright=Math.max(40,Math.min(130,Math.round(s.bright)));
+  for(const k of ['trails','rings','rx','labels']) if(typeof s[k]==='boolean') o[k]=s[k];
+  if(Array.isArray(s.ringList)) o.ringList=s.ringList.map(Number).filter(n=>isFinite(n)&&n>0&&n<=1000).sort((a,b)=>a-b).slice(0,12);
+  if(s.unit==='nm'||s.unit==='km') o.unit=s.unit;
+  return o; }
+function applySettings(s){
+  const c=cleanSettings(s);
+  if(!_mapReady){ _pendingSettings=Object.assign(_pendingSettings||{},c); return; }
+  Object.assign(SETTINGS,c); renderSettings(); }
+function renderSettings(){
+  if(SETTINGS.base!==_appliedBase) applyBase();
+  SHOW_TRAILS=SETTINGS.trails; SHOW_LABELS=SETTINGS.labels; _trailsDirty=true;
+  try{ map.setLayoutProperty('rx','visibility',SETTINGS.rx?'visible':'none'); }catch(e){}
+  try{ map.getSource('rings').setData(ringsGeoJSON());
+       const v=SETTINGS.rings?'visible':'none'; map.setLayoutProperty('rings','visibility',v); map.setLayoutProperty('rings-label','visibility',v); }catch(e){}
+  applyShade();
+  syncBtns(); map.triggerRepaint(); }
+function shadePaint(b){ return b<100?{c:'#000000',o:(100-b)/100}:b>100?{c:'#ffffff',o:(b-100)/100}:{c:'#000000',o:0}; }
+function applyShade(){ const p=shadePaint(SETTINGS.bright);
+  try{ map.setPaintProperty('shade','fill-color',p.c); map.setPaintProperty('shade','fill-opacity',p.o); }catch(e){} }
+
+/* ---------- base layers: Street (Liberty vector), Satellite (Esri imagery + names), Topo (Esri topo) ----------
+   Same imagery as the 2D map, draped on the terrain, fetched through the on-device tile store. Street is the
+   Liberty style as loaded; switching back restores every Liberty layer to its load-time visibility. The
+   background stays on under the imagery, so a missing tile shows plain ground, not a hole. */
+const ESRI_SAT='pilnk://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}';
+const ESRI_TOPO='pilnk://server.arcgisonline.com/ArcGIS/rest/services/World_Topo_Map/MapServer/tile/{z}/{y}/{x}';
+const SAT_KEEP=new Set(['background','label_city','label_city_capital','label_town','label_village','label_other','label_state',
+  'label_country_1','label_country_2','label_country_3','airport']);   // Satellite = imagery + place and airport names
+let LIBERTY_VIS=null, _appliedBase='osm';
+function applyBase(){
+  if(!LIBERTY_VIS) return; const b=SETTINGS.base;
+  for(const id in LIBERTY_VIS){ let v=LIBERTY_VIS[id];
+    if(b==='sat'&&!SAT_KEEP.has(id)) v='none';
+    if(b==='topo'&&id!=='background') v='none';          // the topo map carries its own names
+    try{ map.setLayoutProperty(id,'visibility',v); }catch(e){} }
+  try{ map.setLayoutProperty('base-sat','visibility',b==='sat'?'visible':'none');
+       map.setLayoutProperty('base-topo','visibility',b==='topo'?'visible':'none'); }catch(e){}
+  _appliedBase=b; applyBaseNight(); }
+function applyBaseNight(){   // 2D: topo gets brightness(0.45) contrast(1.15) at night; satellite is left alone
+  try{ map.setPaintProperty('base-topo','raster-brightness-max',NIGHT_ON?0.45:1);
+       map.setPaintProperty('base-topo','raster-contrast',NIGHT_ON?0.15:0); }catch(e){} }
 
 /* ---------- local tile store + DEM clean-up (same store as the Approach view: they share tiles) ---------- */
 const SPIKE_M=100;
@@ -533,10 +589,13 @@ function toggleModels(){ USE_MODELS=!USE_MODELS; for(const s of AC.values()) if(
 function resetView(){ if(map) map.easeTo({center:[SITE.lon,SITE.lat],zoom:HOME.zoom,pitch:HOME.pitch,bearing:HOME.bearing,duration:900}); }
 syncBtns();
 
+const NM_TO_KM=1.852;
+function ringLabel(nm){ return SETTINGS.unit==='km' ? Math.round(nm*NM_TO_KM)+'km' : nm+'nm'; }   // same rounding as 2D
 function ringsGeoJSON(){ const f=[];
-  for(const nm of [25,50,100,150]){ const r=nm*1852, c=[]; for(let i=0;i<=128;i++){ const a=i/128*2*Math.PI;
+  for(const nm of SETTINGS.ringList){ const r=nm*1852, c=[]; for(let i=0;i<=128;i++){ const a=i/128*2*Math.PI;
       c.push([SITE.lon+r*Math.sin(a)/(111320*Math.cos(SITE.lat*D2R)), SITE.lat+r*Math.cos(a)/111320]); }
-    f.push({type:'Feature',properties:{nm},geometry:{type:'LineString',coordinates:c}}); }
+    f.push({type:'Feature',properties:{nm},geometry:{type:'LineString',coordinates:c}});
+    f.push({type:'Feature',properties:{nm,label:ringLabel(nm)},geometry:{type:'Point',coordinates:[SITE.lon,SITE.lat+r/111320]}}); }
   return {type:'FeatureCollection',features:f}; }
 
 /* ---------- map ---------- */
@@ -561,6 +620,7 @@ async function boot(){
     s.layers=s.layers.filter(l=>STREET_LABELS.indexOf(l.id)<0);
     captureDayPaint(s);            // before anything is repainted
     if(NIGHT_ON) paintNight(s);
+    s.transition={duration:0,delay:0};   // terrain drapes flat layers into cached textures; a paint change must land in the frame that clears them, or brightness/night stay stale until the camera moves
     style=URL.createObjectURL(new Blob([JSON.stringify(s)],{type:'application/json'}));
   }catch(e){}
   if(!styleOK) return failSoft('map tiles unreachable');
@@ -574,9 +634,23 @@ async function boot(){
     layers.filter(l=>l.type==='symbol'&&l.layout&&l.layout['icon-image']!=null&&/line/.test(JSON.stringify(l.layout['symbol-placement']||'')))
           .forEach(l=>map.setLayoutProperty(l.id,'visibility','none'));
     layers.filter(l=>l.type==='fill-extrusion').forEach(l=>{ map.setLayoutProperty(l.id,'visibility',SHOW_BLD?'visible':'none'); if(SHOW_BLD) map.setLayerZoomRange(l.id,12,24); });
+    LIBERTY_VIS={}; for(const l of map.getStyle().layers) LIBERTY_VIS[l.id]=(l.layout&&l.layout.visibility)||'visible';
+    const baseBefore=(map.getStyle().layers.find(l=>l.id!=='background')||{}).id;   // just above the background
+    map.addSource('base-sat',{type:'raster',tiles:[ESRI_SAT],tileSize:256,maxzoom:18,attribution:'© Esri'});
+    map.addSource('base-topo',{type:'raster',tiles:[ESRI_TOPO],tileSize:256,maxzoom:19,attribution:'Tiles © Esri'});
+    map.addLayer({id:'base-sat',type:'raster',source:'base-sat',layout:{visibility:'none'}},baseBefore);
+    map.addLayer({id:'base-topo',type:'raster',source:'base-topo',layout:{visibility:'none'}},baseBefore);
     try{ map.setSky(NIGHT_ON?SKY_NIGHT:SKY_DAY); }catch(e){}
+    // Brightness shade: one world-sized fill above the base map (and buildings), below every text label,
+    // the rings, the receiver marker and the aircraft — the slider dims the map, never what flies over it.
+    const firstLabel=(map.getStyle().layers.find(l=>l.type==='symbol'&&l.layout&&l.layout['text-field']!=null)||{}).id;
+    map.addSource('shade',{type:'geojson',data:{type:'Feature',properties:{},geometry:{type:'Polygon',coordinates:[[[-180,-85],[180,-85],[180,85],[-180,85],[-180,-85]]]}}});
+    map.addLayer({id:'shade',type:'fill',source:'shade',paint:{'fill-color':'#000000','fill-opacity':0}},firstLabel);
     map.addSource('rings',{type:'geojson',data:ringsGeoJSON()});
-    map.addLayer({id:'rings',type:'line',source:'rings',paint:{'line-color':ringColor(),'line-opacity':0.55,'line-width':1.2,'line-dasharray':[3,3]}});
+    map.addLayer({id:'rings',type:'line',source:'rings',filter:['==',['geometry-type'],'LineString'],paint:{'line-color':ringColor(),'line-opacity':0.55,'line-width':1.2,'line-dasharray':[3,3]}});
+    map.addLayer({id:'rings-label',type:'symbol',source:'rings',filter:['==',['geometry-type'],'Point'],
+      layout:{'text-field':['get','label'],'text-font':['Noto Sans Regular'],'text-size':11,'text-allow-overlap':true},
+      paint:{'text-color':ringColor(),'text-halo-color':NIGHT_ON?'#04070e':'#ffffff','text-halo-width':1}});
     map.addSource('rx',{type:'geojson',data:{type:'Feature',properties:{},geometry:{type:'Point',coordinates:[SITE.lon,SITE.lat]}}});
     map.addLayer({id:'rx',type:'circle',source:'rx',paint:{'circle-radius':6,'circle-color':'#7c3aed','circle-stroke-color':'#fff','circle-stroke-width':2,'circle-pitch-alignment':'map'}});
     map.addLayer(skyLayer);
@@ -591,7 +665,9 @@ async function boot(){
     if(!best) return;
     const title=(best.cs||best.reg||best.hex.toUpperCase())+' · '+best.hex.toUpperCase();
     if(!toParent({action:'open-approach', hex:best.hex, title})) window.open('/static/approach.html?hex='+encodeURIComponent(best.hex),'_blank','noopener'); });
-  map.on('error',e=>{ const m=(e&&e.error&&e.error.message)||''; if(!/sprite|glyph|tile/i.test(m)) st('map error: '+m); });
+  // Satellite/Topo imagery is optional: a tile it can't fetch shows plain ground, not a fault line.
+  map.on('error',e=>{ if(e&&(e.sourceId==='base-sat'||e.sourceId==='base-topo')) return;
+    const m=(e&&e.error&&e.error.message)||''; if(!/sprite|glyph|tile/i.test(m)) st('map error: '+m); });
   map.on('webglcontextlost',()=>failSoft('the browser dropped the 3D context'));
 }
 boot().catch(e=>failSoft((e&&e.message)||'startup failed'));

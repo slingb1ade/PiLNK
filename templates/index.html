@@ -161,7 +161,7 @@
   .unit-btn{flex:1;background:var(--bg-card);border:1px solid var(--border);border-radius:4px;color:var(--text-dim);font-family:'Share Tech Mono',monospace;font-size:0.65rem;padding:5px;cursor:pointer;text-align:center;transition:all 0.2s;}
   .unit-btn.active{background:var(--border);border-color:var(--blue-mid);color:var(--blue-mid);}
   .map-tiles{display:flex;gap:4px;margin-top:8px;flex-wrap:wrap;}
-  .tile-btn{flex:1;background:var(--bg-card);border:1px solid var(--border);border-radius:4px;color:var(--text-dim);font-family:'Share Tech Mono',monospace;font-size:0.6rem;padding:6px 4px;cursor:pointer;text-align:center;transition:all 0.2s;min-width:calc(50% - 2px);}
+  .tile-btn{flex:1;background:var(--bg-card);border:1px solid var(--border);border-radius:4px;color:var(--text-dim);font-family:'Share Tech Mono',monospace;font-size:0.6rem;padding:6px 4px;cursor:pointer;text-align:center;transition:all 0.2s;min-width:0;}
   .tile-btn.active{background:var(--border);border-color:var(--blue-mid);color:var(--blue-mid);}
   .sort-row{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:6px;}
   .sort-pills{display:flex;gap:4px;}
@@ -1660,8 +1660,8 @@
               <button class="tile-btn active" id="tileOsm"  onclick="setTileLayer('osm')">Street</button>
               <button class="tile-btn"        id="tileSat"  onclick="setTileLayer('sat')">Satellite</button>
               <button class="tile-btn"        id="tileTopo" onclick="setTileLayer('topo')">Topo</button>
-              <button class="tile-btn"        id="tile3d"   onclick="skyPress()" title="Live 3D view of your own sky">3D</button>
             </div>
+            <div class="toggle-row" style="margin-top:8px;" title="Live 3D view of your own sky, on whichever map layer is selected above. This browser only."><span>3D view</span><label class="toggle-switch"><input type="checkbox" id="sky3dToggle" autocomplete="off" onchange="setSky3D(this.checked, true)"/><span class="toggle-slider"></span></label></div>
             <!-- v1.5.26 (MME1): map brightness, for whichever map and theme is showing. Deliberately
                  NOT class wx-opacity-row: PilnkOptions finds the weather slider by that class, first match. -->
             <div style="margin-top:8px;" title="Dim a bright map or lift a dark one. This browser only; remembered after a refresh. Aircraft are not affected.">
@@ -3243,19 +3243,35 @@ function applyTileFilter() {
 }
 
 // ── 3D Sky: the 4th map layer ─────────────────────────────────────────────
-var skyPrev2D = 'osm';   // where a failed 3D view falls back to
 var SKY_OFF_KEY = 'pilnk-sky3d-off';   // set when THIS browser couldn't draw it (too slow / no GPU / no WebGL)
 var SKY_READY_MS = 60000;              // no 'ready' from the page by then (hung tiles, a script that never came): fall back
 var skyWatchdog = null;
 function skyOffReason() { try { return localStorage.getItem(SKY_OFF_KEY); } catch (e) { return null; } }
-function skyPress() {   // the 3D button: pressing it always tries again, even where it failed before
-  try { localStorage.removeItem(SKY_OFF_KEY); } catch (e) {}
-  setTileLayer('3d');
+// The 3D view switch. pressed = the person flipped it (an explicit retry clears "off on this device");
+// restoring My Setup does not. The switch always mirrors whether the 3D view is actually open.
+function setSky3D(on, pressed) {
+  var t = document.getElementById('sky3dToggle');
+  if (on) {
+    if (pressed) { try { localStorage.removeItem(SKY_OFF_KEY); } catch (e) {} }
+    var off = skyOffReason();
+    if (off) showDashToast('3D map is off on this device (' + off + ') — switch 3D on to try again', 'info');
+    else openSky();
+  } else closeSky();
+  if (t) t.checked = isSkyOpen();
 }
 function skyFail(reason) {
-  setTileLayer(skyPrev2D || 'osm');
+  setSky3D(false);   // the base layer stays as it is: the 2D map shows the same Street / Satellite / Topo
   showDashToast('3D map unavailable here: ' + String(reason || 'unknown').slice(0, 120), 'error');
 }
+// Everything the 3D view mirrors from Options, in one message (3D parity, Release 1).
+function skySettings() {
+  var base = (currentTileLayerName === 'sat' || currentTileLayerName === 'topo') ? currentTileLayerName : 'osm';
+  return { action: 'settings', base: base, bright: (typeof mapBright === 'number' ? mapBright : 100),
+    trails: !!trailsOn, rings: !!ringsOn,
+    ringList: Object.keys(activeRings).map(Number).sort(function (a, b) { return a - b; }),
+    unit: ringUnit === 'km' ? 'km' : 'nm', rx: rxMarkerOn !== false, labels: !!labelsOn };
+}
+function skySendSettings() { if (isSkyOpen()) skyPost(skySettings()); }
 function isSkyOpen() { return document.getElementById('body').classList.contains('sky3d-open'); }
 function skyTheme() { return document.documentElement.getAttribute('data-theme') === 'light' ? 'day' : 'night'; }
 function skyPost(msg) {
@@ -3278,15 +3294,7 @@ function closeSky() {
 }
 
 function setTileLayer(name) {
-  if (name === '3d') {
-    var off = skyOffReason();   // restoring My Setup on a browser that couldn't draw it: stay on 2D and say why
-    if (off) { setTileLayer(skyPrev2D || 'osm'); showDashToast('3D map is off on this device (' + off + ') — press 3D to try again', 'info'); return; }
-    openSky();
-    document.querySelectorAll('.tile-btn').forEach(function (b) { b.classList.remove('active'); });
-    document.getElementById('tile3d').classList.add('active');
-    return;
-  }
-  closeSky(); skyPrev2D = name;
+  if (name === '3d') { setSky3D(true); return; }   // v1.5.40 saves / old callers: keep the base, switch 3D on
   if (extraLayer) { map.removeLayer(extraLayer); extraLayer=null; }
   if (name==='osm') { if (!map.hasLayer(osmLayer)) osmLayer.addTo(map); }
   else if (name==='wx') {
@@ -3311,6 +3319,7 @@ function setTileLayer(name) {
   currentTileLayerName = name; applyTileFilter();
   document.querySelectorAll('.tile-btn').forEach(function(b){b.classList.remove('active');});
   document.getElementById('tile'+name.charAt(0).toUpperCase()+name.slice(1)).classList.add('active');
+  skySendSettings();   // an open 3D view switches base in place
 }
 
 // ── RAINVIEWER WEATHER RADAR ──────────────────────────────
@@ -6258,6 +6267,7 @@ window.addEventListener('message', function (e) {
   if (d.action === 'ready') {   // the page is listening now: say again what it may have missed while loading
     clearTimeout(skyWatchdog); skyWatchdog = null;
     skyPost({ action: 'theme', theme: skyTheme() });
+    skyPost(skySettings());
     if (is3DOpen()) skyPost({ action: 'pause' });
   }
   else if (d.action === 'open-approach' && /^[0-9a-f~]{6,7}$/i.test(String(d.hex || ''))) open3D(d.hex, String(d.title || '').slice(0, 60));
@@ -6270,6 +6280,15 @@ window.addEventListener('message', function (e) {
 // The 3D Sky follows the dashboard's own light/dark, whatever changes it (button, auto theme, My Setup).
 new MutationObserver(function () { if (isSkyOpen()) skyPost({ action: 'theme', theme: skyTheme() }); })
   .observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
+// The Options controls the 3D view mirrors: after any of them runs, an open 3D view gets the new settings.
+window.addEventListener('DOMContentLoaded', function () {
+  ['setMapBrightness', 'toggleTrails', 'toggleRings', 'toggleRing', 'setUnit', 'toggleRxMarker', 'toggleLabels'].forEach(function (n) {
+    var f = window[n]; if (f && f.__sky) return;
+    if (typeof f !== 'function') { console.warn('3D view: ' + n + ' not found — its setting will not reach the 3D view'); return; }
+    var w = function () { var r = f.apply(this, arguments); skySendSettings(); return r; };
+    w.__sky = true; window[n] = w;
+  });
+});
 function cc3DView() {
   if (!ccCurrentHex) return;
   open3D(ccCurrentHex, (ccCurrentCS || '').trim() + ' · ' + String(ccCurrentHex).toUpperCase());
@@ -9713,7 +9732,7 @@ window.PilnkOptions = (function () {
     ['terminatorToggle', 'toggleTerminator']
   ];
 
-  var TILE = { tileOsm: 'osm', tileSat: 'sat', tileTopo: 'topo', tile3d: '3d' };
+  var TILE = { tileOsm: 'osm', tileSat: 'sat', tileTopo: 'topo' };
   var FPM  = { fpBtnRange: 'range', fpBtnHorizon: 'horizon', fpBtnRays: 'rays' };
 
   function $(id) { return document.getElementById(id); }
@@ -9736,7 +9755,8 @@ window.PilnkOptions = (function () {
     var s = { v: 1, saved_at: new Date().toISOString(), checks: {} };
     CHECKS.forEach(function (c) { var e = $(c[0]); if (e) s.checks[c[0]] = !!e.checked; });
 
-    var t = activeOf(['tileOsm', 'tileSat', 'tileTopo', 'tile3d']);   if (t) s.tile = TILE[t];
+    var t = activeOf(['tileOsm', 'tileSat', 'tileTopo']);   if (t) s.tile = TILE[t];
+    s.view3d = isSkyOpen();
     var f = activeOf(['fpBtnRange', 'fpBtnHorizon', 'fpBtnRays']); if (f) s.footprintMode = FPM[f];
     var u = activeOf(['unitNm', 'unitKm']);                 if (u) s.ringUnit = (u === 'unitKm') ? 'km' : 'nm';
 
@@ -9764,6 +9784,7 @@ window.PilnkOptions = (function () {
     }
 
     if (s.tile)          call('setTileLayer', s.tile);
+    if (typeof s.view3d === 'boolean') call('setSky3D', s.view3d);
     if (s.ringUnit)      call('setUnit', s.ringUnit);
     if (s.footprintMode) call('setFootprintMode', s.footprintMode);
 
