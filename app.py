@@ -2961,6 +2961,7 @@ def api_capsule_get(cid):
         for c in CAPSULE_ACTIVE.values():
             if c.get('id') == cid and c.get('cat') and not meta.get('cat'):
                 meta = dict(meta, cat=c['cat'])
+    meta = _cap_with_live_audio(meta, cid)   # a stretch still recording plays up to now
     return jsonify({'meta': meta, 'points': _cap_read_points(cid)})
 
 @app.route('/api/capsules/<cid>/delete', methods=['POST'])
@@ -3250,6 +3251,26 @@ def _cap_probe_dur(path):
         return float(out)
     except Exception:
         return None
+
+def _cap_with_live_audio(meta, cid):
+    """Replay opened while the aircraft is still being tracked (MME1, forum
+    thread 53): a stretch still recording is in the meta as open with no length
+    yet, so replay could not place it and its audio only appeared once tracking
+    stopped. Its file is written through every half second, so measure what has
+    reached disk and give the stretch that length, in the reply only: the saved
+    meta stays open until the stretch closes. One that can't be measured yet
+    (just started) is left exactly as it was."""
+    audio = meta.get('audio') or []
+    if not any(a.get('open') and a.get('dur') is None for a in audio):
+        return meta
+    out = []
+    for a in audio:
+        if a.get('open') and a.get('dur') is None and str(a.get('file', '')).startswith(cid + '.a'):
+            d = _cap_probe_dur(_cap_path(a['file']))
+            if d and d > 0:
+                a = dict(a, dur=round(d, 3))
+        out.append(a)
+    return dict(meta, audio=out)
 
 # ── Transmission markers (28 Sep 2026; MME1 asked, forum thread 53) ──
 # Where in a capsule's audio someone was actually talking, so replay can mark it
@@ -3707,7 +3728,7 @@ def api_capsule_activity(cid):
     """Transmission markers for replay (see _cap_activity_scan). Scans any
     finished stretch that hasn't been scanned yet, caches the result in the
     capsule meta, and returns [{n, t0, dur, act: [[s, e], ...]}] per stretch.
-    A stretch still recording is left for later."""
+    A stretch still recording is scanned up to now each time, never cached."""
     cid = cid.upper()
     if not _cap_valid_id(cid):
         return jsonify({'error': 'bad id'}), 400
@@ -3735,6 +3756,14 @@ def api_capsule_activity(cid):
                         _cap_save_json(cid + '.json', meta)
     segs = [{'n': a.get('n'), 't0': a.get('t0'), 'dur': a.get('dur'), 'act': a['act']}
             for a in (meta.get('audio') or []) if isinstance(a.get('act'), list)]
+    # A stretch still recording: scanned up to what has reached disk, every time,
+    # and never cached, because it is still growing (see _cap_with_live_audio).
+    for a in (_cap_with_live_audio(meta, cid).get('audio') or []):
+        if a.get('open') and a.get('dur'):
+            with CAPSULE_ACT_LOCK:
+                spans = _cap_activity_scan(_cap_path(a['file']), a['dur'])
+            if spans is not None:
+                segs.append({'n': a.get('n'), 't0': a.get('t0'), 'dur': a.get('dur'), 'act': spans})
     return jsonify({'segments': segs})
 
 capsule_thread = threading.Thread(target=capsule_recorder, daemon=True)
