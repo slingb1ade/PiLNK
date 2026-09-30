@@ -3280,6 +3280,7 @@ function skyPost(msg) {
 }
 function openSky() {
   if (isSkyOpen()) return;   // already showing: never rebuild the scene
+  hideTooltip(); skySetSel(null);   // the 3D view draws its own box, and starts with nothing selected
   document.getElementById('sky3dFrame').src = '/static/sky3d.html?embed=1&theme=' + skyTheme();
   document.getElementById('body').classList.add('sky3d-open');
   clearTimeout(skyWatchdog);
@@ -3287,10 +3288,41 @@ function openSky() {
 }
 function closeSky() {
   if (!isSkyOpen()) return;
+  if (skySel) { skySetSel(null); updateFlights(); }   // 3D off: its selection goes too, and the Traffic list loses the highlight now
   clearTimeout(skyWatchdog); skyWatchdog = null;
   document.getElementById('body').classList.remove('sky3d-open');
   document.getElementById('sky3dFrame').src = 'about:blank';   // unload the WebGL scene
   if (typeof map !== 'undefined' && map && map.invalidateSize) setTimeout(function () { map.invalidateSize(); }, 0);
+}
+// ── 3D Sky: the Traffic box ───────────────────────────────────────────────
+// In 3D the page draws the box next to the plane every frame; the dashboard says which plane (select) and what
+// the box says (box, built by ttFields — the same fields as the 2D tooltip). Same-origin postMessage only.
+var skySel = null, skySelCs = null;   // the plane selected in the 3D view (hex, lower-case) · its callsign while the list has it
+function skyCsForHex(hex) {
+  if (!hex) return null;
+  for (var cs in lastAircraft) { var a = lastAircraft[cs]; if (a && String(a.hex || '').toLowerCase() === hex) return cs; }
+  return null;
+}
+function skySetSel(hex) { skySel = hex || null; skySelCs = skySel ? skyCsForHex(skySel) : null; selectedFlight = skySelCs; }
+function skySendBox() {
+  if (!skySel || !skySelCs || !isSkyOpen()) return;   // no callsign (not on the list): the page shows what it knows itself
+  var hex = skySel, cs = skySelCs;
+  lookupRoute(cs, function (info) {
+    if (skySel !== hex || !isSkyOpen()) return;       // the selection moved on while the route was being looked up
+    var f = ttFields(cs, info); if (f) skyPost({ action: 'box', hex: hex, box: f });
+  });
+}
+function skyListSelect(cs) {   // a Traffic-list click while 3D is on: the 3D view glides there; the hidden 2D map stays put
+  var a = lastAircraft[cs]; if (!a || !a.hex) return;
+  skySetSel(String(a.hex).toLowerCase());
+  skyPost({ action: 'select', hex: skySel, fly: true });
+  skySendBox(); updateFlights();
+}
+function skyRefreshBox() {     // every 2 s update: fresh numbers, or the selection ends when its plane has left the list
+  if (!skySel || !isSkyOpen()) return;
+  var cs = skyCsForHex(skySel);
+  if (cs) { skySelCs = cs; selectedFlight = cs; skySendBox(); return; }
+  if (skySelCs) { skySetSel(null); skyPost({ action: 'select', hex: null, fly: false }); }
 }
 
 function setTileLayer(name) {
@@ -3730,10 +3762,12 @@ function routeIsPlausible(c, a) {
 function routeHtmlFor(c, a, prefix) {
   var ok = routeIsPlausible(c, a);
   return '<span>' + (prefix || '') + c.route + '</span>' +
-         '<span class="route-src' + (ok ? '' : ' route-suspect') + '">' +
-         (ok ? 'scheduled route · adsbdb, not from this aircraft'
-             : '⚠ scheduled route disagrees with observed position · adsbdb') +
-         '</span>';
+         '<span class="route-src' + (ok ? '' : ' route-suspect') + '">' + routeSrcText(ok) + '</span>';
+}
+// The provenance line's words — the 2D HTML above and the 3D box's plain-text copy (ttFields) say the same thing.
+function routeSrcText(ok) {
+  return ok ? 'scheduled route · adsbdb, not from this aircraft'
+            : '⚠ scheduled route disagrees with observed position · adsbdb';
 }
 
 function lookupRoute(callsign, callback) {
@@ -4805,22 +4839,39 @@ function hideTooltip(){
   tt.style.display='none';
   tt.style.opacity='0';
 }
+// The Traffic box's fields — ONE helper for the 2D tooltip and the 3D view's box, so the two can never drift.
+// Plain text only. info = this callsign's route lookup (lookupRoute), or null before it has answered.
+var TT_CAT={'A1':'Light','A2':'Small','A3':'Large','A4':'High Vortex','A5':'Heavy','A6':'High Perf','A7':'Rotorcraft'};
+function ttFields(cs, info){
+  var a=lastAircraft[cs]; if(!a) return null;
+  var ph=getPhase(a,cs), vr=a.baro_rate||a.geom_rate||0, pc=ph.color==='#ffffff'?'#dc2626':ph.color;
+  var hasRoute=!!(info&&info.route), ok=routeIsPlausible(info,a);
+  return { cs:cs, flag:getFlag(cs), color:pc, phase:ph.label,
+    alt: a.alt_baro==='ground'?'Ground':(a.alt_baro?Math.round(a.alt_baro).toLocaleString()+' ft':'--'),   // dump1090 sends 'ground' as a string
+    spd: a.gs?Math.round(a.gs)+' kt':'--',
+    hdg: a.track?Math.round(a.track)+'°':'--',
+    vs: vr?(vr>0?'+':'')+Math.round(vr)+' fpm':'--',
+    typ: a.t?a.t:(a.category?TT_CAT[a.category]||a.category:'--'),
+    sqk: a.squawk?a.squawk:'--',
+    reg: (info&&info.reg)?info.reg:'--',
+    route: hasRoute?'✈ '+info.route:'', rsrc: hasRoute?routeSrcText(ok):'', rsus: hasRoute&&!ok };
+}
 function showTooltip(cs,ll){
   if(ccVisible) return; // never show tooltip while cinematic card is open
-  var a=lastAircraft[cs];if(!a)return;
-  var ph=getPhase(a,cs), vr=a.baro_rate||a.geom_rate||0, pc=ph.color==='#ffffff'?'#dc2626':ph.color;
-  document.getElementById('ttFlag').textContent=getFlag(cs);
-  document.getElementById('ttCS').textContent=cs; document.getElementById('ttCS').style.color=pc;
-  document.getElementById('ttAlt').textContent=a.alt_baro?Math.round(a.alt_baro).toLocaleString()+' ft':'--';
-  document.getElementById('ttSpd').textContent=a.gs?Math.round(a.gs)+' kt':'--';
-  document.getElementById('ttHdg').textContent=a.track?Math.round(a.track)+'°':'--';
-  document.getElementById('ttVs').textContent=vr?(vr>0?'+':'')+Math.round(vr)+' fpm':'--';
-  var catLabels={'A1':'Light','A2':'Small','A3':'Large','A4':'High Vortex','A5':'Heavy','A6':'High Perf','A7':'Rotorcraft'};
-  document.getElementById('ttTyp').textContent=a.t?a.t:(a.category?catLabels[a.category]||a.category:'--');
-  document.getElementById('ttSqk').textContent=a.squawk?a.squawk:'--';
-  document.getElementById('ttReg').textContent='--';
+  if(isSkyOpen()) return; // the 3D view draws its own box next to the plane (3D Traffic box)
+  var a=lastAircraft[cs], f=ttFields(cs,null); if(!f)return;
+  var pc=f.color;
+  document.getElementById('ttFlag').textContent=f.flag;
+  document.getElementById('ttCS').textContent=f.cs; document.getElementById('ttCS').style.color=pc;
+  document.getElementById('ttAlt').textContent=f.alt;
+  document.getElementById('ttSpd').textContent=f.spd;
+  document.getElementById('ttHdg').textContent=f.hdg;
+  document.getElementById('ttVs').textContent=f.vs;
+  document.getElementById('ttTyp').textContent=f.typ;
+  document.getElementById('ttSqk').textContent=f.sqk;
+  document.getElementById('ttReg').textContent=f.reg;
   document.getElementById('ttRoute').style.display='none';
-  document.getElementById('ttPhase').innerHTML='<div style="width:10px;height:10px;border-radius:50%;background:'+pc+';box-shadow:0 0 5px '+pc+';flex-shrink:0;"></div><span style="color:'+pc+';">'+ph.label+'</span>';
+  document.getElementById('ttPhase').innerHTML='<div style="width:10px;height:10px;border-radius:50%;background:'+pc+';box-shadow:0 0 5px '+pc+';flex-shrink:0;"></div><span style="color:'+pc+';">'+f.phase+'</span>';
   document.querySelector('.tt-inner').style.borderColor=pc;
   document.querySelector('.tt-inner').style.boxShadow='0 6px 24px '+pc+'44';
   document.getElementById('ttArrow').style.borderTopColor=pc;
@@ -5356,6 +5407,7 @@ function updateFlights(){
     if(window.aircraftLayer) aircraftLayer.redraw();
     updateEmergencyPulses();
     if(typeof updateWatchlistPulses==='function') updateWatchlistPulses();
+    skyRefreshBox();   // 3D Traffic box: fresh numbers, or closed when its plane has left the list
     var list=document.getElementById('flightList');
     if(!ac.length){list.innerHTML='<div class="no-flights">No aircraft found</div>';return;}
     // Sort sidebar by sort mode (distance default, phase optional)
@@ -5390,17 +5442,20 @@ function updateFlights(){
 }
 
 function sidebarSelect(cs){
-  selectedFlight=cs;
-  var ll = planeLatLng(cs);
-  if(ll){
-    var targetZoom=Math.max(map.getZoom(),10);
-    map.flyTo(ll, targetZoom, {duration:0.6});
-    map.once('moveend', function(){
-      var ll2 = planeLatLng(cs);
-      if(ll2) showTooltip(cs, ll2);
-    });
+  if(isSkyOpen()) skyListSelect(cs);   // 3D: the 3D view glides to the plane and shows its box
+  else {
+    selectedFlight=cs;
+    var ll = planeLatLng(cs);
+    if(ll){
+      var targetZoom=Math.max(map.getZoom(),10);
+      map.flyTo(ll, targetZoom, {duration:0.6});
+      map.once('moveend', function(){
+        var ll2 = planeLatLng(cs);
+        if(ll2) showTooltip(cs, ll2);
+      });
+    }
+    updateFlights();
   }
-  updateFlights();
   // On mobile, auto-close the sidebar after picking a flight so the
   // user can actually see the map. No-op on desktop (class never set).
   if (document.body.classList.contains('sidebar-open')) {
@@ -6269,8 +6324,13 @@ window.addEventListener('message', function (e) {
     skyPost({ action: 'theme', theme: skyTheme() });
     skyPost(skySettings());
     if (is3DOpen()) skyPost({ action: 'pause' });
+    if (skySel) { skyPost({ action: 'select', hex: skySel, fly: true }); skySendBox(); }   // a Traffic-list pick made while the page was loading
   }
   else if (d.action === 'open-approach' && /^[0-9a-f~]{6,7}$/i.test(String(d.hex || ''))) open3D(d.hex, String(d.title || '').slice(0, 60));
+  else if (d.action === 'select') {   // a plane (hex) or empty space (null) was clicked in the 3D view
+    var h = d.hex == null ? null : String(d.hex).toLowerCase();
+    if (h === null || /^[0-9a-f~]{6,7}$/.test(h)) { skySetSel(h); skySendBox(); updateFlights(); }
+  }
   else if (d.action === 'failed') {
     var r = String(d.reason || 'unknown');
     if (/too slow|graphics acceleration|no WebGL/i.test(r)) { try { localStorage.setItem(SKY_OFF_KEY, r.slice(0, 80)); } catch (e) {} }

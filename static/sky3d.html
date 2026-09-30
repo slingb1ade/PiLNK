@@ -36,6 +36,35 @@
   #note{display:none;bottom:48px;left:12px;color:var(--dim);font-size:10px;max-width:340px}
   #note.show{display:block}
   .maplibregl-ctrl-attrib{font-size:10px}
+  /* The Traffic box — the dashboard's aircraft info box (#pilnkTooltip), drawn here so it stays on the plane every
+     frame. Same layout, sizes and colours as the 2D box; --bc is the phase colour the dashboard sends. */
+  #skyBox{position:fixed;left:0;top:0;z-index:8;display:none;pointer-events:none;will-change:transform;   /* see-through for the map; only its button takes clicks */
+    --bc:#3b82f6;--bg:#ffffff;--ln:#dbeafe;--tx:#1e3a6e;--dm:#5c7aa3;
+    background:var(--bg);color:var(--tx);border:2px solid var(--bc);border-radius:8px;padding:10px 14px;
+    white-space:nowrap;min-width:190px;font-family:'Share Tech Mono',ui-monospace,Menlo,Consolas,monospace;
+    box-shadow:0 6px 24px rgba(0,0,0,.15)}
+  #skyBox.night{--bg:#0a1020;--ln:#0f2040;--tx:#e0e8ff;--dm:#6f8cbf}
+  #skyBox::after{content:'';position:absolute;left:0;bottom:-85px;width:1px;height:85px;background:#fff;transform-origin:top left;
+    transform:rotate(45deg);pointer-events:none;opacity:.85;box-shadow:0 0 4px rgba(255,255,255,.5)}
+  /* Flipped to stay on screen (placeBox): .ql = box left of the plane, .qd = box below it. The leader line leaves
+     the corner nearest the plane and runs 45° to it. */
+  #skyBox.ql::after{left:auto;right:0;transform-origin:top right;transform:rotate(-45deg)}
+  #skyBox.qd::after{bottom:auto;top:-85px;transform-origin:bottom left;transform:rotate(-45deg)}
+  #skyBox.ql.qd::after{left:auto;right:0;bottom:auto;top:-85px;transform-origin:bottom right;transform:rotate(45deg)}
+  .sb-hd{display:flex;align-items:center;gap:7px;margin-bottom:7px;padding-bottom:7px;border-bottom:1px solid var(--ln)}
+  .sb-flag{font-size:19px;line-height:1;font-family:'Noto Color Emoji','Apple Color Emoji','Segoe UI Emoji',sans-serif}
+  .sb-cs{font-family:'Orbitron',sans-serif;font-size:13.6px;font-weight:700;letter-spacing:.1em;color:var(--bc)}
+  .sb-route{font-size:11.2px;color:#3b82f6;font-weight:bold;margin-bottom:6px;padding-bottom:6px;border-bottom:1px solid var(--ln)}
+  .sb-src{display:block;font-size:8px;line-height:1.3;margin-top:1px;color:var(--dm);opacity:.9;font-weight:normal}
+  .sb-route.sus .sb-src{color:#f59e0b;opacity:1}
+  .sb-row{display:flex;justify-content:space-between;gap:16px;margin-top:4px;font-size:10.4px}
+  .sb-row span{color:var(--dm)}
+  .sb-row b{color:var(--tx)}
+  .sb-ph{display:flex;align-items:center;gap:5px;margin-top:6px;padding-top:6px;border-top:1px solid var(--ln);font-size:10.4px;color:var(--bc)}
+  .sb-ph i{width:10px;height:10px;border-radius:50%;background:var(--bc);box-shadow:0 0 5px var(--bc);flex-shrink:0}
+  .sb-ap{display:block;width:100%;margin-top:8px;font-family:inherit;font-size:10.4px;letter-spacing:.06em;padding:5px 8px;
+    border-radius:6px;border:1px solid var(--bc);background:transparent;color:var(--tx);cursor:pointer;pointer-events:auto}
+  .sb-ap:hover{background:var(--bc);color:#fff}
   @media (max-width:640px){
     html,body{height:100dvh}
     #tl{top:calc(8px + env(safe-area-inset-top));left:8px;max-width:70vw;padding:7px 9px}
@@ -48,6 +77,20 @@
 <body>
 <div id="map"></div>
 <div id="labels"></div>
+<!-- The Traffic box (embedded): the dashboard's info box for the selected plane, pinned to it every frame -->
+<div id="skyBox" role="dialog" aria-label="Aircraft info">
+  <div class="sb-hd"><span class="sb-flag" id="sbFlag"></span><span class="sb-cs" id="sbCs"></span></div>
+  <div class="sb-route" id="sbRoute" style="display:none"><span id="sbRouteTxt"></span><span class="sb-src" id="sbRouteSrc"></span></div>
+  <div class="sb-row"><span>Altitude</span><b id="sbAlt">--</b></div>
+  <div class="sb-row"><span>Speed</span><b id="sbSpd">--</b></div>
+  <div class="sb-row"><span>Heading</span><b id="sbHdg">--</b></div>
+  <div class="sb-row"><span>V/Speed</span><b id="sbVs">--</b></div>
+  <div class="sb-row"><span>Type</span><b id="sbTyp">--</b></div>
+  <div class="sb-row"><span>Squawk</span><b id="sbSqk">--</b></div>
+  <div class="sb-row"><span>Reg</span><b id="sbReg">--</b></div>
+  <div class="sb-ph" id="sbPh" style="display:none"><i></i><span id="sbPhase"></span></div>
+  <button class="sb-ap" id="sbAp" type="button">3D Approach</button>
+</div>
 <div class="hud card" id="tl">
   <div class="t">PiLNK · 3D SKY</div>
   <div class="s" id="sub">your receiver · OpenFreeMap 3D map + AWS terrain</div>
@@ -62,7 +105,7 @@
   <button class="btn" onclick="document.getElementById('note').classList.toggle('show')">?</button>
 </div>
 <div class="hud card" id="note">Drag to pan · right-drag (or two fingers) to tilt and turn · wheel to zoom.
-Click an aircraft to open its 3D Approach view. Buildings appear once you zoom in.
+Click an aircraft to open its 3D Approach view (inside the dashboard: its info box, with a 3D Approach button). Buildings appear once you zoom in.
 Options: <b>?ve=</b> terrain exaggeration (1.5), <b>?scale=</b> aircraft size (1), <b>?models=0</b> simple arrows,
 <b>?labels=0</b>, <b>?trails=0</b>, <b>?buildings=0</b>, <b>?terrain=0</b>, <b>?theme=day|night</b>, <b>?lat= ?lon=</b>.</div>
 
@@ -106,6 +149,8 @@ window.addEventListener('message',e=>{
   else if(d.action==='resume'){ paused=false; _lastDrawAt=0; if(map) map.triggerRepaint(); }
   else if(d.action==='theme') applyTheme(d.theme==='night');
   else if(d.action==='settings') applySettings(d);
+  else if(d.action==='select') selectFromDash(d);   // Traffic box: the dashboard's selected plane (or null)
+  else if(d.action==='box') boxFromDash(d);         // Traffic box: its contents
 });
 
 /* ---------- aircraft models: the same set, spans and orientations as the 3D Approach view ---------- */
@@ -413,7 +458,63 @@ function removeAc(hex){ const s=AC.get(hex); if(!s)return;
   if(s.yaw&&skyLayer.root) skyLayer.root.remove(s.yaw);
   if(s.dartMat) s.dartMat.dispose();
   if(s.lbl&&s.lbl.parentNode) s.lbl.parentNode.removeChild(s.lbl);
-  AC.delete(hex); _trailsDirty=true; }
+  AC.delete(hex); _trailsDirty=true;
+  if(hex===SEL) clearSel(true); }   // the selected plane has left: its box closes, and the dashboard's selection with it
+
+/* ---------- the Traffic box (3D parity with the Traffic page) ----------
+   Embedded, the dashboard says which plane is selected ('select') and what its box says ('box'); this page pins
+   the box to that plane every frame (placeBox, from the render loop). Until the dashboard's contents arrive — or
+   for a plane the dashboard has no callsign for — the box shows what this page knows itself (pageBox).
+   Every value is written with textContent, never as HTML. */
+const HEX_RE=/^[0-9a-f~]{6,7}$/, BOX_COLOR='#3b82f6',
+      BOX_FONTS='https://fonts.googleapis.com/css2?family=Orbitron:wght@400;600;700&family=Share+Tech+Mono&family=Noto+Color+Emoji&display=swap';
+let SEL=null, BOX=null, SEL_FLY=false;   // selected hex (lower-case) or null · the dashboard's box contents for it · a glide waiting to happen
+function boxFonts(){   // the dashboard's own fonts (flags need Noto Color Emoji on Windows) — fetched in once, when a box first opens
+  if(document.getElementById('sbFonts')) return;
+  const l=document.createElement('link'); l.id='sbFonts'; l.rel='stylesheet'; l.href=BOX_FONTS; document.head.appendChild(l); }
+function pageBox(s){ if(!s) return {};
+  return { cs:s.cs||s.reg||s.hex.toUpperCase(), alt:s.ground?'Ground':(s.altFt!=null?Math.round(s.altFt).toLocaleString()+' ft':''),
+    spd:s.gs?Math.round(s.gs)+' kt':'', hdg:s.trk!=null?Math.round(s.trk)+'°':'', typ:s.t, sqk:s.sq, reg:s.reg }; }
+function renderBox(){
+  if(!SEL) return;
+  const b=BOX||pageBox(AC.get(SEL)), txt=(v,n)=>(v==null||v==='')?'':String(v).slice(0,n);
+  const put=(id,v)=>{ document.getElementById(id).textContent=txt(v,80)||'--'; };
+  document.getElementById('sbFlag').textContent=txt(b.flag,16);
+  put('sbCs',b.cs||SEL.toUpperCase()); put('sbAlt',b.alt); put('sbSpd',b.spd); put('sbHdg',b.hdg); put('sbVs',b.vs);
+  put('sbTyp',b.typ); put('sbSqk',b.sqk); put('sbReg',b.reg);
+  const route=txt(b.route,80), r=document.getElementById('sbRoute');
+  r.style.display=route?'':'none'; r.classList.toggle('sus',b.rsus===true);
+  document.getElementById('sbRouteTxt').textContent=route; document.getElementById('sbRouteSrc').textContent=txt(b.rsrc,100);
+  const phase=txt(b.phase,40); document.getElementById('sbPhase').textContent=phase; document.getElementById('sbPh').style.display=phase?'':'none';
+  const c=(typeof b.color==='string'&&/^#[0-9a-f]{6}$/i.test(b.color))?b.color:BOX_COLOR, el=document.getElementById('skyBox');
+  el.style.setProperty('--bc',c); el.style.boxShadow='0 6px 24px '+c+'44'; el._w=0; }   // new contents: placeBox measures the size again
+function setSel(h){ if(h===SEL) return; SEL=h; BOX=null; SEL_FLY=false; if(h){ boxFonts(); renderBox(); } if(map) map.triggerRepaint(); }
+function clearSel(post){ if(SEL===null) return; setSel(null); if(post) toParent({action:'select',hex:null}); }
+function selectFromDash(d){ const h=d.hex==null?null:String(d.hex).toLowerCase();
+  if(h!==null&&!HEX_RE.test(h)) return;
+  setSel(h); if(h&&d.fly===true){ SEL_FLY=true; flyToSel(); } }   // a Traffic-list click: glide there (now, or once this page knows the plane)
+function flyToSel(){ const s=SEL?AC.get(SEL):null;
+  if(!SEL_FLY||!map||!_mapReady||!s||s.lat==null) return;
+  SEL_FLY=false;   // keeps pitch and bearing; zooms in to 9 (the 2D map's zoom 10) only if further out; no follow afterwards
+  map.flyTo({center:[s.lon,s.lat],zoom:Math.max(map.getZoom(),9),duration:1000,essential:true}); }
+function acTitle(s,hex){ return ((s&&(s.cs||s.reg))||hex.toUpperCase())+' · '+hex.toUpperCase(); }
+document.getElementById('sbAp').addEventListener('click',()=>{ if(SEL) toParent({action:'open-approach',hex:SEL,title:acTitle(AC.get(SEL),SEL)}); });
+if(document.fonts) document.fonts.addEventListener('loadingdone',()=>{ document.getElementById('skyBox')._w=0; });   // web fonts change the box's size: measure again
+function boxFromDash(d){ if(!SEL||String(d.hex||'').toLowerCase()!==SEL||!d.box||typeof d.box!=='object') return; BOX=d.box; renderBox(); }
+function placeBox(){   // every frame: on the selected plane, or hidden while it has no place on screen
+  const el=document.getElementById('skyBox'), s=SEL?AC.get(SEL):null;
+  if(!s||s.sx==null){ if(el.style.display!=='none') el.style.display='none'; return; }
+  if(el.style.display!=='block'){ el.style.display='block'; el._w=0; }
+  if(el._night!==NIGHT_ON){ el._night=NIGHT_ON; el.classList.toggle('night',NIGHT_ON); }
+  if(!el._w){ const r=el.getBoundingClientRect(); el._w=Math.ceil(r.width); el._h=Math.ceil(r.height); }   // once per content change (renderBox clears it); ceil: offsetWidth rounds a 263.2 px box down
+  // Up and to the right like the 2D box. Where that would leave the frame, flip left and/or below (the leader
+  // line follows, .ql/.qd); where neither side fits (a phone), clamp inside the frame.
+  const W=window.innerWidth, H=window.innerHeight, w=el._w, h=el._h, sx=Math.round(s.sx), sy=Math.round(s.sy);
+  const left=sx+60+w>W && sx-60-w>=0, below=sy-60-h<0 && sy+60+h<=H;
+  const x=Math.max(0,Math.min(left?sx-60-w:sx+60, W-w)), y=Math.max(0,Math.min(below?sy+60:sy-60-h, H-h));
+  const q=(left?'l':'r')+(below?'d':'u');
+  if(el._q!==q){ el._q=q; el.classList.toggle('ql',left); el.classList.toggle('qd',below); }
+  el.style.transform='translate('+x+'px,'+y+'px)'; }
 
 /* ---------- live data: this node's own /flights, nothing leaves the node ---------- */
 async function seedTrails(){
@@ -454,6 +555,7 @@ async function poll(){
     live.forEach((s,i)=>{ const w=i<modelNear; if(s.wantModel!==w){ s.wantModel=w; setBody(s); if(w) loadModel(s); } });
     _trailsDirty=true; _polls++; _pollFail=0;
     if(_polls===1) st('live · '+seen.size+' aircraft with a position');
+    if(SEL){ if(!BOX) renderBox(); flyToSel(); }   // Traffic box: the page's own numbers until the dashboard's arrive; a glide waiting for this plane
   }catch(e){ if(++_pollFail>=3) st('live data unavailable — retrying'); }
   setTimeout(poll,POLL_MS);
 }
@@ -544,6 +646,7 @@ const skyLayer={
       s.lbl.style.setProperty('--c',s.emerg?'#ff3344':cssColor(altColor(s.altFt,s.ground)));
       s.lbl.style.display=''; s.lbl.style.transform='translate('+Math.round(s.sx+6)+'px,'+Math.round(s.sy-8)+'px)';
     }
+    placeBox();   // the Traffic box rides on the selected plane, placed in the same frame as the labels
     this.renderer.resetState(); this.renderer.render(this.scene,this.camera); this.renderer.resetState();
     if(gl.bindVertexArray) gl.bindVertexArray(null);
     _frames++;
@@ -662,9 +765,9 @@ async function boot(){
   });
   map.on('click',e=>{ let best=null, bd=28;
     for(const s of AC.values()){ if(s.sx==null) continue; const d=Math.hypot(s.sx-e.point.x,s.sy-e.point.y+14); if(d<bd){bd=d;best=s;} }
-    if(!best) return;
-    const title=(best.cs||best.reg||best.hex.toUpperCase())+' · '+best.hex.toUpperCase();
-    if(!toParent({action:'open-approach', hex:best.hex, title})) window.open('/static/approach.html?hex='+encodeURIComponent(best.hex),'_blank','noopener'); });
+    // Embedded: a plane opens its Traffic box (the 3D Approach view is the box's button); empty sky or ground closes it.
+    if(EMBED){ if(best){ setSel(best.hex); toParent({action:'select',hex:best.hex}); } else clearSel(true); return; }
+    if(best) window.open('/static/approach.html?hex='+encodeURIComponent(best.hex),'_blank','noopener'); });
   // Satellite/Topo imagery is optional: a tile it can't fetch shows plain ground, not a fault line.
   map.on('error',e=>{ if(e&&(e.sourceId==='base-sat'||e.sourceId==='base-topo')) return;
     const m=(e&&e.error&&e.error.message)||''; if(!/sprite|glyph|tile/i.test(m)) st('map error: '+m); });
