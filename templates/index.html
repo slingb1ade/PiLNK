@@ -330,7 +330,10 @@
   #view3dFrame{flex:1;min-height:0;width:100%;border:0;background:#0b0f1a;}
   /* 3D Sky — the 4th map layer (Options → Map Layer → 3D). Same swap as the Approach panel above;
      when both are open the Approach panel wins, and closing it returns to the 3D sky. */
-  #sky3d{display:none;flex:1;min-width:0;min-height:0;background:#0b0f1a;}
+  #sky3d{display:none;flex:1;min-width:0;min-height:0;background:#0b0f1a;position:relative;}
+  /* The 2D map's wind compass, moved onto the 3D view while it is open (skyMoveControls) — same spot, top left */
+  #sky3d .wind-compass{position:absolute;top:10px;left:10px;z-index:5;margin:0;}
+  /* …and the map's top-right buttons (Re-center, 3D Approach, Airport view, Glideslope, Hunter): Leaflet's own corner, moved whole */
   #body.sky3d-open #map{display:none;}
   #body.sky3d-open #sky3d{display:flex;}
   #body.sky3d-open.view3d-open #sky3d{display:none;}
@@ -498,9 +501,15 @@
     overflow:hidden;     /* clip the slide so the card emerges from under the navbar */
     pointer-events:none;
     /* no backdrop, no flex centering — this is a top-sliding panel, not a modal */
+    /* Closed, the card still sat just above this box with a 40 px shadow, and that shadow showed as a grey band
+       under the header — across the phone side menu too (MME1, 30 Sep). Hidden once the slide-out has finished. */
+    visibility:hidden;
+    transition:visibility 0s linear 0.35s;
   }
   #cinematicOverlay.active{
     pointer-events:auto;
+    visibility:visible;
+    transition-delay:0s;
   }
   #cinematicCard{
     width:100%;
@@ -3052,6 +3061,7 @@ var RecenterControl = L.Control.extend({
     L.DomEvent.disableClickPropagation(div);
     L.DomEvent.on(div, 'click', function(e) {
       L.DomEvent.preventDefault(e);
+      if (isSkyOpen()) { skyPost({ action: 'home' }); return; }   // 3D on: the 3D camera goes home (the 2D map is hidden)
       // Centre-on-receiver is a no-op until we know where the receiver is.
       if(RX_UNSET || typeof RX_LAT !== 'number' || typeof RX_LON !== 'number') return;
       map.flyTo([RX_LAT, RX_LON], 9, {duration: 0.6});
@@ -3269,7 +3279,8 @@ function skySettings() {
   return { action: 'settings', base: base, bright: (typeof mapBright === 'number' ? mapBright : 100),
     trails: !!trailsOn, rings: !!ringsOn,
     ringList: Object.keys(activeRings).map(Number).sort(function (a, b) { return a - b; }),
-    unit: ringUnit === 'km' ? 'km' : 'nm', rx: rxMarkerOn !== false, labels: !!labelsOn };
+    unit: ringUnit === 'km' ? 'km' : 'nm', rx: rxMarkerOn !== false, labels: !!labelsOn,
+    hunter: typeof hunterMode !== 'undefined' && !!hunterMode };
 }
 function skySendSettings() { if (isSkyOpen()) skyPost(skySettings()); }
 function isSkyOpen() { return document.getElementById('body').classList.contains('sky3d-open'); }
@@ -3281,6 +3292,7 @@ function skyPost(msg) {
 function openSky() {
   if (isSkyOpen()) return;   // already showing: never rebuild the scene
   hideTooltip(); skySetSel(null);   // the 3D view draws its own box, and starts with nothing selected
+  skyMoveControls(true);
   document.getElementById('sky3dFrame').src = '/static/sky3d.html?embed=1&theme=' + skyTheme();
   document.getElementById('body').classList.add('sky3d-open');
   clearTimeout(skyWatchdog);
@@ -3291,6 +3303,7 @@ function closeSky() {
   if (skySel) { skySetSel(null); updateFlights(); }   // 3D off: its selection goes too, and the Traffic list loses the highlight now
   clearTimeout(skyWatchdog); skyWatchdog = null;
   document.getElementById('body').classList.remove('sky3d-open');
+  skyMoveControls(false);
   document.getElementById('sky3dFrame').src = 'about:blank';   // unload the WebGL scene
   if (typeof map !== 'undefined' && map && map.invalidateSize) setTimeout(function () { map.invalidateSize(); }, 0);
 }
@@ -3317,6 +3330,29 @@ function skyListSelect(cs) {   // a Traffic-list click while 3D is on: the 3D vi
   skySetSel(String(a.hex).toLowerCase());
   skyPost({ action: 'select', hex: skySel, fly: true });
   skySendBox(); updateFlights();
+}
+function skyCard(hex) {       // a plane clicked in the 3D view: its dropdown card, exactly as a plane click on the 2D map
+  var cs = skyCsForHex(hex);
+  if (!cs) { skySetSel(hex); skyPost({ action: 'select', hex: hex, fly: false }); return; }   // no callsign, no card: the page shows its own box
+  skySetSel(null);             // a list pick's box goes (the page has already dropped it)
+  selectedFlight = cs; hideTooltip(); updateFlights(); openCinematicCard(cs, false);
+}
+// The wind compass and the top-right button column are Leaflet controls inside #map, which is hidden while 3D is on:
+// move the same elements onto the 3D view and back, so they keep their updaters, clicks and panels. skyCtlHome
+// remembers where each came from.
+var skyCtlHome = [];
+function skyMoveControls(on3d) {
+  var k = document.getElementById('sky3d'), m = document.getElementById('map'); if (!k) return;
+  // Leaflet styles its controls through classes on the map box (leaflet-container, and leaflet-touch on touch-capable
+  // screens: the 2 px button borders): the 3D box wears the same ones while it holds them, so nothing shifts.
+  ['leaflet-container', 'leaflet-touch'].forEach(function (c) { k.classList.toggle(c, !!(on3d && m && m.classList.contains(c))); });
+  if (on3d) {
+    if (skyCtlHome.length) return;
+    [document.getElementById('windCompass'), document.querySelector('#map .leaflet-top.leaflet-right')].forEach(function (el) {
+      if (!el) return; skyCtlHome.push({ el: el, parent: el.parentNode, next: el.nextSibling }); k.appendChild(el); });
+  } else {
+    skyCtlHome.forEach(function (h) { h.parent.insertBefore(h.el, h.next); }); skyCtlHome = [];
+  }
 }
 function skyRefreshBox() {     // every 2 s update: fresh numbers, or the selection ends when its plane has left the list
   if (!skySel || !isSkyOpen()) return;
@@ -6327,9 +6363,17 @@ window.addEventListener('message', function (e) {
     if (skySel) { skyPost({ action: 'select', hex: skySel, fly: true }); skySendBox(); }   // a Traffic-list pick made while the page was loading
   }
   else if (d.action === 'open-approach' && /^[0-9a-f~]{6,7}$/i.test(String(d.hex || ''))) open3D(d.hex, String(d.title || '').slice(0, 60));
-  else if (d.action === 'select') {   // a plane (hex) or empty space (null) was clicked in the 3D view
+  else if (d.action === 'select') {   // the page's selection changed: null = its plane left, or (click:true) empty sky was clicked
     var h = d.hex == null ? null : String(d.hex).toLowerCase();
-    if (h === null || /^[0-9a-f~]{6,7}$/.test(h)) { skySetSel(h); skySendBox(); updateFlights(); }
+    if (h === null || /^[0-9a-f~]{6,7}$/.test(h)) {
+      if (h !== null || skySel !== null) skySetSel(h);   // nothing selected here already: leave an open card's plane selected
+      if (h === null && d.click === true && ccVisible) closeCinematicCard();   // empty sky closes the card, like any click on the 2D map
+      skySendBox(); updateFlights();
+    }
+  }
+  else if (d.action === 'card') {   // a plane was clicked in the 3D view
+    var hc = typeof d.hex === 'string' ? d.hex.toLowerCase() : '';
+    if (/^[0-9a-f~]{6,7}$/.test(hc)) skyCard(hc);
   }
   else if (d.action === 'failed') {
     var r = String(d.reason || 'unknown');
@@ -6342,7 +6386,7 @@ new MutationObserver(function () { if (isSkyOpen()) skyPost({ action: 'theme', t
   .observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
 // The Options controls the 3D view mirrors: after any of them runs, an open 3D view gets the new settings.
 window.addEventListener('DOMContentLoaded', function () {
-  ['setMapBrightness', 'toggleTrails', 'toggleRings', 'toggleRing', 'setUnit', 'toggleRxMarker', 'toggleLabels'].forEach(function (n) {
+  ['setMapBrightness', 'toggleTrails', 'toggleRings', 'toggleRing', 'setUnit', 'toggleRxMarker', 'toggleLabels', 'setHunter'].forEach(function (n) {
     var f = window[n]; if (f && f.__sky) return;
     if (typeof f !== 'function') { console.warn('3D view: ' + n + ' not found — its setting will not reach the 3D view'); return; }
     var w = function () { var r = f.apply(this, arguments); skySendSettings(); return r; };

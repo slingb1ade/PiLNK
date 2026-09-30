@@ -27,15 +27,22 @@
   #tl .s{color:var(--dim);font-size:11px;margin-top:2px}
   #perf{color:var(--good)!important}
   #perf{display:none} body.debug #perf{display:block}
-  body.embed #tl{top:8px;left:8px;padding:6px 9px;max-width:300px}
+  body.embed #tl{top:auto;bottom:8px;left:8px;right:auto;padding:6px 9px;max-width:300px}   /* top left: the dashboard's wind compass; top right: its map buttons */
+  body.embed #note{bottom:72px}
   body.embed #sub{display:none}
-  body.embed #b_lbl, body.embed #b_trl{display:none}   /* embedded, the dashboard's Options control labels and trails */
+  body.embed #b_lbl, body.embed #b_trl, body.embed #b_rst{display:none}   /* embedded, the dashboard's Options control labels and trails */
   #btns{bottom:12px;left:50%;transform:translateX(-50%);display:flex;gap:6px;flex-wrap:wrap;justify-content:center;max-width:96vw}
   .btn{font-family:inherit;font-size:11px;background:#0e1526;color:var(--dim);border:1px solid var(--line);border-radius:6px;padding:6px 10px;cursor:pointer}
   .btn.on{color:var(--txt);border-color:var(--purple)}
   #note{display:none;bottom:48px;left:12px;color:var(--dim);font-size:10px;max-width:340px}
   #note.show{display:block}
   .maplibregl-ctrl-attrib{font-size:10px}
+  /* Zoom buttons, bottom right — the same look as the dashboard's 2D map (Leaflet's zoom control) */
+  .sky-zoom{background:#fff;border:2px solid rgba(0,0,0,.2);border-radius:4px;background-clip:padding-box;overflow:hidden}
+  .sky-zoom button{display:block;width:30px;height:30px;padding:0;border:0;background:#fff;color:#000;cursor:pointer;text-align:center;
+    font:bold 22px/30px 'Lucida Console',Monaco,monospace}
+  .sky-zoom button+button{border-top:1px solid #ccc}
+  .sky-zoom button:hover{background:#f4f4f4}
   /* The Traffic box — the dashboard's aircraft info box (#pilnkTooltip), drawn here so it stays on the plane every
      frame. Same layout, sizes and colours as the 2D box; --bc is the phase colour the dashboard sends. */
   #skyBox{position:fixed;left:0;top:0;z-index:8;display:none;pointer-events:none;will-change:transform;   /* see-through for the map; only its button takes clicks */
@@ -98,7 +105,7 @@
   <div class="s" id="perf"></div>
 </div>
 <div class="hud" id="btns">
-  <button class="btn" onclick="resetView()">Reset view</button>
+  <button class="btn" id="b_rst" onclick="resetView()">Reset view</button>
   <button class="btn" id="b_lbl" onclick="toggleLabels()">Labels</button>
   <button class="btn" id="b_trl" onclick="toggleTrails()">Trails</button>
   <button class="btn" id="b_mdl" onclick="toggleModels()">Models</button>
@@ -151,6 +158,7 @@ window.addEventListener('message',e=>{
   else if(d.action==='settings') applySettings(d);
   else if(d.action==='select') selectFromDash(d);   // Traffic box: the dashboard's selected plane (or null)
   else if(d.action==='box') boxFromDash(d);         // Traffic box: its contents
+  else if(d.action==='home') resetView();           // the dashboard's Re-center on node button
 });
 
 /* ---------- aircraft models: the same set, spans and orientations as the 3D Approach view ---------- */
@@ -277,7 +285,8 @@ function applyTheme(night){
        map.setPaintProperty('rings-label','text-halo-color',NIGHT_ON?'#04070e':'#ffffff'); }catch(e){}
   skyLayer.relight();
   TPL.forEach(p=>p.then(t=>{ if(t) t.traverse(o=>{ if(o.isMesh&&o.material) (Array.isArray(o.material)?o.material:[o.material]).forEach(tintMaterial); }); }));
-  for(const s of AC.values()) if(s.dartMat) s.dartMat.color.copy(altColor(s.altFt,s.ground));
+  for(const s of AC.values()) if(s.dartMat) dartTint(s);
+  _fadeMats.forEach(f=>f.dispose()); _fadeMats.clear(); _fadeGen++;   // Hunter Mode's faded copies follow the new tint
   _trailsDirty=true; map.triggerRepaint();
 }
 /* The map is up: apply any theme that arrived early, then tell the dashboard — it re-sends what we may
@@ -291,12 +300,12 @@ function onMapReady(){ _mapReady=true;
    The dashboard sends one 'settings' message on 'ready' and on every change; its Options controls are
    the single source of truth. Standalone, these defaults (today's look) stand. Unknown or malformed
    fields are ignored, never guessed. */
-const SETTINGS={ base:'osm', bright:100, trails:true, rings:true, ringList:[25,50,100,150], unit:'nm', rx:true, labels:true };
+const SETTINGS={ base:'osm', bright:100, trails:true, rings:true, ringList:[25,50,100,150], unit:'nm', rx:true, labels:true, hunter:false };
 let _pendingSettings=null;
 function cleanSettings(s){ const o={}; if(!s||typeof s!=='object') return o;
   if(s.base==='osm'||s.base==='sat'||s.base==='topo') o.base=s.base;
   if(typeof s.bright==='number'&&isFinite(s.bright)) o.bright=Math.max(40,Math.min(130,Math.round(s.bright)));
-  for(const k of ['trails','rings','rx','labels']) if(typeof s[k]==='boolean') o[k]=s[k];
+  for(const k of ['trails','rings','rx','labels','hunter']) if(typeof s[k]==='boolean') o[k]=s[k];
   if(Array.isArray(s.ringList)) o.ringList=s.ringList.map(Number).filter(n=>isFinite(n)&&n>0&&n<=1000).sort((a,b)=>a-b).slice(0,12);
   if(s.unit==='nm'||s.unit==='km') o.unit=s.unit;
   return o; }
@@ -454,9 +463,21 @@ function loadModel(s){   // models load only while they are switched on — ?mod
   if(!USE_MODELS||!s.wantModel||s.tpl||!s.key) return; const key=s.key;
   template(key).then(t=>{ if(t&&s.key===key){ s.tpl=t; if(USE_MODELS&&s.wantModel) setBody(s); map&&map.triggerRepaint(); } });
 }
+/* Military Hunter Mode (the dashboard's button): civil aircraft fade to 12 % and their labels to 10 %, as on the 2D map;
+   military stay bright, and so does an emergency squawk. The faded look is a see-through copy of each material, cached
+   per original; a theme change re-tints the originals in place, so the copies are rebuilt (_fadeGen). */
+const _fadeMats=new Map(); let _fadeGen=0;
+function fadedMat(m){ let f=_fadeMats.get(m); if(!f){ f=m.clone(); f.transparent=true; f.opacity=0.12; f.depthWrite=false; _fadeMats.set(m,f); } return f; }
+function isFaded(s){ return !!SETTINGS.hunter&&!s.mil&&!s.emerg; }
+function setFade(s,on){
+  if(s._fade===on&&s._fadeGen===_fadeGen&&s._fadeBody===s.body) return;
+  if(s._fadeBody) s._fadeBody.traverse(o=>{ if(o.isMesh&&o.userData._om){ o.material=o.userData._om; delete o.userData._om; } });   // undo first
+  if(on&&s.body) s.body.traverse(o=>{ if(o.isMesh&&o.material){ o.userData._om=o.material; o.material=Array.isArray(o.material)?o.material.map(fadedMat):fadedMat(o.material); } });
+  s._fade=on; s._fadeGen=_fadeGen; s._fadeBody=s.body; }
+function dartTint(s){ s.dartMat.color.copy(altColor(s.altFt,s.ground)); const f=_fadeMats.get(s.dartMat); if(f) f.color.copy(s.dartMat.color); }
 function removeAc(hex){ const s=AC.get(hex); if(!s)return;
   if(s.yaw&&skyLayer.root) skyLayer.root.remove(s.yaw);
-  if(s.dartMat) s.dartMat.dispose();
+  if(s.dartMat){ const f=_fadeMats.get(s.dartMat); if(f){ f.dispose(); _fadeMats.delete(s.dartMat); } s.dartMat.dispose(); }
   if(s.lbl&&s.lbl.parentNode) s.lbl.parentNode.removeChild(s.lbl);
   AC.delete(hex); _trailsDirty=true;
   if(hex===SEL) clearSel(true); }   // the selected plane has left: its box closes, and the dashboard's selection with it
@@ -468,7 +489,7 @@ function removeAc(hex){ const s=AC.get(hex); if(!s)return;
    Every value is written with textContent, never as HTML. */
 const HEX_RE=/^[0-9a-f~]{6,7}$/, BOX_COLOR='#3b82f6',
       BOX_FONTS='https://fonts.googleapis.com/css2?family=Orbitron:wght@400;600;700&family=Share+Tech+Mono&family=Noto+Color+Emoji&display=swap';
-let SEL=null, BOX=null, SEL_FLY=false;   // selected hex (lower-case) or null · the dashboard's box contents for it · a glide waiting to happen
+let SEL=null, BOX=null, SEL_FLY=false, CARD=null;   // selected hex (lower-case) or null · the dashboard's box contents for it · a glide waiting to happen
 function boxFonts(){   // the dashboard's own fonts (flags need Noto Color Emoji on Windows) — fetched in once, when a box first opens
   if(document.getElementById('sbFonts')) return;
   const l=document.createElement('link'); l.id='sbFonts'; l.rel='stylesheet'; l.href=BOX_FONTS; document.head.appendChild(l); }
@@ -490,6 +511,14 @@ function renderBox(){
   el.style.setProperty('--bc',c); el.style.boxShadow='0 6px 24px '+c+'44'; el._w=0; }   // new contents: placeBox measures the size again
 function setSel(h){ if(h===SEL) return; SEL=h; BOX=null; SEL_FLY=false; if(h){ boxFonts(); renderBox(); } if(map) map.triggerRepaint(); }
 function clearSel(post){ if(SEL===null) return; setSel(null); if(post) toParent({action:'select',hex:null}); }
+// Embedded clicks, as on the 2D map: a plane opens the dashboard's dropdown card (any list-pick box goes); empty sky closes
+// both. CARD is the plane a card was asked for, so an empty click after it still tells the dashboard (click:true = close the card).
+function cardFor(h){ setSel(null); CARD=h; toParent({action:'card',hex:h}); }
+function emptyClick(){ if(SEL===null&&CARD===null) return; setSel(null); CARD=null; toParent({action:'select',hex:null,click:true}); }
+function zoomCtl(){ return { onAdd(m){ const d=document.createElement('div'); d.className='maplibregl-ctrl sky-zoom';
+    d.innerHTML='<button type="button" id="zIn" aria-label="Zoom in" title="Zoom in">+</button><button type="button" id="zOut" aria-label="Zoom out" title="Zoom out">−</button>';
+    d.querySelector('#zIn').onclick=()=>m.zoomIn({duration:300}); d.querySelector('#zOut').onclick=()=>m.zoomOut({duration:300}); return d; },
+  onRemove(){} }; }
 function selectFromDash(d){ const h=d.hex==null?null:String(d.hex).toLowerCase();
   if(h!==null&&!HEX_RE.test(h)) return;
   setSel(h); if(h&&d.fly===true){ SEL_FLY=true; flyToSel(); } }   // a Traffic-list click: glide there (now, or once this page knows the plane)
@@ -546,7 +575,7 @@ async function poll(){
       const lt=s.trail[s.trail.length-1];
       if(!lt||Math.abs(lt[0]-a.lat)>1e-5||Math.abs(lt[1]-a.lon)>1e-5){ s.trail.push([a.lat,a.lon,ft,ground]); if(s.trail.length>TRAIL_N) s.trail.shift(); }
       s.gnd=groundY(a.lon,a.lat);
-      if(s.dartMat) s.dartMat.color.copy(altColor(ft,ground));
+      if(s.dartMat) dartTint(s);
       ensureVisual(s);
     }
     for(const [hex,s] of AC){ if(!seen.has(hex)){ s.miss=(s.miss||0)+1; if(!s.live||s.miss>8) removeAc(hex); } }
@@ -618,10 +647,11 @@ const skyLayer={
         let dh=((s.trk-s.hd+540)%360)-180; s.hd=(s.hd+dh*k+360)%360; }
       s.lastT=now;
       s.yaw.visible=true; s.yaw.position.set(s.px,s.py,s.pz); s.yaw.rotation.y=-s.hd*D2R;
+      const fd=isFaded(s); setFade(s,fd);
       // size: real size up close, then grow with distance so an aircraft stays ~1.3° across on screen
       let d=5000; if(cam) d=Math.hypot(s.px-cam[0],s.py-cam[1],s.pz-cam[2]);
       const span=s.span||35, sc=Math.max(1,d*0.022*SCALE/span); s.yaw.scale.setScalar(sc);
-      if(!s.ground&&(s.py-(s.gnd||0))>30) (s.emerg?edropPos:dropPos).push(s.px,s.py,s.pz,s.px,s.gnd||0,s.pz);
+      if(!fd&&!s.ground&&(s.py-(s.gnd||0))>30) (s.emerg?edropPos:dropPos).push(s.px,s.py,s.pz,s.px,s.gnd||0,s.pz);   // Hunter: no height line under a faded civil
       if(SHOW_TRAILS&&s.trail&&s.trail.length){ const p=s.trail[s.trail.length-1], [hx,hz]=toScene(p[1],p[0]);
         headPos.push(hx,p[3]?(s.gnd||0):p[2]*0.3048*VE,hz,s.px,s.py,s.pz); const c=altColor(s.altFt,s.ground); headCol.push(c.r,c.g,c.b,c.r,c.g,c.b); }
       // screen position for the label and for clicks
@@ -639,6 +669,7 @@ const skyLayer={
       let clash=false; for(const q of placed){ if(Math.abs(q[0]-s.sx)<92&&Math.abs(q[1]-s.sy)<13){ clash=true; break; } }
       if(clash) continue; placed.push([s.sx,s.sy]); shown.add(s); }
     for(const s of AC.values()){ if(!s.lbl) continue;
+      const lo=isFaded(s)?'0.1':''; if(s.lbl.style.opacity!==lo) s.lbl.style.opacity=lo;
       if(!shown.has(s)){ if(s.lbl.style.display!=='none') s.lbl.style.display='none'; continue; }
       const txt=(s.emerg?'⚠ '+s.sq+' ':'')+(s.cs||s.reg||s.hex.toUpperCase())+'|'+(s.ground?'GND':('FL'+String(Math.round(s.altFt/100)).padStart(3,'0')))+'|'+(s.t||'');
       if(s._txt!==txt){ s._txt=txt; const p=txt.split('|'); s.lbl.innerHTML='<b></b> <i></i>'; s.lbl.firstChild.textContent=p[0]; s.lbl.lastChild.textContent=p[1]+(p[2]?' · '+p[2]:''); }
@@ -730,6 +761,7 @@ async function boot(){
   await seedTrails();
   map=new maplibregl.Map({ container:'map', style, center:[SITE.lon,SITE.lat], zoom:HOME.zoom, pitch:HOME.pitch, bearing:HOME.bearing,
     maxPitch:85, antialias:true, attributionControl:{compact:false}, maxTileCacheSize:600 });
+  map.addControl(zoomCtl(),'bottom-right');   // bottom-right controls stack upward: the zoom sits above the attribution
   map.on('load',()=>{
     map.addSource('dem',{type:'raster-dem', tiles:['pilnk://s3.amazonaws.com/elevation-tiles-prod/terrarium/{z}/{x}/{y}.png'], encoding:'terrarium', tileSize:256, maxzoom:15, attribution:'Elevation: AWS Terrain Tiles'});
     if(TERRAIN) map.setTerrain({source:'dem', exaggeration:VE});
@@ -765,8 +797,8 @@ async function boot(){
   });
   map.on('click',e=>{ let best=null, bd=28;
     for(const s of AC.values()){ if(s.sx==null) continue; const d=Math.hypot(s.sx-e.point.x,s.sy-e.point.y+14); if(d<bd){bd=d;best=s;} }
-    // Embedded: a plane opens its Traffic box (the 3D Approach view is the box's button); empty sky or ground closes it.
-    if(EMBED){ if(best){ setSel(best.hex); toParent({action:'select',hex:best.hex}); } else clearSel(true); return; }
+    // Embedded: a plane opens the dashboard's dropdown card; empty sky or ground closes the card and any list-pick box.
+    if(EMBED){ if(best) cardFor(best.hex); else emptyClick(); return; }
     if(best) window.open('/static/approach.html?hex='+encodeURIComponent(best.hex),'_blank','noopener'); });
   // Satellite/Topo imagery is optional: a tile it can't fetch shows plain ground, not a fault line.
   map.on('error',e=>{ if(e&&(e.sourceId==='base-sat'||e.sourceId==='base-topo')) return;
