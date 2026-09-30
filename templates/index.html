@@ -3280,7 +3280,9 @@ function skySettings() {
     trails: !!trailsOn, rings: !!ringsOn,
     ringList: Object.keys(activeRings).map(Number).sort(function (a, b) { return a - b; }),
     unit: ringUnit === 'km' ? 'km' : 'nm', rx: rxMarkerOn !== false, labels: !!labelsOn,
-    hunter: typeof hunterMode !== 'undefined' && !!hunterMode };
+    hunter: typeof hunterMode !== 'undefined' && !!hunterMode,
+    // Weather panel: the 3D view fetches its own frames and runs its own loop at the same pace
+    wx: !!wxOverlayOn, wxAnim: !!wxAnimateOn, wxOp: Math.round(wxOpacity * 100), wxSrc: wxActiveSource };
 }
 function skySendSettings() { if (isSkyOpen()) skyPost(skySettings()); }
 function isSkyOpen() { return document.getElementById('body').classList.contains('sky3d-open'); }
@@ -6386,7 +6388,8 @@ new MutationObserver(function () { if (isSkyOpen()) skyPost({ action: 'theme', t
   .observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
 // The Options controls the 3D view mirrors: after any of them runs, an open 3D view gets the new settings.
 window.addEventListener('DOMContentLoaded', function () {
-  ['setMapBrightness', 'toggleTrails', 'toggleRings', 'toggleRing', 'setUnit', 'toggleRxMarker', 'toggleLabels', 'setHunter'].forEach(function (n) {
+  ['setMapBrightness', 'toggleTrails', 'toggleRings', 'toggleRing', 'setUnit', 'toggleRxMarker', 'toggleLabels', 'setHunter',
+   'toggleWxOverlay', 'toggleWxAnimation', 'setWxOpacity', 'updateWxSource'].forEach(function (n) {
     var f = window[n]; if (f && f.__sky) return;
     if (typeof f !== 'function') { console.warn('3D view: ' + n + ' not found — its setting will not reach the 3D view'); return; }
     var w = function () { var r = f.apply(this, arguments); skySendSettings(); return r; };

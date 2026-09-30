@@ -123,7 +123,7 @@ Options: <b>?ve=</b> terrain exaggeration (1.5), <b>?scale=</b> aircraft size (1
 const _q=new URLSearchParams(location.search);
 const num=(k,d)=>{const v=_q.get(k);return (v!=null&&v!=='')?+v:d;};
 const D2R=Math.PI/180;
-const VE=num('ve',1.5), SCALE=num('scale',1);
+const VE=num('ve',1.5), SCALE=num('scale',1.5);   // on-screen aircraft size: 1.5 ≈ 2° across at distance (was 1, AJ 30 Sep: too small); ?scale= overrides
 const SHOW_BLD=_q.get('buildings')!=='0', TERRAIN=_q.get('terrain')!=='0';
 let USE_MODELS=_q.get('models')!=='0', SHOW_LABELS=_q.get('labels')!=='0', SHOW_TRAILS=_q.get('trails')!=='0';
 const TRAIL_N=120;          // points kept per aircraft (one per poll, ~3 min)
@@ -163,14 +163,21 @@ window.addEventListener('message',e=>{
 
 /* ---------- aircraft models: the same set, spans and orientations as the 3D Approach view ---------- */
 const MODEL_ORIENT={ 'a320_200.glb':{yaw:-90}, 'atr72.glb':{yaw:90}, 'b777_klm.glb':{yaw:180}, 'b737_800.glb':{yaw:180}, 'c172.glb':{yaw:180}, 'b429.glb':{yaw:180}, 'c208.glb':{yaw:90}, 'c130.glb':{yaw:180},
-  'b52.glb':{yaw:180}, 'e3.glb':{yaw:90}, 'kc135.glb':{yaw:0}, 'kc46.glb':{yaw:0} };
+  /* 30 Sep (3D session): these four yaws shipped exactly 180° wrong, as in the Approach view — the measuring step had
+     its sign inverted. Corrected here too, with the five new models. Keep in step with approach.html. */
+  'b52.glb':{yaw:0}, 'e3.glb':{yaw:-90}, 'kc135.glb':{yaw:180}, 'kc46.glb':{yaw:180},
+  'b787.glb':{yaw:180}, 'a350.glb':{yaw:180}, 'b1b.glb':{yaw:0}, 'c17.glb':{yaw:-90}, 'a400.glb':{yaw:0} };
 const MODEL_SPAN={ 'c172.glb':11.0, 'b429.glb':13.0, 'c208.glb':15.9, 'atr72.glb':27.1, 'c130.glb':40.4, 'a320_200.glb':35.8, 'a320_v2.glb':35.8,
   'b737_800.glb':35.8, 'b738_v2.glb':35.8, 'a333_v2.glb':60.3, 'b747_100.glb':59.6,
   'b777_klm.glb':64.8, 'a380_v2.glb':79.8,
-  'b52.glb':56.4, 'e3.glb':44.4, 'kc135.glb':39.9, 'kc46.glb':47.6 };
+  'b52.glb':56.4, 'e3.glb':44.4, 'kc135.glb':39.9, 'kc46.glb':47.6,
+  'b787.glb':60.1, 'a350.glb':64.8, 'b1b.glb':41.8, 'c17.glb':51.8, 'a400.glb':42.4 };
 function modelFor(t){ t=(t||'').toUpperCase();
   if(['C130','C30J','L100','C130J','LMT1','C130H'].includes(t))return'c130.glb';
   if(/^B52/.test(t))return'b52.glb';
+  if(t==='B1'||t==='B1B')return'b1b.glb';   // EXACT: /^B1/ would also catch B190, the Beech 1900
+  if(t==='C17')return'c17.glb';             // EXACT: /^C17/ would also catch C172, the Cessna 172
+  if(t==='A400')return'a400.glb';
   if(['E3TF','E3CF','E3'].includes(t))return'e3.glb';
   if(/^K46/.test(t))return'kc46.glb';
   if(/^(K35|C135|R135|W135|O135|E8)/.test(t))return'kc135.glb';
@@ -183,6 +190,8 @@ function modelFor(t){ t=(t||'').toUpperCase();
   if(HELI.includes(t))return'b429.glb';
   if(TP.includes(t))return'atr72.glb';
   if(['A380','A388'].includes(t))return'a380_v2.glb';
+  if(/^A35/.test(t))return'a350.glb';   // ORDER MATTERS: before the A330 family rule, or it never fires
+  if(/^B78/.test(t))return'b787.glb';   // ORDER MATTERS: before the 767/777 rule, or it never fires
   if(/^A3[0-5]|^A3[0-9][0-9]$/.test(t)&&!['A318','A319','A320','A321'].includes(t))return'a333_v2.glb';
   if(/^A(318|319|320|321|19N|20N|21N|221|223|220)$/.test(t)||/^BCS/.test(t))return'a320_200.glb';
   if(/^B74/.test(t)||t==='BLCF')return'b747_100.glb';
@@ -300,12 +309,15 @@ function onMapReady(){ _mapReady=true;
    The dashboard sends one 'settings' message on 'ready' and on every change; its Options controls are
    the single source of truth. Standalone, these defaults (today's look) stand. Unknown or malformed
    fields are ignored, never guessed. */
-const SETTINGS={ base:'osm', bright:100, trails:true, rings:true, ringList:[25,50,100,150], unit:'nm', rx:true, labels:true, hunter:false };
+const SETTINGS={ base:'osm', bright:100, trails:true, rings:true, ringList:[25,50,100,150], unit:'nm', rx:true, labels:true, hunter:false,
+  wx:false, wxAnim:true, wxOp:80, wxSrc:'rainviewer' };
 let _pendingSettings=null;
 function cleanSettings(s){ const o={}; if(!s||typeof s!=='object') return o;
   if(s.base==='osm'||s.base==='sat'||s.base==='topo') o.base=s.base;
   if(typeof s.bright==='number'&&isFinite(s.bright)) o.bright=Math.max(40,Math.min(130,Math.round(s.bright)));
-  for(const k of ['trails','rings','rx','labels','hunter']) if(typeof s[k]==='boolean') o[k]=s[k];
+  for(const k of ['trails','rings','rx','labels','hunter','wx','wxAnim']) if(typeof s[k]==='boolean') o[k]=s[k];
+  if(typeof s.wxOp==='number'&&isFinite(s.wxOp)) o.wxOp=Math.max(10,Math.min(100,Math.round(s.wxOp)));
+  if(s.wxSrc==='rainviewer'||s.wxSrc==='opera'||s.wxSrc==='nexrad') o.wxSrc=s.wxSrc;
   if(Array.isArray(s.ringList)) o.ringList=s.ringList.map(Number).filter(n=>isFinite(n)&&n>0&&n<=1000).sort((a,b)=>a-b).slice(0,12);
   if(s.unit==='nm'||s.unit==='km') o.unit=s.unit;
   return o; }
@@ -319,8 +331,71 @@ function renderSettings(){
   try{ map.setLayoutProperty('rx','visibility',SETTINGS.rx?'visible':'none'); }catch(e){}
   try{ map.getSource('rings').setData(ringsGeoJSON());
        const v=SETTINGS.rings?'visible':'none'; map.setLayoutProperty('rings','visibility',v); map.setLayoutProperty('rings-label','visibility',v); }catch(e){}
-  applyShade();
+  applyShade(); wxApply();
   syncBtns(); map.triggerRepaint(); }
+/* ---------- weather radar (3D parity R2a, 30 Sep 2026) ----------
+   Follows the dashboard's Weather panel: on/off, Past frames, Opacity, and the source its region brain picked
+   (RainViewer; Europe → LibreWXR/OPERA, falling back to RainViewer; US → NEXRAD, one live image). Same frames
+   and pace as the 2D loop: the newest 7 observed frames (the last hour, no forecast), 1.6 s each, a 1 s
+   crossfade with the incoming frame on top (rain never dips mid-blend), 4 s extra on the newest, and a frame
+   is only shown once its tiles are in (8 s at most). Tiles come through the node's own proxy, like 2D; each
+   frame is a raster layer draped on the terrain, above the brightness shade and under names, rings and aircraft.
+   Opacity is stepped by the page's own frame loop: the style runs with transitions off (terrain drapes). */
+const WX_SRC={ rainviewer:{api:'/api/rainviewer', tile:'/api/rv-tile', tail:'/256/{z}/{x}/{y}/2/1_1.png', attr:'© RainViewer'},
+               opera:{api:'/api/librewxr', tile:'/api/lw-tile', tail:'/256/{z}/{x}/{y}/2/0_0.png', attr:'© LibreWXR · EUMETNET OPERA'} };
+const WX_NEXRAD='https://mesonet.agron.iastate.edu/cache/tile.py/1.0.0/nexrad-n0q-900913/{z}/{x}/{y}.png';
+const WX_LOOP_FRAMES=7, WX_STEP_MS=1600, WX_FADE_MS=1000, WX_HOLD_MS=4000, WX_WAIT_MAX_MS=8000, WX_REFRESH_MS=5*60*1000;
+const WX={ key:'', src:null, anim:true, ids:[], frames:[], cur:-1, prev:-1, fadeT0:0, nextAt:0, waitFrom:0, timer:null, gen:0, bust:0 };
+function wxApply(){   // after any settings change (map ready)
+  const want=SETTINGS.wx?SETTINGS.wxSrc:'';
+  if(want!==WX.key){ wxClear(); WX.key=want; WX.anim=SETTINGS.wxAnim;
+    if(want){ wxLoad(); WX.timer=setInterval(wxLoad,WX_REFRESH_MS); } return; }
+  if(SETTINGS.wxAnim!==WX.anim){ WX.anim=SETTINGS.wxAnim; wxShow(true); } else wxShow(false); }
+function wxClear(){ if(WX.timer){ clearInterval(WX.timer); WX.timer=null; } WX.gen++; wxRemoveLayers(); WX.key=''; WX.src=null; WX.bust=0; }
+function wxRemoveLayers(){ for(const id of WX.ids){ try{ map.removeLayer(id); }catch(e){} try{ map.removeSource(id); }catch(e){} }
+  WX.ids=[]; WX.frames=[]; WX.cur=WX.prev=-1; }
+function wxBefore(){ return (map.getStyle().layers.find(l=>l.type==='symbol'&&l.layout&&l.layout['text-field']!=null)||{}).id; }
+function wxAdd(id,tiles,maxzoom,attr){
+  map.addSource(id,{type:'raster',tiles:[tiles],tileSize:256,maxzoom,attribution:attr});
+  map.addLayer({id,type:'raster',source:id,paint:{'raster-opacity':0,'raster-fade-duration':0}},wxBefore()); WX.ids.push(id); }
+function wxSet(id,v){ try{ if(map.getPaintProperty(id,'raster-opacity')!==v) map.setPaintProperty(id,'raster-opacity',v); }catch(e){} }
+async function wxLoad(){
+  const key=WX.key, gen=WX.gen; if(!key) return;
+  if(key==='nexrad'){   // one live image, re-fetched when the 5-minute stamp moves on
+    const bust=Math.floor(Date.now()/WX_REFRESH_MS); if(WX.ids.length&&bust===WX.bust) return;
+    wxRemoveLayers(); WX.bust=bust; wxAdd('wx-nexrad',WX_NEXRAD+'?t='+bust,9,'NOAA NEXRAD via Iowa Env Mesonet');
+    WX.frames=[{path:'nexrad'}]; wxShow(true); return; }
+  let src=WX_SRC[key]||WX_SRC.rainviewer, past=[];
+  for(;;){
+    try{ const r=await fetch(src.api,{cache:'no-store'}); const d=await r.json(); past=(d&&d.radar&&Array.isArray(d.radar.past))?d.radar.past:[]; }catch(e){ past=[]; }
+    past=past.filter(f=>f&&typeof f.path==='string'&&/^[/][A-Za-z0-9_/-]+$/.test(f.path)).slice(-WX_LOOP_FRAMES);   // observed frames only: never the forecast
+    if(past.length||src===WX_SRC.rainviewer) break;
+    src=WX_SRC.rainviewer; }   // Europe: LibreWXR empty or unreachable → RainViewer, as 2D does
+  if(gen!==WX.gen||key!==WX.key||!map) return;   // switched off or changed while the list was on its way
+  if(WX.ids.length&&WX.src===src&&past.length===WX.frames.length&&past.every((f,i)=>WX.frames[i].path===f.path)) return;   // same frames: leave the loop be
+  wxRemoveLayers(); WX.src=src; if(!past.length) return;
+  WX.frames=past.map(f=>({time:f.time,path:f.path}));
+  WX.frames.forEach((f,i)=>wxAdd('wx-'+i, src.tile+f.path+src.tail, 6, src.attr));
+  wxShow(true); }
+function wxShow(reset){   // latest frame at the set opacity; reset = open on the newest and hold it
+  const n=WX.ids.length; if(!n) return; const op=SETTINGS.wxOp/100;
+  if(reset||WX.cur<0||WX.cur>=n||!SETTINGS.wxAnim){ WX.cur=n-1; WX.prev=-1; WX.waitFrom=0;
+    WX.nextAt=performance.now()+WX_STEP_MS+WX_HOLD_MS; }
+  WX.ids.forEach((id,i)=>wxSet(id, i===WX.cur?op:(i===WX.prev?op:0))); }
+function wxTick(now){   // one step of the loop, from the page's frame loop (or a test, with its own clock)
+  const n=WX.ids.length; if(n<2||!SETTINGS.wxAnim) return; const op=SETTINGS.wxOp/100;
+  if(WX.prev>=0){ const f=Math.max(0,Math.min(1,(now-WX.fadeT0)/WX_FADE_MS));
+    wxSet(WX.ids[WX.cur],op*f); if(f>=1){ wxSet(WX.ids[WX.prev],0); WX.prev=-1; } }
+  if(now<WX.nextAt) return;
+  const next=(WX.cur+1)%n;
+  let ready=true; try{ ready=map.isSourceLoaded(WX.ids[next]); }catch(e){}
+  if(!ready){ if(!WX.waitFrom) WX.waitFrom=now; if(now-WX.waitFrom<WX_WAIT_MAX_MS) return; }
+  WX.waitFrom=0;
+  if(WX.prev>=0) wxSet(WX.ids[WX.prev],0);   // a fade still running: finish it
+  wxSet(WX.ids[WX.cur],op);                   // the outgoing frame stays solid underneath
+  try{ map.moveLayer(WX.ids[next],wxBefore()); }catch(e){}   // the incoming one on top of the radar stack
+  wxSet(WX.ids[next],0); WX.prev=WX.cur; WX.cur=next; WX.fadeT0=now;
+  WX.nextAt=now+WX_STEP_MS+(next===n-1?WX_HOLD_MS:0); }
 function shadePaint(b){ return b<100?{c:'#000000',o:(100-b)/100}:b>100?{c:'#ffffff',o:(b-100)/100}:{c:'#000000',o:0}; }
 function applyShade(){ const p=shadePaint(SETTINGS.bright);
   try{ map.setPaintProperty('shade','fill-color',p.c); map.setPaintProperty('shade','fill-opacity',p.o); }catch(e){} }
@@ -410,6 +485,54 @@ function groundY(lon,lat){ if(!TERRAIN||!map) return 0; try{ const e=map.queryTe
 function altColor(ft,ground){ const c=new THREE.Color(); if(ground){ c.setHSL(0,0,0.65); return c; }
   const k=Math.max(0,Math.min(1,(ft||0)/40000)); c.setHSL(0.08+0.68*k,0.95,NIGHT_ON?0.62:0.5); return c; }
 function cssColor(c){ return '#'+c.getHexString(); }
+/* ---------- trail colours: the 2D map's flight-phase colours and rules (30 Sep 2026) ----------
+   Same colours as 2D. Final approach = under 2,000 ft and descending faster than 200 ft/min; climb or descent
+   past ±200 ft/min; otherwise cruise. A trail only changes colour once the aircraft is 500 ft from where the
+   last change was made (final and ground change at once), and a helicopter (A7) holds its phase until it has
+   moved 750 ft, so hover-bobbing never flickers. 2D's white "transmitting" needs radio data this page does
+   not have. Points are [lat, lon, ft, ground, colour]. */
+const PHASE_COL={ ground:'#6b7280', climb:'#00ff88', cruise:'#00aaff', descent:'#ff8800', final:'#ff2244' };
+function phaseKey(ft,ground,vr){ if(ground) return 'ground'; vr=vr||0; ft=ft||0;
+  if(ft<2000&&vr<-200) return 'final'; if(vr>200) return 'climb'; if(vr<-200) return 'descent'; return 'cruise'; }
+function trailColor(s,ft,ground,vr,cat){
+  let k;
+  if(!ground&&cat==='A7'&&s.heli&&Math.abs(ft-s.heli.alt)<750) k=s.heli.k;
+  else { k=phaseKey(ft,ground,vr); if(!ground&&cat==='A7') s.heli={k,alt:ft}; }
+  const last=s.trail&&s.trail.length?s.trail[s.trail.length-1]:null;
+  let col=PHASE_COL[k];
+  if(last&&last[4]&&k!=='final'&&k!=='ground'){ if(Math.abs(ft-(s.phAlt!=null?s.phAlt:ft))<500) col=last[4]; else s.phAlt=ft; }
+  else s.phAlt=ft;
+  return col; }
+function trailSegs(s){   // 2D's taper: segment i of n is 1.5 + 3·i/n px wide and 0.2 + 0.8·i/n opaque, in its newer point's colour
+  const T=s.trail, n=T.length, out=[];
+  for(let i=1;i<n;i++){ const f=i/n; out.push({p:T[i-1],q:T[i],w:1.5+f*3,al:0.2+f*0.8,c:T[i][4]||PHASE_COL.cruise}); }
+  return out; }
+/* Screen-space ribbon: WebGL draws GL lines 1 pixel wide whatever width is asked for, so each segment is a quad
+   whose two ends are pushed apart on screen by its width in CSS pixels, the same at any distance, like 2D. */
+const RIBBON_VS=`attribute vec3 aA; attribute vec3 aB; attribute float aSide; attribute float aEnd; attribute vec3 aCol; attribute float aAlpha; attribute float aWidth;
+uniform vec2 uRes; uniform float uPx; varying vec3 vCol; varying float vAlpha;
+void main(){ vCol=aCol; vAlpha=aAlpha;
+  vec4 ca=projectionMatrix*modelViewMatrix*vec4(aA,1.0), cb=projectionMatrix*modelViewMatrix*vec4(aB,1.0);
+  if(ca.w<=0.0||cb.w<=0.0){ gl_Position=vec4(2.0,2.0,2.0,1.0); return; }
+  vec2 sa=ca.xy/ca.w*uRes*0.5, sb=cb.xy/cb.w*uRes*0.5, d=sb-sa; float l=length(d);
+  vec2 nrm=l>1e-6?vec2(-d.y,d.x)/l:vec2(0.0,1.0);
+  vec4 c=aEnd<0.5?ca:cb; c.xy+=nrm*aSide*aWidth*uPx*0.5/(uRes*0.5)*c.w; gl_Position=c; }`;
+const RIBBON_FS=`varying vec3 vCol; varying float vAlpha; void main(){ gl_FragColor=vec4(vCol,vAlpha); }`;
+function ribbonMaterial(){ return new THREE.ShaderMaterial({ vertexShader:RIBBON_VS, fragmentShader:RIBBON_FS, transparent:true, depthWrite:false,
+  side:THREE.DoubleSide, uniforms:{ uRes:{value:new THREE.Vector2(1,1)}, uPx:{value:window.devicePixelRatio||1} } }); }
+const _rc=new THREE.Color();
+function ribbonGeo(segs){   // segs: [{a:[x,y,z], b:[x,y,z], c:'#rrggbb', al, w}] → 4 vertices and 2 triangles each
+  const n=segs.length, A=new Float32Array(n*12), B=new Float32Array(n*12), side=new Float32Array(n*4), end=new Float32Array(n*4),
+        col=new Float32Array(n*12), al=new Float32Array(n*4), w=new Float32Array(n*4), idx=new Uint32Array(n*6);
+  segs.forEach((g,i)=>{ _rc.set(g.c);   // CSS colour straight through: the ribbon shader writes it as-is, so it matches 2D exactly
+    for(let v=0;v<4;v++){ const k=i*4+v; A.set(g.a,k*3); B.set(g.b,k*3); side[k]=(v&1)?1:-1; end[k]=v>>1; col[k*3]=_rc.r; col[k*3+1]=_rc.g; col[k*3+2]=_rc.b; al[k]=g.al; w[k]=g.w; }
+    idx.set([i*4,i*4+1,i*4+2,i*4+2,i*4+1,i*4+3],i*6); });
+  const geo=new THREE.BufferGeometry(), aA=new THREE.BufferAttribute(A,3);
+  geo.setAttribute('position',aA); geo.setAttribute('aA',aA); geo.setAttribute('aB',new THREE.BufferAttribute(B,3));
+  geo.setAttribute('aSide',new THREE.BufferAttribute(side,1)); geo.setAttribute('aEnd',new THREE.BufferAttribute(end,1));
+  geo.setAttribute('aCol',new THREE.BufferAttribute(col,3)); geo.setAttribute('aAlpha',new THREE.BufferAttribute(al,1));
+  geo.setAttribute('aWidth',new THREE.BufferAttribute(w,1)); geo.setIndex(new THREE.BufferAttribute(idx,1));
+  return geo; }
 
 /* ---------- aircraft state ---------- */
 const AC=new Map();       // hex -> state
@@ -550,7 +673,7 @@ async function seedTrails(){
   try{ const j=await fetch('/api/trails?hours=0.05',{cache:'no-store'}).then(r=>r.json());
     for(const hex in j){ const pts=j[hex]; if(!pts||pts.length<2) continue;
       const s={hex:hex.toLowerCase(),trail:[],seeded:true};
-      for(const p of pts.slice(-TRAIL_N)){ const g=p.alt_baro==='ground'; const ft=g?0:(+p.alt_baro||0); s.trail.push([p.lat,p.lon,ft,g]); }
+      for(const p of pts.slice(-TRAIL_N)){ const g=p.alt_baro==='ground'; const ft=g?0:(+p.alt_baro||0); s.trail.push([p.lat,p.lon,ft,g,trailColor(s,ft,g,+p.baro_rate||0,'')]); }
       AC.set(s.hex,s); }
   }catch(e){}
 }
@@ -572,8 +695,9 @@ async function poll(){
       s.sq=String(a.squawk||''); s.emerg=EMERG.has(s.sq);
       s.lat=a.lat; s.lon=a.lon; s.gs=a.gs||0; s.trk=(typeof a.track==='number')?a.track:(s.trk||0);
       s.fixT=now-((a.seen_pos||0)*1000); s.live=true; s.miss=0;
-      const lt=s.trail[s.trail.length-1];
-      if(!lt||Math.abs(lt[0]-a.lat)>1e-5||Math.abs(lt[1]-a.lon)>1e-5){ s.trail.push([a.lat,a.lon,ft,ground]); if(s.trail.length>TRAIL_N) s.trail.shift(); }
+      const lt=s.trail[s.trail.length-1], vr=(typeof a.baro_rate==='number')?a.baro_rate:(typeof a.geom_rate==='number'?a.geom_rate:0);
+      s.phCol=trailColor(s,ft,ground,vr,a.category||'');   // 2D works the phase out on every update, and draws with it when the aircraft has moved
+      if(!lt||Math.abs(lt[0]-a.lat)>1e-5||Math.abs(lt[1]-a.lon)>1e-5){ s.trail.push([a.lat,a.lon,ft,ground,s.phCol]); if(s.trail.length>TRAIL_N) s.trail.shift(); }
       s.gnd=groundY(a.lon,a.lat);
       if(s.dartMat) dartTint(s);
       ensureVisual(s);
@@ -598,14 +722,13 @@ const skyLayer={
     this.sun=new THREE.DirectionalLight(0xfff2e0,1.2); this.sun.position.set(-1,2,1); this.scene.add(this.sun);
     this.relight();
     this.root=new THREE.Group(); this.scene.add(this.root);
-    this.trailMat=new THREE.LineBasicMaterial({vertexColors:true,transparent:true,opacity:0.9});
-    this.trails=new THREE.LineSegments(new THREE.BufferGeometry(),this.trailMat); this.trails.frustumCulled=false; this.scene.add(this.trails);
+    this.trailMat=ribbonMaterial();
+    this.trails=new THREE.Mesh(ribbonGeo([]),this.trailMat); this.trails.frustumCulled=false; this.scene.add(this.trails);
     this.dropMat=new THREE.LineBasicMaterial({color:0xffffff,transparent:true,opacity:0.28});
     this.drops=new THREE.LineSegments(new THREE.BufferGeometry(),this.dropMat); this.drops.frustumCulled=false; this.scene.add(this.drops);
     this.emergMat=new THREE.LineBasicMaterial({color:0xff3344,transparent:true,opacity:0.95});
     this.edrops=new THREE.LineSegments(new THREE.BufferGeometry(),this.emergMat); this.edrops.frustumCulled=false; this.scene.add(this.edrops);
-    this.headMat=new THREE.LineBasicMaterial({vertexColors:true,transparent:true,opacity:0.9});
-    this.heads=new THREE.LineSegments(new THREE.BufferGeometry(),this.headMat); this.heads.frustumCulled=false; this.scene.add(this.heads);
+    this.heads=new THREE.Mesh(ribbonGeo([]),this.trailMat); this.heads.frustumCulled=false; this.scene.add(this.heads);   // the link from the trail to the moving aircraft: full width
     this.renderer=new THREE.WebGLRenderer({canvas:m.getCanvas(),context:gl,antialias:true});
     this.renderer.autoClear=false; this.renderer.outputEncoding=THREE.sRGBEncoding;
   },
@@ -613,14 +736,10 @@ const skyLayer={
     this.hemi.color.setHex(NIGHT_ON?0x3a4a68:0xbcd4ff); this.hemi.groundColor.setHex(NIGHT_ON?0x0a0f18:0x24303f); this.hemi.intensity=NIGHT_ON?0.9:1.0;
     this.sun.color.setHex(NIGHT_ON?0x9fb4d8:0xfff2e0); this.sun.intensity=NIGHT_ON?0.6:1.2; },
   rebuildTrails(){
-    const pos=[], col=[];
-    if(SHOW_TRAILS) for(const s of AC.values()){ const T=s.trail; if(!T||T.length<2) continue;
-      for(let i=1;i<T.length;i++){ const p=T[i-1], q=T[i];
-        const [x1,z1]=toScene(p[1],p[0]), [x2,z2]=toScene(q[1],q[0]);
-        const y1=p[3]?(s.gnd||0):p[2]*0.3048*VE, y2=q[3]?(s.gnd||0):q[2]*0.3048*VE;
-        pos.push(x1,y1,z1,x2,y2,z2); const c1=altColor(p[2],p[3]), c2=altColor(q[2],q[3]); col.push(c1.r,c1.g,c1.b,c2.r,c2.g,c2.b); } }
-    const g=new THREE.BufferGeometry(); g.setAttribute('position',new THREE.Float32BufferAttribute(pos,3)); g.setAttribute('color',new THREE.Float32BufferAttribute(col,3));
-    this.trails.geometry.dispose(); this.trails.geometry=g;
+    const segs=[], pt=(s,p)=>{ const [x,z]=toScene(p[1],p[0]); return [x,p[3]?(s.gnd||0):p[2]*0.3048*VE,z]; };
+    if(SHOW_TRAILS) for(const s of AC.values()){ if(!s.trail||s.trail.length<2) continue;
+      for(const g of trailSegs(s)) segs.push({a:pt(s,g.p),b:pt(s,g.q),c:g.c,al:g.al,w:g.w}); }
+    this.trails.geometry.dispose(); this.trails.geometry=ribbonGeo(segs);
   },
   render(gl,args){
     if(!REF) return;
@@ -628,13 +747,14 @@ const skyLayer={
     const M=(args&&args.defaultProjectionData)?args.defaultProjectionData.mainMatrix:args;
     const P=new THREE.Matrix4().fromArray(M).multiply(LREF);
     this.camera.projectionMatrix=P;
+    this.trailMat.uniforms.uRes.value.set(gl.drawingBufferWidth,gl.drawingBufferHeight); this.trailMat.uniforms.uPx.value=window.devicePixelRatio||1;
     if(_trailsDirty){ this.rebuildTrails(); _trailsDirty=false; }
     // Camera position in the scene frame, for distance-based sizing and label order. MapLibre has no
     // getFreeCameraOptions() (that is Mapbox — it threw here and every aircraft fell back to one size),
     // so it is recovered from the projection itself: the eye is the one point P sends to x = y = w = 0,
     // i.e. [eye,1] ∝ P⁻¹·(0,0,1,0).
     let cam=null; try{ const v=new THREE.Vector4(0,0,1,0).applyMatrix4(P.clone().invert()); if(Math.abs(v.w)>1e-12) cam=[v.x/v.w,v.y/v.w,v.z/v.w]; }catch(e){}
-    const now=performance.now(), dropPos=[], edropPos=[], headPos=[], headCol=[], vis=[];
+    const now=performance.now(), dropPos=[], edropPos=[], heads=[], vis=[];
     const W=map.getCanvas().clientWidth, H=map.getCanvas().clientHeight, v4=new THREE.Vector4();
     for(const s of AC.values()){
       if(!s.yaw||s.lat==null){ if(s.yaw) s.yaw.visible=false; continue; }
@@ -653,14 +773,14 @@ const skyLayer={
       const span=s.span||35, sc=Math.max(1,d*0.022*SCALE/span); s.yaw.scale.setScalar(sc);
       if(!fd&&!s.ground&&(s.py-(s.gnd||0))>30) (s.emerg?edropPos:dropPos).push(s.px,s.py,s.pz,s.px,s.gnd||0,s.pz);   // Hunter: no height line under a faded civil
       if(SHOW_TRAILS&&s.trail&&s.trail.length){ const p=s.trail[s.trail.length-1], [hx,hz]=toScene(p[1],p[0]);
-        headPos.push(hx,p[3]?(s.gnd||0):p[2]*0.3048*VE,hz,s.px,s.py,s.pz); const c=altColor(s.altFt,s.ground); headCol.push(c.r,c.g,c.b,c.r,c.g,c.b); }
+        heads.push({a:[hx,p[3]?(s.gnd||0):p[2]*0.3048*VE,hz],b:[s.px,s.py,s.pz],c:s.phCol||p[4]||PHASE_COL.cruise,al:1,w:4.5}); }
       // screen position for the label and for clicks
       v4.set(s.px,s.py+span*sc*0.9,s.pz,1).applyMatrix4(P);
       if(v4.w>0){ const nx=v4.x/v4.w, ny=v4.y/v4.w; if(nx>-1.05&&nx<1.05&&ny>-1.05&&ny<1.05){ s.sx=(nx+1)/2*W; s.sy=(1-ny)/2*H; s.cd=d; vis.push(s); continue; } }
       s.sx=null;
     }
     const setGeo=(obj,pos,col)=>{ const g=new THREE.BufferGeometry(); g.setAttribute('position',new THREE.Float32BufferAttribute(pos,3)); if(col) g.setAttribute('color',new THREE.Float32BufferAttribute(col,3)); obj.geometry.dispose(); obj.geometry=g; };
-    setGeo(this.drops,dropPos); setGeo(this.edrops,edropPos); setGeo(this.heads,headPos,headCol);
+    setGeo(this.drops,dropPos); setGeo(this.edrops,edropPos); this.heads.geometry.dispose(); this.heads.geometry=ribbonGeo(heads);
     // labels: nearest first, at most MAX_LABELS, and never on top of one already placed
     vis.sort((a,b)=>a.cd-b.cd);
     const shown=new Set(), placed=[];
@@ -687,7 +807,7 @@ const skyLayer={
 /* ---------- frame pacing + the measurement this spike exists for ---------- */
 let _frames=0, _lastFrameReq=0;
 const FRAME_MS=num('frame',30);   // ~33 fps cap, kind to a Pi's browser; ?frame=0 for uncapped (measuring headroom)
-function loop(t){ if(map&&!paused&&!_failed&&t-_lastFrameReq>=FRAME_MS){ _lastFrameReq=t; map.triggerRepaint(); } requestAnimationFrame(loop); }
+function loop(t){ if(map&&!paused&&!_failed&&t-_lastFrameReq>=FRAME_MS){ _lastFrameReq=t; wxTick(t); map.triggerRepaint(); } requestAnimationFrame(loop); }
 /* Busy-sky guard. Five consecutive seconds under 15 fps with models on → the nearest 4 only, said once.
    Ignored for the first 10 s after load (tiles still streaming) and while paused or hidden. */
 let _slow=0, _degraded=false, _loadedAt=performance.now();

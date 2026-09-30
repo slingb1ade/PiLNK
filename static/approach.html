@@ -13,6 +13,10 @@
   .hud{position:fixed;z-index:10;pointer-events:none;font-size:12px;line-height:1.5}
   .card{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:10px 12px;backdrop-filter:blur(6px);pointer-events:auto}
   #tl{top:12px;left:12px;max-width:360px}
+  /* Retired from normal view (AJ, 30 Sep). NOT deleted: it holds #st, where failSoft() explains why the
+     3D view could not start — remove the element and a node with no WebGL is back to a silent blank
+     screen. It reappears by itself on failure, and ?debug=1 shows it for calibration readouts. */
+  #tl:not(.show){display:none}
   #tl .t{color:var(--purple);font-weight:700;letter-spacing:.06em;font-size:13px}
   #tl .s{color:var(--dim);font-size:11px;margin-top:2px}
   #tr{top:12px;right:12px;min-width:220px}
@@ -160,7 +164,7 @@ function integrate(){   // predict where the aircraft is *now* from the last fix
   /* AUDIT FIX #4 (24 Sep 2026): `bias` — the retained cross-track offset — belongs to one aircraft and
      must be dropped with `corr`. It wasn't: the next subject was drawn correctly for one frame, then
      jumped sideways by whatever the last one had left (measured 37.5 m) until its first fix. */
-  if(!aircraft||aircraft.key!==fix.key||document.hidden){ aircraft={lon:pLon,lat:pLat,altM:pAlt,hdg:pHdg,roll:fix.roll,pitch:fix.pitch,dist:fix.dist,gnd:fix.gnd,key:fix.key,fixT:fix.t}; corr=null; bias.e=0; bias.n=0; return; }
+  if(!aircraft||aircraft.key!==fix.key||document.hidden){ aircraft={lon:pLon,lat:pLat,altM:pAlt,hdg:pHdg,roll:fix.roll,pitch:fix.pitch,dist:fix.dist,gnd:fix.gnd,key:fix.key,fixT:fix.t}; corr=null; bias.e=0; bias.n=0; bias.alt=0; return; }
   /* When a new fix lands, the prediction restarts from it — typically 10-30 m from where the old guess
      had the aircraft drawn (ordinary ADS-B noise). Snapping that closed, even over half a second, is a
      visible nudge every two seconds at chase range. Instead the gap is captured as an offset and faded
@@ -174,22 +178,50 @@ function integrate(){   // predict where the aircraft is *now* from the last fix
        low-pass of the fixes instead of following every wobble. Dropped during a turn, and whenever
        the offset is too big to be noise (a genuine sidestep), so nothing real is ever lagged. */
     const s=Math.sin(fix.trk), c=Math.cos(fix.trk);
-    const cross=oE*c-oN*s;
+    const cross=oE*c-oN*s, along=oE*s+oN*c;
     const keep=(turning||Math.abs(cross)>60)?0.15:XTRACK_KEEP;
-    bias.e=cross*keep*c; bias.n=-cross*keep*s;
-    corr={dE:oE-bias.e, dN:oN-bias.n, dAlt:aircraft.altM-pAlt, dHdg:((aircraft.hdg-pHdg+540)%360)-180, t0:now};
+    /* ALONG-TRACK was taken in full, on the reasoning that it is timing and speed and therefore real.
+       The speed is; the timing is not. A fix is stamped when it ARRIVES, not when it was measured, so
+       polling and network jitter of a couple of hundred milliseconds is ±14 m of along-track error at
+       140 kt — the surge forward and back on final. Keeping most of it makes the drawn aircraft run on
+       its own clock and use the fixes as a slow reference. The escape is the same as cross-track: an
+       offset too large to be jitter is a genuine speed change and is taken in full. */
+    const akeep=(fix.gnd||Math.abs(along)>80)?0:ALONG_KEEP;
+    bias.e=cross*keep*c+along*akeep*s;
+    bias.n=-cross*keep*s+along*akeep*c;
+    /* ALTITUDE is quantised, not noisy, and that is a different problem. ADS-B sends barometric
+       altitude in 25 ft steps — 7.6 m — so a descent arrives as a staircase, and the vertical rate used
+       to ramp between steps is itself quantised to 64 ft/min, so the ramp has the wrong slope and each
+       fix corrects it. Ramp, step, ramp, step. Half a step is 3.8 m, so anything past 15 m is a real
+       change of vertical path — a level-off, a go-around — and goes through untouched. */
+    const dAltRaw=aircraft.altM-pAlt;
+    bias.alt=(fix.gnd||Math.abs(dAltRaw)>15)?0:dAltRaw*ALT_KEEP;
+    corr={dE:oE-bias.e, dN:oN-bias.n, dAlt:dAltRaw-bias.alt, dHdg:((aircraft.hdg-pHdg+540)%360)-180, t0:now};
     aircraft.fixT=fix.t;
   }
   let w=0;
   if(corr){ const u=Math.min(1,(now-corr.t0)/1000/CORR_T); w=1-u*u*(3-2*u); if(u>=1)corr=null; }
-  aircraft.lon=pLon+(bias.e+(corr?corr.dE*w:0))/mPerLon; aircraft.lat=pLat+(bias.n+(corr?corr.dN*w:0))/mPerLat; aircraft.altM=pAlt+(corr?corr.dAlt*w:0);
+  aircraft.lon=pLon+(bias.e+(corr?corr.dE*w:0))/mPerLon; aircraft.lat=pLat+(bias.n+(corr?corr.dN*w:0))/mPerLat;
+  aircraft.altM=Math.max(SITE.elev,pAlt+bias.alt+(corr?corr.dAlt*w:0));
   aircraft.hdg=(pHdg+(corr?corr.dHdg*w:0)+360)%360;
   const k=0.08; aircraft.roll+=(fix.roll-aircraft.roll)*k; aircraft.pitch+=(fix.pitch-aircraft.pitch)*k;   // attitude: plain easing is fine
   aircraft.dist=fix.dist; aircraft.gnd=fix.gnd;
 }
 let corr=null; const CORR_T=1.8;   // seconds to absorb a fix correction — just under the 2 s poll, so it is gone before the next one
-const bias={e:0,n:0};              // retained cross-track offset: the lateral low-pass
-const XTRACK_KEEP=(_q.get('xtrack')!=null&&_q.get('xtrack')!=='')?+_q.get('xtrack'):0.75;   // 0 = follow every fix, 0.9 = very smooth
+const bias={e:0,n:0,alt:0};        // retained offsets: the lateral, longitudinal and vertical low-pass
+/* All three are "how much of the last disagreement with the fix do we keep". 0 follows every fix
+   exactly and jitters; 0.9 is very smooth and slow to react. Each has an escape above, so a real
+   manoeuvre is never lagged — these only damp what is measurement error. Tunable live by query
+   string for comparing side by side: ?xtrack=0&along=0&alt=0 restores the old behaviour exactly. */
+const XTRACK_KEEP=(_q.get('xtrack')!=null&&_q.get('xtrack')!=='')?+_q.get('xtrack'):0.75;
+const ALONG_KEEP =(_q.get('along') !=null&&_q.get('along') !=='')?+_q.get('along') :0.60;
+const ALT_KEEP   =(_q.get('alt')   !=null&&_q.get('alt')   !=='')?+_q.get('alt')   :0.70;
+const VS_TAU     =(_q.get('vstau') !=null&&_q.get('vstau') !=='')?+_q.get('vstau') :3;      // seconds; ?vstau=0.01 ≈ raw
+const _vsMem={hex:null,v:0,t:0};   // smoothed vertical rate, per subject — see where it is set
+/* How stale the aircraft.json snapshot itself is. See the poll: seen_pos counts from when the decoder
+   WROTE the file, not from when we read it, and the decoder rewrites it once a second while we poll
+   every two — so each snapshot carries 0–1 s of extra age that seen_pos cannot see. */
+const _lagHist=[]; let _jsonAge=0;
 const st=(t)=>document.getElementById('st').textContent=t;
 
 /* ---------- approach lighting ----------
@@ -313,7 +345,16 @@ function buildLights(end,scene){
 
 /* ---------- Three.js custom layer: the aircraft ---------- */
 const MODEL_ORIENT={ 'a320_200.glb':{yaw:-90}, 'atr72.glb':{yaw:90}, 'b777_klm.glb':{yaw:180}, 'b737_800.glb':{yaw:180}, 'c172.glb':{yaw:180}, 'b429.glb':{yaw:180}, 'c208.glb':{yaw:90}, 'c130.glb':{yaw:180},
-  'b52.glb':{yaw:180}, 'e3.glb':{yaw:90}, 'kc135.glb':{yaw:0}, 'kc46.glb':{yaw:0} };
+  /* Every yaw on the next two lines was MEASURED from the file, and every one shipped exactly 180° wrong
+     until 30 Sep. The measuring method finds the tail fin reliably; it then mapped "nose is at +Z" to the
+     wrong yaw. It was validated only on the span axis (9/9), never on direction — and the model inspector
+     ignores MODEL_ORIENT, so eyeballing a model there proves nothing about which way it will fly. Caught
+     when AJ clicked a departing 787. Re-checked against the eight models whose direction had been
+     confirmed on live approaches: the old mapping scored 0/8, every one exactly 180° off; corrected, 8/8.
+     ⚠️ When adding a model: confirm its direction on a LIVE aircraft, or with ?force= on a live one. */
+  'b52.glb':{yaw:0}, 'e3.glb':{yaw:-90}, 'kc135.glb':{yaw:180}, 'kc46.glb':{yaw:180},
+  'b787.glb':{yaw:180}, 'a350.glb':{yaw:180}, 'b1b.glb':{yaw:0}, 'c17.glb':{yaw:-90},
+  'a400.glb':{yaw:0} };   // measured with the corrected mapping; confirm on a live aircraft before release
 /* Real wingspan in metres, per model. Every model is normalised to this at load, so a Cessna is drawn
    Cessna-sized next to a 747. Until now everything was normalised to a single 40 m span, which made an
    ATR 48% too big and a 777 38% too small — invisible in a chase shot where there is nothing to compare
@@ -321,7 +362,8 @@ const MODEL_ORIENT={ 'a320_200.glb':{yaw:-90}, 'atr72.glb':{yaw:90}, 'b777_klm.g
 const MODEL_SPAN={ 'c172.glb':11.0, 'b429.glb':13.0, 'c208.glb':15.9, 'atr72.glb':27.1, 'c130.glb':40.4, 'a320_200.glb':35.8, 'a320_v2.glb':35.8,
   'b737_800.glb':35.8, 'b738_v2.glb':35.8, 'a333_v2.glb':60.3, 'b747_100.glb':59.6,
   'b777_klm.glb':64.8, 'a380_v2.glb':79.8,
-  'b52.glb':56.4, 'e3.glb':44.4, 'kc135.glb':39.9, 'kc46.glb':47.6 };
+  'b52.glb':56.4, 'e3.glb':44.4, 'kc135.glb':39.9, 'kc46.glb':47.6,
+  'b787.glb':60.1, 'a350.glb':64.8, 'b1b.glb':41.8, 'c17.glb':51.8, 'a400.glb':42.4 };
 function modelFor(t){ t=(t||'').toUpperCase();
   /* Single-engine turboprops get the Caravan; the twins and the regionals keep the ATR. */
   /* The Hercules. Flown by about seventy air forces, so on most nodes in the world it is the military
@@ -333,6 +375,12 @@ function modelFor(t){ t=(t||'').toUpperCase();
      point of recognising it. The rotodome does not turn: that model is merged by material, not by
      part, so there is no dome node to rotate. */
   if(/^B52/.test(t))return'b52.glb';
+  /* EXACT match, not a prefix. The B-1's ICAO type is plain 'B1', and /^B1/ would also swallow B190 —
+     the Beech 1900, a common regional turboprop — and draw it as a supersonic bomber. Short type codes
+     are the ones to check: a prefix test is only safe when nothing else starts the same way. */
+  if(t==='B1'||t==='B1B')return'b1b.glb';
+  if(t==='C17')return'c17.glb';          // NOT /^C17/ — that also matches C172, the Cessna 172
+  if(t==='A400')return'a400.glb';        // exact: was falling through to the A320 fallback
   /* AUDIT FIX #5 (24 Sep 2026): was /^E3/, which also caught E35L (Embraer Legacy 600/650, a common
      business jet) and E390 (KC-390) and drew them with a rotodome. The Sentry's designators only. */
   if(['E3TF','E3CF','E3'].includes(t))return'e3.glb';
@@ -355,6 +403,12 @@ function modelFor(t){ t=(t||'').toUpperCase();
   if(HELI.includes(t))return'b429.glb';
   if(TP.includes(t))return'atr72.glb';
   if(['A380','A388'].includes(t))return'a380_v2.glb';
+  /* The two current-generation widebodies, both of which were being drawn as a 777 until now. ORDER
+     MATTERS: each of these must be tested BEFORE the family rule below it, because /^A3[0-5]/ swallows
+     the A350 into the A330 and /^B7(6|7|8)/ swallows the 787 into the 777. Put either one after its
+     family rule and it silently never fires. */
+  if(/^A35/.test(t))return'a350.glb';          // A359, A35K — the model is a -900, the commoner variant
+  if(/^B78/.test(t))return'b787.glb';          // B788, B789, B78X
   if(/^A3[0-5]|^A3[0-9][0-9]$/.test(t)&&!['A318','A319','A320','A321'].includes(t))return'a333_v2.glb';
   if(/^A(318|319|320|321|19N|20N|21N|221|223|220)$/.test(t)||/^BCS/.test(t))return'a320_200.glb';
   if(/^B74/.test(t)||t==='BLCF')return'b747_100.glb';
@@ -437,7 +491,7 @@ const acLayer={
       mm.scale.setScalar(k); mm.position.set(-c.x*k,-c.y*k,-c.z*k);
       mm.traverse(o=>{if(o.isMesh&&o.material){(Array.isArray(o.material)?o.material:[o.material]).forEach(mt=>{mt.metalness=0.25;mt.roughness=0.6;tintMaterial(mt);});}});
       const or=MODEL_ORIENT[key]||{}; this.holder.rotation.set((or.pitch||0)*D2R,(or.yaw||0)*D2R,(or.roll||0)*D2R);
-      this.holder.add(mm); this.props=findProps(mm).concat(splitRotor(mm,key)); this.key=key; this.loading=false; },undefined,()=>{this.loading=false;});
+      this.holder.add(mm); this.props=findProps(mm).concat(splitRotor(mm,key)).concat(splitParts(mm,key)); this.key=key; this.loading=false; },undefined,()=>{this.loading=false;});
   },
   render(gl,args){
     const M0=(args&&args.defaultProjectionData)?args.defaultProjectionData.mainMatrix:args;
@@ -523,9 +577,27 @@ const TILE_DB=(()=>{ let p=null; return ()=>p||(p=new Promise((res,rej)=>{ try{
   const r=indexedDB.open('pilnk-tiles',1);
   r.onupgradeneeded=()=>{ const s=r.result.createObjectStore('t'); s.createIndex('t','t'); };
   r.onsuccess=()=>res(r.result); r.onerror=()=>rej(r.error); }catch(e){rej(e);} })); })();
-async function tileGet(key){ try{ const db=await TILE_DB(); return await new Promise(res=>{ const q=db.transaction('t','readonly').objectStore('t').get(key); q.onsuccess=()=>res(q.result?q.result.b:null); q.onerror=()=>res(null); }); }catch(e){ return null; } }
+/* THE CACHE KEY. OpenFreeMap's tile address carries its build date — /planet/20260913_164504_pt/… — and
+   they rebuild the planet roughly weekly. Keyed on the full address, every stored vector tile became
+   unreachable at each rebuild and the corridor started again from nothing: a cache that worked for about
+   a week at a time. The date is stripped from the KEY only; requests still go to the live address.
+   Terrain (AWS) has no build segment and is unaffected. Map data changes slowly, so a tile from last
+   week's build is a correct tile — and anything older than TILE_STALE is refreshed in the background. */
+const TILE_DAY=86400000, TILE_STALE=30*TILE_DAY;
+function tileKey(u){ return u.replace(/\/planet\/[0-9]{8}_[0-9]{6}_[a-z]+\//,'/planet/'); }
+async function tileRec(url){ try{ const db=await TILE_DB(), key=tileKey(url); return await new Promise(res=>{ const q=db.transaction('t','readonly').objectStore('t').get(key); q.onsuccess=()=>res(q.result||null); q.onerror=()=>res(null); }); }catch(e){ return null; } }
+async function tileGet(url){ const r=await tileRec(url); return r?r.b:null; }
+/* THE EVICTION. `t` was the time a tile was WRITTEN and reading never changed it, so when the store
+   filled and dropped its 800 oldest, it dropped the tiles stored first — the approach corridor, which
+   is the one set every approach reads. Least-recently-DOWNLOADED, not least-recently-used. A hit now
+   re-stamps the tile, at most once a day so it costs one write per tile per day rather than per read. */
+async function tileTouch(url,rec){ try{ const db=await TILE_DB(); db.transaction('t','readwrite').objectStore('t').put({b:rec.b,t:Date.now()},tileKey(url)); }catch(e){} }
+const _rfBusy=new Set();
+function tileRefresh(url){ const k=tileKey(url); if(_rfBusy.has(k))return; _rfBusy.add(k);
+  fetch(url).then(r=>r.ok?r.arrayBuffer():null).then(async b=>{ if(b){ if(/terrarium/.test(url)) b=await cleanDem(b); tilePut(url,b); } })
+    .catch(()=>{}).then(()=>{ _rfBusy.delete(k); }); }
 let _tileCount=null;
-async function tilePut(key,buf){ try{ const db=await TILE_DB(); const tx=db.transaction('t','readwrite'), s=tx.objectStore('t'); s.put({b:buf,t:Date.now()},key);
+async function tilePut(url,buf){ try{ const db=await TILE_DB(), key=tileKey(url); const tx=db.transaction('t','readwrite'), s=tx.objectStore('t'); s.put({b:buf,t:Date.now()},key);
   if(_tileCount==null){ const c=s.count(); c.onsuccess=()=>{_tileCount=c.result;}; } else if(++_tileCount>5000){ _tileCount=null;   // evict the 800 oldest
     const cur=s.index('t').openCursor(); let n=0; cur.onsuccess=()=>{ const k=cur.result; if(k&&n++<800){ k.delete(); k.continue(); } }; }
 }catch(e){} }
@@ -597,7 +669,11 @@ async function cleanDem(raw){
   }catch(e){ return raw; }
 }
 async function tileFetch(url,signal){
-  const hit=await tileGet(url); if(hit) return hit;
+  const rec=await tileRec(url);
+  if(rec){ const age=Date.now()-(rec.t||0);
+    if(age>TILE_STALE) tileRefresh(url);          // serve the cached copy now, fetch a fresh one behind it
+    else if(age>TILE_DAY) tileTouch(url,rec);     // mark it as used, so eviction leaves it alone
+    return rec.b; }
   const r=await fetch(url,{signal}); if(!r.ok) throw new Error('tile '+r.status);
   let buf=await r.arrayBuffer(); if(/terrarium/.test(url)) buf=await cleanDem(buf);
   tilePut(url,buf); return buf;
@@ -615,6 +691,7 @@ let _failed=false;
 function failSoft(why){
   if(_failed) return; _failed=true;
   try{ console.warn('3D unavailable:',why); }catch(e){}
+  try{ document.getElementById('tl').classList.add('show'); }catch(e){}   // the box is hidden normally; a failure has to be seen
   st('3D view unavailable — '+why+'. The 2D map on the dashboard still works.');
 }
 function webglOK(){
@@ -730,6 +807,57 @@ function splitRotor(root,key){
   const pivot=new THREE.Group(); pivot.position.set(spec.mastX,yMid,spec.mastZ);
   pivot.add(new THREE.Mesh(rg,Array.isArray(mat)?mat[0]:mat)); root.add(pivot);
   return [{p:pivot, axis:'y'}];
+}
+
+/* ---------- per-model moving parts (3D session, 30 Sep 2026) ----------
+   For models whose parts are separate but not NAMED, so findProps() cannot see them. The A400M came out
+   of SketchUp as Group14, Mesh153_BODY and so on — nothing called "propeller" or "ramp" — but every blade
+   and the cargo ramp are their own nodes, so nothing has to be cut, only regrouped. Same principle as
+   splitRotor: numbers per model, in the model's OWN units and frame, measured from the file rather than
+   guessed. For a new model, measure the same way and add an entry.
+   PROPS: each hub collects every mesh inside the named groups whose bounding-box centre lies within R of
+   the hub across the disc and within dz of it along the shaft. Checked against the file before shipping:
+   4 hubs × 18 parts, all 72 parts in the two prop groups claimed exactly once. A first attempt without
+   the group restriction also caught one nacelle part per engine, which would have spun the intake.
+   RAMP: the ramp is modelled open and resting on the ground. It swings shut about its hinge — the top
+   edge, where it meets the fuselage. Measured by rotating the ramp and finding where its tip meets the
+   tail-cone skin: 26 cm short at 30°, 30 cm past at 35°, flush at about 32°. A first estimate aimed at
+   "the underside above the ramp" and got 59° — that underside is the cargo-bay CEILING, because when the
+   ramp is shut, the ramp IS the underside. ?ramp=<degrees> overrides, for judging it by eye. */
+const PARTS={
+  'a400.glb':{
+    props:{ groups:['Group14','Group36'], R:0.0324, dz:0.0142,
+            hubs:[[-0.42959,0.03905,-0.09821],[-0.37000,0.04486,-0.11485],[-0.23167,0.04486,-0.11485],[-0.17208,0.03905,-0.09821]] },
+    ramp:{ node:'Mesh153_BODY_0', hinge:[-0.29956,0.01878,0.01949], deg:32 }
+  }
+};
+function splitParts(root,key){
+  const spec=PARTS[key]; if(!spec) return [];
+  root.updateMatrixWorld(true);
+  const inv=new THREE.Matrix4().copy(root.matrixWorld).invert(), rel=new THREE.Matrix4();
+  const centreOf=m=>{ const g=m.geometry; if(!g.boundingBox) g.computeBoundingBox();
+    rel.multiplyMatrices(inv,m.matrixWorld); return g.boundingBox.clone().applyMatrix4(rel).getCenter(new THREE.Vector3()); };
+  const out=[];
+  if(spec.props){
+    const sp=spec.props, cands=[];
+    root.traverse(o=>{ if(sp.groups.indexOf(o.name)>=0) o.traverse(m=>{ if(m.isMesh&&m.geometry) cands.push(m); }); });
+    const centres=cands.map(centreOf);     // measured before anything moves
+    for(const h of sp.hubs){
+      const mine=cands.filter((m,i)=>{ const c=centres[i]; return Math.hypot(c.x-h[0],c.y-h[1])<sp.R&&Math.abs(c.z-h[2])<sp.dz; });
+      if(!mine.length) continue;
+      const pv=new THREE.Group(); pv.position.set(h[0],h[1],h[2]); root.add(pv); pv.updateMatrixWorld(true);
+      for(const m of mine) pv.attach(m);    // attach keeps each blade exactly where it was
+      out.push({p:pv, axis:'z'});           // the shaft runs along the model's length
+    }
+  }
+  if(spec.ramp){
+    let r=null; root.traverse(o=>{ if(!r&&o.name===spec.ramp.node) r=o; });
+    if(r){ const h=spec.ramp.hinge, pv=new THREE.Group(); pv.position.set(h[0],h[1],h[2]); root.add(pv); pv.updateMatrixWorld(true);
+      pv.attach(r);
+      const deg=(_q.get('ramp')!=null&&_q.get('ramp')!=='')?+_q.get('ramp'):spec.ramp.deg;
+      pv.rotation.x=-deg*D2R; }            // negative about +X swings the tail end UP
+  }
+  return out;
 }
 
 /* ---------- day / night ----------
@@ -920,6 +1048,7 @@ function paintRunway(style,night){
 
 /* ---------- map ---------- */
 async function boot(){
+  if(_q.get('debug')==='1'){ try{ document.getElementById('tl').classList.add('show'); }catch(e){} }
   if(!webglOK()) return failSoft('no WebGL in this browser');
   if(typeof THREE==='undefined') return failSoft('3D libraries did not load');
   await resolveSite(); mPerLon=111320*Math.cos(SITE.lat*D2R);
@@ -1091,6 +1220,19 @@ const mvS=[]; function median(a){const s=a.slice().sort((x,y)=>x-y),m=s.length>>
 async function poll(){
   try{
     const j=await fetch('/flights',{cache:'no-store'}).then(r=>r.json()); const list=j.aircraft||[];
+    /* The along-track "forward and back". aircraft.json carries `now` — the decoder's clock when it wrote
+       the file — and every seen_pos is relative to it. We were back-dating fixes by seen_pos alone, so
+       the 0–1 s between the file being written and us fetching it went uncounted: 0 to 70 m of
+       along-track error at approach speed, different on every fix. The Pi's clock and this browser's
+       cannot be compared directly — the page is usually viewed on another machine — so the raw
+       difference is clock offset plus staleness. Over a minute, the SMALLEST difference seen is the
+       offset with (near) zero staleness; the excess over it is how old this particular snapshot is.
+       Clock skew cancels out, and an NTP step is forgotten within the minute. */
+    if(typeof j.now==='number'&&_q.get('jsonage')!=='0'){      // ?jsonage=0 disables, for side-by-side comparison
+      const lag=Date.now()/1000-j.now;
+      _lagHist.push(lag); if(_lagHist.length>30) _lagHist.shift();
+      _jsonAge=Math.min(3,Math.max(0,lag-Math.min.apply(null,_lagHist)));
+    } else _jsonAge=0;
     if(_pollFails>=3) st('live data back');
     _pollFails=0;
     learnDatum(list);
@@ -1120,9 +1262,21 @@ async function poll(){
       } else { hdg=trkNow!=null?trkNow:0; _hdgMem.stale=false; }
       _hdgMem.hex=hx;
       const vs=vsOf(a), tas=(typeof a.bds50_true_airspeed==='number')?a.bds50_true_airspeed:(a.gs||250);
-      // pitch attitude from the inertial vertical rate when the aircraft sends it (BDS 6,0) — steadier than the barometric one
+      // inertial vertical rate (BDS 6,0) when the aircraft sends it — steadier than the barometric one
       const vsAtt=(typeof a.bds60_inertial_vertical_rate==='number')?a.bds60_inertial_vertical_rate:vs;
-      const pitch=Math.atan2((vsAtt/60)*0.3048,(tas*0.514)||1)*R2D;
+      /* The vertical rate is SMOOTHED here, once, and the smoothed value drives both the pitch of the
+         nose and the slope of the predicted descent. Raw, it arrives in 64 ft/min steps and a turboprop's
+         barometric rate wanders by a few hundred ft/min fix to fix, so every two seconds two things
+         happened at once: the nose re-pitched to the new number within a fifth of a second, and the ramp
+         between fixes changed slope. The altitude low-pass could only ever smooth the CORRECTION, not the
+         prediction it was correcting — which is why the along-track fix worked and this one did not.
+         VS_TAU is short enough that a level-off overshoots by about 12 m, inside the 15 m altitude escape,
+         so even a go-around arrives smoothly rather than as a jump. */
+      const nowV=performance.now();
+      if(_vsMem.hex!==hx){ _vsMem.hex=hx; _vsMem.v=(typeof vsAtt==='number')?vsAtt:0; _vsMem.t=nowV; }
+      else if(typeof vsAtt==='number'){ const al=1-Math.exp(-((nowV-_vsMem.t)/1000)/VS_TAU); _vsMem.v+=(vsAtt-_vsMem.v)*al; _vsMem.t=nowV; }
+      const vsS=_vsMem.v;
+      const pitch=Math.atan2((vsS/60)*0.3048,(tas*0.514)||1)*R2D;
       /* Altitude: prefer GNSS geometric altitude (immune to QNH) once the local datum has been learned
          from aircraft seen ON THE GROUND at the field; until then barometric + METAR QNH. */
       const geomM=(typeof a.alt_geom==='number')?a.alt_geom*0.3048:null;
@@ -1139,7 +1293,7 @@ async function poll(){
       document.getElementById('d_altsrc').textContent='alt: '+altSrc+' · fix '+(typeof a.seen_pos==='number'?a.seen_pos.toFixed(1):'?')+' s old';
       // dead-reckoning fix: position + velocity (m/s ENU) + age; tick() integrates and eases toward it
       const gsMs=(a.gs||0)*0.5144, trkDeg=(typeof a.track==='number'?a.track:hdg), trk=trkDeg*D2R;
-      const tFix=performance.now()-Math.min(a.seen_pos||0,12)*1000, key=(a.hex||'').toLowerCase();
+      const tFix=performance.now()-Math.min((a.seen_pos||0)+_jsonAge,12)*1000, key=(a.hex||'').toLowerCase();
       // turn rate, rad/s (+ = right): BDS 5,0 track rate when the aircraft sends it, else the change in
       // track between this fix and the last one from the same aircraft. Clamped to ±6°/s.
       /* Turn rate, best source first:
@@ -1156,7 +1310,7 @@ async function poll(){
       rate=Math.max(-6*D2R,Math.min(6*D2R,rate));
       if(fix&&fix.key===key&&tFix-fix.t<300) rate=fix.rate;   // same fix re-served: keep the last estimate
       fix={lon:a.lon,lat:a.lat,altM,hdg,roll,pitch,dist:distNm(a),gnd:a.alt_baro==='ground',
-           vE:Math.sin(trk)*gsMs, vN:Math.cos(trk)*gsMs, vU:a.alt_baro==='ground'?0:vs*0.00508,
+           vE:Math.sin(trk)*gsMs, vN:Math.cos(trk)*gsMs, vU:a.alt_baro==='ground'?0:vsS*0.00508,
            gs:gsMs, trk, rate, t:tFix, key};
       acLayer.ensureModel(a.t);
       document.getElementById('d_cs').textContent=(a.flight||'').trim()||(a.hex||'').toUpperCase();
