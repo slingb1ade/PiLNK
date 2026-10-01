@@ -1671,6 +1671,7 @@
               <button class="tile-btn"        id="tileTopo" onclick="setTileLayer('topo')">Topo</button>
             </div>
             <div class="toggle-row" style="margin-top:8px;" title="Live 3D view of your own sky, on whichever map layer is selected above. This browser only."><span>3D view</span><label class="toggle-switch"><input type="checkbox" id="sky3dToggle" autocomplete="off" onchange="setSky3D(this.checked, true)"/><span class="toggle-slider"></span></label></div>
+            <div class="toggle-row" style="margin-top:6px;" title="How many of the nearest aircraft get a full 3D model in the 3D view; the rest are drawn as arrows. More looks better but needs a faster computer. This browser only."><span>3D models</span><select id="sky3dModels" autocomplete="off" onchange="setSkyModels(this.value)" style="font-size:0.7rem;"><option value="4">4</option><option value="12">12</option><option value="24">24</option><option value="48">48</option></select></div>
             <!-- v1.5.26 (MME1): map brightness, for whichever map and theme is showing. Deliberately
                  NOT class wx-opacity-row: PilnkOptions finds the weather slider by that class, first match. -->
             <div style="margin-top:8px;" title="Dim a bright map or lift a dark one. This browser only; remembered after a refresh. Aircraft are not affected.">
@@ -2238,6 +2239,7 @@ function findNearestAirport(lat, lon) {
 }
 
 function updateNearestAirport(lat, lon) {
+  var prevAvIcao = avIcao;
   nearestAirport = findNearestAirport(lat, lon);
   avIcao = nearestAirport.icao;
   avLat = nearestAirport.lat;
@@ -2257,6 +2259,13 @@ function updateNearestAirport(lat, lon) {
   // Update IFR waypoints based on region
   if (typeof IFR_WAYPOINTS_NZ !== 'undefined') {
     IFR_WAYPOINTS = isInNZ() ? IFR_WAYPOINTS_NZ : [];
+  }
+  // Airspace and NAVAIDs were fetched around the old airport (Auckland by default): a node overseas kept Auckland's
+  // until someone searched for an airport. Fetch again around the new one.
+  // The page preloads Auckland at start-up, usually still in flight when the location lands — so refetch if loaded OR loading.
+  if (avIcao !== prevAvIcao && typeof avData !== 'undefined' && (avData || avLoading)) {
+    avData = null;
+    loadAvData(avIcao, avLat, avLon);
   }
 }
 
@@ -3253,6 +3262,17 @@ function applyTileFilter() {
 }
 
 // ── 3D Sky: the 4th map layer ─────────────────────────────────────────────
+// "3D models" (1 Oct 2026): how many of the nearest aircraft get a full model in 3D. The view is drawn by
+// THIS browser's computer, not the node, so the choice is per browser (like brightness). 12 unless picked.
+var SKY_MODELS_KEY = 'pilnk-sky3d-models', SKY_MODEL_CHOICES = [4, 12, 24, 48];
+function skyModelsClean(v) { v = parseInt(v, 10); return SKY_MODEL_CHOICES.indexOf(v) >= 0 ? v : 12; }
+var skyModels = (function () { try { return skyModelsClean(localStorage.getItem(SKY_MODELS_KEY)); } catch (e) { return 12; } })();
+function setSkyModels(v) {
+  skyModels = skyModelsClean(v);
+  try { localStorage.setItem(SKY_MODELS_KEY, String(skyModels)); } catch (e) {}
+  var el = document.getElementById('sky3dModels'); if (el && el.value !== String(skyModels)) el.value = String(skyModels);
+}
+window.addEventListener('DOMContentLoaded', function () { var el = document.getElementById('sky3dModels'); if (el) el.value = String(skyModels); });
 var SKY_OFF_KEY = 'pilnk-sky3d-off';   // set when THIS browser couldn't draw it (too slow / no GPU / no WebGL)
 var SKY_READY_MS = 60000;              // no 'ready' from the page by then (hung tiles, a script that never came): fall back
 var skyWatchdog = null;
@@ -3282,9 +3302,92 @@ function skySettings() {
     unit: ringUnit === 'km' ? 'km' : 'nm', rx: rxMarkerOn !== false, labels: !!labelsOn,
     hunter: typeof hunterMode !== 'undefined' && !!hunterMode,
     // Weather panel: the 3D view fetches its own frames and runs its own loop at the same pace
-    wx: !!wxOverlayOn, wxAnim: !!wxAnimateOn, wxOp: Math.round(wxOpacity * 100), wxSrc: wxActiveSource };
+    wx: !!wxOverlayOn, wxAnim: !!wxAnimateOn, wxOp: Math.round(wxOpacity * 100), wxSrc: wxActiveSource,
+    // Aviation Overlay: Runway Centerlines + Airfields, under the same master switch as 2D
+    rwy: !!avOverlayOn && !!runwaysVisible, afld: !!avOverlayOn && !!airfieldsVisible,
+    asp: !!avOverlayOn && skyChecked('avAirways'), nav: !!avOverlayOn && skyChecked('avNavaids'), fix: !!avOverlayOn && skyChecked('avWaypoints'),
+    fp: !!avOverlayOn && !!footprintVisible, notam: !!notamsOn,
+    models: (typeof skyModels === 'number') ? skyModels : 12 };
+}
+function skyChecked(id) { var e = document.getElementById(id); return !!(e && e.checked); }
+// OpenAIP limits in the page's short form: value, unit (0 m, 1 ft, 6 FL), datum (0 GND, 1 MSL, 2 STD).
+function skyLimit(l) { return l ? { v: l.value, u: l.unit, d: l.referenceDatum } : null; }
+function skyAvExtra(m) {
+  var set = skySettings();
+  m.icao = avIcao;
+  m.airspaces = skyAirspaces(set.asp && avData && avData.airspaces || []);
+  m.navaids = (set.nav && avData && avData.navaids || []).map(function (n) {
+    var c = n.geometry && n.geometry.coordinates || [];
+    return { ident: n.identifier, name: n.name, type: n.type, freq: n.frequency && n.frequency.value, lat: c[1], lon: c[0] };
+  });
+  m.fixes = set.fix ? IFR_WAYPOINTS.filter(function (w) { return w.type !== 'VOR' && w.type !== 'NDB'; })
+                                   .map(function (w) { return { name: w.name, type: w.type, lat: w.lat, lon: w.lon }; }) : [];
+  // Footprint: the shape 2D draws, from the same helper. NOTAMs: one entry per aerodrome with its count, as 2D groups them.
+  m.footprint = (set.fp && footprintData) ? footprintGeom(footprintData, footprintMode) : null;
+  m.notams = (set.notam && notamData) ? notamGroups(notamData.notams || []).groups.map(function (g) {
+    return { icao: g.icao, lat: g.lat, lon: g.lon, r: g.radius, n: g.items.length };
+  }) : [];
+  return m;
 }
 function skySendSettings() { if (isSkyOpen()) skyPost(skySettings()); }
+// Aviation Overlay data for the 3D view: the runway airport picked here and the same ±5° airfield list 2D draws.
+// Nothing is fetched for 3D; it gets what the dashboard already holds. Sent only when it changes (the list can be large).
+var skyAvLast = '';
+function skyAviation() {
+  var apt = null, fields = [];
+  if (runwaysVisible && runwaySelectedIcao) {
+    for (var i = 0; i < runwayAirports.length; i++) if (runwayAirports[i].icao === runwaySelectedIcao) { apt = runwayAirports[i]; break; }
+  }
+  if (airfieldsVisible && Array.isArray(airportDB)) fields = skyFieldList();
+  return skyAvExtra({ action: 'aviation', runways: apt, airfields: fields });
+}
+// Batched: a 2D redraw cascades through several wrapped functions; they all land in one build, after the 2D work is done.
+// A failure here is logged and never thrown back into the 2D code that triggered it.
+var skyAvTimer = null, skyAvForce = false;
+function skySendAviation(force) {
+  if (force) skyAvForce = true;
+  if (skyAvTimer) return;
+  skyAvTimer = setTimeout(function () {
+    skyAvTimer = null; var f = skyAvForce; skyAvForce = false;
+    try {
+      if (!isSkyOpen()) return;
+      var m = skyAviation(), k = JSON.stringify(m);
+      if (!f && k === skyAvLast) return;
+      skyAvLast = k; skyPost(m);
+    } catch (e) { console.warn('3D view: aviation data not sent:', e && e.message); }
+  }, 0);
+}
+// Airfields for 3D: the ±5° box 2D draws, most important first (large, medium, small, seaplane, heliport), then nearest,
+// capped at the page's 4000. Cached per receiver position and database load.
+var skyFieldsCache = { key: '', list: [] };
+function skyFieldList() {
+  var rxLat = (typeof RX_LAT === 'number') ? RX_LAT : 0, rxLon = (typeof RX_LON === 'number') ? RX_LON : 0;
+  var key = rxLat + ',' + rxLon + ',' + airportDB.length;
+  if (skyFieldsCache.key === key) return skyFieldsCache.list;
+  var rank = { large_airport: 0, medium_airport: 1, small_airport: 2, seaplane_base: 3, heliport: 4 }, all = [];
+  airportDB.forEach(function (ap) {
+    if (!(ap.type in rank)) return;
+    var lat = parseFloat(ap.latitude_deg), lon = parseFloat(ap.longitude_deg);
+    if (isNaN(lat) || isNaN(lon) || Math.abs(lat - rxLat) > 5 || Math.abs(lon - rxLon) > 5) return;
+    all.push({ ident: ap.ident, type: ap.type, lat: lat, lon: lon, r: rank[ap.type], d: (lat - rxLat) * (lat - rxLat) + (lon - rxLon) * (lon - rxLon) });
+  });
+  all.sort(function (a, b) { return a.r - b.r || a.d - b.d; });
+  skyFieldsCache = { key: key, list: all.slice(0, 4000).map(function (f) { return { ident: f.ident, type: f.type, lat: f.lat, lon: f.lon }; }) };
+  return skyFieldsCache.list;
+}
+// Airspace for 3D: leave out what the page never draws (FIR, UIR, ACC, FIS), nearest 300, rings thinned to 500 points, 5 dp.
+function skyAirspaces(list) {
+  var rxLat = (typeof RX_LAT === 'number') ? RX_LAT : 0, rxLon = (typeof RX_LON === 'number') ? RX_LON : 0;
+  var r5 = function (v) { return Math.round(v * 1e5) / 1e5; };
+  return list.filter(function (a) { return a && [10, 11, 27, 33].indexOf(a.type) < 0 && a.geometry && a.geometry.coordinates && a.geometry.coordinates[0]; })
+    .map(function (a) { var c = a.geometry.coordinates[0][0] || [0, 0]; return { a: a, d: (c[1] - rxLat) * (c[1] - rxLat) + (c[0] - rxLon) * (c[0] - rxLon) }; })
+    .sort(function (x, y) { return x.d - y.d; }).slice(0, 300)
+    .map(function (x) {
+      var ring = x.a.geometry.coordinates[0], k = Math.ceil(ring.length / 500);
+      ring = ring.filter(function (p, i) { return i % k === 0 || i === ring.length - 1; }).map(function (p) { return [r5(p[0]), r5(p[1])]; });
+      return { name: x.a.name, type: x.a.type, lo: skyLimit(x.a.lowerLimit), hi: skyLimit(x.a.upperLimit), ring: ring };
+    });
+}
 function isSkyOpen() { return document.getElementById('body').classList.contains('sky3d-open'); }
 function skyTheme() { return document.documentElement.getAttribute('data-theme') === 'light' ? 'day' : 'night'; }
 function skyPost(msg) {
@@ -3864,7 +3967,9 @@ function toggleAvOverlay(on) {
   else { loadAvData(avIcao, avLat, avLon); }
 }
 
+var avReqSeq = 0, avLoading = false;   // only the newest request may land: an old airport's slow reply is dropped
 function loadAvData(icao, lat, lon) {
+  var seq = ++avReqSeq; avLoading = true;
   avIcao=icao; avLat=lat; avLon=lon;
   document.getElementById('avStatus').textContent = 'Loading '+icao+' data...';
   clearAvOverlay();
@@ -3883,6 +3988,8 @@ function loadAvData(icao, lat, lon) {
     fetchAV('navaids', pos, dist),
     fetchAV('airspaces', pos, dist)
   ]).then(function(results) {
+    if (seq !== avReqSeq) return;   // superseded (the node's own location arrived, or another airport was picked)
+    avLoading = false;
     var nav = results[0].status === 'fulfilled' ? results[0].value : null;
     var asp = results[1].status === 'fulfilled' ? results[1].value : null;
     avData = { navaids: nav || [], airspaces: asp || [] };
@@ -3900,6 +4007,8 @@ function loadAvData(icao, lat, lon) {
     if (avOverlayOn) redrawAvOverlay();
   });
 }
+
+function avEsc(s) { return String(s == null ? '' : s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
 
 function fetchAV(type, pos, dist) {
   return fetch('/api/openaip/'+type+'?pos='+pos+'&dist='+dist+'&limit=500')
@@ -3937,8 +4046,12 @@ function redrawAvOverlay() {
       var coords = nav.geometry && nav.geometry.coordinates;
       if (!coords) return;
       var lat=coords[1], lon=coords[0], name=nav.name||nav.identifier||'';
-      var type=(nav.type||'').toString();
-      var isVOR = type==='2'||type==='7';
+      // OpenAIP's own type codes (checked against its schema 1 Oct 2026): 0 DME, 1 TACAN, 2 NDB, 3 VOR, 4 VOR-DME,
+      // 5 VORTAC, 6 DVOR, 7 DVOR-DME, 8 DVORTAC. This used to treat 2 and 7 as VORs, so NDBs showed as VORs and most VORs as NDBs.
+      var tcode = parseInt(nav.type, 10);
+      var tname = ['DME','TACAN','NDB','VOR','VOR-DME','VORTAC','DVOR','DVOR-DME','DVORTAC'][tcode] || 'NAVAID';
+      var isVOR = tcode >= 3 && tcode <= 8;
+      name = avEsc(name);   // OpenAIP text goes into HTML below: show it, never run it
       var shape = isVOR
         ? '<polygon points="5,0 10,10 0,10" fill="none" stroke="#f59e0b" stroke-width="1.5"/><circle cx="5" cy="6" r="1.5" fill="#f59e0b"/>'
         : '<circle cx="5" cy="5" r="4" fill="none" stroke="#f59e0b" stroke-width="1.5"/><circle cx="5" cy="5" r="1.5" fill="#f59e0b"/>';
@@ -3951,7 +4064,7 @@ function redrawAvOverlay() {
               '</div>',
         iconSize:[10,10], iconAnchor:[5,5]
       });
-      L.marker([lat,lon],{icon:ic,pane:'avOverlay'}).bindTooltip('<b>'+name+'</b><br>'+(isVOR?'VOR':'NDB'),{direction:'top'}).addTo(avLayerGroup);
+      L.marker([lat,lon],{icon:ic,pane:'avOverlay'}).bindTooltip('<b>'+name+'</b><br>'+tname+(nav.frequency&&nav.frequency.value?' '+avEsc(nav.frequency.value):''),{direction:'top'}).addTo(avLayerGroup);
     });
   }
 
@@ -3959,7 +4072,7 @@ function redrawAvOverlay() {
     avData.airspaces.forEach(function(as) {
       var coords = as.geometry&&as.geometry.coordinates&&as.geometry.coordinates[0];
       if (!coords||coords.length<3) return;
-      var name=as.name||'';
+      var name=avEsc(as.name||'');
       L.polygon(coords.map(function(c){return[c[1],c[0]];}),{
         color:'#06b6d4',weight:1.5,opacity:0.7,fillColor:'#06b6d4',fillOpacity:0.05,dashArray:'4 3',pane:'avOverlay'
       }).bindTooltip('<b>'+name+'</b>',{sticky:true}).addTo(avLayerGroup);
@@ -4105,21 +4218,9 @@ function renderNotams() {
   // that field. Area-wide notices have no honest place on a map, so
   // they go to the panel list rather than being counted and then left
   // unreachable.
-  var groups = {};
-  var areaWide = [];
+  var grouped = notamGroups(list);
 
-  list.forEach(function(n) {
-    if (n.area_wide || n.lat == null || n.lon == null) { areaWide.push(n); return; }
-    var key = n.location_icao || (n.lat.toFixed(4) + ',' + n.lon.toFixed(4));
-    if (!groups[key]) {
-      groups[key] = { icao: n.location_icao || '—', lat: n.lat, lon: n.lon, radius: 0, items: [] };
-    }
-    groups[key].items.push(n);
-    if (n.radius_nm && n.radius_nm > groups[key].radius) groups[key].radius = n.radius_nm;
-  });
-
-  Object.keys(groups).forEach(function(key) {
-    var g = groups[key];
+  grouped.groups.forEach(function(g) {
     var popup = notamGroupPopup(g);
 
     var shape = (g.radius > 0)
@@ -4150,7 +4251,24 @@ function renderNotams() {
     }).bindPopup(popup, { maxWidth: 340 }).addTo(notamLayer);
   });
 
-  renderNotamAreaWide(areaWide);
+  renderNotamAreaWide(grouped.areaWide);
+}
+
+// One entry per location (the source gives every notice its location's reference point), plus the area-wide ones.
+// Shared by the 2D map and the 3D view.
+function notamGroups(list) {
+  var groups = {}, order = [], areaWide = [];
+  list.forEach(function(n) {
+    if (n.area_wide || n.lat == null || n.lon == null) { areaWide.push(n); return; }
+    var key = n.location_icao || (n.lat.toFixed(4) + ',' + n.lon.toFixed(4));
+    if (!groups[key]) {
+      groups[key] = { icao: n.location_icao || '—', lat: n.lat, lon: n.lon, radius: 0, items: [] };
+      order.push(key);
+    }
+    groups[key].items.push(n);
+    if (n.radius_nm && n.radius_nm > groups[key].radius) groups[key].radius = n.radius_nm;
+  });
+  return { groups: order.map(function(k) { return groups[k]; }), areaWide: areaWide };
 }
 
 // Popup body for one location: every NOTAM issued for that field, in
@@ -4284,7 +4402,7 @@ function selectAirport(ap,el){
   if(airportMark)map.removeLayer(airportMark);
   var dark=document.documentElement.getAttribute('data-theme')==='dark';
   var mc=dark?'#60a5fa':'#2563eb';
-  var apIcon=L.divIcon({className:'',html:'<div style="text-align:center;"><svg width="32" height="32" viewBox="0 0 32 32"><circle cx="16" cy="16" r="14" fill="'+mc+'" opacity="0.15" stroke="'+mc+'" stroke-width="2"/><g transform="translate(16 16) scale(0.44) translate(-24 -16)" fill="'+mc+'"><path d="M4,15 C4,10.5,8,9,14,9 L33,9 C41,9,45,11,47,14 C45,17,41,19,33,19 L14,19 C8,19,4,18.5,4,15 Z"/><polygon points="34,9.5 43,0 47,1 41,9.5"/><polygon points="13,18.5 23,27 29,27 25,18.5"/><rect x="3" y="30" width="42" height="2.6" rx="1.3"/></g></svg><div style="font-family:monospace;font-size:9px;color:'+mc+';background:var(--bg-panel);padding:1px 4px;border-radius:2px;white-space:nowrap;margin-top:2px;border:1px solid '+mc+';">'+ap.ident+'</div></div>',iconSize:[32,48],iconAnchor:[16,16]});
+  var apIcon=L.divIcon({className:'',html:'<div style="text-align:center;"><svg width="32" height="32" viewBox="0 0 32 32"><circle cx="16" cy="16" r="14" fill="'+mc+'" opacity="0.15" stroke="'+mc+'" stroke-width="2"/><g transform="translate(16 16) scale(0.44) translate(-24 -16)" fill="'+mc+'"><path d="M4,15 C4,10.5,8,9,14,9 L33,9 C41,9,45,11,47,14 C45,17,41,19,33,19 L14,19 C8,19,4,18.5,4,15 Z"/><polygon points="34,9.5 43,0 47,1 41,9.5"/><polygon points="13,18.5 23,27 29,27 25,18.5"/><rect x="3" y="30" width="42" height="2.6" rx="1.3"/></g></svg><div style="font-family:monospace;font-size:9px;color:'+mc+';background:var(--bg-panel);padding:1px 4px;border-radius:2px;white-space:nowrap;margin-top:2px;border:1px solid '+mc+';">'+avEsc(ap.ident)+'</div></div>',iconSize:[32,48],iconAnchor:[16,16]});
   airportMark=L.marker([lat,lon],{icon:apIcon,zIndexOffset:500}).addTo(map);
   showFrequencies(ap);
   loadAvData(ap.ident,lat,lon);
@@ -6361,6 +6479,7 @@ window.addEventListener('message', function (e) {
     clearTimeout(skyWatchdog); skyWatchdog = null;
     skyPost({ action: 'theme', theme: skyTheme() });
     skyPost(skySettings());
+    skySendAviation(true);   // runways + airfields, if they're on
     if (is3DOpen()) skyPost({ action: 'pause' });
     if (skySel) { skyPost({ action: 'select', hex: skySel, fly: true }); skySendBox(); }   // a Traffic-list pick made while the page was loading
   }
@@ -6389,11 +6508,23 @@ new MutationObserver(function () { if (isSkyOpen()) skyPost({ action: 'theme', t
 // The Options controls the 3D view mirrors: after any of them runs, an open 3D view gets the new settings.
 window.addEventListener('DOMContentLoaded', function () {
   ['setMapBrightness', 'toggleTrails', 'toggleRings', 'toggleRing', 'setUnit', 'toggleRxMarker', 'toggleLabels', 'setHunter',
-   'toggleWxOverlay', 'toggleWxAnimation', 'setWxOpacity', 'updateWxSource'].forEach(function (n) {
+   'toggleWxOverlay', 'toggleWxAnimation', 'setWxOpacity', 'updateWxSource', 'setSkyModels'].forEach(function (n) {
     var f = window[n]; if (f && f.__sky) return;
     if (typeof f !== 'function') { console.warn('3D view: ' + n + ' not found — its setting will not reach the 3D view'); return; }
     var w = function () { var r = f.apply(this, arguments); skySendSettings(); return r; };
     w.__sky = true; window[n] = w;
+  });
+  // Aviation Overlay: 2D redraws whenever its data, airport pick, theme or switches change — send the 3D view the same data then
+  ['drawRunways', 'drawAirfields', 'toggleAvOverlay', 'toggleRunways', 'toggleAirfields', 'redrawAvOverlay', 'toggleWaypoints',
+   'drawFootprint', 'toggleFootprint', 'toggleNotams', 'renderNotams'].forEach(function (n) {
+    var f = window[n]; if (f && f.__skyAv) return;
+    if (typeof f !== 'function') { console.warn('3D view: ' + n + ' not found — the Aviation Overlay will not reach the 3D view'); return; }
+    var w = function () {
+      var r = f.apply(this, arguments);
+      try { skySendSettings(); skySendAviation(); } catch (e) { console.warn('3D view: ' + (e && e.message)); }   // never breaks the 2D call
+      return r;
+    };
+    w.__skyAv = true; window[n] = w;
   });
 });
 function cc3DView() {
@@ -8226,43 +8357,30 @@ function raysColor(t, dark) {
                   Math.round(lo[2] + (hi[2]-lo[2])*t) + ')';
 }
 
-function drawFootprint() {
-  clearFootprint();
-  if (!footprintVisible) return;
-  var d = footprintData;
-  if (!d || !d.max_nm || !d.max_nm.length) return;
+// The footprint's shape, in map terms, for 2D and the 3D view alike: pts [lat,lon] per sector for 'range' and
+// 'horizon', or spokes {lat, lon, t} from the receiver for 'rays' (t = this sector's range / the longest). null = nothing yet.
+function footprintGeom(d, mode) {
+  if (!d || !d.max_nm || !d.max_nm.length) return null;
   var n = d.max_nm.length, secDeg = 360 / n, any = false, pts = [];
-
-  // FancyFeet 'rays' view — individual radial spokes from the RX marker,
-  // one per sector, length = max range in that bearing, colour-graded by
-  // range. Same sector-centre bearing + great-circle dest-point as the
-  // polygon, drawn as separate polylines instead of joined — so long
-  // open-sky bearings and short terrain-shadowed ones read at a glance.
-  if (footprintMode === 'rays') {
-    var maxNm = 0;
+  function dest(rNm, s) {   // great-circle point rNm out along sector s's centre bearing
+    var brg = (s * secDeg + secDeg / 2) * Math.PI / 180, dR = (rNm * 1852) / 6371000;
+    var la1 = RX_LAT * Math.PI / 180, lo1 = RX_LON * Math.PI / 180;
+    var la2 = Math.asin(Math.sin(la1) * Math.cos(dR) + Math.cos(la1) * Math.sin(dR) * Math.cos(brg));
+    var lo2 = lo1 + Math.atan2(Math.sin(brg) * Math.sin(dR) * Math.cos(la1), Math.cos(dR) - Math.sin(la1) * Math.sin(la2));
+    return [la2 * 180 / Math.PI, lo2 * 180 / Math.PI];
+  }
+  if (mode === 'rays') {
+    var maxNm = 0, rays = [];
     for (var mi = 0; mi < n; mi++) { var mv = parseFloat(d.max_nm[mi]) || 0; if (mv > maxNm) maxNm = mv; }
-    if (maxNm <= 0) return;
-    var darkR = document.documentElement.getAttribute('data-theme') === 'dark';
-    var spokes = [];
+    if (maxNm <= 0) return null;
     for (var r = 0; r < n; r++) {
       var rn = parseFloat(d.max_nm[r]) || 0;
       if (rn <= 0) continue;
-      var brgR = (r * secDeg + secDeg / 2) * Math.PI / 180;
-      var dRr = (rn * 1852) / 6371000;
-      var la1r = RX_LAT * Math.PI / 180, lo1r = RX_LON * Math.PI / 180;
-      var la2r = Math.asin(Math.sin(la1r) * Math.cos(dRr) + Math.cos(la1r) * Math.sin(dRr) * Math.cos(brgR));
-      var lo2r = lo1r + Math.atan2(Math.sin(brgR) * Math.sin(dRr) * Math.cos(la1r), Math.cos(dRr) - Math.sin(la1r) * Math.sin(la2r));
-      spokes.push(L.polyline([[RX_LAT, RX_LON], [la2r * 180 / Math.PI, lo2r * 180 / Math.PI]], {
-        color: raysColor(rn / maxNm, darkR), weight: 3, opacity: 0.9,
-        lineCap: 'round', interactive: false
-      }));
+      var e2 = dest(rn, r); rays.push({ lat: e2[0], lon: e2[1], t: rn / maxNm });
     }
-    if (!spokes.length) return;
-    footprintRays = L.layerGroup(spokes).addTo(map);
-    return;
+    return rays.length ? { mode: 'rays', rays: rays } : null;
   }
-
-  var horizon = (footprintMode === 'horizon');
+  var horizon = (mode === 'horizon');
   // Horizon view maps the elevation floor (an angle, not a distance)
   // onto the map for shape comparison: full display radius = 0° floor
   // (clear to the horizon), pinched to centre = floor ≥10° (badly
@@ -8282,19 +8400,38 @@ function drawFootprint() {
       rNm = parseFloat(d.max_nm[s]) || 0;
     }
     if (rNm > 0) any = true;
-    var brg = (s * secDeg + secDeg / 2) * Math.PI / 180;   // sector centre bearing
-    var dR = (rNm * 1852) / 6371000;                        // angular distance
-    var la1 = RX_LAT * Math.PI / 180, lo1 = RX_LON * Math.PI / 180;
-    var la2 = Math.asin(Math.sin(la1) * Math.cos(dR) + Math.cos(la1) * Math.sin(dR) * Math.cos(brg));
-    var lo2 = lo1 + Math.atan2(Math.sin(brg) * Math.sin(dR) * Math.cos(la1), Math.cos(dR) - Math.sin(la1) * Math.sin(la2));
-    pts.push([la2 * 180 / Math.PI, lo2 * 180 / Math.PI]);
+    pts.push(dest(rNm, s));
   }
-  if (!any) return;   // no positions accumulated yet — nothing to draw
+  return any ? { mode: horizon ? 'horizon' : 'range', pts: pts } : null;   // no positions accumulated yet — nothing to draw
+}
+
+function drawFootprint() {
+  clearFootprint();
+  if (!footprintVisible) return;
+  var g = footprintGeom(footprintData, footprintMode);
+  if (!g) return;
+
+  // FancyFeet 'rays' view — individual radial spokes from the RX marker,
+  // one per sector, length = max range in that bearing, colour-graded by
+  // range. Same sector-centre bearing + great-circle dest-point as the
+  // polygon, drawn as separate polylines instead of joined — so long
+  // open-sky bearings and short terrain-shadowed ones read at a glance.
+  if (g.mode === 'rays') {
+    var darkR = document.documentElement.getAttribute('data-theme') === 'dark';
+    footprintRays = L.layerGroup(g.rays.map(function (k) {
+      return L.polyline([[RX_LAT, RX_LON], [k.lat, k.lon]], {
+        color: raysColor(k.t, darkR), weight: 3, opacity: 0.9,
+        lineCap: 'round', interactive: false
+      });
+    })).addTo(map);
+    return;
+  }
+  var horizon = (g.mode === 'horizon');
   var dark = document.documentElement.getAttribute('data-theme') === 'dark';
   // Range = solid cyan (geographic truth). Horizon = dashed violet —
   // dashed signals it's a normalised shape, not literal distances.
   var color = horizon ? (dark ? '#a78bfa' : '#7c3aed') : (dark ? '#22d3ee' : '#0369a1');
-  footprintPoly = L.polygon(pts, {
+  footprintPoly = L.polygon(g.pts, {
     color: color, weight: 2, opacity: 0.75,
     fillColor: color, fillOpacity: 0.10,
     dashArray: horizon ? '6 6' : null,
@@ -8477,7 +8614,7 @@ function rwyEndLabel(lat, lon, ident, col, shadow) {
     className: '',
     html: '<div style="font-family:monospace;font-size:10px;color:' + col +
           ';font-weight:bold;white-space:nowrap;text-shadow:0 0 3px ' + shadow +
-          ',0 0 3px ' + shadow + ';">' + ident + '</div>',
+          ',0 0 3px ' + shadow + ';">' + avEsc(ident) + '</div>',
     iconSize: [0, 0], iconAnchor: [8, 5]
   });
   L.marker([lat, lon], {icon: lbl, pane: 'avOverlay', interactive: false}).addTo(runwayLayer);
@@ -8579,6 +8716,7 @@ function drawAirfields() {
       ? '<div style="background:rgba(125,211,252,0.12);border:1px solid ' + ringColor + ';border-radius:50%;width:' + size + 'px;height:' + size + 'px;display:flex;align-items:center;justify-content:center;line-height:1;">' + emoji + '</div>'
       : '<div style="background:rgba(125,211,252,0.25);border:1px solid ' + ringColor + ';border-radius:50%;width:' + size + 'px;height:' + size + 'px;"></div>';
 
+    labelText = avEsc(labelText);
     var icon = L.divIcon({
       className: '',
       html: '<div style="display:flex;flex-direction:column;align-items:center;">' + inner +
@@ -8589,12 +8727,12 @@ function drawAirfields() {
 
     // Tooltip — ICAO + name + class + IATA if present + municipality
     var classLabel = ap.type.replace('_', ' ').replace(/\b\w/g, function(c) { return c.toUpperCase(); });
-    var tipHtml = '<b>' + (ap.ident || '???') + '</b>';
-    if (ap.iata_code) tipHtml += ' <span style="color:#7dd3fc;">(' + ap.iata_code + ')</span>';
-    tipHtml += '<br>' + (ap.name || 'Unnamed');
+    var tipHtml = '<b>' + avEsc(ap.ident || '???') + '</b>';   // OurAirports is a public, editable source: escape all of it
+    if (ap.iata_code) tipHtml += ' <span style="color:#7dd3fc;">(' + avEsc(ap.iata_code) + ')</span>';
+    tipHtml += '<br>' + avEsc(ap.name || 'Unnamed');
     tipHtml += '<br><span style="color:#94a3b8;">' + classLabel + '</span>';
-    if (ap.municipality) tipHtml += '<br><span style="color:#7dd3fc;"><svg width="9" height="9" viewBox="0 0 24 24" fill="#7dd3fc" style="vertical-align:-1px;"><path d="M12 2C8.1 2 5 5.1 5 9c0 5.2 7 13 7 13s7-7.8 7-13c0-3.9-3.1-7-7-7z"/><circle cx="12" cy="9" r="2.5" fill="#0b0f1a"/></svg> ' + ap.municipality + '</span>';
-    if (ap.elevation_ft) tipHtml += '<br><span style="font-family:monospace;font-size:10px;opacity:0.8;">elev ' + ap.elevation_ft + ' ft</span>';
+    if (ap.municipality) tipHtml += '<br><span style="color:#7dd3fc;"><svg width="9" height="9" viewBox="0 0 24 24" fill="#7dd3fc" style="vertical-align:-1px;"><path d="M12 2C8.1 2 5 5.1 5 9c0 5.2 7 13 7 13s7-7.8 7-13c0-3.9-3.1-7-7-7z"/><circle cx="12" cy="9" r="2.5" fill="#0b0f1a"/></svg> ' + avEsc(ap.municipality) + '</span>';
+    if (ap.elevation_ft) tipHtml += '<br><span style="font-family:monospace;font-size:10px;opacity:0.8;">elev ' + avEsc(ap.elevation_ft) + ' ft</span>';
 
     var marker = L.marker([lat, lon], { icon: icon, interactive: true })
       .bindTooltip(tipHtml, { className: 'pilnk-tooltip', direction: 'top' });
