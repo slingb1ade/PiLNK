@@ -5,6 +5,11 @@
 **Last updated:** 2026-06-08
 **Reference release (worked example):** v1.2.11.1 "Vitals"
 
+> **2 Oct 2026 — hardware swap.** The production node and push box is now **EpsomHub** (pilnk-hub, HP mini,
+> x86_64 Debian 12, `~/pilnk`, origin over SSH with the "EpsomHub" deploy key). The Pi 5 (EpsomPi) is no longer
+> a PiLNK node. **Everywhere this SOP says "Pi5", read "EpsomHub".** The MCP tool names (`pi5_git_commit_push`,
+> `pi5_*`) are unchanged and now act on EpsomHub.
+
 ---
 
 ## 1. Purpose
@@ -54,7 +59,7 @@ This SOP is the canonical checklist. If a step is skipped, stop and go back to i
 | Box | Role |
 |---|---|
 | **Pi4** | Dev / test bench. Where new features are built and first tested. |
-| **Pi5 (EpsomPi)** | Production node **and the single source of truth for GitHub pushes**. Final testing happens here; the canonical commit is pushed from here. |
+| **EpsomHub (pilnk-hub; "Pi5" in older text)** | Production node **and the single source of truth for GitHub pushes**. Final testing happens here; the canonical commit is pushed from here. Replaced the Pi 5 (EpsomPi) on 2 Oct 2026. |
 | **myHost** | pilnk.io PHP backend. Home of `api/version.php`. No shell access. |
 | **linklabs** | AJ's laptop / workstation. |
 

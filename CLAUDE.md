@@ -16,7 +16,7 @@ ADS-B (and planned VHF-ATC) flight tracking that runs on distributed nodes — R
 ## Who does what
 
 - **AJ** — sole authority (Rule #27). Picks every **version number + codename**. Performs **all git pushes** (authenticates to GitHub). Approves every service restart.
-- **You (Claude Code, web)** — the **builder**, running in a cloud sandbox on a clone of this repo. Write the feature, then push a **branch** and open a **PR** with a change summary. You do **not** touch the Pi4/Pi5 and you do **not** push to `main`. Your output is a PR for AJ to test on real hardware — never assume a change is "shipped." Hardware testing (Pi4 → Pi5) and the merge/push to `main` are AJ's.
+- **You (Claude Code, web)** — the **builder**, running in a cloud sandbox on a clone of this repo. Write the feature, then push a **branch** and open a **PR** with a change summary. You do **not** touch the Pi4/EpsomHub and you do **not** push to `main`. Your output is a PR for AJ to test on real hardware — never assume a change is "shipped." Hardware testing (Pi4 → EpsomHub) and the merge/push to `main` are AJ's.
 - **Hub Claude** (claude.ai + PiLNK Hub MCP) — **release supervisor**: runs the read-only verify gate, syncs `version.php`, confirms the live endpoint, drafts tester comms.
 
 ---
@@ -24,10 +24,11 @@ ADS-B (and planned VHF-ATC) flight tracking that runs on distributed nodes — R
 ## Boxes — label every command with its box
 
 - **Pi4** — dev / test bench. Build + first test here.
-- **Pi5 (EpsomPi)** — production node **and the only box you push from**. Final test here.
+- **EpsomHub (pilnk-hub, HP mini, x86_64 Debian 12)** — production node **and the only box you push from**. Final test here.
+  Since 2 Oct 2026 it replaced the Pi 5 (EpsomPi), which is no longer a PiLNK node. Older notes that say "Pi5" mean this box now.
 - **myHost** — pilnk.io PHP backend (`api/version.php`). No shell access.
 - **linklabs** — AJ's laptop.
-- **GitHub:** `github.com/slingb1ade/PiLNK`, branch `main`. **Only ever push from Pi5.**
+- **GitHub:** `github.com/slingb1ade/PiLNK`, branch `main`. **Only ever push from EpsomHub.**
 
 ---
 
@@ -37,7 +38,7 @@ ADS-B (and planned VHF-ATC) flight tracking that runs on distributed nodes — R
 2. **One change at a time**; test each before the next.
 3. **Surgical edits** — change only what's needed; verify each.
 4. **Ask, then STOP** — confirm at decision points; don't barrel ahead.
-5. **Label every command** with its box (Pi4 / Pi5 / myHost / linklabs).
+5. **Label every command** with its box (Pi4 / EpsomHub / myHost / linklabs).
 6. **Global by default** (Rule #25).
 
 ---
@@ -58,10 +59,10 @@ ADS-B (and planned VHF-ATC) flight tracking that runs on distributed nodes — R
 ```
 [ ] Web Claude Code: build feature -> push branch + open PR on GitHub
 [ ] Pi4: pull the PR branch + dev test — solid, no regressions
-[ ] Pi5: install + final test + hard-refresh
-[ ] Pi5: GLOBAL CHECK (AJ-NZ / Jim-US / KICTPI-US / M0CRT-UK)   (#25)
-[ ] Pi5: bump VERSION file — AJ picks number + codename          (#28)
-[ ] Pi5: git add … VERSION ; commit ; push   (AJ pushes)
+[ ] EpsomHub: install + final test + hard-refresh
+[ ] EpsomHub: GLOBAL CHECK (AJ-NZ / Jim-US / KICTPI-US / M0CRT-UK)   (#25)
+[ ] EpsomHub: bump VERSION file — AJ picks number + codename          (#28)
+[ ] EpsomHub: git add … VERSION ; commit ; push   (AJ pushes)
 [ ] VERIFY pushed — git status / log / origin match             (#31)  <-- GATE
 [ ] myHost: version.php $RELEASE_META synced + php -l clean  (Hub Claude / AJ)
 [ ] confirm https://pilnk.io/api/version.php
@@ -78,7 +79,8 @@ ADS-B (and planned VHF-ATC) flight tracking that runs on distributed nodes — R
 - **Canvas plane renderer** — aircraft draw on a single `<canvas>` (`SHOW_DOM_PLANES = false`), so there are **no per-plane DOM markers**. Any map feature (labels, receiver marker, click handling) must **not** depend on `markers[cs]` existing. This caused the v1.2.11.1 labels + node-marker bugs.
 - **myHost has no shell** — use MySQL queries / PHP endpoints, never shell tailing. There is no per-directory `error_log` file; PHP errors land in the **`error_logs` DB table**.
 - **Resend = 2 requests/sec** — space notification email sends so a multi-recipient fan-out doesn't 429.
-- **Pi4 → Pi5 hand-off** — develop on Pi4, bring the change onto Pi5, then push from Pi5 as the single canonical commit. Don't push from Pi4.
+- **Pi4 → EpsomHub hand-off** — develop on Pi4, bring the change onto EpsomHub, then push from EpsomHub as the single canonical commit.
+- **EpsomHub is x86_64, not a Pi** — anything Pi-only (vcgencmd, raspi-config, /boot/firmware, aarch64 binaries) won't exist there; native builds (e.g. libdf.so) must be x86 builds. Don't push from Pi4.
 
 ---
 
