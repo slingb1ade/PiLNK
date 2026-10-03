@@ -5628,6 +5628,151 @@ def _cap_network_info(params):
     return out
 
 
+# ── Radio tune-up over Remote Assist (v1.5.52, 4 Oct 2026) ──────────────────
+# So an operator (AJ, or Claude via the MCP) can tune a member's ATC radio —
+# gain, AGC, squelch — inside an assist session the owner opened. Both halves
+# talk only to the local engine on :5656 (same helpers as the capsule wake).
+# LEVELS ONLY: these read the engine's status numbers (signal power in dBFS,
+# gain step, squelch). No audio is read, recorded or sent anywhere — the ATC
+# rule (nothing captured leaves the user's node) holds.
+_RADIO_KEYS = ('playing', 'vfoHz', 'mode', 'bandwidthHz', 'squelchEnabled', 'squelchLevel',
+               'rfGainSteps', 'rfGainIndex', 'rfAgc', 'channelPowerDb', 'denoise')
+_RADIO_DOWN = ('radio engine not answering on :5656 — no radio dongle, or the '
+               'pilnkradio service is stopped')
+RADIO_SQ_MIN, RADIO_SQ_MAX = -90.0, -20.0    # dBFS; the dashboard slider is -75..-50
+RADIO_SAMPLE_MAX_S = 20
+
+
+def _radio_snapshot():
+    st = _cap_sdr_status()
+    if not isinstance(st, dict):
+        return None
+    out = {k: st.get(k) for k in _RADIO_KEYS if k in st}
+    # The engine reports float32s (0.8999999761581421): round for people to read.
+    steps = [round(float(g), 1) for g in (st.get('rfGainSteps') or []) if isinstance(g, (int, float))]
+    if 'rfGainSteps' in out:
+        out['rfGainSteps'] = steps
+    if isinstance(out.get('channelPowerDb'), float):
+        out['channelPowerDb'] = round(out['channelPowerDb'], 1)
+    idx = st.get('rfGainIndex')
+    if isinstance(idx, int) and 0 <= idx < len(steps):
+        out['rfGainDb'] = steps[idx]
+    return out
+
+
+def _cap_radio_status(params):
+    """Read tier. The radio's settings now, plus — with params.seconds (1-20) — a
+    sample of the channel's signal level: the quiet floor (min/p10), how strong the
+    calls come in (p90/max), and how often the current squelch would be open."""
+    snap = _radio_snapshot()
+    if snap is None:
+        return {'error': _RADIO_DOWN}
+    try:
+        secs = int((params or {}).get('seconds', 0))
+    except (TypeError, ValueError):
+        secs = 0
+    secs = max(0, min(RADIO_SAMPLE_MAX_S, secs))
+    if secs:
+        vals, end = [], time.time() + secs
+        while time.time() < end:
+            st = _cap_sdr_status()
+            p = st.get('channelPowerDb') if isinstance(st, dict) else None
+            if isinstance(p, (int, float)) and not isinstance(p, bool):
+                vals.append(float(p))
+            time.sleep(0.5)
+        if vals:
+            v = sorted(vals)
+            q = lambda f: round(v[min(len(v) - 1, int(f * (len(v) - 1) + 0.5))], 1)
+            sample = {'seconds': secs, 'samples': len(v), 'min': round(v[0], 1), 'p10': q(0.1),
+                      'median': q(0.5), 'p90': q(0.9), 'max': round(v[-1], 1)}
+            sq = snap.get('squelchLevel')
+            if isinstance(sq, (int, float)):
+                sample['open_share'] = round(sum(1 for x in v if x >= sq) / len(v), 2)
+        else:
+            sample = {'seconds': secs, 'samples': 0,
+                      'note': 'no channel level reported (radio switched off?)'}
+        snap['sample'] = sample
+    snap['note'] = 'levels only — no audio leaves the node'
+    return snap
+
+
+def _radio_view(s):
+    return {k: s.get(k) for k in ('rfGainIndex', 'rfGainDb', 'rfAgc', 'squelchEnabled', 'squelchLevel')}
+
+
+def _act_set_radio(params):
+    """Write tier. Set any of gain_index (a step on THIS dongle's ladder), agc,
+    squelch_enabled, squelch_level (dBFS). Returns before/after so it can be undone;
+    ok only when the engine reports the new values. The engine saves them, so they
+    survive a restart."""
+    p = params or {}
+    before = _radio_snapshot()
+    if before is None:
+        return {'ok': False, 'error': _RADIO_DOWN}
+    steps = before.get('rfGainSteps') or []
+    want, posts = {}, []
+    if 'agc' in p:
+        if not isinstance(p['agc'], bool):
+            return {'ok': False, 'error': 'agc must be true or false'}
+        want['rfAgc'] = p['agc']
+        posts.append(('/sdr/agc', {'on': p['agc']}))
+    if 'gain_index' in p:
+        gi = p['gain_index']
+        if isinstance(gi, bool) or not isinstance(gi, int):
+            return {'ok': False, 'error': 'gain_index must be a whole number'}
+        if not steps:
+            return {'ok': False, 'error': 'the engine reports no gain steps (no radio dongle?)'}
+        if not 0 <= gi < len(steps):
+            return {'ok': False, 'error': f'gain_index must be 0..{len(steps) - 1} '
+                                          f'(this dongle has {len(steps)} steps)'}
+        want['rfGainIndex'] = gi
+        posts.append(('/sdr/gain', {'index': gi}))   # after AGC: turning AGC off drops the gain
+    sq_body = {}
+    if 'squelch_enabled' in p:
+        if not isinstance(p['squelch_enabled'], bool):
+            return {'ok': False, 'error': 'squelch_enabled must be true or false'}
+        want['squelchEnabled'] = sq_body['enabled'] = p['squelch_enabled']
+    if 'squelch_level' in p:
+        lv = p['squelch_level']
+        if isinstance(lv, bool) or not isinstance(lv, (int, float)):
+            return {'ok': False, 'error': 'squelch_level must be a number (dBFS)'}
+        if not RADIO_SQ_MIN <= lv <= RADIO_SQ_MAX:
+            return {'ok': False, 'error': f'squelch_level must be between {RADIO_SQ_MIN:g} and '
+                                          f'{RADIO_SQ_MAX:g} dBFS'}
+        want['squelchLevel'] = sq_body['level'] = round(float(lv), 1)
+    if sq_body:
+        posts.append(('/sdr/squelch', sq_body))
+    if not want:
+        return {'ok': False, 'error': 'nothing to set: give gain_index, agc, squelch_enabled '
+                                      'and/or squelch_level'}
+    for path, body in posts:
+        if not _cap_sdr_post(path, body):
+            return {'ok': False, 'error': f'engine refused {path} {body}', 'before': _radio_view(before)}
+    # Commands are queued inside the engine: wait until it reports them (max ~3 s).
+    after, deadline = before, time.time() + 3
+    while time.time() < deadline:
+        time.sleep(0.3)
+        after = _radio_snapshot() or after
+        if all(after.get(k) == v for k, v in want.items()):
+            break
+    off = [k for k, v in want.items() if after.get(k) != v]
+    b, a = _radio_view(before), _radio_view(after)
+    bits = []
+    if 'rfGainIndex' in want:
+        bits.append(f"gain {b['rfGainDb']} → {a['rfGainDb']} dB")
+    if 'rfAgc' in want:
+        bits.append(f"AGC {'on' if b['rfAgc'] else 'off'} → {'on' if a['rfAgc'] else 'off'}")
+    if 'squelchEnabled' in want:
+        bits.append(f"squelch {'on' if b['squelchEnabled'] else 'off'} → "
+                    f"{'on' if a['squelchEnabled'] else 'off'}")
+    if 'squelchLevel' in want:
+        bits.append(f"squelch {b['squelchLevel']} → {a['squelchLevel']} dBFS")
+    out = {'ok': not off, 'action': 'set_radio', 'detail': '; '.join(bits), 'before': b, 'after': a}
+    if off:
+        out['error'] = 'engine did not apply: ' + ', '.join(off)
+    return out
+
+
 def _assist_cap_lines(params, default=100, hard=500):
     try:
         n = int((params or {}).get('lines', default))
@@ -5662,6 +5807,7 @@ ASSIST_CAPABILITIES = {
     'blacklist':        _cap_blacklist,
     'loaded_dvb':       _cap_loaded_dvb,
     'network_info':     _cap_network_info,
+    'radio_status':     _cap_radio_status,
 }
 
 
@@ -5763,11 +5909,18 @@ ASSIST_ACTIONS = {
     'restart_decoder':  _act_restart_decoder,
     'ota_apply':        _act_ota_apply,
     'reboot':           _act_reboot,
+    'set_radio':        _act_set_radio,
 }
 
 # Destructive actions require an explicit params['confirm'] is True — a guard against a
 # blind sweep of the request queue. restart_* / ota_apply are non-destructive.
 ASSIST_ACTIONS_DESTRUCTIVE = {'reboot'}
+
+# Actions that change how the owner's node BEHAVES (not just restart it) run only
+# while the owner is present: a session they opened with Request Assist. Standing
+# "remote maintenance" consent covers reading and restarting — the toggle says so —
+# so it never covers these.
+ASSIST_ACTIONS_OWNER_ONLY = {'set_radio'}
 
 # Node-local, owner-visible audit of operator actions (Prong B3). A file, not memory,
 # so the owner sees even the restart that just ran once the node comes back.
@@ -5902,6 +6055,10 @@ def assist_poller():
                     # WRITE tier. Gate on live consent / owner presence, then confirm.
                     if kind == 'maintenance' and not _remote_maintenance_enabled():
                         result = {'ok': False, 'error': 'remote maintenance consent withdrawn'}
+                        is_err = True
+                    elif cap in ASSIST_ACTIONS_OWNER_ONLY and kind != 'owner':
+                        result = {'ok': False, 'error': f'{cap} needs the owner to open a Request '
+                                  'Assist session — it is not part of standing maintenance'}
                         is_err = True
                     elif cap in ASSIST_ACTIONS_DESTRUCTIVE and params.get('confirm') is not True:
                         result = {'ok': False, 'error': f'{cap} requires confirm=true'}
