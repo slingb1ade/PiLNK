@@ -6155,6 +6155,10 @@ function openCinematicCard(cs, auto) {
   var meta = [];
   if (a.t) meta.push(a.t);
   if (a.r) meta.push(a.r);
+  // ICAO hex between the rego and the class (AJ, 2 Oct 2026) — e.g. "ZK-JPT  Hex-c82982  Light single".
+  // Cleaned to hex digits (+ '~' for TIS-B) because these tags are written with innerHTML.
+  var hexTag = String(a.hex || '').replace(/[^0-9a-f~]/gi, '');
+  if (hexTag) meta.push('Hex-' + hexTag);
   var cat = getCat(a.t, a.category);
   // A military airframe isn't an airliner class — an RNZAF C-130J used to read
   // "Narrow-body" here. Say what it is instead (v1.5.22).
@@ -6482,6 +6486,7 @@ window.addEventListener('message', function (e) {
     skySendAviation(true);   // runways + airfields, if they're on
     if (is3DOpen()) skyPost({ action: 'pause' });
     if (skySel) { skyPost({ action: 'select', hex: skySel, fly: true }); skySendBox(); }   // a Traffic-list pick made while the page was loading
+    if (typeof capSkySend === 'function') capSkySend();   // a capsule replay open (or re-entered mid-replay) gets its track again
   }
   else if (d.action === 'open-approach' && /^[0-9a-f~]{6,7}$/i.test(String(d.hex || ''))) open3D(d.hex, String(d.title || '').slice(0, 60));
   else if (d.action === 'select') {   // the page's selection changed: null = its plane left, or (click:true) empty sky was clicked
@@ -6934,7 +6939,7 @@ loadWatchAlerts();
 // Flight Capsules UI (v1.5.22) lives in static/capsules.js. Loaded dynamically
 // so it runs AFTER this script has defined map / lastAircraft / the card state
 // it hooks into. ?v= busts the browser cache on each release.
-(function(){ var s = document.createElement('script'); s.src = '/static/capsules.js?v=1.5.39'; document.body.appendChild(s); })();
+(function(){ var s = document.createElement('script'); s.src = '/static/capsules.js?v=1.5.47'; document.body.appendChild(s); })();
 
 // ── METAR ──────────────────────────────────────────────────
 var metarData = null;

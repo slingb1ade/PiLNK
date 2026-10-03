@@ -58,7 +58,7 @@
 
 using nlohmann::json;
 
-#define PILNKRADIO_VERSION "2.1.1"
+#define PILNKRADIO_VERSION "2.1.2"
 #define PILNK_FFT_SIZE     1024
 #define PILNK_FFT_RATE     25.0
 
@@ -281,6 +281,7 @@ public:
     void setGainIndex(int idx) {
         if (!dev || gainStepsDb.empty()) return;
         idx = std::clamp(idx, 0, (int)gainStepsDb.size() - 1);
+        curGainIdx = idx;
         rtlsdr_set_tuner_gain_mode(dev, 1);
         rtlsdr_set_tuner_gain(dev, (int)llround(gainStepsDb[idx] * 10.0f));
     }
@@ -288,6 +289,13 @@ public:
         if (!dev) return;
         rtlsdr_set_tuner_gain_mode(dev, on ? 0 : 1);
         rtlsdr_set_agc_mode(dev, on ? 1 : 0);
+        // 2.1.2: in the R82xx driver (rtl-sdr-blog too), set_tuner_gain_mode(manual)
+        // ALSO drops the tuner to its LOWEST gain — r82xx_set_gain(..., manual, 0).
+        // Startup called setGainIndex() then setAgc(false), so every engine start
+        // silently ran ~20 dB under the configured gain until something re-POSTed
+        // /sdr/gain (STT session, 2 Oct: floor -68.9 dB at "idx 17", -57.9 after a
+        // re-POST). Turning AGC off from the dashboard did the same. Re-apply ours.
+        if (!on) setGainIndex(curGainIdx);
     }
 
     bool startStream() {
@@ -333,6 +341,7 @@ private:
     std::atomic<bool> streaming{false};
     std::atomic<bool> stopRequested{false};
     std::vector<float> gainStepsDb;
+    int curGainIdx = 0;   // last gain index applied — setAgc(false) re-applies it (see setAgc)
     uint32_t rate = 2400000;
 };
 

@@ -323,6 +323,25 @@ function capDimOthers(level){
     }
   });
 }
+// 3D Sky replay relay (v1.5.47 Capsule Replay): the replay bar stays the one clock; these just mirror it to
+// the 3D page over the dashboard's existing postMessage channel. Audio NEVER crosses — only the five meta
+// fields already shown on the bar and the bare track points, built fresh each time, never the capsule's own
+// meta object (which carries audio).
+function capSkyOn(){ return typeof isSkyOpen === 'function' && isSkyOpen() && typeof skyPost === 'function'; }
+function capSkyMsg(R){
+  var m = R.meta || {};
+  return {action: 'replay', on: true, id: R.id,
+    meta: {flight: m.flight, reg: m.reg, type: m.type, cat: m.cat, hex: m.hex},
+    pts: R.pts.map(function(p){
+      return [p.t, p.lat, p.lon, typeof p.alt === 'number' ? p.alt : null, p.gnd ? 1 : 0, typeof p.trk === 'number' ? p.trk : null];
+    }),
+    t: R.t};
+}
+function capSkySend(){
+  if (!capRP || !capSkyOn()) return false;
+  skyPost(capSkyMsg(capRP));
+  return true;
+}
 function capReplay(id){
   fetch('/api/capsules/' + id).then(function(r){ return r.json(); }).then(function(d){
     var pts = (d && d.points) || [];
@@ -371,6 +390,7 @@ function capReplay(id){
              // Ship 2: audio stretches {n, t0, dur, hz, mode}, played in sync at 1×.
              audio: (m.audio || []).slice().sort(function(x, y){ return x.t0 - y.t0; }),
              aud: null, audSeg: null, audOn: true};
+    capSkySend();   // already in 3D: this replay appears there too, at its start time
     capDimOthers(0.25);
     capBuildBar();
     capLoadMarks(capRP);
@@ -411,7 +431,11 @@ function capBuildBar(){
       '<button onclick="capExit()" style="margin-left:auto;">✕ Close</button></div>';
   document.body.appendChild(bar);
 }
-function capFit(){ if (capRP) map.fitBounds(capRP.bounds, {padding: [40, 40]}); }
+function capFit(){
+  if (!capRP) return;
+  map.fitBounds(capRP.bounds, {padding: [40, 40]});
+  if (capSkyOn()) skyPost({action: 'replayFit'});
+}
 function capPlayToggle(){
   var R = capRP; if (!R) return;
   if (!R.playing && R.t >= R.t1) { R.t = R.t0; R.i = 0; }
@@ -464,6 +488,7 @@ function capUpdate(fromScrub){
     (typeof p.vr === 'number' && p.vr ? (p.vr > 0 ? '+' : '') + Math.round(p.vr) + 'fpm' : ''),
     p.sq ? 'sq ' + p.sq : '', p.fl || ''].filter(Boolean).join(' · ');
   capSyncAudio();
+  if (capSkyOn()) skyPost({action: 'replayT', t: R.t});   // the 3D view never runs its own clock — this IS the clock
 }
 // ── Ship 2: audio playback ───────────────────────────────────
 // Each stretch is its own file with its own start time, so the position inside
@@ -622,6 +647,7 @@ function capExit(){
   if (R.rend) map.removeLayer(R.rend);
   capDimOthers(null);
   var bar = document.getElementById('capBar'); if (bar) bar.remove();
+  if (capSkyOn()) skyPost({action: 'replay', on: false});
   capRP = null;
 }
 document.addEventListener('keydown', function(e){

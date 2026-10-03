@@ -415,8 +415,8 @@ const acLayer={
      is not, and was drawn 109 m below and 72 m aside from the aircraft it was meant to be. */
   applySpan(span){ acSpan=span; const k=span/this.base.w, c=this.base.c;   // acSpan: the cameras frame by this
     this.mm.scale.setScalar(k); this.mm.position.set(-c.x*k,-c.y*k,-c.z*k); },
-  ensureModel(t){
-    const forced=_q.get('force'), key=forced||modelFor(t);
+  ensureModel(t,cat){
+    const forced=_q.get('force'), key=forced||modelFor(t,cat);   // cat: ADS-B category, used only when the type is unknown (2 Oct)
     // a forced model keeps its own size, so ?force= tests the MODEL rather than resizing it to the live type
     this.wantSpan=(forced?null:spanFor(t,key))||MODEL_SPAN[key]||this.targetSpan;
     /* Same model, different type — a Phenom followed by a Global on the bizjet stand-in. The reload below is
@@ -1251,7 +1251,7 @@ async function poll(){
       fix={lon:a.lon,lat:a.lat,altM,hdg,roll,pitch,dist:distNm(a),gnd:a.alt_baro==='ground',
            vE:Math.sin(trk)*gsMs, vN:Math.cos(trk)*gsMs, vU:a.alt_baro==='ground'?0:vsS*0.00508,
            gs:gsMs, trk, rate, t:tFix, key};
-      acLayer.ensureModel(a.t);
+      acLayer.ensureModel(a.t,a.category);
       document.getElementById('d_cs').textContent=(a.flight||'').trim()||(a.hex||'').toUpperCase();
       document.getElementById('d_t').textContent=a.t||'—';
       document.getElementById('d_alt').textContent=a.alt_baro==='ground'?'GROUND':Math.round(a.alt_baro).toLocaleString()+' ft'+(qnh?' (Q'+qnh+')':'');

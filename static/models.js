@@ -77,7 +77,7 @@ function spanFor(t,key){
   if(key==='b738_v2.glb'||key==='a320_v2.glb') return MODEL_SPAN[key]||null;   // the catch-all keeps its own size
   return TYPE_SPAN[t]||MODEL_SPAN[key]||null;
 }
-function modelFor(t){ t=(t||'').toUpperCase();
+function modelFor(t,cat){ t=(t||'').toUpperCase();
   /* Single-engine turboprops get the Caravan; the twins and the regionals keep the ATR. */
   /* The Hercules. Flown by about seventy air forces, so on most nodes in the world it is the military
      transport most likely to appear — and PiLNK already watches for military traffic. */
@@ -137,5 +137,12 @@ function modelFor(t){ t=(t||'').toUpperCase();
   if(/^B74/.test(t)||t==='BLCF')return'b747_100.glb';
   if(/^B7(6|7|8)/.test(t))return'b777_klm.glb';
   if(/^B7(3|1|2|5)/.test(t))return'b737_800.glb';
+  /* No type, or a type none of the lists know: the transponder's own ADS-B emitter category says what it is
+     (2 Oct 2026). ZK-JPT, an RV-7 with no type in the local database, flies as category A1 (light) and was
+     drawn as a 737. Only the two unambiguous categories — A2 is noisy (some C172s send it), A3+ is the airliner
+     catch-all anyway. A known type above always wins; the 2D map's getCat() does the same. */
+  cat=(cat||'').toUpperCase();
+  if(cat==='A1')return'c172.glb';
+  if(cat==='A7')return'b429.glb';
   return t[0]==='A'?'a320_v2.glb':'b738_v2.glb';
 }
