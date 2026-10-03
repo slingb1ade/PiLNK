@@ -39,7 +39,25 @@
   .theme-toggle:hover{border-color:var(--blue-mid);color:var(--text);}
   .header-clock{font-family:'Share Tech Mono',monospace;font-size:0.78rem;color:var(--text-dim);font-variant-numeric:tabular-nums;letter-spacing:0.5px;user-select:none;}
   #body{flex:1;display:flex;min-height:0;}
-  #sidebar{flex-shrink:0;width:240px;background:var(--bg-panel);border-right:1px solid var(--border);display:flex;flex-direction:column;overflow:hidden;}
+  #sidebar{flex-shrink:0;width:240px;background:var(--bg-panel);border-right:1px solid var(--border);display:flex;flex-direction:column;overflow:hidden;transition:margin-left .25s ease;}
+  /* v1.5.48 — collapsible side panel (desktop). The tab on its edge slides it away and the map takes the full width;
+     the same tab brings it back and the map shrinks to make room. Remembered per browser (pilnk.sidebarCollapsed).
+     Phones keep the ☰ overlay below — the tab and this class do nothing there. */
+  .sidebar-tab{position:fixed;top:50%;left:240px;transform:translateY(-50%);z-index:1001;width:16px;height:56px;padding:0;
+    display:flex;align-items:center;justify-content:center;background:var(--bg-panel);border:1px solid var(--border);border-left:none;
+    border-radius:0 8px 8px 0;color:var(--text-dim);cursor:pointer;box-shadow:2px 0 6px rgba(0,0,0,.2);transition:left .25s ease,color .15s,border-color .15s;}
+  .sidebar-tab:hover{color:var(--text);border-color:var(--blue-mid);}
+  .sidebar-tab svg{width:12px;height:12px;transition:transform .25s;}
+  body.sidebar-collapsed .sidebar-tab{left:0;}
+  body.sidebar-collapsed .sidebar-tab svg{transform:rotate(180deg);}
+  @media (min-width:769px){
+    body.sidebar-collapsed #sidebar{margin-left:-240px;}
+    body.sidebar-collapsed #altProfilePanel{left:12px;}
+  }
+  @media (max-width:768px){ .sidebar-tab{display:none;} }
+  .fs-toggle{display:inline-flex;align-items:center;justify-content:center;padding:4px 9px;}
+  .fs-toggle svg{width:14px;height:14px;}
+  .fs-toggle.on{border-color:var(--blue-mid);color:var(--text);}
   .tab-bar{display:flex;border-bottom:1px solid var(--border);flex-shrink:0;}
   .tab-btn{flex:1;padding:8px 4px;font-family:'Orbitron',sans-serif;font-size:0.58rem;letter-spacing:0.08em;color:var(--text-dim);background:none;border:none;cursor:pointer;text-transform:uppercase;transition:all 0.2s;border-bottom:2px solid transparent;}
   .tab-btn:hover{color:var(--blue-mid);}
@@ -187,7 +205,12 @@
   @media (max-width:768px){
     .traffic-quick-nav{display:flex;}
     .header-clock{display:none;}
-    .wind-compass{display:none !important;}
+    /* v1.5.48: the wind compass is a header chip now — on phones just the dial, no numbers */
+    #header .wind-compass{padding:0;border:none;background:none;}
+    #header .wind-compass .wc-data{display:none;}
+    #header .wc-svg{width:30px;height:30px;}
+    .fs-toggle{display:none !important;}
+    .header-right{gap:10px;}
     /* Hide the redundant header status bar on phones — frees room for
        the theme-toggle button which otherwise overflows past the right
        edge of the viewport. Same data is on the main map view. */
@@ -331,8 +354,6 @@
   /* 3D Sky — the 4th map layer (Options → Map Layer → 3D). Same swap as the Approach panel above;
      when both are open the Approach panel wins, and closing it returns to the 3D sky. */
   #sky3d{display:none;flex:1;min-width:0;min-height:0;background:#0b0f1a;position:relative;}
-  /* The 2D map's wind compass, moved onto the 3D view while it is open (skyMoveControls) — same spot, top left */
-  #sky3d .wind-compass{position:absolute;top:10px;left:10px;z-index:5;margin:0;}
   /* …and the map's top-right buttons (Re-center, 3D Approach, Airport view, Glideslope, Hunter): Leaflet's own corner, moved whole */
   #body.sky3d-open #map{display:none;}
   #body.sky3d-open #sky3d{display:flex;}
@@ -978,9 +999,13 @@
   .wc-speed .wc-unit{font-family:'Share Tech Mono',monospace;font-size:0.5rem;color:var(--text-dim);margin-left:2px;font-weight:normal;letter-spacing:0.05em;}
   .wc-dir{font-size:0.55rem;color:var(--text-dim);letter-spacing:0.1em;}
 
+  /* v1.5.48: the compass lives in the header (next to the aircraft count) — a compact chip */
+  #header .wind-compass{padding:2px 10px 2px 3px;border-radius:22px;gap:6px;box-shadow:none;}
+  #header .wc-svg{width:34px;height:34px;}
+  #header .wc-data{flex-direction:row;align-items:baseline;gap:6px;min-width:0;}
   #wxPanel{
     position:fixed;
-    left:10px;top:90px;
+    right:12px;top:60px;
     z-index:4999;
     width:min(340px,calc(100vw - 20px));
     max-height:calc(100vh - 110px);
@@ -990,14 +1015,14 @@
     border-radius:12px;
     padding:16px;
     box-shadow:6px 0 24px rgba(0,0,0,0.25);
-    transform:translateX(-115%);
+    transform:translateY(-10px);
     opacity:0;
     pointer-events:none;
-    transition:transform 0.35s cubic-bezier(0.22,1,0.36,1), opacity 0.35s ease;
+    transition:transform 0.25s cubic-bezier(0.22,1,0.36,1), opacity 0.25s ease;
     scrollbar-width:thin;
   }
   #wxPanel.show{
-    transform:translateX(0);
+    transform:translateY(0);
     opacity:1;
     pointer-events:auto;
   }
@@ -1258,6 +1283,7 @@
         <span id="hdr-count">-- AIRCRAFT</span>
       </div>
       <div id="local-clock" class="header-clock" title="Local time">--:--:--</div>
+      <button class="theme-toggle fs-toggle" id="fsBtn" onclick="toggleFullscreen()" title="Full screen" aria-label="Full screen"></button>
       <button class="theme-toggle" id="themeBtn" onclick="toggleTheme()"><svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor" style="vertical-align:-3px;"><path d="M21 12.8A9 9 0 1 1 11.2 3 7 7 0 0 0 21 12.8z"/></svg> Dark</button>
     </div>
   </div>
@@ -1949,6 +1975,8 @@
       </div>
 
     </div><!-- end sidebar -->
+    <button id="sidebarTab" class="sidebar-tab" onclick="toggleSidebarCollapse()" title="Hide side panel" aria-label="Hide side panel" aria-expanded="true"><svg class="icn" viewBox="0 0 24 24"><path d="M15 18l-6-6 6-6"/></svg></button>
+    <script>try{ if(localStorage.getItem('pilnk.sidebarCollapsed')==='1') document.body.classList.add('sidebar-collapsed'); }catch(e){}</script>
     <div id="map"></div>
     <!-- 3D Sky (the 4th map layer). An iframe that takes the map's place, exactly like the 3D Approach
          panel below; unloaded when a 2D layer is chosen, so it costs nothing while you are on 2D. -->
@@ -3101,10 +3129,9 @@ var Approach3DControl = L.Control.extend({
 });
 new Approach3DControl().addTo(map);
 
-// Wind compass at top-left of map. Always visible. Click → toggle Wx panel.
-var WindCompassControl = L.Control.extend({
-  options: {position:'topleft'},
-  onAdd: function(){
+// Wind compass — v1.5.48: a chip in the header (next to the aircraft count), so it frees the map's corner and shows in 2D and 3D alike.
+// Click → toggle the METAR/TAF panel, which drops down under it. Same ids as before (wcArrow/wcSpeed/wcDir), so updateWindCompass is unchanged.
+function buildWindCompass(){
     var div = L.DomUtil.create('div','wind-compass');
     div.id = 'windCompass';
     div.title = 'Wind — click for METAR / TAF';
@@ -3155,9 +3182,8 @@ var WindCompassControl = L.Control.extend({
       if(typeof wxPanel !== 'undefined' && wxPanel.toggle) wxPanel.toggle();
     });
     return div;
-  }
-});
-new WindCompassControl().addTo(map);
+}
+(function(){ var hr = document.querySelector('#header .header-right'); if (hr) hr.insertBefore(buildWindCompass(), hr.querySelector('.status-bar')); })();
 
 function updateWindCompass(){
   if(typeof metarData === 'undefined' || !metarData) return;
@@ -3442,7 +3468,8 @@ function skyCard(hex) {       // a plane clicked in the 3D view: its dropdown ca
   skySetSel(null);             // a list pick's box goes (the page has already dropped it)
   selectedFlight = cs; hideTooltip(); updateFlights(); openCinematicCard(cs, false);
 }
-// The wind compass and the top-right button column are Leaflet controls inside #map, which is hidden while 3D is on:
+// The top-right button column is a Leaflet control inside #map, which is hidden while 3D is on (the wind compass
+// used to move too — since v1.5.48 it lives in the header):
 // move the same elements onto the 3D view and back, so they keep their updaters, clicks and panels. skyCtlHome
 // remembers where each came from.
 var skyCtlHome = [];
@@ -3453,7 +3480,7 @@ function skyMoveControls(on3d) {
   ['leaflet-container', 'leaflet-touch'].forEach(function (c) { k.classList.toggle(c, !!(on3d && m && m.classList.contains(c))); });
   if (on3d) {
     if (skyCtlHome.length) return;
-    [document.getElementById('windCompass'), document.querySelector('#map .leaflet-top.leaflet-right')].forEach(function (el) {
+    [document.querySelector('#map .leaflet-top.leaflet-right')].forEach(function (el) {
       if (!el) return; skyCtlHome.push({ el: el, parent: el.parentNode, next: el.nextSibling }); k.appendChild(el); });
   } else {
     skyCtlHome.forEach(function (h) { h.parent.insertBefore(h.el, h.next); }); skyCtlHome = [];
@@ -5632,6 +5659,47 @@ function toggleSidebar() {
   var btn = document.getElementById('sidebarToggleBtn');
   if (btn) btn.setAttribute('aria-expanded', open ? 'true' : 'false');
 }
+// ── Desktop side panel collapse (v1.5.48) ─────────────────
+// The tab on the panel's edge hides it (map goes full width) and shows it again (map shrinks back).
+// Leaflet only notices WINDOW resizes, so the map is told after the slide; the 3D iframes resize themselves.
+var SIDEBAR_KEY = 'pilnk.sidebarCollapsed';
+function sidebarResized() {
+  var fix = function () { if (typeof map !== 'undefined' && map && map.invalidateSize) map.invalidateSize(); };
+  setTimeout(fix, 300);   // after the .25s slide
+}
+function setSidebarCollapsed(on, save) {
+  document.body.classList.toggle('sidebar-collapsed', !!on);
+  var t = document.getElementById('sidebarTab'), lbl = on ? 'Show side panel' : 'Hide side panel';
+  if (t) { t.title = lbl; t.setAttribute('aria-label', lbl); t.setAttribute('aria-expanded', on ? 'false' : 'true'); }
+  if (save !== false) { try { localStorage.setItem(SIDEBAR_KEY, on ? '1' : '0'); } catch (e) {} }
+  sidebarResized();
+}
+function toggleSidebarCollapse() { setSidebarCollapsed(!document.body.classList.contains('sidebar-collapsed')); }
+setSidebarCollapsed(document.body.classList.contains('sidebar-collapsed'), false);   // labels match what the early script restored
+// ── Browser full screen (v1.5.48) — hides the browser's own bars; Esc or the button again leaves it ──
+var FS_ICON_ON  = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M8 3H5a2 2 0 0 0-2 2v3M21 8V5a2 2 0 0 0-2-2h-3M3 16v3a2 2 0 0 0 2 2h3M16 21h3a2 2 0 0 0 2-2v-3"/></svg>';
+var FS_ICON_OFF = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M8 3v3a2 2 0 0 1-2 2H3M21 8h-3a2 2 0 0 1-2-2V3M3 16h3a2 2 0 0 1 2 2v3M16 21v-3a2 2 0 0 1 2-2h3"/></svg>';
+function fsActive() { return !!(document.fullscreenElement || document.webkitFullscreenElement); }
+function toggleFullscreen() {
+  var d = document.documentElement;
+  try {
+    var p = fsActive() ? (document.exitFullscreen || document.webkitExitFullscreen).call(document)
+                       : (d.requestFullscreen || d.webkitRequestFullscreen).call(d);
+    if (p && p.catch) p.catch(function () {});
+  } catch (e) {}
+}
+function fsSync() {
+  var b = document.getElementById('fsBtn'); if (!b) return;
+  var on = fsActive();
+  b.classList.toggle('on', on); b.innerHTML = on ? FS_ICON_OFF : FS_ICON_ON;
+  b.title = on ? 'Exit full screen (Esc)' : 'Full screen'; b.setAttribute('aria-label', b.title);
+}
+(function () {
+  var d = document.documentElement, b = document.getElementById('fsBtn');
+  if (b && !(d.requestFullscreen || d.webkitRequestFullscreen)) b.style.display = 'none';   // e.g. iPhone Safari: no API, no button
+  document.addEventListener('fullscreenchange', fsSync); document.addEventListener('webkitfullscreenchange', fsSync);
+  fsSync();
+})();
 // Selected plane's current latlng — from the DOM marker if present, else from data (canvas mode).
 function planeLatLng(cs){
   if(markers[cs]) return markers[cs].getLatLng();
@@ -8772,6 +8840,10 @@ var wxPanel = (function() {
     var panel = document.getElementById('wxPanel');
     var btn   = document.getElementById('windCompass');
     if (visible) {
+      // v1.5.48: drop down under the header chip, right edge lined up with it, kept on screen
+      var cr = btn.getBoundingClientRect(), pw = panel.offsetWidth || 340;
+      panel.style.right = 'auto';
+      panel.style.left = Math.max(10, Math.min(cr.right - pw, window.innerWidth - pw - 10)) + 'px';
       panel.classList.add('show');
       btn.classList.add('active');
       if (!loaded) load();
