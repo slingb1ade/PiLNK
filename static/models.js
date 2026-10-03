@@ -15,7 +15,8 @@ const MODEL_ORIENT={ 'a320_200.glb':{yaw:-90}, 'atr72.glb':{yaw:90}, 'b777_klm.g
   'b787.glb':{yaw:180}, 'a350.glb':{yaw:180}, 'b1b.glb':{yaw:0}, 'c17.glb':{yaw:-90},
   'a400.glb':{yaw:0},
   'bizjet.glb':{yaw:180}, 'crj.glb':{yaw:180},
-  'p8.glb':{yaw:0}, 't38.glb':{yaw:-90}, 'hawk.glb':{yaw:180} };   // measured, corrected mapping — confirm on a live aircraft before release (a400: confirmed 30 Sep)
+  'p8.glb':{yaw:0}, 't38.glb':{yaw:-90}, 'hawk.glb':{yaw:180},
+  'e7.glb':{yaw:0} };   // measured, corrected mapping — confirm on a live aircraft before release (a400: confirmed 30 Sep)
 /* Real wingspan in metres, per model. Every model is normalised to this at load, so a Cessna is drawn
    Cessna-sized next to a 747. Until now everything was normalised to a single 40 m span, which made an
    ATR 48% too big and a 777 38% too small — invisible in a chase shot where there is nothing to compare
@@ -26,7 +27,8 @@ const MODEL_SPAN={ 'c172.glb':11.0, 'b429.glb':13.0, 'c208.glb':15.9, 'atr72.glb
   'b52.glb':56.4, 'e3.glb':44.4, 'kc135.glb':39.9, 'kc46.glb':47.6,
   'b787.glb':60.1, 'a350.glb':64.8, 'b1b.glb':41.8, 'c17.glb':51.8, 'a400.glb':42.4,
   'bizjet.glb':16.2, 'crj.glb':24.9,
-  'p8.glb':37.6, 't38.glb':7.7, 'hawk.glb':9.4 };   // Phenom 300E and CRJ-900 as modelled; TYPE_SPAN resizes each type
+  'p8.glb':37.6, 't38.glb':7.7, 'hawk.glb':9.4,
+  'e7.glb':34.4 };   // Phenom 300E and CRJ-900 as modelled; TYPE_SPAN resizes each type
 /* ---------- true size: scale by the WINGS, not the longest side (1 Oct 2026) ----------
    Both pages used to divide MODEL_SPAN by max(size.x,size.z) and call it the span. For a long, thin jet that
    is the fuselage: the T-38 (14.1 m long, 7.7 m span) was drawn at 55% of its real size, the Hawk ~80%, the
@@ -104,6 +106,10 @@ function modelFor(t,cat){ t=(t||'').toUpperCase();
   if(t==='P8')return'p8.glb';            // P-8 Poseidon — RNZAF flies four from Ohakea; exact, no other code is just 'P8'
   if(t==='T38')return't38.glb';          // T-38 Talon, USAF trainer — exact
   if(t==='HAWK')return'hawk.glb';        // BAe Hawk, RAF/Red Arrows — exact
+  /* E-7 Wedgetail (737-700 AEW&C), RAAF and now RAF from Lossiemouth. 'E737' is the ICAO Doc 8643 designator
+     (doc8643.com/aircraft/E737). No node had reported one when this was added, and some databases list them as
+     plain B737 — those still get the 737, the right airframe, just without the radar. Span 34.4 m: no winglets. */
+  if(t==='E737')return'e7.glb';
   if(BIZJET_MODEL&&BIZJET.includes(t))return BIZJET_MODEL;
   if(REGIONAL_MODEL&&REGIONAL.includes(t))return REGIONAL_MODEL;
   if(EJET.includes(t))return'a320_200.glb';
