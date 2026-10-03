@@ -672,7 +672,7 @@ function findProps(root){
     if(!parent) continue;
     if(named.some(o=>o!==n&&isAncestor(o,n))) continue;
     const inv=new THREE.Matrix4().copy(parent.matrixWorld).invert();
-    const b=new THREE.Box3(), v=new THREE.Vector3(), m=new THREE.Matrix4();
+    const b=new THREE.Box3(), v=new THREE.Vector3(), m=new THREE.Matrix4(), sum=new THREE.Vector3(); let cnt=0;
     n.traverse(o=>{
       if(!o.isMesh||!o.geometry) return;
       const g=o.geometry; if(!g.boundingBox) g.computeBoundingBox();
@@ -681,10 +681,19 @@ function findProps(root){
         v.set((i&1)?bb.max.x:bb.min.x,(i&2)?bb.max.y:bb.min.y,(i&4)?bb.max.z:bb.min.z).applyMatrix4(m);
         b.expandByPoint(v);
       }
+      const P=g.attributes.position; if(P) for(let i=0;i<P.count;i++){ v.fromBufferAttribute(P,i).applyMatrix4(m); sum.add(v); cnt++; }
     });
     if(b.isEmpty()) continue;
     const size=new THREE.Vector3(), c=new THREE.Vector3();
     b.getSize(size); b.getCenter(c);
+    /* PIVOT ON THE VERTEX AVERAGE, not the box centre (3 Oct 2026). The box is still right for the shape test
+       above and the shaft axis; it is wrong for WHERE the shaft is. A rotor with an odd number of blades has a
+       lopsided box — three blades at 120° put its centre 1.44 m off the AS350's mast, so the rotor would have
+       wobbled round a circle nearly 3 m across instead of turning on its hub. The average of the vertices lands
+       on the hub for any number of evenly spaced blades: 0.11 m off on the AS350. Every model this already
+       turned had even blade counts, which is why it never showed — re-measured on the ATR (2.1 cm) and the
+       C-130 (1.4 cm), so those do not visibly move. */
+    if(cnt) c.copy(sum).divideScalar(cnt);
     const d=[size.x,size.y,size.z];
     let ax=0; for(let i=1;i<3;i++) if(d[i]<d[ax]) ax=i;
     const rest=[]; for(let i=0;i<3;i++) if(i!==ax) rest.push(d[i]);
