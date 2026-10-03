@@ -3940,6 +3940,10 @@ function routeSrcText(ok) {
 
 function lookupRoute(callsign, callback) {
   var cs = callsign.trim();
+  var la = lastAircraft[cs];
+  if (la && la._csFromReg) {   // listed by registration (no callsign): there is no flight number to look up
+    callback({route:null, reg:cs, airline:null, ts:Date.now(), oLat:null, oLon:null, dLat:null, dLon:null}); return;
+  }
   var hit = routeCache[cs];
   if (hit !== undefined && (Date.now() - hit.ts) < ROUTE_TTL_MS) { callback(hit); return; }
   fetch('/api/adsbdb/' + cs)
@@ -5540,10 +5544,43 @@ setInterval(updateGhosts, 10000);  // poll gone-dark
 setInterval(applyHunter, 10000);   // re-apply fade to newly-seen aircraft
 
 // ── FLIGHTS ───────────────────────────────────────────────
+// No callsign (v1.5.49). A plane that stops sending its callsign keeps the row it had; one that never sent
+// one is listed — and opens its card — under its registration. Before this both simply vanished: a USAF C-17
+// with its callsign off could be heard but never clicked. csForHex remembers which key each hex is listed
+// under, so a registration row is swapped for the callsign row the moment the callsign arrives (one plane,
+// never two). No callsign and no registration: still not listed. _csFromReg marks a registration key, which
+// is not a flight number: no route lookup, and it is never sent anywhere as a callsign.
+var csForHex = {};
+function dropAircraft(cs){
+  var a=lastAircraft[cs], h=a&&String(a.hex||'').toLowerCase();
+  if(h && csForHex[h]===cs) delete csForHex[h];
+  if(markers[cs]){map.removeLayer(markers[cs]);delete markers[cs];}
+  delete lastAircraft[cs];
+  delete lastSeen[cs];
+  delete markerSig[cs];
+  removeTrail(cs);
+  removeLabel(cs);
+}
+function nocsKey(a){
+  var h=String(a.hex||'').toLowerCase(), fl=a.flight?String(a.flight).trim():'';
+  if(fl){
+    var prev=csForHex[h];
+    if(prev && prev!==fl && lastAircraft[prev] && lastAircraft[prev]._csFromReg) dropAircraft(prev);
+    if(h) csForHex[h]=fl;
+    return a;
+  }
+  var keep=csForHex[h];
+  if(keep && lastAircraft[keep] && !lastAircraft[keep]._csFromReg){ a.flight=keep; return a; }
+  var reg=a.r?String(a.r).trim():'';
+  if(!reg || !h) return null;
+  a.flight=reg; a._csFromReg=true; csForHex[h]=reg;
+  return a;
+}
+
 function updateFlights(){
   if(document.hidden) return;   // skip the whole tick when the display is blanked / tab backgrounded
   fetch('/flights').then(function(r){return r.json();}).then(function(data){
-    var ac=(data.aircraft||[]).filter(function(a){return a.lat&&a.lon&&a.flight;});
+    var ac=(data.aircraft||[]).filter(function(a){return a.lat&&a.lon;}).map(nocsKey).filter(Boolean);
     document.getElementById('hdr-count').textContent=ac.length+' AIRCRAFT';
     var seen={};
     var now = Date.now();
@@ -5577,14 +5614,7 @@ function updateFlights(){
     Object.keys(lastAircraft).forEach(function(cs){
       if(!seen[cs]){
         var age = now - (lastSeen[cs]||0);
-        if(age > 60000){
-          if(markers[cs]){map.removeLayer(markers[cs]);delete markers[cs];}
-          delete lastAircraft[cs];
-          delete lastSeen[cs];
-          delete markerSig[cs];
-          removeTrail(cs);
-          removeLabel(cs);
-        }
+        if(age > 60000) dropAircraft(cs);
       }
     });
     if(window.aircraftLayer) aircraftLayer.redraw();
@@ -5855,7 +5885,7 @@ function renderMilSection(info, a) {
       window._pendingCatch = {
         hex: a.hex.toUpperCase(),
         icao_type: a.t.toUpperCase(),
-        callsign: (a.flight || '').trim(),
+        callsign: a._csFromReg ? '' : (a.flight || '').trim(),
         country: c.country_code || ''
       };
       var cbtn = document.getElementById('ccMilCatchBtn');
