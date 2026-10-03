@@ -2442,6 +2442,46 @@ def api_watchlist_alerts():
             return jsonify(out)
         return jsonify({'enabled': True, 'alerts': [], 'unseen': 0, 'error': type(e).__name__}), 503
 
+# ── Airport live cams near this node (v1.5.51, 3 Oct 2026) ──────────────────
+# pilnk.io keeps a hand-verified list of airport live streams and re-checks
+# every 10 min which are live (api/cams.php + api/cron/cams_check.php). The
+# dashboard card asks /api/cams and offers a LIVE STREAM button only when one
+# fits the aircraft. Metadata only: the video itself is the channel's own
+# official YouTube embed, played by the viewer's browser. Nothing is streamed,
+# recorded or relayed by the node (AJ's legal line). Location goes up at 1 dp,
+# like the rest of the node's pilnk.io calls.
+_CAMS_CACHE = {'ts': 0.0, 'data': None}
+_CAMS_TTL = 120   # seconds; pilnk.io itself only re-checks every 10 min
+
+@app.route('/api/cams', methods=['GET'])
+def api_cams():
+    if RX_LAT is None or RX_LON is None:
+        return jsonify({'ok': True, 'count': 0, 'cams': [], 'note': 'no receiver location'})
+    now = time.time()
+    if _CAMS_CACHE['data'] is not None and (now - _CAMS_CACHE['ts']) < _CAMS_TTL:
+        out = dict(_CAMS_CACHE['data']); out['cached'] = True
+        return jsonify(out)
+    try:
+        r = requests.get('https://pilnk.io/api/cams.php',
+                         params={'lat': round(float(RX_LAT), 1), 'lon': round(float(RX_LON), 1), 'radius_nm': 150},
+                         headers={'User-Agent': 'PiLNK/1.0'}, timeout=8)
+        data = r.json()
+        if not isinstance(data, dict) or not data.get('ok') or not isinstance(data.get('cams'), list):
+            raise ValueError('unexpected payload: ' + str(data)[:120])
+        out = {'ok': True, 'count': len(data['cams']), 'cams': data['cams'], 'fetched_at': int(now)}
+        _CAMS_CACHE['ts'] = now
+        _CAMS_CACHE['data'] = out
+        return jsonify(out)
+    except Exception as e:
+        # Fail-soft, never silent. No cams = no button, which is the safe answer.
+        logging.warning('[cams] live cam fetch failed (serving cache if under 30 min): %s', e)
+        # A stream that was live 30+ min ago may have ended: drop it rather
+        # than offer a dead button.
+        if _CAMS_CACHE['data'] is not None and (now - _CAMS_CACHE['ts']) < 1800:
+            out = dict(_CAMS_CACHE['data']); out['stale'] = True
+            return jsonify(out)
+        return jsonify({'ok': False, 'count': 0, 'cams': [], 'error': type(e).__name__}), 503
+
 # ── Military card proxies (24 Sep 2026) ─────────────────────────────────────
 # The cinematic card's military section called pilnk.io straight from the
 # browser with credentials:'include'. From a dashboard on the Pi's LAN address

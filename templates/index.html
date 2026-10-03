@@ -2115,6 +2115,7 @@
           <div class="cc-planespotters" id="ccPhotoSource">📷 Planespotters.net</div>
           <button id="ccAddPhotoBtn" onclick="ccAddPhoto()" style="display:none;background:none;border:1px solid rgba(167,139,250,0.3);border-radius:4px;color:#a78bfa;font-family:'Share Tech Mono',monospace;font-size:0.58rem;padding:2px 8px;cursor:pointer;letter-spacing:0.05em;">📸 Add Photo</button>
           <button id="cc3dBtn" onclick="cc3DView()" title="Watch this aircraft in the 3D approach view" style="background:rgba(124,58,237,0.12);border:1px solid rgba(167,139,250,0.45);border-radius:4px;color:#a78bfa;font-family:'Share Tech Mono',monospace;font-size:0.58rem;padding:2px 8px;cursor:pointer;letter-spacing:0.05em;">🛬 3D View</button>
+          <button id="ccLiveBtn" onclick="ccLiveToggle()" title="Watch a live stream from this airport" style="display:none;background:rgba(220,38,38,0.12);border:1px solid rgba(248,113,113,0.5);border-radius:4px;color:#f87171;font-family:'Share Tech Mono',monospace;font-size:0.58rem;padding:2px 8px;cursor:pointer;letter-spacing:0.05em;">🔴 LIVE STREAM</button>
           <button id="ccRecBtn" onclick="ccRecToggle()" title="Record this aircraft's track until it leaves your coverage (Flight Capsule)" style="display:none;background:rgba(220,38,38,0.12);border:1px solid rgba(248,113,113,0.5);border-radius:4px;color:#f87171;font-family:'Share Tech Mono',monospace;font-size:0.58rem;padding:2px 8px;cursor:pointer;letter-spacing:0.05em;">● REC</button>
           <button id="ccAutoBtn" onclick="ccAutoToggle()" title="Always record this aircraft whenever your node hears it" style="display:none;background:rgba(56,189,248,0.10);border:1px solid rgba(56,189,248,0.45);border-radius:4px;color:#38bdf8;font-family:'Share Tech Mono',monospace;font-size:0.58rem;padding:2px 8px;cursor:pointer;letter-spacing:0.05em;">⟳ AUTO</button>
         </div>
@@ -6148,6 +6149,7 @@ function populateBDS(a) {
 // the refresh cheap enough to run every tick.
 function refreshCinematicCardLive(a, cs) {
   if (!a) return;
+  if (typeof ccLiveRefresh === 'function') ccLiveRefresh(a, cs);
   var ph = getPhase(a, cs);
   var col = ph.color === '#ffffff' ? '#dc2626' : ph.color;
   var vr = a.baro_rate || a.geom_rate || 0;
@@ -6247,6 +6249,7 @@ function openCinematicCard(cs, auto) {
 
   lookupRoute(cs, function(info) {
     if (info.airline) document.getElementById('ccAirline').textContent = info.airline;
+    if (ccCurrentCS === cs) ccLiveRefresh(lastAircraft[cs] || a, cs);
   });
 
   // Meta tags
@@ -6276,6 +6279,11 @@ function openCinematicCard(cs, auto) {
   }
 
   // Phase indicator and waveform are live — written by refreshCinematicCardLive().
+
+  // Live stream — a previous aircraft's stream never carries over; offer this one's cam (if any).
+  ccLiveStop();
+  ccCam = null;
+  ccLiveRefresh(a, cs);
 
   // Photo — reset first
   document.getElementById('ccImg').style.display = 'none';
@@ -6457,6 +6465,90 @@ function ccImgError() {
   ccPendingSource = '';
 }
 
+// ── Airport live stream on the card (v1.5.51) ─────────────────────────────
+// pilnk.io keeps a hand-verified list of airport cams (api/cams.php) and checks
+// every 10 min which are live. The node proxies the live ones near it
+// (/api/cams). The card offers LIVE STREAM only when one fits THIS aircraft:
+// low (≤ 6,000 ft or on the ground) within 20 nm of a cam airport, else a route
+// that starts or ends there. No live cam → no button (never a dead button).
+// Legal line (AJ): the channel's own official YouTube embed, privacy-enhanced,
+// muted until the viewer unmutes. Nothing is re-streamed, recorded or proxied.
+var liveCams = [];
+var ccCam = null;        // cam offered on the open card
+var ccLiveOn = false;    // its stream is playing in the photo slot
+var ccLiveSavedSource = '';
+var LIVE_LOW_FT = 6000, LIVE_NEAR_NM = 20, LIVE_ROUTE_NM = 3;
+function loadLiveCams() {
+  fetch('/api/cams').then(function(r){ return r.json(); }).then(function(j) {
+    liveCams = (j && Array.isArray(j.cams)) ? j.cams.filter(function(c){
+      return c && /^[A-Za-z0-9_-]{11}$/.test(String(c.video_id || '')) && isFinite(c.lat) && isFinite(c.lon);
+    }) : [];
+    if (ccVisible && ccCurrentCS) ccLiveRefresh(lastAircraft[ccCurrentCS], ccCurrentCS);
+  }).catch(function(e){ console.warn('[live] cam list unavailable:', e); liveCams = []; });
+}
+function pickLiveCam(a, info) {
+  if (!a || !liveCams.length) return null;
+  var alt = a.alt_baro, best = null, bd = Infinity;
+  var low = (alt === 'ground') || (typeof alt === 'number' && alt <= LIVE_LOW_FT);
+  if (low && a.lat != null && a.lon != null) {
+    liveCams.forEach(function(c){ var d = haversineNm(a.lat, a.lon, c.lat, c.lon); if (d <= LIVE_NEAR_NM && d < bd) { bd = d; best = c; } });
+    if (best) return best;
+  }
+  if (info) {
+    var ends = [[info.dLat, info.dLon], [info.oLat, info.oLon]];
+    for (var i = 0; i < ends.length; i++) {
+      if (ends[i][0] == null || ends[i][1] == null) continue;
+      for (var k = 0; k < liveCams.length; k++) {
+        if (haversineNm(ends[i][0], ends[i][1], liveCams[k].lat, liveCams[k].lon) <= LIVE_ROUTE_NM) return liveCams[k];
+      }
+    }
+  }
+  return null;
+}
+function ccLiveRefresh(a, cs) {
+  if (ccLiveOn) return;                       // never yank a stream someone is watching
+  var btn = document.getElementById('ccLiveBtn');
+  if (!btn) return;
+  var info = routeCache[cs];
+  ccCam = pickLiveCam(a, info && info.ts ? info : null);
+  btn.style.display = ccCam ? '' : 'none';
+  btn.textContent = '🔴 LIVE STREAM';
+  if (ccCam) btn.title = 'Watch ' + (ccCam.label || ccCam.icao) + ' live' + (ccCam.channel_name ? ' — stream by ' + ccCam.channel_name : '');
+}
+function ccLiveToggle() {
+  if (ccLiveOn) { ccLiveStop(); return; }
+  if (!ccCam || !/^[A-Za-z0-9_-]{11}$/.test(String(ccCam.video_id || ''))) return;
+  // Watching holds the card open: cancel an auto-card's dismiss timer.
+  if (ccDismissTimer) { clearTimeout(ccDismissTimer); ccDismissTimer = null; }
+  var bar = document.getElementById('ccTimerBar');
+  bar.style.transition = 'none'; bar.style.transform = 'scaleX(0)';
+  var fr = document.createElement('iframe');
+  fr.id = 'ccLiveFrame';
+  fr.src = 'https://www.youtube-nocookie.com/embed/' + ccCam.video_id + '?autoplay=1&mute=1&playsinline=1&rel=0';
+  fr.setAttribute('allow', 'autoplay; encrypted-media; picture-in-picture; fullscreen');
+  fr.setAttribute('allowfullscreen', '');
+  fr.setAttribute('referrerpolicy', 'strict-origin-when-cross-origin');
+  fr.title = 'Live stream — ' + (ccCam.label || ccCam.icao);
+  fr.style.cssText = 'position:absolute;inset:0;width:100%;height:100%;border:0;z-index:4;background:#000;';
+  document.getElementById('ccPhoto').appendChild(fr);
+  var src = document.getElementById('ccPhotoSource');
+  ccLiveSavedSource = src.textContent;
+  src.textContent = '🔴 Live: ' + (ccCam.label || ccCam.icao) + (ccCam.channel_name ? ' · ▶ ' + ccCam.channel_name + ' (YouTube)' : '');
+  ccLiveOn = true;
+  var btn = document.getElementById('ccLiveBtn');
+  btn.textContent = '📷 PHOTO';
+  btn.title = 'Back to the photo';
+}
+function ccLiveStop() {
+  var fr = document.getElementById('ccLiveFrame');
+  if (fr) { fr.src = 'about:blank'; fr.remove(); }
+  if (!ccLiveOn) return;
+  ccLiveOn = false;
+  document.getElementById('ccPhotoSource').textContent = ccLiveSavedSource;
+  var btn = document.getElementById('ccLiveBtn');
+  if (btn) { btn.textContent = '🔴 LIVE STREAM'; btn.title = 'Watch a live stream from this airport'; }
+}
+
 // Reset the photo slot between aircraft. Without this the previous
 // aircraft's photo stays on screen until the next one finishes loading.
 function ccResetPhoto() {
@@ -6480,6 +6572,7 @@ function closeCinematicCard() {
   selectedFlight = null;
   if (ccDismissTimer) { clearTimeout(ccDismissTimer); ccDismissTimer = null; }
   stopCCWaveform();
+  ccLiveStop();
   document.getElementById('cinematicOverlay').classList.remove('active');
   document.removeEventListener('click', ccCloseOnAnyClick, true);
   document.getElementById('ccAddPhotoBtn').style.display = 'none';
@@ -7033,6 +7126,11 @@ function updateWatchlistPulses(){
 
 setInterval(loadWatchAlerts, 20000);
 loadWatchAlerts();
+
+// Airport live cams near this node (card LIVE STREAM button). The list changes
+// slowly (pilnk.io re-checks every 10 min), so 5 min here is plenty.
+setInterval(loadLiveCams, 300000);
+loadLiveCams();
 
 // Flight Capsules UI (v1.5.22) lives in static/capsules.js. Loaded dynamically
 // so it runs AFTER this script has defined map / lastAircraft / the card state
