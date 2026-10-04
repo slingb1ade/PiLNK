@@ -10,6 +10,8 @@ stats_records.json
 coverage.json
 ota_state.json
 audio_build_state.json
+denoise_state.json
+.audio_build_task
 badge_announced.json
 __pycache__/
 *.pyc

@@ -141,6 +141,31 @@ if [ -n "$RADIO_BUILD_WHY" ] && [ -f "$PILNK_DIR/pilnkradio-install.sh" ]; then
     fi
 fi
 
+# Step 3.7: Live-denoise files for a node that already has the radio engine.
+#
+# v1.5.29 shipped denoise in the engine but nothing ever delivered the two
+# files it needs (libdf.so for this CPU, and the model), so it only worked on
+# the developer's hand-set-up receivers. They now travel in the repo
+# (denoise/); this puts them in place. A full engine build (step 3.6) already
+# does this at its end, so only act when no build was started above.
+# Same three rules as 3.6: detached, fail-soft, idempotent (cmp, so a node
+# that already matches does nothing at all).
+if [ -z "$RADIO_BUILD_WHY" ] && [ -x "$PILNKRADIO_BIN" ] && [ -f "$PILNK_DIR/denoise-install.sh" ]; then
+    DN_ARCH="$(uname -m)"
+    DN_LIB="$PILNK_DIR/denoise/$DN_ARCH/libdf.so"
+    DN_MODEL="$PILNK_DIR/denoise/DeepFilterNet3_onnx.tar.gz"
+    if [ -f "$DN_LIB" ] && { ! cmp -s "$DN_LIB" /usr/local/lib/pilnk/libdf.so \
+            || ! cmp -s "$DN_MODEL" /usr/local/share/pilnk/DeepFilterNet3_onnx.tar.gz; }; then
+        if systemctl list-unit-files pilnk-audio-build.service >/dev/null 2>&1; then
+            log "ATC audio: live-denoise files missing or out of date — installing (detached)"
+            echo denoise > "$PILNK_DIR/.audio_build_task"
+            sudo -n systemctl start --no-block pilnk-audio-build 2>> "$LOG_FILE" \
+                && log "denoise install started (journalctl -u pilnk-audio-build to follow)" \
+                || { rm -f "$PILNK_DIR/.audio_build_task"; log "could not start denoise install (continuing — non-fatal)"; }
+        fi
+    fi
+fi
+
 # Step 4: Restart the PiLNK service to load the new code.
 log "Restarting PiLNK service..."
 

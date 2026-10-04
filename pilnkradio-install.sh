@@ -67,6 +67,18 @@ _on_exit() {
     if [ "$rc" -eq 0 ]; then _state ok; else _state failed "$LAST_ERR"; fi
     return "$rc"
 }
+
+# ── Denoise-only run (4 Oct 2026) ───────────────────────────
+# update.sh asks for this when the engine is fine but the live-denoise files
+# are missing or out of date: it writes "denoise" to the task file and starts
+# pilnk-audio-build. Install those files and stop — no compile, and the engine
+# build state above is left exactly as it was (hence BEFORE the EXIT trap).
+AUDIO_TASK_FILE="${PILNK_AUDIO_TASK_FILE:-$HOME/pilnk/.audio_build_task}"
+if [ -n "${PILNKRADIO_NONINTERACTIVE:-}" ] && [ -f "$AUDIO_TASK_FILE" ] \
+   && [ "$(cat "$AUDIO_TASK_FILE" 2>/dev/null)" = "denoise" ]; then
+    rm -f "$AUDIO_TASK_FILE"
+    exec bash "$(dirname "$0")/denoise-install.sh"
+fi
 trap _on_exit EXIT
 
 # prompts must survive `curl | bash` (stdin is the pipe) — read from the terminal
@@ -479,6 +491,12 @@ else
         JRNL_LAST="$(printf '%s' "$JRNL_TAIL" | tail -2 | tr '\n' ' ')"
         die "engine not answering on :5656 — journal: ${JRNL_LAST:-<journal empty>}"
     fi
+fi
+
+# Live denoise files (4 Oct 2026). Never fatal: a radio without denoise is
+# still a radio. Restarts the engine itself if it installed anything.
+if [ -f "$SRC/denoise-install.sh" ]; then
+    sudo bash "$SRC/denoise-install.sh" || warn "denoise files not installed (radio unaffected)"
 fi
 
 printf "\n${BOLD}${GREEN}════════ RADIO INSTALL COMPLETE ════════${RESET}\n"

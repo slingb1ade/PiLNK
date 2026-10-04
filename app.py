@@ -1647,6 +1647,7 @@ def ping_server():
                 'env': NODE_ENV,
                 'features': dict({
                     'sdr_audio': _sdr_audio_feature(),
+                    'denoise': _denoise_feature(),
                     'audio_build': _audio_build_feature(),
                     'audio_build_err': _audio_build_err(),
                     'atc_stt':   'ready' if os.path.exists(ATC_TRANSCRIPT_PATH) else 'absent',
@@ -1654,6 +1655,10 @@ def ping_server():
                     # probe above. Answers "which nodes COULD run STT" with a
                     # measurement instead of a guess from the model name.
                     'stt_bench': STT_BENCH.get('score'),
+                    # Standing maintenance consent. pilnk.io only lets the
+                    # operator wake a node that reports True here; the node
+                    # still re-checks its own config before every action.
+                    'remote_maintenance': _remote_maintenance_enabled(),
                 }, **_ota_ping_features()),
             }
             if emergency_aircraft:
@@ -1699,6 +1704,9 @@ def ping_server():
                         'from':      (str(ib['from'])[:24] if ib.get('from') else None),
                         'ts':        time.time(),
                     }
+                # Remote Assist: has the operator opened a maintenance session
+                # for this node? (Standing consent no longer holds one open.)
+                _assist_note_wanted(rj.get('assist_wanted'))
             except Exception as e:
                 print(f'[PILNK] Config adopt skipped: {e}')
 
@@ -1895,6 +1903,120 @@ def _sdr_audio_feature():
         # 'ready' used to swallow.
         return 'no_device'
     return 'running:' + str(s.get('version') or 'unknown')
+
+_DENOISE_WHY_TAGS = (
+    ('no library', 'no_lib'),
+    ('no model', 'no_model'),
+    ('probe crashed', 'probe_crash'),
+    ('probe failed', 'probe_fail'),
+    ('probe timed out', 'probe_fail'),
+    ('probe could not fork', 'probe_fail'),
+    ('dlopen', 'dlopen'),
+    ('library lacks', 'bad_lib'),
+)
+
+
+def _denoise_state_from_status(s):
+    """Map the engine's /sdr/status 'denoise' block to a short fleet-groupable
+    state. Kept separate from the HTTP call so it can be tested on its own."""
+    dn = s.get('denoise') if isinstance(s, dict) else None
+    if not isinstance(dn, dict):
+        return 'old_engine'          # engine predates denoise reporting (< 2.1.0)
+    if dn.get('available') is True:
+        return 'on'
+    why = str(dn.get('why') or '')
+    for prefix, tag in _DENOISE_WHY_TAGS:
+        if why.startswith(prefix):
+            return 'off:' + tag
+    return 'off:other'
+
+
+def _denoise_feature():
+    """Whether live denoise is actually ON for listeners here, and if not, why.
+
+    v1.5.29 shipped denoise in the engine, but nothing delivered the two files
+    it needs, so for nine days it worked only on the developer's own
+    receivers. The DENOISE button hides itself when unavailable, so from
+    outside "not delivered" and "nobody tried it" looked the same. This puts
+    the engine's own answer in the ping (4 Oct 2026).
+
+      n/a          no radio engine on this node
+      unknown      engine not answering (sdr_audio says why)
+      on           available to listeners
+      off:<why>    no_lib, no_model, probe_crash, probe_fail, dlopen, bad_lib, other
+      old_engine   engine too old to say
+    """
+    if not os.path.exists('/usr/local/bin/pilnkradio'):
+        return 'n/a'
+    try:
+        s = requests.get('http://127.0.0.1:5656/sdr/status', timeout=1.5).json()
+    except Exception:
+        return 'unknown'
+    return _denoise_state_from_status(s)
+
+# ── Live-denoise files: install kick (4 Oct 2026) ─────────────────────────────
+# The denoise library + model ship in denoise/ and denoise-install.sh puts them
+# where the radio engine loads them. update.sh asks for that too (step 3.7),
+# but on the OTA that FIRST brings that step, bash is still reading the old
+# update.sh — so the new step cannot run until the release after. This app.py
+# is the new code the moment the service restarts, so it asks once at start-up.
+# Same privileged path as the OTA engine build (pilnk-audio-build). Idempotent:
+# files that already match mean nothing happens. Never raises.
+_DN_BASE = os.path.dirname(os.path.abspath(__file__))
+import platform as _dn_platform   # app.py imports platform only inside functions
+_DN_ARCH = _dn_platform.machine()
+_DN_ENGINE_BIN = '/usr/local/bin/pilnkradio'
+_DN_LIB_DST = '/usr/local/lib/pilnk/libdf.so'
+_DN_MODEL_DST = '/usr/local/share/pilnk/DeepFilterNet3_onnx.tar.gz'
+
+
+def _dn_run(argv):
+    return subprocess.run(argv, capture_output=True, timeout=20).returncode
+
+
+def _dn_differs(a, b):
+    try:
+        if os.path.getsize(a) != os.path.getsize(b):
+            return True
+        with open(a, 'rb') as fa, open(b, 'rb') as fb:
+            while True:
+                ca, cb = fa.read(1 << 20), fb.read(1 << 20)
+                if ca != cb:
+                    return True
+                if not ca:
+                    return False
+    except OSError:
+        return True
+
+
+def _denoise_kick():
+    """'skip' (no engine / no build for this CPU), 'current', 'started' or 'failed'."""
+    task = os.path.join(_DN_BASE, '.audio_build_task')
+    try:
+        lib = os.path.join(_DN_BASE, 'denoise', _DN_ARCH, 'libdf.so')
+        model = os.path.join(_DN_BASE, 'denoise', 'DeepFilterNet3_onnx.tar.gz')
+        if not (os.path.exists(_DN_ENGINE_BIN) and os.path.isfile(lib)
+                and os.path.isfile(os.path.join(_DN_BASE, 'denoise-install.sh'))):
+            return 'skip'
+        if not (_dn_differs(lib, _DN_LIB_DST) or _dn_differs(model, _DN_MODEL_DST)):
+            return 'current'
+        with open(task, 'w') as f:
+            f.write('denoise\n')
+        if _dn_run(['sudo', '-n', 'systemctl', 'start', '--no-block', 'pilnk-audio-build']) == 0:
+            print('[PILNK] Denoise files missing or out of date — install started (pilnk-audio-build)')
+            return 'started'
+    except Exception as e:
+        print(f'[PILNK] Denoise install kick failed: {e}')
+    try:
+        os.remove(task)
+    except OSError:
+        pass
+    return 'failed'
+
+
+def _denoise_kick_later(delay=90):
+    time.sleep(delay)   # let the engine and the OTA settle first
+    _denoise_kick()
 
 def _ota_ping_features():
     """Three LOW-CARDINALITY strings for the ping's features dict — states,
@@ -2225,6 +2347,8 @@ if NODE_VERIFY_CODE != 'YOUR_VERIFY_CODE_HERE':
     ping_thread = threading.Thread(target=ping_server, daemon=True)
     ping_thread.start()
     print('[PILNK] Server ping active — reporting to pilnk.io')
+    # Live-denoise files: install if missing/different (see _denoise_kick).
+    threading.Thread(target=_denoise_kick_later, daemon=True).start()
 else:
     # No code in config.json — start Phase 2 pairing flow
     _start_pairing_flow()
@@ -5355,6 +5479,7 @@ _assist_state = {
     'expires_at': 0,        # epoch seconds
     'active': False,
     'kind': 'owner',        # 'owner' = owner pressed the button; 'maintenance' = standing consent
+    'wanted': False,        # ping reply: the operator opened a maintenance session for us
 }
 _assist_lock = threading.Lock()
 ASSIST_RESULT_CAP = 200000   # ~200KB, matches server cap
@@ -5970,13 +6095,26 @@ def _remote_maintenance_enabled():
         return False
 
 
-def assist_open_session(kind='owner'):
+def _assist_note_wanted(flag):
+    """Called from the ping loop with the reply's assist_wanted. True means the
+    operator has opened a maintenance session for this node and is waiting for
+    it to join. Only a literal True counts; anything else means not wanted."""
+    with _assist_lock:
+        _assist_state['wanted'] = (flag is True)
+
+
+def assist_open_session(kind='owner', join_only=False):
     """Open a session at pilnk.io. kind='owner' is the classic owner-pressed-the-
-    button session; kind='maintenance' is the standing session the poller keeps
-    alive while the owner has granted remote maintenance. Both only ever run
-    whitelisted capabilities — the kind is for visibility, audit and revoke."""
+    button session. kind='maintenance' with join_only=True JOINS a session the
+    operator opened under standing consent — the server never creates one for a
+    join, so a quiet node holds nothing open (4 Oct 2026; before that the node
+    re-opened a fresh session every 30 minutes, forever). Both kinds only ever
+    run whitelisted capabilities — the kind is for visibility, audit and revoke."""
     try:
-        r = _assist_post('open_session', {'kind': kind})
+        body = {'kind': kind}
+        if join_only:
+            body['join_only'] = True
+        r = _assist_post('open_session', body)
         if r.get('session_id'):
             with _assist_lock:
                 _assist_state['session_id'] = r['session_id']
@@ -6005,96 +6143,114 @@ def assist_close_session(reason='owner'):
         _assist_state['human_code'] = None
 
 
-def assist_poller():
-    """Background thread. Idle until the owner opens a session, then polls
-    pilnk.io for whitelisted requests, runs them locally, posts results back."""
-    while True:
-        with _assist_lock:
-            active = _assist_state['active']
-            sid = _assist_state['session_id']
-            exp = _assist_state['expires_at']
-            kind = _assist_state.get('kind', 'owner')
+def _assist_drop_maintenance():
+    """Forget a finished maintenance session and the wanted flag that led to it,
+    so the node goes quiet until the next ping says the operator wants in."""
+    with _assist_lock:
+        _assist_state['active'] = False
+        _assist_state['session_id'] = None
+        _assist_state['wanted'] = False
 
-        # Revoke: standing consent withdrawn while a maintenance session is live.
-        # The fresh config read here is what makes a toggle-off take effect within
-        # one cycle. Owner-initiated sessions are unaffected.
-        if active and sid and kind == 'maintenance' and not _remote_maintenance_enabled():
-            assist_close_session('owner')
-            continue
 
-        # Expiry. An owner session that expires is closed. A maintenance session
-        # that hits its 30-min cap is simply dropped, so the block below re-opens
-        # a fresh one — a rolling standing session.
-        if active and sid and time.time() > exp:
+def _assist_poll_once():
+    """One poller cycle. Returns how many seconds to sleep before the next."""
+    with _assist_lock:
+        active = _assist_state['active']
+        sid = _assist_state['session_id']
+        exp = _assist_state['expires_at']
+        kind = _assist_state.get('kind', 'owner')
+        wanted = _assist_state.get('wanted', False)
+
+    # Revoke: standing consent withdrawn while a maintenance session is live.
+    # The fresh config read here is what makes a toggle-off take effect within
+    # one cycle. Owner-initiated sessions are unaffected.
+    if active and sid and kind == 'maintenance' and not _remote_maintenance_enabled():
+        assist_close_session('owner')
+        return 0
+
+    # Expiry. An owner session that expires is closed. A maintenance session is
+    # dropped; the node joins another only when the operator opens one.
+    if active and sid and time.time() > exp:
+        if kind == 'maintenance':
+            _assist_drop_maintenance()
+        else:
+            assist_close_session('expired')
+        return 0
+
+    # No live session. With standing consent ON the node still holds nothing
+    # open: it joins only when its ping reply says the operator is waiting.
+    if not active or not sid:
+        if wanted and _remote_maintenance_enabled():
+            assist_open_session(kind='maintenance', join_only=True)
+        return 5
+
+    try:
+        r = _assist_post('poll', {'session_id': sid})
+        if r.get('session_status') and r['session_status'] != 'open':
             if kind == 'maintenance':
-                with _assist_lock:
-                    _assist_state['active'] = False
-                    _assist_state['session_id'] = None
+                _assist_drop_maintenance()
             else:
-                assist_close_session('expired')
-            continue
-
-        # No live session. Keep a maintenance session open if the owner has opted
-        # in (standing consent); otherwise stay idle exactly as before.
-        if not active or not sid:
-            if _remote_maintenance_enabled():
-                assist_open_session(kind='maintenance')
-            time.sleep(5)
-            continue
-        try:
-            r = _assist_post('poll', {'session_id': sid})
-            if r.get('session_status') and r['session_status'] != 'open':
                 with _assist_lock:
                     _assist_state['active'] = False
-                continue
-            req = r.get('request')
-            if req:
-                cap = req.get('capability')
-                params = req.get('params') or {}
-                if cap in ASSIST_ACTIONS:
-                    # WRITE tier. Gate on live consent / owner presence, then confirm.
-                    if kind == 'maintenance' and not _remote_maintenance_enabled():
-                        result = {'ok': False, 'error': 'remote maintenance consent withdrawn'}
-                        is_err = True
-                    elif cap in ASSIST_ACTIONS_OWNER_ONLY and kind != 'owner':
-                        result = {'ok': False, 'error': f'{cap} needs the owner to open a Request '
-                                  'Assist session — it is not part of standing maintenance'}
-                        is_err = True
-                    elif cap in ASSIST_ACTIONS_DESTRUCTIVE and params.get('confirm') is not True:
-                        result = {'ok': False, 'error': f'{cap} requires confirm=true'}
-                        is_err = True
-                    else:
-                        try:
-                            result = ASSIST_ACTIONS[cap](params)
-                            is_err = not (isinstance(result, dict) and result.get('ok'))
-                        except Exception as e:
-                            result = {'ok': False, 'error': f'action {cap} failed: {e}'}
-                            is_err = True
-                    _assist_log_action(cap, not is_err,
-                                       (isinstance(result, dict) and
-                                        (result.get('detail') or result.get('error'))) or '')
+            return 0
+        req = r.get('request')
+        if req:
+            cap = req.get('capability')
+            params = req.get('params') or {}
+            if cap in ASSIST_ACTIONS:
+                # WRITE tier. Gate on live consent / owner presence, then confirm.
+                if kind == 'maintenance' and not _remote_maintenance_enabled():
+                    result = {'ok': False, 'error': 'remote maintenance consent withdrawn'}
+                    is_err = True
+                elif cap in ASSIST_ACTIONS_OWNER_ONLY and kind != 'owner':
+                    result = {'ok': False, 'error': f'{cap} needs the owner to open a Request '
+                              'Assist session — it is not part of standing maintenance'}
+                    is_err = True
+                elif cap in ASSIST_ACTIONS_DESTRUCTIVE and params.get('confirm') is not True:
+                    result = {'ok': False, 'error': f'{cap} requires confirm=true'}
+                    is_err = True
                 else:
-                    fn = ASSIST_CAPABILITIES.get(cap)
-                    if fn:
-                        try:
-                            result = fn(params)
-                            is_err = isinstance(result, dict) and 'error' in result
-                        except Exception as e:
-                            result = {'error': f'capability {cap} failed: {e}'}
-                            is_err = True
-                    else:
-                        result = {'error': f'unknown capability: {cap}'}
+                    try:
+                        result = ASSIST_ACTIONS[cap](params)
+                        is_err = not (isinstance(result, dict) and result.get('ok'))
+                    except Exception as e:
+                        result = {'ok': False, 'error': f'action {cap} failed: {e}'}
                         is_err = True
-                _assist_post('result', {
-                    'request_id': req['request_id'],
-                    'result': result,
-                    'is_error': 1 if is_err else 0,
-                })
-        except Exception as e:
-            print(f'[PILNK] Assist poll error: {e}')
-        # Snappy for an owner-driven session (Claude-driven debug); gentler for a
-        # standing maintenance session, which is idle most of the time.
-        time.sleep(5 if kind == 'owner' else 20)
+                _assist_log_action(cap, not is_err,
+                                   (isinstance(result, dict) and
+                                    (result.get('detail') or result.get('error'))) or '')
+            else:
+                fn = ASSIST_CAPABILITIES.get(cap)
+                if fn:
+                    try:
+                        result = fn(params)
+                        is_err = isinstance(result, dict) and 'error' in result
+                    except Exception as e:
+                        result = {'error': f'capability {cap} failed: {e}'}
+                        is_err = True
+                else:
+                    result = {'error': f'unknown capability: {cap}'}
+                    is_err = True
+            _assist_post('result', {
+                'request_id': req['request_id'],
+                'result': result,
+                'is_error': 1 if is_err else 0,
+            })
+    except Exception as e:
+        print(f'[PILNK] Assist poll error: {e}')
+    # Every open session now has someone at the other end (an owner who pressed
+    # the button, or an operator who woke this node), so poll briskly.
+    return 5
+
+
+def assist_poller():
+    """Background thread. Idle until a session exists — the owner pressed
+    Request Assist, or (with standing consent) the operator woke this node —
+    then polls pilnk.io for whitelisted requests, runs them, posts results."""
+    while True:
+        delay = _assist_poll_once()
+        if delay:
+            time.sleep(delay)
 
 
 # ── Owner-facing controls (local dashboard) ──────────────────────────────────
