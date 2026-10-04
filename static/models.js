@@ -153,7 +153,15 @@ function modelFor(t,cat){ t=(t||'').toUpperCase();
      until now. One twin-engine light helicopter stands in for the lot — at this range a 429, an H130
      and a Squirrel read the same: rotor disc, short fuselage, tail boom. */
   const HELI=['B429','B06','B06T','B407','B412','B427','B430','B505','EC20','EC25','EC30','EC35','EC45','EC55','EC75','H500','H125','H130','H135','H145','H155','H160','H175','AS32','AS50','AS55','AS65','A109','A119','A139','A169','A189','R22','R44','R66','S76','S92','S61','S64','MD52','MD60','MD90','EN28','GAZL','LYNX','PUMA','SK76','BK17','NH90','UH60','UH1','CH47','G2CA','H64'];
-  if(HELI.includes(t))return'b429.glb';
+  /* MORE HELICOPTERS (5 Oct 2026). 58 rotorcraft codes in adsb_database were falling through to the 737/A320 catch-all -
+     H60 (Black Hawk / Seahawk family, 2,845 airframes) and H47 (Chinook) among them: the list above has UH60 and CH47,
+     which are not the ICAO designators. H2 is the Kaman SH-2 Seasprite (RNZN). Exact codes, checked by hand against
+     each code's database description; test_heli.js pins all 112 known rotorcraft codes to a helicopter model. */
+  const HELI_MORE=['H60','S70','H72','H47','H53','H53S','H46','H2','H43A','H43B','B212','B214','BSTP','B222','B230','HUCO','UH1Y',
+    'B47G','B47J','B47T','H269','UH12','S330','EN48','BRB2','EXPL','B105','KMAX','EH10','WESX','WASP','SCOU','TIGR','ALO2','ALO3',
+    'LAMA','AS3B','A149','MI2','MI6','MI8','MI24','MI26','MI34','MI38','KA26','KA27','S52','S55P','S58P','S58T','S61R','S62','S97',
+    'SB1','V500','A600','CH7','K209','UHEL','M74','H140'];
+  if(HELI.includes(t)||HELI_MORE.includes(t))return'b429.glb';
   if(TP.includes(t))return'atr72.glb';
   if(['A380','A388'].includes(t))return'a380_v2.glb';
   /* The two current-generation widebodies, both of which were being drawn as a 777 until now. ORDER
