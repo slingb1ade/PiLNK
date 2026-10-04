@@ -45,6 +45,9 @@ history_day.json
 history_day.json.tmp
 # Remote-maintenance action log — per-node runtime record, never committed.
 assist_actions.log
+# Tune my radio — "tuning now" marker (STT skips audio) + crash-restore file.
+.radio_tuning
+.radio_tune_restore.json
 
 # Aircraft photo cache — locally fetched Planespotters images, pruned at
 # 200 MB. Per-node runtime data: never the same twice, never worth committing.

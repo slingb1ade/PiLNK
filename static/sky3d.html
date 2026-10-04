@@ -760,6 +760,19 @@ function dartGeo(){
   const g=new THREE.ExtrudeGeometry(s,{depth:0.08,bevelEnabled:false}); g.rotateX(-Math.PI/2); g.translate(0,-0.04,0);
   return (_dartGeo=g);
 }
+/* LOD (4 Oct 2026 — AJ saw planes flip between model and arrow "at random"): which live aircraft get a full model.
+   On-screen planes rank first, nearest first; off-screen ones after them (nobody sees their body). A plane already
+   showing its model keeps it until it falls past n + margin, so the two planes either side of the cut-off no longer
+   swap bodies every poll as they move. Never more than n. items: [{cd, on, cur}] → [want a model?, …] */
+function lodPick(items,n){
+  const d=s=>s.cd!=null?s.cd:1e12;
+  const order=items.map((s,i)=>i).sort((a,b)=>{ const A=items[a],B=items[b]; return (!!A.on===!!B.on)?d(A)-d(B):(A.on?-1:1); });
+  const rank=[]; order.forEach((idx,r)=>{ rank[idx]=r; });
+  const margin=Math.max(2,Math.ceil(n/4)), want=items.map(()=>false); let used=0;
+  for(const i of order){ if(used>=n) break; if(items[i].cur&&items[i].on&&rank[i]<n+margin){ want[i]=true; used++; } }   // on-screen holders stay put
+  for(const i of order){ if(used>=n) break; if(!want[i]){ want[i]=true; used++; } }                                    // the rest, nearest first
+  return want;
+}
 function setBody(s){
   if(s.body){ s.yaw.remove(s.body); s.body=null; }
   if(USE_MODELS&&s.wantModel&&s.tpl){ s.body=s.tpl.clone(); s.span=s.tpl.userData.span; }
@@ -912,9 +925,9 @@ async function poll(){
       ensureVisual(s);
     }
     for(const [hex,s] of AC){ if(!seen.has(hex)){ s.miss=(s.miss||0)+1; if(!s.live||s.miss>8) removeAc(hex); } }
-    // LOD: the nearest modelNear (by camera distance from the last frame) get real models
-    const live=[...AC.values()].filter(s=>s.yaw&&s.live).sort((a,b)=>(a.cd!=null?a.cd:1e12)-(b.cd!=null?b.cd:1e12));
-    live.forEach((s,i)=>{ const w=i<modelNear; if(s.wantModel!==w){ s.wantModel=w; setBody(s); if(w) loadModel(s); } });
+    // LOD: up to modelNear aircraft get real models — see lodPick (camera distance from the last frame, on-screen first, sticky)
+    const live=[...AC.values()].filter(s=>s.yaw&&s.live), want=lodPick(live.map(s=>({cd:s.cd,on:s.on,cur:!!s.wantModel})),modelNear);
+    live.forEach((s,i)=>{ const w=want[i]; if(s.wantModel!==w){ s.wantModel=w; setBody(s); if(w) loadModel(s); } });
     if(AV.apt&&SETTINGS.rwy) avUpdateActive();
     _trailsDirty=true; _polls++; _pollFail=0;
     if(_polls===1) st('live · '+seen.size+' aircraft with a position');
@@ -1017,8 +1030,8 @@ const skyLayer={
     const now=performance.now(), dropPos=[], edropPos=[], heads=[], vis=[];
     const W=map.getCanvas().clientWidth, H=map.getCanvas().clientHeight, v4=new THREE.Vector4();
     for(const s of AC.values()){
-      if(RP){ if(s.yaw) s.yaw.visible=false; s.sx=null; continue; }   // capsule replay: live traffic hidden (models, drops, trail heads, labels — the label loop below follows s.sx/shown)
-      if(!s.yaw||s.lat==null){ if(s.yaw) s.yaw.visible=false; continue; }
+      if(RP){ if(s.yaw) s.yaw.visible=false; s.sx=null; s.on=false; continue; }   // capsule replay: live traffic hidden (models, drops, trail heads, labels — the label loop below follows s.sx/shown)
+      if(!s.yaw||s.lat==null){ if(s.yaw) s.yaw.visible=false; s.on=false; continue; }
       // dead reckoning from the last fix (capped), eased so a new fix never jumps the model
       const dt=Math.max(0,Math.min(12,(now-s.fixT)/1000)), dist=s.ground&&s.gs<40?0:s.gs*0.514444*dt, tr=s.trk*D2R;
       const lat=s.lat+dist*Math.cos(tr)/111320, lon=s.lon+dist*Math.sin(tr)/(111320*Math.cos(s.lat*D2R));
@@ -1033,11 +1046,13 @@ const skyLayer={
       if(!fd&&!s.ground&&(s.py-(s.gnd||0))>30) (s.emerg?edropPos:dropPos).push(s.px,s.py,s.pz,s.px,s.gnd||0,s.pz);   // Hunter: no height line under a faded civil
       if(SHOW_TRAILS&&s.trail&&s.trail.length){ const p=s.trail[s.trail.length-1], [hx,hz]=toScene(p[1],p[0]);
         heads.push({a:[hx,p[3]?(s.gnd||0):p[2]*0.3048*VE,hz],b:[s.px,s.py,s.pz],c:s.phCol||p[4]||PHASE_COL.cruise,al:1,w:4.5}); }
-      // screen position for the label and for clicks
+      // camera distance for EVERY aircraft (the LOD ranks by it — a stale one from when a plane was last on screen
+      // let it keep a model ahead of planes in view), then the screen position for the label and for clicks
+      s.cd=cam?Math.hypot(s.px-cam[0],s.py-cam[1],s.pz-cam[2]):5000;
       v4.set(s.px,s.py+span*sc*0.9,s.pz,1).applyMatrix4(P);
       if(v4.w>0){ const nx=v4.x/v4.w, ny=v4.y/v4.w; if(nx>-1.05&&nx<1.05&&ny>-1.05&&ny<1.05){ s.sx=(nx+1)/2*W; s.sy=(1-ny)/2*H;
-        s.cd=cam?Math.hypot(s.px-cam[0],s.py-cam[1],s.pz-cam[2]):5000; vis.push(s); continue; } }
-      s.sx=null;
+        s.on=true; vis.push(s); continue; } }
+      s.sx=null; s.on=false;
     }
     // capsule replay: the one aircraft at the replay time t — position + heading from rpAt, scaled and labelled like a live aircraft
     if(RP&&RS&&RS.yaw){

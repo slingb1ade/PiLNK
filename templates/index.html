@@ -1496,6 +1496,24 @@
               .sdr-sqldot{width:8px;height:8px;border-radius:50%;background:#3a3f4b;flex:0 0 auto;transition:background .1s;}
               .sdr-sqldot.open{background:#00ff88;box-shadow:0 0 5px #00ff88;}
               .sdr-pending{font-size:0.5rem;color:#f59e0b;letter-spacing:0.03em;}
+              /* Tune my radio (radio-autotune.md). The card's data-state picks which parts show. */
+              .sdr-tune-btn{margin-top:10px;width:100%;padding:8px;border:1px solid var(--blue-mid);background:transparent;border-radius:6px;color:var(--blue-mid);font-family:'Orbitron',sans-serif;font-size:0.6rem;font-weight:700;letter-spacing:0.12em;cursor:pointer;}
+              .sdr-tune-btn:disabled{opacity:.4;cursor:not-allowed;}
+              #sdrTuneCard{margin-top:8px;padding:9px;border:1px solid var(--border);border-radius:6px;background:var(--bg-card);font-size:0.6rem;color:var(--text);}
+              #sdrTuneCard .tb{display:none;margin:7px 6px 0 0;padding:5px 10px;border:1px solid var(--border);background:transparent;border-radius:5px;color:var(--text);font-family:'Share Tech Mono',monospace;font-size:0.58rem;cursor:pointer;}
+              #sdrTuneCard .tb.pri{border-color:var(--green);color:var(--green);}
+              #sdrTuneCard[data-state=intro] #sdrTuneStart,#sdrTuneCard[data-state=intro] #sdrTuneCancel,
+              #sdrTuneCard[data-state=msg] #sdrTuneCancel,#sdrTuneCard[data-state=running] #sdrTuneStop,
+              #sdrTuneCard[data-state=result] #sdrTuneApply,#sdrTuneCard[data-state=result] #sdrTuneKeep,
+              #sdrTuneCard[data-state=applied] #sdrTuneUndo{display:inline-block;}
+              #sdrTuneBarWrap{display:none;height:5px;margin-top:7px;border-radius:3px;background:var(--border);overflow:hidden;}
+              #sdrTuneCard[data-state=running] #sdrTuneBarWrap{display:block;}
+              #sdrTuneBar{height:100%;width:0;background:var(--green);transition:width .4s;}
+              #sdrTuneTable{display:none;margin-top:7px;border-collapse:collapse;font-family:'Share Tech Mono',monospace;font-size:0.58rem;}
+              #sdrTuneCard[data-state=result] #sdrTuneTable,#sdrTuneCard[data-state=applied] #sdrTuneTable{display:table;}
+              #sdrTuneTable td,#sdrTuneTable th{padding:2px 10px 2px 0;text-align:left;font-weight:normal;}
+              #sdrTuneTable th{color:var(--text-dim);}
+              #sdrTuneRemote{display:none;margin-bottom:6px;color:#f59e0b;font-weight:700;}
               #tab-sdr-audio input[type=range]{accent-color:var(--blue-mid);}
               .laws-note summary::-webkit-details-marker{display:none;}
               .laws-note[open] .laws-chev{transform:rotate(90deg);}
@@ -1579,7 +1597,7 @@
                 <span style="font-size:0.6rem;color:var(--text-dim);width:64px;flex:0 0 auto;">Squelch</span>
                 <button class="sdr-tgl" id="sdrSqBtn" role="switch" aria-checked="false" title="squelch on/off" disabled><span class="knob"></span></button>
                 <span class="sdr-tglst" id="sdrSqState">OFF</span>
-                <input type="range" min="-75" max="-50" value="-65" id="sdrSqLevel" disabled style="flex:1;min-width:80px;"/>
+                <input type="range" min="-90" max="-20" value="-65" id="sdrSqLevel" disabled style="flex:1;min-width:80px;"/>
                 <span id="sdrSqLevelVal" style="font-size:0.55rem;color:var(--text-dim);font-family:'Share Tech Mono',monospace;width:58px;text-align:right;">-65 dBFS</span>
                 <span id="sdrSqDot" class="sdr-sqldot" title="green = audio passing"></span>
                 <span class="sdr-pending" id="sdrSqPending">bridge pending</span>
@@ -1599,6 +1617,14 @@
                 <button class="sdr-tgl" id="sdrRfAgc" role="switch" aria-checked="false" title="tuner AGC (auto gain)" disabled><span class="knob"></span></button>
                 <span class="sdr-tglst" id="sdrRfAgcState">OFF</span>
                 <span class="sdr-pending" id="sdrRfPending">bridge pending</span>
+              </div>
+              <button class="sdr-tune-btn" id="sdrTuneBtn" disabled title="needs the radio engine and a radio dongle">🎚 TUNE MY RADIO</button>
+              <div id="sdrTuneCard" data-state="" style="display:none;">
+                <div id="sdrTuneRemote">Support is tuning your radio</div>
+                <div id="sdrTuneLine"></div>
+                <div id="sdrTuneBarWrap"><div id="sdrTuneBar"></div></div>
+                <table id="sdrTuneTable"></table>
+                <button class="tb pri" id="sdrTuneStart">Start</button><button class="tb" id="sdrTuneCancel">Cancel</button><button class="tb" id="sdrTuneStop">Stop</button><button class="tb pri" id="sdrTuneApply">Apply</button><button class="tb" id="sdrTuneKeep">Keep my settings</button><button class="tb" id="sdrTuneUndo">Undo</button>
               </div>
             </div>
 
@@ -9649,7 +9675,7 @@ setInterval(raPoll, 5000);
   function pollStatus(){
     if(!wantConn) return;
     fetch(base()+'/sdr/status').then(function(r){return r.json();}).then(function(s){
-      st = s; syncCaps(); updateUI(); syncDenoise();
+      st = s; syncCaps(); updateUI(); syncDenoise(); tuneWatch();
     }).catch(function(){});
   }
 
@@ -9978,6 +10004,7 @@ setInterval(raPoll, 5000);
     if(rg){ rg.disabled=!caps.rfgain||rfAgc; }
     if(ra){ ra.disabled=!caps.rfgain; ra.classList.toggle('on',rfAgc); ra.setAttribute('aria-checked',rfAgc); }
     var ras=$('sdrRfAgcState'); if(ras) ras.textContent=rfAgc?'ON':'OFF';
+    var tb=$('sdrTuneBtn'); if(tb) tb.disabled=!caps.rfgain;
     if(caps.rfgain && rfSteps && rg){ rg.min=0; rg.max=rfSteps.length-1; rg.step=1; rg.value=rfIndex;
       var rv=$('sdrRfGainVal'); if(rv) rv.textContent=(rfSteps[rfIndex]!=null?rfSteps[rfIndex].toFixed(1):'—')+' dB'; }
   }
@@ -10083,8 +10110,90 @@ setInterval(raPoll, 5000);
     }
   };
 
+  // ---- Tune my radio (radio-autotune.md) ----
+  // app.py runs the ~90 s sweep (/api/radio/tune/*) and always puts the radio back; this card
+  // only starts it, shows progress, and offers Apply / Keep / Undo. Nothing changes until Apply.
+  var tuneT=null;
+  var TUNE_INTRO='Finds the best gain and squelch for your antenna. Takes about 90 seconds. What you hear will change while it measures. Nothing is changed until you press Apply.';
+  function tuneApi(path, post){
+    return fetch('/api/radio/tune/'+path, post?{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'}:{})
+      .then(function(r){ return r.json(); }).catch(function(e){ return {ok:false,error:'The node did not answer ('+e+').'}; });
+  }
+  function tuneShow(state, line){
+    var c=$('sdrTuneCard'); if(!c) return;
+    c.dataset.state=state; c.style.display=state?'':'none';
+    var l=$('sdrTuneLine'); if(l) l.textContent=line||'';
+    if(state!=='running'){ var rb=$('sdrTuneRemote'); if(rb) rb.style.display='none'; }
+  }
+  function tuneDb(v){ return (typeof v==='number')?v.toFixed(1):'—'; }
+  function tuneTable(s){
+    var r=s.result||{}, b=s.before||{}, t=$('sdrTuneTable'); if(!t) return;
+    var nowG=b.rfAgc?'AGC':tuneDb(b.rfGainDb)+' dB';
+    var newG=(rfSteps&&rfSteps[r.gain_index]!=null)?tuneDb(rfSteps[r.gain_index])+' dB':'step '+r.gain_index;
+    var nowS=b.squelchEnabled?tuneDb(b.squelchLevel)+' dBFS':'off';
+    var rows=[['','Now','Proposed'],['RF gain',nowG,newG],['Squelch',nowS,tuneDb(r.squelch)+' dBFS'],
+              ['Noise floor',tuneDb(r.before_floor)+' dBFS',tuneDb(r.final_floor)+' dBFS']];
+    t.innerHTML='';
+    rows.forEach(function(row,i){ var tr=document.createElement('tr');
+      row.forEach(function(v){ var td=document.createElement(i?'td':'th'); td.textContent=v; tr.appendChild(td); }); t.appendChild(tr); });
+  }
+  function tuneRender(s){
+    if(!s || !s.state) return;
+    if(s.state==='running'){
+      var done=Math.min((s.done||0)+1, s.total||1), total=s.total||0;
+      tuneShow('running', total?('Measuring gain '+tuneDb(s.gain_db)+' dB (step '+done+' of '+total+')…'):'Starting…');
+      var bar=$('sdrTuneBar'); if(bar) bar.style.width=(total?Math.round(100*(s.done||0)/total):0)+'%';
+      var rb=$('sdrTuneRemote'); if(rb) rb.style.display=(s.by==='assist')?'block':'none';
+      return;
+    }
+    tuneStop();
+    var r=s.result||{};
+    if(s.state==='done' && (r.verdict==='ok'||r.verdict==='weak')){ tuneTable(s); tuneShow('result', r.reason||''); return; }
+    if(s.state==='cancelled' && r.reason==='stopped by you'){ tuneShow('msg','Stopped. Your settings are back as they were.'); return; }
+    tuneShow('msg', r.reason||'The tune did not finish. Your settings are back as they were.');
+  }
+  function tunePoll(){ tuneApi('status').then(tuneRender); }
+  function tuneStop(){ if(tuneT){ clearInterval(tuneT); tuneT=null; } }
+  function tuneFollow(){ tuneStop(); tunePoll(); tuneT=setInterval(tunePoll, 1000); }
+  // A sweep started over Remote Assist: show it, so the owner knows why the radio sounds odd.
+  function tuneWatch(){
+    var c=$('sdrTuneCard'); if(tuneT || !c || c.style.display!=='none') return;
+    tuneApi('status').then(function(s){ if(s && s.state==='running' && !tuneT) tuneFollow(); });
+  }
+  function tuneAfter(r){   // set_radio's 'after' view → the sliders
+    var a=r&&r.after; if(!a) return;
+    if(typeof a.rfGainIndex==='number') rfIndex=a.rfGainIndex;
+    rfAgc=!!a.rfAgc; sqOn=!!a.squelchEnabled;
+    if(typeof a.squelchLevel==='number') sqLevel=a.squelchLevel;
+    refreshControls();
+  }
+  function tuneOpen(){ tuneShow('intro', TUNE_INTRO); }
+  function wireTune(){
+    // One request at a time: a double-click on Apply used to send two, and the second
+    // one's 'before' (the proposal itself) became the Undo target.
+    var tuneBusy=false;
+    var on=function(id,f){ var e=$(id); if(e) e.onclick=function(){
+      if(tuneBusy) return; tuneBusy=true;
+      Promise.resolve(f()).then(function(){ tuneBusy=false; }, function(){ tuneBusy=false; }); }; };
+    on('sdrTuneBtn', tuneOpen);
+    on('sdrTuneCancel', function(){ tuneShow(''); });
+    on('sdrTuneKeep', function(){ tuneShow(''); });
+    on('sdrTuneStart', function(){
+      tuneShow('running','Starting…');
+      return tuneApi('start', true).then(function(r){ if(r && r.ok) tuneFollow(); else tuneShow('msg', (r&&r.error)||'Could not start.'); });
+    });
+    on('sdrTuneStop', function(){ return tuneApi('cancel', true); });
+    on('sdrTuneApply', function(){
+      return tuneApi('apply', true).then(function(r){ if(r && r.ok){ tuneAfter(r); tuneShow('applied','Applied ✓'); } else tuneShow('msg', (r&&r.error)||'Could not apply.'); });
+    });
+    on('sdrTuneUndo', function(){
+      return tuneApi('revert', true).then(function(r){ if(r && r.ok){ tuneAfter(r); tuneShow('msg','Undone. Your previous settings are back.'); } else tuneShow('msg', (r&&r.error)||'Could not undo.'); });
+    });
+  }
+
   // ---- wire the new controls ----
   function wireControls(){
+    wireTune();
     var sp=$('sdrSpectrum'), wf=$('sdrWaterfall');
     sCtx = sp && sp.getContext('2d');
     wCtx = wf && wf.getContext('2d');

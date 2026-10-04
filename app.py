@@ -1502,6 +1502,11 @@ PING_LAST_OK_TS = 0.0
 # is unreachable (a server outage — restarting the node would not help, and a whole
 # fleet restarting at once would be worse). Watch the loop, not the ping.
 PING_LOOP_TS = 0.0
+# Set as the LAST statement of this module (just above `if __name__`). The ping thread
+# starts mid-import, and three times now its first ping has called a function defined
+# further down ('_get_local_version', ATC_TRANSCRIPT_PATH, '_remote_maintenance_enabled')
+# and died with NameError. Moving each name was whack-a-mole; waiting for this ends it.
+_MODULE_LOADED = threading.Event()
 
 # Unread PiChat messages for this node's owner, as pilnk.io reported them in the
 # last ping reply (27 Sep 2026). Operators live on this dashboard, not on
@@ -1570,6 +1575,7 @@ def ping_server():
             print('[PILNK] ping_server already running — duplicate launch ignored')
             return
         _ping_loop_running = True
+    _MODULE_LOADED.wait(60)   # first ping only once every def below has loaded (see decl)
     while True:
         PING_LOOP_TS = time.time()   # loop heartbeat — see PING_LOOP_TS decl above
         try:
@@ -3654,6 +3660,8 @@ def _cap_sdr_post(path, body):
 def _cap_radio_wake(ids):
     """Switch the radio on for these capsules. True only once the engine SAYS it is
     playing — the command is queued inside the engine, so the reply alone proves nothing."""
+    if _tune_busy():          # Tune my radio owns the radio for ~90 s; the wake waits
+        return False
     # v1.5.28: the rule may want a particular frequency (PLC1 → Tower 118.7 while the
     # radio sat on Approach 124.3). Retune BEFORE switching on — the radio is off, so
     # nobody hears it move — and remember where it was, so it can be put back.
@@ -5792,7 +5800,7 @@ _RADIO_KEYS = ('playing', 'vfoHz', 'mode', 'bandwidthHz', 'squelchEnabled', 'squ
                'rfGainSteps', 'rfGainIndex', 'rfAgc', 'channelPowerDb', 'denoise')
 _RADIO_DOWN = ('radio engine not answering on :5656 — no radio dongle, or the '
                'pilnkradio service is stopped')
-RADIO_SQ_MIN, RADIO_SQ_MAX = -90.0, -20.0    # dBFS; the dashboard slider is -75..-50
+RADIO_SQ_MIN, RADIO_SQ_MAX = -90.0, -20.0    # dBFS; the dashboard slider is -90..-20
 RADIO_SAMPLE_MAX_S = 20
 
 
@@ -5807,6 +5815,9 @@ def _radio_snapshot():
         out['rfGainSteps'] = steps
     if isinstance(out.get('channelPowerDb'), float):
         out['channelPowerDb'] = round(out['channelPowerDb'], 1)
+    # Squelch too: it comes back as -55.599998…, and set_radio compares it with the -55.6 it asked for.
+    if isinstance(out.get('squelchLevel'), float):
+        out['squelchLevel'] = round(out['squelchLevel'], 1)
     idx = st.get('rfGainIndex')
     if isinstance(idx, int) and 0 <= idx < len(steps):
         out['rfGainDb'] = steps[idx]
@@ -5924,6 +5935,434 @@ def _act_set_radio(params):
     if off:
         out['error'] = 'engine did not apply: ' + ', '.join(off)
     return out
+
+
+# ── Tune my radio (radio-autotune.md, 4 Oct 2026) ─────────────────────────────
+# The owner presses 🎚 TUNE MY RADIO; about 90 s later they get a gain + squelch
+# proposal measured for THEIR antenna, cable and location, and press Apply or keep
+# their own. The same sweep is the Remote Assist action 'radio_autotune' (owner
+# present only; it proposes, it never applies). Levels only: no audio is read.
+#
+# How it chooses: at low gain the floor sits flat (the dongle hearing its own
+# noise); once the antenna's noise takes over it rises ~1 dB per dB of gain. The
+# pick is the LOWEST step whose floor is 6 dB above that flat start. Squelch =
+# that floor + 6 dB. A floor rising >1.5 dB per dB twice running is overload
+# (FM breakthrough): say so, propose nothing.
+TUNE_RISE_DB = 6.0
+TUNE_SQ_MARGIN_DB = 6.0
+TUNE_OVERLOAD_SLOPE = 1.5
+TUNE_PCTL = 0.15
+TUNE_SETTLE_S = 1.0
+TUNE_SAMPLE_HZ = 2
+TUNE_COARSE_S = 4
+TUNE_FINE_S = 6
+TUNE_FINAL_S = 10
+TUNE_COARSE_EVERY = 3
+TUNE_MIN_SAMPLES = 3
+TUNE_MARKER_TTL_S = 150
+TUNE_SQ_MIN, TUNE_SQ_MAX = -90.0, -20.0   # same range as set_radio
+
+
+def _tune_floor(samples):
+    """A step's noise floor: the 15th percentile of its readings. Calls only push
+    readings UP, so a low percentile survives a busy channel. None if too few."""
+    v = sorted(float(x) for x in samples if isinstance(x, (int, float)) and not isinstance(x, bool))
+    if len(v) < TUNE_MIN_SAMPLES:
+        return None
+    return v[int(round(TUNE_PCTL * (len(v) - 1)))]
+
+
+def _tune_coarse_indices(n):
+    """Every 3rd gain step, always including the first and the last."""
+    if n <= 0:
+        return []
+    idx = list(range(0, n, TUNE_COARSE_EVERY))
+    if idx[-1] != n - 1:
+        idx.append(n - 1)
+    return idx
+
+
+def _tune_pick(floors, steps):
+    """floors {gain index: floor dBFS} → {'verdict', 'gain_index', 'baseline', 'reason'}."""
+    idx = sorted(i for i in floors if 0 <= i < len(steps))
+    baseline = min(floors[i] for i in idx[:2])
+    run = 0
+    for a, b in zip(idx, idx[1:]):
+        ddb = steps[b] - steps[a]
+        if ddb <= 0:
+            continue
+        if (floors[b] - floors[a]) / ddb > TUNE_OVERLOAD_SLOPE:
+            run += 1
+            if run >= 2:
+                return {'verdict': 'overload', 'gain_index': None, 'baseline': baseline,
+                        'reason': "Strong interference: the noise jumps faster than the gain, probably "
+                                  "from an FM broadcast station. Try an FM filter or moving the antenna; "
+                                  "tuning around it won't help."}
+        else:
+            run = 0
+    # The pick must be CONFIRMED by the next measured step: a call on the frequency
+    # can lift one step's floor, and a lone spike is not the knee. Past the knee the
+    # floor keeps rising, so a real knee always has a confirming neighbour.
+    thr = baseline + TUNE_RISE_DB
+    for k, i in enumerate(idx):
+        nxt = idx[k + 1] if k + 1 < len(idx) else None
+        if floors[i] >= thr and (nxt is None or floors[nxt] >= thr):
+            return {'verdict': 'ok', 'gain_index': i, 'baseline': baseline,
+                    'reason': f"Your antenna's noise takes over at about {steps[i]:.1f} dB, so that is "
+                              f"as much gain as helps. More would only add overload risk."}
+    return {'verdict': 'weak', 'gain_index': idx[-1], 'baseline': baseline,
+            'reason': "The noise floor hardly rises even at full gain, so the antenna or cable "
+                      "looks weak. Using full gain."}
+
+
+def _tune_squelch(final_floor):
+    return max(TUNE_SQ_MIN, min(TUNE_SQ_MAX, round(float(final_floor) + TUNE_SQ_MARGIN_DB, 1)))
+
+_TUNE_FAILED_READINGS = ("The radio stopped giving readings (switched off, or the engine "
+                         "restarted). Your settings are back as they were.")
+
+
+class _TuneStop(Exception):
+    def __init__(self, verdict, reason):
+        Exception.__init__(self, reason)
+        self.verdict, self.reason = verdict, reason
+
+
+def _tune_sweep(steps, start_index, read_power, set_gain, progress, should_stop, t=None):
+    """Measure the floor across the gain ladder and choose. Engine I/O is passed in
+    (read_power, set_gain), so this runs against a fake radio in tests. It never
+    restores anything itself: the caller's finally does that."""
+    t = dict(t or {})
+    settle = t.get('settle_s', TUNE_SETTLE_S)
+    hz = t.get('hz', TUNE_SAMPLE_HZ)
+    sleep = t.get('sleep', time.sleep)
+    coarse = _tune_coarse_indices(len(steps))
+    total = 1 + len(coarse) + 2 * TUNE_COARSE_EVERY + 1   # an upper bound; the end reports total
+    floors, done = {}, [0]
+    out = {'verdict': None, 'gain_index': None, 'squelch': None, 'floors': {},
+           'before_floor': None, 'final_floor': None, 'reason': ''}
+
+    def measure(i, secs, phase):
+        why = should_stop()
+        if why:
+            raise _TuneStop('cancelled', why)
+        progress(phase, done[0], total, steps[i])
+        if not set_gain(i):
+            raise _TuneStop('failed', _TUNE_FAILED_READINGS)
+        sleep(settle)
+        vals = []
+        for _ in range(max(TUNE_MIN_SAMPLES, int(secs * hz))):
+            why = should_stop()
+            if why:
+                raise _TuneStop('cancelled', why)
+            v = read_power()
+            if isinstance(v, (int, float)) and not isinstance(v, bool):
+                vals.append(float(v))
+            sleep(1.0 / hz)
+        f = _tune_floor(vals)
+        if f is None:
+            raise _TuneStop('failed', _TUNE_FAILED_READINGS)
+        done[0] = min(total - 1, done[0] + 1)
+        return f
+
+    try:
+        out['before_floor'] = floors[start_index] = measure(start_index, t.get('coarse_s', TUNE_COARSE_S), 'now')
+        for i in coarse:
+            if i not in floors:
+                floors[i] = measure(i, t.get('coarse_s', TUNE_COARSE_S), 'coarse')
+        pick = _tune_pick(floors, steps)
+        # Fine pass: fill the steps just below the pick, and measure the pick itself a
+        # second time (keeping the lower floor). A call can lift a whole 4 s window,
+        # so a pick is only trusted once it has been heard quiet twice.
+        rechecked = set()
+        for _ in range(3):
+            if pick['verdict'] != 'ok':
+                break
+            g = pick['gain_index']
+            below = [i for i in sorted(floors) if i < g]
+            lo = below[-1] if below else -1
+            for i in range(lo + 1, g):
+                if i not in floors:
+                    floors[i] = measure(i, t.get('fine_s', TUNE_FINE_S), 'fine')
+            if g not in rechecked:
+                rechecked.add(g)
+                floors[g] = min(floors[g], measure(g, t.get('fine_s', TUNE_FINE_S), 'fine'))
+            pick = _tune_pick(floors, steps)
+            if pick['gain_index'] == g:
+                break
+        out.update(verdict=pick['verdict'], gain_index=pick['gain_index'], reason=pick['reason'])
+        if pick['verdict'] in ('ok', 'weak'):
+            out['final_floor'] = measure(pick['gain_index'], t.get('final_s', TUNE_FINAL_S), 'final')
+            out['squelch'] = _tune_squelch(out['final_floor'])
+        progress('done', total, total, steps[pick['gain_index']] if pick['gain_index'] is not None else None)
+    except _TuneStop as e:
+        out.update(verdict=e.verdict, gain_index=None, squelch=None, final_floor=None, reason=e.reason)
+    out['floors'] = {str(i): round(f, 1) for i, f in sorted(floors.items())}
+    return out
+
+
+# ── the job: one tune at a time, settings always put back, Apply / Undo ────────
+_TUNE_BASE = os.path.dirname(os.path.abspath(__file__))
+TUNE_MARKER = os.path.join(_TUNE_BASE, '.radio_tuning')              # STT skips audio while current
+TUNE_RESTORE = os.path.join(_TUNE_BASE, '.radio_tune_restore.json')  # survives a crash mid-sweep
+_TUNE_LOCK = threading.Lock()
+_TUNE = {'state': 'idle', 'by': None, 'phase': '', 'done': 0, 'total': 0, 'gain_db': None,
+         'result': None, 'before': None, 'undo': None, 'cancel': False}
+_TUNE_ASSIST_T = None      # test hook: sweep timings for the Remote Assist action
+_TUNE_RETRY_SLEEP = time.sleep   # test hook: the background restore retry's sleep
+_TUNE_RADIO_KEYS = ('rfGainIndex', 'rfAgc', 'squelchEnabled', 'squelchLevel')
+
+
+def _tune_busy():
+    return _TUNE['state'] == 'running'
+
+
+def _tune_check():
+    """None when a tune may start, else the plain reason it may not."""
+    snap = _radio_snapshot()
+    if not snap or not snap.get('rfGainSteps'):
+        return "The radio engine isn't answering. Is the radio dongle plugged in?"
+    if not snap.get('playing'):
+        return "Switch the radio on first: press ▶ LISTEN."
+    with CAPSULE_LOCK:
+        recording = bool(CAPSULE_ACTIVE)
+    if recording:
+        return "A flight capsule is recording. Try again when it finishes."
+    if CAPSULE_WAKE.get('woke'):
+        return "A 📻 capsule rule has the radio. Try again when it finishes."
+    if _tune_busy():
+        return "A tune is already running."
+    if os.path.exists(TUNE_RESTORE):   # an earlier tune's settings are not back yet: never snapshot sweep values
+        return ("Your settings from an earlier tune haven't been put back yet (the radio engine "
+                "wasn't answering). Try again in a minute.")
+    return None
+
+
+def _tune_assist_live():
+    """Is the Remote Assist session still open? (owner present is the condition for an assist tune)"""
+    st = globals().get('_assist_state')
+    return bool(st.get('active')) if isinstance(st, dict) else True
+
+
+def _tune_set_view(v):
+    """Put gain / AGC / squelch back to a saved view. With AGC on, the gain goes
+    first: setting a gain while AGC is on is not the same as restoring AGC."""
+    p = {}
+    if v.get('squelchEnabled') is not None:
+        p['squelch_enabled'] = bool(v['squelchEnabled'])
+    lv = v.get('squelchLevel')
+    if isinstance(lv, (int, float)) and not isinstance(lv, bool) and TUNE_SQ_MIN <= lv <= TUNE_SQ_MAX:
+        p['squelch_level'] = float(lv)
+    if v.get('rfAgc'):
+        r = _act_set_radio(dict(p, gain_index=int(v['rfGainIndex'])))
+        if not r.get('ok'):
+            return r
+        return _act_set_radio({'agc': True})
+    return _act_set_radio(dict(p, gain_index=int(v['rfGainIndex']), agc=False))
+
+
+def _tune_rm(*paths):
+    for f in paths:
+        try:
+            os.remove(f)
+        except OSError:
+            pass
+
+
+def _tune_write(path, obj):
+    tmp = path + '.tmp'
+    with open(tmp, 'w') as f:
+        json.dump(obj, f)
+    os.replace(tmp, path)
+
+
+def _tune_start(by, t=None):
+    with _TUNE_LOCK:
+        why = _tune_check()
+        if why:
+            return {'ok': False, 'error': why}
+        _TUNE.update(state='running', by=by, phase='starting', done=0, total=0, gain_db=None,
+                     result=None, before=None, undo=None, cancel=False)
+    threading.Thread(target=_tune_run, args=(by, t), daemon=True).start()
+    return {'ok': True}
+
+
+def _tune_run(by, t=None):
+    result = {'verdict': 'failed', 'gain_index': None, 'squelch': None, 'floors': {},
+              'before_floor': None, 'final_floor': None, 'reason': _TUNE_FAILED_READINGS}
+    snap, wrote = None, False
+    try:
+        snap = _radio_snapshot()
+        if not snap or not snap.get('rfGainSteps'):
+            return
+        before = {k: snap.get(k) for k in _TUNE_RADIO_KEYS}
+        before['rfGainDb'] = snap.get('rfGainDb')
+        _TUNE['before'] = before
+        _tune_write(TUNE_RESTORE, {k: snap.get(k) for k in _TUNE_RADIO_KEYS})
+        wrote = True
+        _tune_write(TUNE_MARKER, {'until': int(time.time()) + TUNE_MARKER_TTL_S, 'by': by})
+        if snap.get('rfAgc'):
+            _act_set_radio({'agc': False})
+
+        def set_gain(i):
+            return bool(_act_set_radio({'gain_index': int(i)}).get('ok'))
+
+        def read_power():
+            st = _cap_sdr_status()
+            return st.get('channelPowerDb') if isinstance(st, dict) else None
+
+        def progress(phase, done, total, gain_db):
+            _TUNE.update(phase=phase, done=done, total=total, gain_db=gain_db)
+
+        def should_stop():
+            if _TUNE.get('cancel'):
+                return 'stopped by you'
+            if by == 'assist' and not _tune_assist_live():
+                return 'The support session ended, so the tune stopped.'
+            with CAPSULE_LOCK:
+                if CAPSULE_ACTIVE:
+                    return 'A flight capsule started recording, so the tune stopped.'
+            return None
+
+        result = _tune_sweep(list(snap['rfGainSteps']), int(snap.get('rfGainIndex') or 0),
+                             read_power, set_gain, progress, should_stop, t)
+    except Exception as e:   # never leave the radio on a sweep gain
+        logging.warning('[tune] sweep failed: %s', e)
+    finally:
+        if wrote:
+            restored = False
+            try:
+                restored = bool(_tune_set_view({k: snap.get(k) for k in _TUNE_RADIO_KEYS}).get('ok'))
+                if restored:
+                    _tune_rm(TUNE_RESTORE)
+            except Exception as e:
+                logging.warning('[tune] restore failed: %s', e)
+            if not restored:   # keep the file; put the settings back as soon as the engine answers
+                result = dict(result, verdict='failed', gain_index=None, squelch=None,
+                              reason="The radio engine stopped answering before your settings could be put "
+                                     "back. They will be put back as soon as it answers.")
+                threading.Thread(target=_tune_restore_on_start, kwargs={'wait_s': 600, 'sleep': _TUNE_RETRY_SLEEP},
+                                 daemon=True).start()
+        _tune_rm(TUNE_MARKER)
+        v = result.get('verdict')
+        _TUNE.update(result=result, cancel=False, phase='',
+                     state='cancelled' if v == 'cancelled' else ('failed' if v == 'failed' else 'done'))
+
+
+def _tune_status():
+    st = {k: _TUNE.get(k) for k in ('state', 'by', 'phase', 'done', 'total', 'gain_db', 'result', 'before')}
+    st['undo_available'] = bool(_TUNE.get('undo'))
+    return json.loads(json.dumps(st))
+
+
+def _tune_cancel():
+    if not _tune_busy():
+        return {'ok': False, 'error': 'No tune is running.'}
+    _TUNE['cancel'] = True
+    return {'ok': True}
+
+
+def _tune_apply():
+    with _TUNE_LOCK:   # one Apply per proposal: a second one would make Undo return to the proposal
+        res = _TUNE.get('result') or {}
+        if _TUNE['state'] != 'done' or res.get('verdict') not in ('ok', 'weak'):
+            return {'ok': False, 'error': 'There is no finished proposal to apply.'}
+        if _TUNE.get('undo'):
+            return {'ok': False, 'error': 'Already applied. Press Undo to go back.'}
+        r = _act_set_radio({'gain_index': int(res['gain_index']), 'agc': False,
+                            'squelch_enabled': True, 'squelch_level': float(res['squelch'])})
+        if r.get('ok'):
+            _TUNE['undo'] = r.get('before')
+    _assist_log_action('tune_apply', bool(r.get('ok')), r.get('detail') or r.get('error') or '')
+    return r
+
+
+def _tune_revert():
+    with _TUNE_LOCK:
+        undo = _TUNE.get('undo')
+        if not undo:
+            return {'ok': False, 'error': 'Nothing to undo.'}
+        r = _tune_set_view(undo)
+        if r.get('ok'):
+            _TUNE['undo'] = None
+    _assist_log_action('tune_undo', bool(r.get('ok')), r.get('detail') or r.get('error') or '')
+    return r
+
+
+def _tune_restore_on_start(wait_s=60, sleep=time.sleep):
+    """At start-up: a restore file means the app stopped mid-sweep and the radio may
+    still be on a sweep gain (the engine keeps gain across restarts). Put it back,
+    waiting for the engine to come up; keep the file if it never does."""
+    if not os.path.exists(TUNE_RESTORE):
+        return False
+    try:
+        with open(TUNE_RESTORE) as f:
+            v = json.load(f)
+    except Exception:
+        _tune_rm(TUNE_RESTORE, TUNE_MARKER)
+        return False
+    for _ in range(max(1, int(wait_s / 2))):
+        try:
+            if _tune_set_view(v).get('ok'):
+                _tune_rm(TUNE_RESTORE, TUNE_MARKER)
+                logging.info('[tune] radio settings restored after an interrupted tune')
+                return True
+        except Exception:
+            pass
+        sleep(2)
+    return False
+
+
+def _act_radio_autotune(params):
+    """Remote Assist (owner present): run the sweep and return its proposal. It never
+    applies — applying is a separate set_radio, so both sides see each step."""
+    r = _tune_start('assist', _TUNE_ASSIST_T)
+    if not r.get('ok'):
+        return {'ok': False, 'action': 'radio_autotune', 'error': r.get('error')}
+    end = time.time() + TUNE_MARKER_TTL_S + 30
+    while _tune_busy() and time.time() < end:
+        time.sleep(0.5 if _TUNE_ASSIST_T is None else 0.01)
+    res = _tune_status().get('result') or {}
+    return {'ok': res.get('verdict') in ('ok', 'weak'), 'action': 'radio_autotune',
+            'detail': res.get('reason', ''), 'result': res}
+
+
+# ── dashboard routes (local; the app-wide origin guard covers every POST) ───────
+_TUNE_ROUTE_T = None       # test hook: sweep timings for the dashboard button
+
+
+def _tune_reply(r):
+    return jsonify(r), (200 if r.get('ok') else 409)
+
+
+@app.route('/api/radio/tune/start', methods=['POST'])
+def api_radio_tune_start():
+    return _tune_reply(_tune_start('owner', _TUNE_ROUTE_T))
+
+
+@app.route('/api/radio/tune/status', methods=['GET'])
+def api_radio_tune_status():
+    return jsonify(_tune_status())
+
+
+@app.route('/api/radio/tune/apply', methods=['POST'])
+def api_radio_tune_apply():
+    return _tune_reply(_tune_apply())
+
+
+@app.route('/api/radio/tune/revert', methods=['POST'])
+def api_radio_tune_revert():
+    return _tune_reply(_tune_revert())
+
+
+@app.route('/api/radio/tune/cancel', methods=['POST'])
+def api_radio_tune_cancel():
+    return _tune_reply(_tune_cancel())
+
+
+# A restore file at start-up means the app stopped mid-sweep: put the radio back
+# once the engine answers. Here, after the definitions, never before them.
+threading.Thread(target=_tune_restore_on_start, daemon=True).start()
 
 
 def _assist_cap_lines(params, default=100, hard=500):
@@ -6063,6 +6502,7 @@ ASSIST_ACTIONS = {
     'ota_apply':        _act_ota_apply,
     'reboot':           _act_reboot,
     'set_radio':        _act_set_radio,
+    'radio_autotune':   _act_radio_autotune,
 }
 
 # Destructive actions require an explicit params['confirm'] is True — a guard against a
@@ -6073,7 +6513,7 @@ ASSIST_ACTIONS_DESTRUCTIVE = {'reboot'}
 # while the owner is present: a session they opened with Request Assist. Standing
 # "remote maintenance" consent covers reading and restarting — the toggle says so —
 # so it never covers these.
-ASSIST_ACTIONS_OWNER_ONLY = {'set_radio'}
+ASSIST_ACTIONS_OWNER_ONLY = {'set_radio', 'radio_autotune'}
 
 # Node-local, owner-visible audit of operator actions (Prong B3). A file, not memory,
 # so the owner sees even the restart that just ran once the node comes back.
@@ -6357,6 +6797,10 @@ if NODE_VERIFY_CODE != 'YOUR_VERIFY_CODE_HERE':
     _assist_thread = threading.Thread(target=assist_poller, daemon=True)
     _assist_thread.start()
     print('[PILNK] Remote Assist poller ready (idle until owner opens a session)')
+
+
+# Everything is defined now: release the ping thread's first ping (see _MODULE_LOADED).
+_MODULE_LOADED.set()
 
 
 if __name__ == '__main__':
