@@ -88,12 +88,13 @@
 <div class="hud" id="cams">
   <button class="cambtn on" data-cam="director">Director</button>
   <button class="cambtn" data-cam="chase">Chase</button>
+  <button class="cambtn" data-cam="orbit">Orbit (drag)</button>
   <button class="cambtn" data-cam="tower">Tower</button>
   <button class="cambtn" data-cam="free">Free (drag · right-drag tilt)</button>
 </div>
 <button class="hud cambtn" id="themebtn" title="Day / night — long-press to follow the sun" onclick="setTheme(NIGHT_ON?'day':'night')" oncontextmenu="event.preventDefault();setTheme('auto');return false;">☀</button>
 <button class="hud cambtn" id="helpbtn" title="Options" onclick="document.getElementById('note').classList.toggle('show')">?</button>
-<div class="hud" id="note">Wheel: chase distance / tower zoom. Buildings are OSM heights (patchy outside city centres). Options: <b>?buildings=0</b>, <b>?ve=</b> terrain exaggeration (1.5), <b>?fov=</b> tower lens (18), <b>?cut=</b> tower cut, ft above the field (500), <b>?acscale=</b> aircraft size in the tower shot (3), <b>?magvar= ?geomoff= ?qnh=</b> calibration overrides, <b>?terrain=0</b>, <b>?dem=</b>, <b>?base=sat</b>.</div>
+<div class="hud" id="note"><b>Orbit</b>: drag to go round the aircraft, up/down for height, double-click to go back behind it. Wheel: chase distance / tower zoom. Buildings are OSM heights (patchy outside city centres). Options: <b>?buildings=0</b>, <b>?ve=</b> terrain exaggeration (1.5), <b>?fov=</b> tower lens (18), <b>?cut=</b> tower cut, ft above the field (500), <b>?acscale=</b> aircraft size in the tower shot (3), <b>?magvar= ?geomoff= ?qnh=</b> calibration overrides, <b>?terrain=0</b>, <b>?dem=</b>, <b>?base=sat</b>.</div>
 
 <script src="https://unpkg.com/maplibre-gl@5.24.0/dist/maplibre-gl.js"></script>
 <script crossorigin="anonymous" src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
@@ -1329,6 +1330,31 @@ function mapGestures(on){ if(!map)return;
 }
 document.querySelectorAll('.cambtn').forEach(b=>b.addEventListener('click',()=>{document.querySelectorAll('.cambtn').forEach(x=>x.classList.remove('on'));b.classList.add('on');camMode=b.dataset.cam;
   mapGestures(camMode==='free'); }));
+/* ---------- orbit camera (5 Oct 2026) ----------
+   Chase, but you choose where to stand: drag sideways to go right round the aircraft (nose-on included), drag
+   up/down for height, wheel or pinch for distance (the same chaseZoom). It still follows the aircraft on the chase
+   shot's smoothed path, and the angle is relative to the smoothed heading, so the view holds through turns. It
+   starts exactly on the chase shot. The height floor is MIN_DEP+0.5: MapLibre caps pitch at 85, so the camera can
+   never look up at the aircraft, only level or down. Free mode is unchanged (the map's own gestures). */
+const ORB_EL0=Math.atan(0.35)/D2R;      // the chase shot's elevation: up = 0.35 x back
+const ORB_EL_MIN=MIN_DEP+0.5, ORB_EL_MAX=80;
+let orbAz=0, orbEl=ORB_EL0;             // degrees: 0 = behind, 180 = in front; elevation above the aircraft
+function orbitCam(back,el){ const k=back/Math.cos(ORB_EL0*D2R);   // same distance at every height
+  return {horiz:k*Math.cos(el*D2R), up:k*Math.sin(el*D2R)}; }
+function orbitPos(s,back){ const c=orbitCam(back,orbEl), h=(s.hdg+orbAz)*D2R;
+  return {lon:s.lon-Math.sin(h)*c.horiz/mPerLon, lat:s.lat-Math.cos(h)*c.horiz/mPerLat, alt:s.alt+c.up}; }
+function orbitDrag(dx,dy){ orbAz=((orbAz-dx*0.4)%360+540)%360-180;
+  orbEl=Math.max(ORB_EL_MIN,Math.min(ORB_EL_MAX,orbEl+dy*0.25)); }
+function orbitReset(){ orbAz=0; orbEl=ORB_EL0; }
+/* ---------- end orbit camera ---------- */
+(function(){ const el=document.getElementById('map'), pts=new Map();   // one finger or the mouse drags; two fingers are the pinch above
+  el.addEventListener('pointerdown',e=>{ if(camMode!=='orbit')return; pts.set(e.pointerId,{x:e.clientX,y:e.clientY}); });
+  el.addEventListener('pointermove',e=>{ if(camMode!=='orbit'||!pts.has(e.pointerId))return; const p=pts.get(e.pointerId);
+    if(pts.size===1) orbitDrag(e.clientX-p.x, e.clientY-p.y); p.x=e.clientX; p.y=e.clientY; });
+  const lift=e=>{ pts.delete(e.pointerId); };
+  el.addEventListener('pointerup',lift); el.addEventListener('pointercancel',lift); el.addEventListener('pointerleave',lift);
+  el.addEventListener('dblclick',e=>{ if(camMode==='orbit'){ e.preventDefault(); orbitReset(); } });
+})();
 function zoomStep(f){   // f > 1 = closer
   if(shot==='tower') towerZoom=Math.max(0.5,Math.min(8,towerZoom*f));
   else chaseZoom=Math.max(0.2,Math.min(6,chaseZoom*f));
@@ -1417,6 +1443,8 @@ function tick(){
       camS.lon+=(a.lon-camS.lon)*kp; camS.lat+=(a.lat-camS.lat)*kp; camS.alt+=(a.altM-camS.alt)*kp;
       camS.hdg=lerpAng(camS.hdg,a.hdg,kh); camS.t=tNow; }
     const back=Math.max(20,Math.min(1500, acSpan*CHASE_SPANS/chaseZoom)), up=back*0.35, h=camS.hdg*D2R;
+    if(shot==='orbit'){ const p=orbitPos({lon:camS.lon,lat:camS.lat,alt:camS.alt*VE,hdg:camS.hdg},back);
+      aimCamera(p.lon,p.lat,p.alt, camS.lon,camS.lat,camS.alt*VE); return; }
     const cLon=camS.lon-Math.sin(h)*back/mPerLon, cLat=camS.lat-Math.cos(h)*back/mPerLat;
     aimCamera(cLon,cLat,camS.alt*VE+up, camS.lon,camS.lat,camS.alt*VE); }
 }

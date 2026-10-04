@@ -16,7 +16,7 @@ const MODEL_ORIENT={ 'a320_200.glb':{yaw:-90}, 'atr72.glb':{yaw:90}, 'b777_klm.g
   'a400.glb':{yaw:0},
   'bizjet.glb':{yaw:180}, 'crj.glb':{yaw:180},
   'p8.glb':{yaw:0}, 't38.glb':{yaw:-90}, 'hawk.glb':{yaw:180},
-  'e7.glb':{yaw:0},
+  'e7.glb':{yaw:0}, 'c5.glb':{yaw:180}, 'nh90.glb':{yaw:-90},   // NH90: direction from the TAIL ROTOR, as for the AS350
   'as350.glb':{yaw:0} };   /* all measured with the corrected mapping; confirm each on a LIVE aircraft before release. The
      AS350 is a helicopter: its direction came from the TAIL ROTOR's position, because the fin test reads the highest
      point and on a helicopter that is the main rotor. */
@@ -32,6 +32,11 @@ const MODEL_SPAN={ 'c172.glb':11.0, 'b429.glb':13.0, 'c208.glb':15.9, 'atr72.glb
   'bizjet.glb':16.2, 'crj.glb':24.9,
   'p8.glb':37.6, 't38.glb':7.7, 'hawk.glb':9.4,
   'e7.glb':34.4,
+  'c5.glb':71.87,   /* C-5 Galaxy: real span 67.9 m. 71.87, not 67.9, because Box3.setFromObject reads this file 73.13 across
+     when its true vertex extent is 69.09 (parts sit rotated inside the FBX hierarchy, so their boxes overhang). 67.9 here
+     drew it 64.2 m x 69.9 m; 71.87 draws 67.9 x 74.0 (real 67.9 x 75.3). Measured 5 Oct in a headless r128 render. */
+  'nh90.glb':16.3,  /* NH90: the main rotor disc, 16.3 m. Its four blades lie fore-aft and across in the file, so the
+     lateral extent IS the disc, and Box3 reads this file exactly (0.184 = 0.184 by vertex pass) - no correction. */
   'as350.glb':9.31 };    /* NOT the 10.69 m rotor diameter, deliberately. This number is applied to the model's lateral
      extent, and with THREE blades at 120° no blade lies straight across, so the width undersells the disc. Sized at
      10.69 the rotor measured 12.3 m across and the fuselage 12.9 m (real 10.69 / 10.93) — both ~15–18% big. 9.31 puts
@@ -102,6 +107,9 @@ function modelFor(t,cat){ t=(t||'').toUpperCase();
      are the ones to check: a prefix test is only safe when nothing else starts the same way. */
   if(t==='B1'||t==='B1B')return'b1b.glb';
   if(t==='C17')return'c17.glb';          // NOT /^C17/ — that also matches C172, the Cessna 172
+  /* C-5 Galaxy (AC1MX, CC-BY-4.0, added 5 Oct). EXACT codes: /^C5/ would catch every Citation — C56X alone was 90
+     airframes in the fleet's history. C5M is the C-5M Super Galaxy (6 seen, all drawn as a 737 until now); C5 the A/B. */
+  if(t==='C5M'||t==='C5')return'c5.glb';
   if(t==='A400')return'a400.glb';        // exact: was falling through to the A320 fallback
   /* AUDIT FIX #5 (24 Sep 2026): was /^E3/, which also caught E35L (Embraer Legacy 600/650, a common
      business jet) and E390 (KC-390) and drew them with a rotodome. The Sentry's designators only. */
@@ -122,6 +130,10 @@ function modelFor(t,cat){ t=(t||'').toUpperCase();
      its main rotor. AS50 is the AS350/H125, AS55 the twin-engined AS355; both look the same at range. Exact codes,
      ahead of the HELI list, which otherwise sends them to the 429. */
   if(['AS50','AS55'].includes(t))return'as350.glb';
+  /* NH90 (davidmarton1987, CC-BY-4.0, added 5 Oct) - RNZAF No. 3 Squadron flies eight from Ohakea. Exact code, ahead
+     of the HELI list, which otherwise sends it to the 429. German Navy livery. Both rotors are named parts
+     (MainRotor, TailRotor), so findProps turns them; the model's display base was cut out. */
+  if(t==='NH90')return'nh90.glb';
   if(BIZJET_MODEL&&BIZJET.includes(t))return BIZJET_MODEL;
   if(REGIONAL_MODEL&&REGIONAL.includes(t))return REGIONAL_MODEL;
   if(EJET.includes(t))return'a320_200.glb';
