@@ -1971,10 +1971,30 @@ def _denoise_feature():
 # files that already match mean nothing happens. Never raises.
 _DN_BASE = os.path.dirname(os.path.abspath(__file__))
 import platform as _dn_platform   # app.py imports platform only inside functions
-_DN_ARCH = _dn_platform.machine()
+_DN_ARCH = None   # None = ask the engine binary (below); set only to override
 _DN_ENGINE_BIN = '/usr/local/bin/pilnkradio'
 _DN_LIB_DST = '/usr/local/lib/pilnk/libdf.so'
 _DN_MODEL_DST = '/usr/local/share/pilnk/DeepFilterNet3_onnx.tar.gz'
+# ELF (class, machine) -> denoise/<dir>. Same table as denoise-install.sh.
+_DN_ELF_ARCH = {(1, 40): 'armhf', (2, 183): 'aarch64', (2, 62): 'x86_64'}
+
+
+def _dn_engine_arch(path):
+    """Which denoise build the ENGINE can load, read from its ELF header.
+    uname/platform.machine() is the kernel's answer, and a 32-bit userland on
+    a 64-bit kernel (PiAware images; MME1, 4 Oct 2026) says 'aarch64' while
+    its engine is 32-bit ARM — the 64-bit library then fails dlopen (code 10).
+    Falls back to platform.machine() when the header is unreadable/unknown."""
+    try:
+        with open(path, 'rb') as f:
+            h = f.read(20)
+        if len(h) == 20 and h[:4] == b'\x7fELF' and h[5] == 1:
+            arch = _DN_ELF_ARCH.get((h[4], h[18] | (h[19] << 8)))
+            if arch:
+                return arch
+    except OSError:
+        pass
+    return _dn_platform.machine()
 
 
 def _dn_run(argv):
@@ -2000,7 +2020,8 @@ def _denoise_kick():
     """'skip' (no engine / no build for this CPU), 'current', 'started' or 'failed'."""
     task = os.path.join(_DN_BASE, '.audio_build_task')
     try:
-        lib = os.path.join(_DN_BASE, 'denoise', _DN_ARCH, 'libdf.so')
+        arch = _DN_ARCH or _dn_engine_arch(_DN_ENGINE_BIN)
+        lib = os.path.join(_DN_BASE, 'denoise', arch, 'libdf.so')
         model = os.path.join(_DN_BASE, 'denoise', 'DeepFilterNet3_onnx.tar.gz')
         if not (os.path.exists(_DN_ENGINE_BIN) and os.path.isfile(lib)
                 and os.path.isfile(os.path.join(_DN_BASE, 'denoise-install.sh'))):

@@ -151,7 +151,9 @@ fi
 # Same three rules as 3.6: detached, fail-soft, idempotent (cmp, so a node
 # that already matches does nothing at all).
 if [ -z "$RADIO_BUILD_WHY" ] && [ -x "$PILNKRADIO_BIN" ] && [ -f "$PILNK_DIR/denoise-install.sh" ]; then
-    DN_ARCH="$(uname -m)"
+    # The engine's own ELF type, not uname: a 32-bit userland on a 64-bit
+    # kernel needs the armhf build (MME1, 4 Oct 2026). One source of truth.
+    DN_ARCH="$(bash "$PILNK_DIR/denoise-install.sh" --print-arch 2>/dev/null || uname -m)"
     DN_LIB="$PILNK_DIR/denoise/$DN_ARCH/libdf.so"
     DN_MODEL="$PILNK_DIR/denoise/DeepFilterNet3_onnx.tar.gz"
     if [ -f "$DN_LIB" ] && { ! cmp -s "$DN_LIB" /usr/local/lib/pilnk/libdf.so \

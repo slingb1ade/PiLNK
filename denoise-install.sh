@@ -6,7 +6,7 @@
 #  WHY THIS EXISTS (4 Oct 2026). v1.5.29 "Five-By-Five" shipped live
 #  denoise in the engine, but the engine only offers it when two files
 #  are on the node:
-#      /usr/local/lib/pilnk/libdf.so                      (per CPU arch)
+#      /usr/local/lib/pilnk/libdf.so                      (per engine arch)
 #      /usr/local/share/pilnk/DeepFilterNet3_onnx.tar.gz  (the model)
 #  Nothing ever delivered them. They were copied by hand onto AJ's own
 #  receivers, so denoise worked there and nowhere else — and because the
@@ -28,7 +28,30 @@ set -uo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SRC="${PILNK_DENOISE_SRC:-$HERE/denoise}"
-ARCH="${PILNK_DENOISE_ARCH:-$(uname -m)}"
+ENGINE_BIN="${PILNK_ENGINE_BIN:-/usr/local/bin/pilnkradio}"
+
+# Which build to install is decided by the ENGINE, not by uname. A 32-bit
+# userland on a 64-bit kernel (PiAware images, 4 Oct 2026: MME1) reports
+# "aarch64" from uname, but its engine is 32-bit ARM and can only dlopen a
+# 32-bit library — the probe failed with code 10. The ELF header says what
+# the engine really is: class (byte 4) and machine (bytes 18-19, LE).
+_engine_arch() {
+    local b
+    b=($(od -An -tu1 -N20 "$ENGINE_BIN" 2>/dev/null)) || true
+    if [ "${#b[@]}" -eq 20 ] && [ "${b[0]}" = 127 ] && [ "${b[1]}" = 69 ] \
+       && [ "${b[2]}" = 76 ] && [ "${b[3]}" = 70 ] && [ "${b[5]}" = 1 ]; then
+        case "${b[4]}:$(( b[18] + 256 * b[19] ))" in
+            1:40)  echo armhf;   return ;;
+            2:183) echo aarch64; return ;;
+            2:62)  echo x86_64;  return ;;
+        esac
+    fi
+    uname -m
+}
+ARCH="${PILNK_DENOISE_ARCH:-$(_engine_arch)}"
+if [ "${1:-}" = "--print-arch" ]; then   # used by update.sh; touches nothing
+    echo "$ARCH"; exit 0
+fi
 LIB_SRC="$SRC/$ARCH/libdf.so"
 MODEL_SRC="$SRC/DeepFilterNet3_onnx.tar.gz"
 LIB_DST="${PILNK_DF_LIB_DST:-/usr/local/lib/pilnk/libdf.so}"
