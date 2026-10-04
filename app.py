@@ -6092,7 +6092,12 @@ def _tune_sweep(steps, start_index, read_power, set_gain, progress, should_stop,
                 break
         out.update(verdict=pick['verdict'], gain_index=pick['gain_index'], reason=pick['reason'])
         if pick['verdict'] in ('ok', 'weak'):
-            out['final_floor'] = measure(pick['gain_index'], t.get('final_s', TUNE_FINAL_S), 'final')
+            g = pick['gain_index']
+            fin = measure(g, t.get('final_s', TUNE_FINAL_S), 'final')
+            # Squelch from the QUIETEST reading at this gain, not the final 10 s alone: on 5 Oct the
+            # final window caught calls (-55.4 where the same gain read -61.4 a minute earlier), which
+            # set squelch 6 dB too high and would have cut weak calls.
+            out['final_floor'] = min(fin, floors.get(g, fin))
             out['squelch'] = _tune_squelch(out['final_floor'])
         progress('done', total, total, steps[pick['gain_index']] if pick['gain_index'] is not None else None)
     except _TuneStop as e:

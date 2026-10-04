@@ -1630,7 +1630,9 @@
 
             <!-- Recent Frequencies -->
             <div class="panel">
-              <div class="panel-title">Recent</div>
+              <div class="panel-title" style="display:flex;justify-content:space-between;align-items:center;">Recent
+                <button id="saRecentClear" title="remove every recent frequency" style="display:none;background:none;border:none;color:var(--text-dim);font-family:'Share Tech Mono',monospace;font-size:0.5rem;cursor:pointer;padding:0;">Clear all</button>
+              </div>
               <div id="saRecent" style="font-size:0.62rem;color:var(--text-dim);">No recent frequencies</div>
             </div>
 
@@ -10022,16 +10024,33 @@ setInterval(raPoll, 5000);
     localStorage.setItem('pilnk-recent-freqs', JSON.stringify(recentFreqs));
     renderRecent();
   }
+  function saveRecent(){ try{ localStorage.setItem('pilnk-recent-freqs', JSON.stringify(recentFreqs)); }catch(e){} }
   function renderRecent(){
     var el=$('saRecent'); if(!el) return;
+    var clr=$('saRecentClear'); if(clr) clr.style.display=recentFreqs.length?'':'none';
     if(!recentFreqs.length){ el.innerHTML='<div style="font-size:0.62rem;color:var(--text-dim);">No recent frequencies</div>'; return; }
-    el.innerHTML=recentFreqs.map(function(r){
+    // Built from DOM nodes, not an HTML string: the list comes from localStorage.
+    el.innerHTML='';
+    recentFreqs.forEach(function(r){
       var ago=Math.round((Date.now()-r.time)/60000);
-      var agoStr=ago<1?'just now':ago+'m ago';
-      return '<div style="display:flex;justify-content:space-between;align-items:center;padding:4px 0;border-bottom:1px solid var(--border);cursor:pointer;" onclick="saSetFreq('+Math.round(parseFloat(r.freq)*1e6)+')">'+
-        '<span style="font-size:0.65rem;color:var(--blue-mid);font-weight:700;">'+r.freq+' MHz</span>'+
-        '<span style="font-size:0.5rem;color:var(--text-dim);">'+agoStr+'</span></div>';
-    }).join('');
+      var row=document.createElement('div');
+      row.dataset.recent=r.freq;
+      row.style.cssText='display:flex;justify-content:space-between;align-items:center;gap:6px;padding:4px 0;border-bottom:1px solid var(--border);';
+      var f=document.createElement('span'); f.className='sa-recent-f';
+      f.style.cssText='flex:1;font-size:0.65rem;color:var(--blue-mid);font-weight:700;cursor:pointer;';
+      f.textContent=r.freq+' MHz';
+      f.onclick=function(){ window.saSetFreq(Math.round(parseFloat(r.freq)*1e6)); };
+      var t=document.createElement('span');
+      t.style.cssText='font-size:0.5rem;color:var(--text-dim);';
+      t.textContent=ago<1?'just now':ago+'m ago';
+      var x=document.createElement('button'); x.className='sa-recent-x'; x.title='remove '+r.freq+' MHz';
+      x.style.cssText='background:none;border:none;color:var(--text-dim);cursor:pointer;font-size:0.75rem;line-height:1;padding:0 2px;';
+      x.textContent='×';
+      x.onclick=function(e){ e.stopPropagation();
+        recentFreqs=recentFreqs.filter(function(q){ return q.freq!==r.freq; }); saveRecent(); renderRecent(); };
+      row.appendChild(f); row.appendChild(t); row.appendChild(x);
+      el.appendChild(row);
+    });
   }
 
   // ---- recording (Whisper training data) ----
@@ -10219,6 +10238,7 @@ setInterval(raPoll, 5000);
         };
     }
     var ban=$('sdrAudioBanner'); if(ban) ban.addEventListener('click', ensureAudio);
+    var rc=$('saRecentClear'); if(rc) rc.onclick=function(){ recentFreqs=[]; saveRecent(); renderRecent(); };
     renderRecent();
     refreshControls();
     setInterval(function(){ if(!recording) return; var sr=st.audioSampleRate||48000; recInfo('REC '+fmtDur(recSamples/sr)+' · '+(recSamples*2/1048576).toFixed(1)+' MB'); }, 500);
