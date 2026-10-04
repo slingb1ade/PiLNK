@@ -1908,9 +1908,8 @@ _DENOISE_WHY_TAGS = (
     ('no library', 'no_lib'),
     ('no model', 'no_model'),
     ('probe crashed', 'probe_crash'),
-    ('probe failed', 'probe_fail'),
-    ('probe timed out', 'probe_fail'),
-    ('probe could not fork', 'probe_fail'),
+    ('probe timed out', 'probe_timeout'),
+    ('probe could not fork', 'probe_fork'),
     ('dlopen', 'dlopen'),
     ('library lacks', 'bad_lib'),
 )
@@ -1925,6 +1924,13 @@ def _denoise_state_from_status(s):
     if dn.get('available') is True:
         return 'on'
     why = str(dn.get('why') or '')
+    # Keep the probe's exit code: 10 dlopen, 11 symbols, 12 model would not
+    # load, 13 bad frame length. Each needs a different fix (4 Oct: MME1).
+    m = re.match(r'probe failed \(code (\d+)\)', why)
+    if m:
+        return 'off:probe_code_' + m.group(1)
+    if why.startswith('probe failed'):
+        return 'off:probe_fail'
     for prefix, tag in _DENOISE_WHY_TAGS:
         if why.startswith(prefix):
             return 'off:' + tag
@@ -1943,7 +1949,8 @@ def _denoise_feature():
       n/a          no radio engine on this node
       unknown      engine not answering (sdr_audio says why)
       on           available to listeners
-      off:<why>    no_lib, no_model, probe_crash, probe_fail, dlopen, bad_lib, other
+      off:<why>    no_lib, no_model, probe_crash, probe_timeout, probe_code_<n>,
+                   probe_fail, probe_fork, dlopen, bad_lib, other
       old_engine   engine too old to say
     """
     if not os.path.exists('/usr/local/bin/pilnkradio'):
