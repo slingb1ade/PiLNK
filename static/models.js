@@ -17,6 +17,7 @@ const MODEL_ORIENT={ 'a320_200.glb':{yaw:-90}, 'atr72.glb':{yaw:90}, 'b777_klm.g
   'bizjet.glb':{yaw:180}, 'crj.glb':{yaw:180},
   'p8.glb':{yaw:0}, 't38.glb':{yaw:-90}, 'hawk.glb':{yaw:180},
   'e7.glb':{yaw:0}, 'c5.glb':{yaw:180}, 'nh90.glb':{yaw:-90},   // NH90: direction from the TAIL ROTOR, as for the AS350
+  'sh60.glb':{yaw:180},   // SH-60: cockpit and nose gear at +Z, tail rotor at -Z
   'as350.glb':{yaw:0} };   /* all measured with the corrected mapping; confirm each on a LIVE aircraft before release. The
      AS350 is a helicopter: its direction came from the TAIL ROTOR's position, because the fin test reads the highest
      point and on a helicopter that is the main rotor. */
@@ -37,6 +38,8 @@ const MODEL_SPAN={ 'c172.glb':11.0, 'b429.glb':13.0, 'c208.glb':15.9, 'atr72.glb
      drew it 64.2 m x 69.9 m; 71.87 draws 67.9 x 74.0 (real 67.9 x 75.3). Measured 5 Oct in a headless r128 render. */
   'nh90.glb':16.3,  /* NH90: the main rotor disc, 16.3 m. Its four blades lie fore-aft and across in the file, so the
      lateral extent IS the disc, and Box3 reads this file exactly (0.184 = 0.184 by vertex pass) - no correction. */
+  'sh60.glb':14.06,  /* SH-60 Seahawk: 16.36 m rotor disc. Its four blades sit diagonally in the file, so the lateral extent
+     (1689.6 units) is NOT the disc: the tips are 982.9 units from the hub (all four within 0.4). 14.06 draws the disc at 16.36 m. */
   'as350.glb':9.31 };    /* NOT the 10.69 m rotor diameter, deliberately. This number is applied to the model's lateral
      extent, and with THREE blades at 120° no blade lies straight across, so the width undersells the disc. Sized at
      10.69 the rotor measured 12.3 m across and the fuselage 12.9 m (real 10.69 / 10.93) — both ~15–18% big. 9.31 puts
@@ -134,6 +137,10 @@ function modelFor(t,cat){ t=(t||'').toUpperCase();
      of the HELI list, which otherwise sends it to the 429. German Navy livery. Both rotors are named parts
      (MainRotor, TailRotor), so findProps turns them; the model's display base was cut out. */
   if(t==='NH90')return'nh90.glb';
+  /* SH-60 Seahawk (Muhamad Mirza Arrafi, CC-BY-4.0, added 5 Oct) - the RNZN's MH-60R, which replaced the Seasprite. H60 is the
+     ICAO designator for the whole Black Hawk / Seahawk family (2,845 airframes in adsb_database), S70 the civil/export S-70;
+     UH60 is kept for databases that use it. Exact codes. Rotors split into named parts (MainRotor, TailRotor) so findProps turns both. */
+  if(['H60','S70','UH60'].includes(t))return'sh60.glb';
   if(BIZJET_MODEL&&BIZJET.includes(t))return BIZJET_MODEL;
   if(REGIONAL_MODEL&&REGIONAL.includes(t))return REGIONAL_MODEL;
   if(EJET.includes(t))return'a320_200.glb';
