@@ -1587,20 +1587,9 @@ def ping_server():
                 try:
                     data = json.loads(raw)
                     for a in data.get('aircraft', []):
-                        if a.get('lat'):
-                            aircraft.append({
-                                'hex': a.get('hex', ''),
-                                'flight': a.get('flight', '').strip(),
-                                'alt': a.get('alt_baro', 0),
-                                'alt_baro': a.get('alt_baro', 0),
-                                'gs': a.get('gs', 0),
-                                'lat': a.get('lat', 0),
-                                'lon': a.get('lon', 0),
-                                'squawk': a.get('squawk', ''),
-                                'baro_rate': a.get('baro_rate', 0),
-                                't': a.get('t', ''),
-                                'track': a.get('track', 0)
-                            })
+                        rec = _ping_aircraft(a)   # 11 basic fields + fresh Mode S (1.5.61)
+                        if rec:
+                            aircraft.append(rec)
 
                     # ── Emergency black-box payload ─────────────────────────
                     # Aircraft squawking an emergency code (incl. the 2200
@@ -4391,6 +4380,39 @@ def _merge_bds(ac, icao_upper):
             logging.warning('[bds] dropped TAS %r vs groundspeed %r for %s — '
                             '%d dropped so far',
                             tas, gs, icao_upper, _bds_stats['tas_dropped'])
+
+
+def _ping_aircraft(a):
+    """One aircraft as the ping sends it to pilnk.io, or None if it has no position.
+
+    The 11 basic fields are exactly what the ping always sent. Since 1.5.61 the
+    node's fresh Mode S Comm-B fields (_merge_bds: same names, limits and 60 s
+    per-field freshness as the dashboard's /flights) ride along, so the pilnk.io
+    3D network card can show the Hidden Sky Data box. Aircraft with no Comm-B
+    add nothing. This is broadcast ADS-B/Mode S data, the same class as the
+    positions; nothing from the radio/STT side is ever added here.
+    """
+    if not a.get('lat'):
+        return None
+    out = {
+        'hex': a.get('hex', ''),
+        'flight': a.get('flight', '').strip(),
+        'alt': a.get('alt_baro', 0),
+        'alt_baro': a.get('alt_baro', 0),
+        'gs': a.get('gs', 0),
+        'lat': a.get('lat', 0),
+        'lon': a.get('lon', 0),
+        'squawk': a.get('squawk', ''),
+        'baro_rate': a.get('baro_rate', 0),
+        't': a.get('t', ''),
+        'track': a.get('track', 0)
+    }
+    if out['hex']:
+        try:
+            _merge_bds(out, str(out['hex']).upper())
+        except Exception as e:   # Mode S is extra: never let it cost the ping
+            logging.warning('[bds] ping merge skipped for %s: %s', out['hex'], e)
+    return out
 
 
 def _bds_bootstrap():
