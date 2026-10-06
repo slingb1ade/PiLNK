@@ -1725,7 +1725,7 @@
               <button class="tile-btn"        id="tileTopo" onclick="setTileLayer('topo')">Topo</button>
             </div>
             <div class="toggle-row" style="margin-top:8px;" title="Live 3D view of your own sky, on whichever map layer is selected above. This browser only."><span>3D view</span><label class="toggle-switch"><input type="checkbox" id="sky3dToggle" autocomplete="off" onchange="setSky3D(this.checked, true)"/><span class="toggle-slider"></span></label></div>
-            <div class="toggle-row" style="margin-top:6px;" title="How many of the nearest aircraft get a full 3D model in the 3D view; the rest are drawn as arrows. More looks better but needs a faster computer. This browser only."><span>3D models</span><select id="sky3dModels" autocomplete="off" onchange="setSkyModels(this.value)" style="font-size:0.7rem;"><option value="4">4</option><option value="12">12</option><option value="24">24</option><option value="48">48</option></select></div>
+            <div class="toggle-row" style="margin-top:6px;" title="In the 3D view, aircraft within this many miles of your receiver get a full 3D model; those further out are drawn as arrows. Further looks better but needs a faster computer. This browser only."><span>3D models within</span><select id="sky3dModels" autocomplete="off" onchange="setSkyModels(this.value)" style="font-size:0.7rem;"><option value="25">25 mi</option><option value="50">50 mi</option><option value="100">100 mi</option></select></div>
             <!-- v1.5.26 (MME1): map brightness, for whichever map and theme is showing. Deliberately
                  NOT class wx-opacity-row: PilnkOptions finds the weather slider by that class, first match. -->
             <div style="margin-top:8px;" title="Dim a bright map or lift a dark one. This browser only; remembered after a refresh. Aircraft are not affected.">
@@ -3317,11 +3317,12 @@ function applyTileFilter() {
 }
 
 // ── 3D Sky: the 4th map layer ─────────────────────────────────────────────
-// "3D models" (1 Oct 2026): how many of the nearest aircraft get a full model in 3D. The view is drawn by
-// THIS browser's computer, not the node, so the choice is per browser (like brightness). 12 unless picked.
-var SKY_MODELS_KEY = 'pilnk-sky3d-models', SKY_MODEL_CHOICES = [4, 12, 24, 48];
-function skyModelsClean(v) { v = parseInt(v, 10); return SKY_MODEL_CHOICES.indexOf(v) >= 0 ? v : 12; }
-var skyModels = (function () { try { return skyModelsClean(localStorage.getItem(SKY_MODELS_KEY)); } catch (e) { return 12; } })();
+// "3D models" (6 Oct 2026; a count of the nearest before that): aircraft within this many statute miles of the
+// receiver get a full model in 3D, the rest arrows. The view is drawn by THIS browser's computer, not the node, so
+// the choice is per browser (like brightness). 50 unless picked. A new key: an old count pick ("24") is not a distance.
+var SKY_MODELS_KEY = 'pilnk-sky3d-modelmi', SKY_MODEL_CHOICES = [25, 50, 100];
+function skyModelsClean(v) { v = Number(v); return SKY_MODEL_CHOICES.indexOf(v) >= 0 ? v : 50; }
+var skyModels = (function () { try { return skyModelsClean(localStorage.getItem(SKY_MODELS_KEY)); } catch (e) { return 50; } })();
 function setSkyModels(v) {
   skyModels = skyModelsClean(v);
   try { localStorage.setItem(SKY_MODELS_KEY, String(skyModels)); } catch (e) {}
@@ -3362,7 +3363,7 @@ function skySettings() {
     rwy: !!avOverlayOn && !!runwaysVisible, afld: !!avOverlayOn && !!airfieldsVisible,
     asp: !!avOverlayOn && skyChecked('avAirways'), nav: !!avOverlayOn && skyChecked('avNavaids'), fix: !!avOverlayOn && skyChecked('avWaypoints'),
     fp: !!avOverlayOn && !!footprintVisible, notam: !!notamsOn,
-    models: (typeof skyModels === 'number') ? skyModels : 12 };
+    modelMi: (typeof skyModels === 'number') ? skyModels : 50 };
 }
 function skyChecked(id) { var e = document.getElementById(id); return !!(e && e.checked); }
 // OpenAIP limits in the page's short form: value, unit (0 m, 1 ft, 6 FL), datum (0 GND, 1 MSL, 2 STD).

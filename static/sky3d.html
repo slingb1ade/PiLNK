@@ -120,7 +120,7 @@
 <div class="hud card" id="note">Drag to pan · right-drag (or two fingers) to tilt and turn · wheel to zoom.
 Click an aircraft to open its 3D Approach view (inside the dashboard: its info box, with a 3D Approach button). Buildings appear once you zoom in.
 Options: <b>?ve=</b> terrain exaggeration (1.5), <b>?scale=</b> aircraft size (1), <b>?models=0</b> simple arrows,
-<b>?labels=0</b>, <b>?trails=0</b>, <b>?buildings=0</b>, <b>?terrain=0</b>, <b>?theme=day|night</b>, <b>?lat= ?lon=</b>.</div>
+<b>?mi=</b> 3D models within this many miles (50), <b>?labels=0</b>, <b>?trails=0</b>, <b>?buildings=0</b>, <b>?terrain=0</b>, <b>?theme=day|night</b>, <b>?lat= ?lon=</b>.</div>
 
 <script src="https://unpkg.com/maplibre-gl@5.24.0/dist/maplibre-gl.js"></script>
 <script crossorigin="anonymous" src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
@@ -137,12 +137,14 @@ const TRAIL_N=120;          // points kept per aircraft (one per poll, ~3 min)
 const POLL_MS=1500;
 const MAX_LABELS=60;        // nearest N aircraft get a label; the rest stay readable as models + trails
 /* Level of detail. Measured on the Pi4's own model files: 66–267 meshes and 25k–114k triangles EACH
-   (a320_200: 223 meshes / 114k tris). A full model on every aircraft is ~150 draw calls apiece —
-   100 aircraft would be ~15,000 per frame. Past a few km the model is scaled up and its detail is
-   invisible anyway, so only the nearest modelNear get the real model; the rest get the dart. */
-let modelNear=num('near',12);
-const NEAR_URL=_q.has('near');   // ?near= is a manual test override: the dashboard's "3D models" choice never beats it
-const MODEL_CHOICES=[4,12,24,48]; let _appliedModels=null;
+   (a320_200: 223 meshes / 114k tris), ~150 draw calls apiece, so not every aircraft gets the real model.
+   6 Oct 2026 (AJ: "under 50 miles is full icon. Over 50 miles is the arrow"): the rule is distance from the
+   receiver, not a count of the nearest — a count let planes swap bodies as their ranks changed. modelMi is the
+   choice (the dashboard's "3D models": 25, 50 or 100 statute miles); lodMi is what is drawn, halved by the
+   busy-sky guard. */
+const MODEL_MI_CHOICES=[25,50,100];
+const MI_URL=_q.has('mi');   // ?mi= is a manual test override: the dashboard's "3D models" choice never beats it
+let modelMi=MI_URL?Math.max(1,Math.min(500,num('mi',50)||50)):50, lodMi=modelMi, _appliedMi=null;
 const EMERG=new Set(['7500','7600','7700']);   // hijack · radio failure · emergency — never hidden, always red
 const SITE={lat:null,lon:null};
 const st=t=>{document.getElementById('st').textContent=t;};
@@ -300,7 +302,7 @@ function cleanSettings(s){ const o={}; if(!s||typeof s!=='object') return o;
   if(s.wxSrc==='rainviewer'||s.wxSrc==='opera'||s.wxSrc==='nexrad') o.wxSrc=s.wxSrc;
   if(Array.isArray(s.ringList)) o.ringList=s.ringList.map(Number).filter(n=>isFinite(n)&&n>0&&n<=1000).sort((a,b)=>a-b).slice(0,12);
   if(s.unit==='nm'||s.unit==='km') o.unit=s.unit;
-  if(MODEL_CHOICES.includes(s.models)) o.models=s.models;   // numbers only, one of the four choices
+  if(MODEL_MI_CHOICES.includes(s.modelMi)) o.modelMi=s.modelMi;   // numbers only, one of the three choices
   return o; }
 function applySettings(s){
   const c=cleanSettings(s);
@@ -311,7 +313,7 @@ function renderSettings(){
   SHOW_TRAILS=SETTINGS.trails; SHOW_LABELS=SETTINGS.labels; _trailsDirty=true;
   // "3D models": only a NEW pick acts. It gets a fresh try — the busy-sky guard re-arms with its start-up grace —
   // while every other settings message (which carries the same pick) leaves a guard that already stepped in alone.
-  if(SETTINGS.models&&!NEAR_URL&&SETTINGS.models!==_appliedModels){ _appliedModels=SETTINGS.models; modelNear=SETTINGS.models;
+  if(SETTINGS.modelMi&&!MI_URL&&SETTINGS.modelMi!==_appliedMi){ _appliedMi=SETTINGS.modelMi; modelMi=lodMi=SETTINGS.modelMi;
     _degraded=false; _slow=0; _loadedAt=performance.now(); }
   try{ map.setLayoutProperty('rx','visibility',SETTINGS.rx?'visible':'none'); }catch(e){}
   try{ map.getSource('rings').setData(ringsGeoJSON());
@@ -760,19 +762,16 @@ function dartGeo(){
   const g=new THREE.ExtrudeGeometry(s,{depth:0.08,bevelEnabled:false}); g.rotateX(-Math.PI/2); g.translate(0,-0.04,0);
   return (_dartGeo=g);
 }
-/* LOD (4 Oct 2026 — AJ saw planes flip between model and arrow "at random"): which live aircraft get a full model.
-   On-screen planes rank first, nearest first; off-screen ones after them (nobody sees their body). A plane already
-   showing its model keeps it until it falls past n + margin, so the two planes either side of the cut-off no longer
-   swap bodies every poll as they move. Never more than n. items: [{cd, on, cur}] → [want a model?, …] */
-function lodPick(items,n){
-  const d=s=>s.cd!=null?s.cd:1e12;
-  const order=items.map((s,i)=>i).sort((a,b)=>{ const A=items[a],B=items[b]; return (!!A.on===!!B.on)?d(A)-d(B):(A.on?-1:1); });
-  const rank=[]; order.forEach((idx,r)=>{ rank[idx]=r; });
-  const margin=Math.max(2,Math.ceil(n/4)), want=items.map(()=>false); let used=0;
-  for(const i of order){ if(used>=n) break; if(items[i].cur&&items[i].on&&rank[i]<n+margin){ want[i]=true; used++; } }   // on-screen holders stay put
-  for(const i of order){ if(used>=n) break; if(!want[i]){ want[i]=true; used++; } }                                    // the rest, nearest first
-  return want;
+/* LOD by distance from the receiver (6 Oct 2026). siteMi: great-circle statute miles from SITE (null when either
+   end is unknown). lodWant: inside r → model; a plane already showing its model keeps it to r + max(1 mi, 4 %),
+   so one cruising along the line never swaps bodies every poll. Where the camera looks changes nothing. */
+function siteMi(lat,lon){
+  if(lat==null||lon==null||SITE.lat==null||SITE.lon==null) return null;
+  const p1=SITE.lat*D2R, p2=lat*D2R, dp=p2-p1, dl=(lon-SITE.lon)*D2R;
+  const h=Math.sin(dp/2)**2+Math.cos(p1)*Math.cos(p2)*Math.sin(dl/2)**2;
+  return 2*3958.7613*Math.asin(Math.min(1,Math.sqrt(h)));
 }
+function lodWant(mi,cur,r){ if(mi==null) return false; return mi<=(cur?r+Math.max(1,r*0.04):r); }
 function setBody(s){
   if(s.body){ s.yaw.remove(s.body); s.body=null; }
   if(USE_MODELS&&s.wantModel&&s.tpl){ s.body=s.tpl.clone(); s.span=s.tpl.userData.span; }
@@ -925,9 +924,9 @@ async function poll(){
       ensureVisual(s);
     }
     for(const [hex,s] of AC){ if(!seen.has(hex)){ s.miss=(s.miss||0)+1; if(!s.live||s.miss>8) removeAc(hex); } }
-    // LOD: up to modelNear aircraft get real models — see lodPick (camera distance from the last frame, on-screen first, sticky)
-    const live=[...AC.values()].filter(s=>s.yaw&&s.live), want=lodPick(live.map(s=>({cd:s.cd,on:s.on,cur:!!s.wantModel})),modelNear);
-    live.forEach((s,i)=>{ const w=want[i]; if(s.wantModel!==w){ s.wantModel=w; setBody(s); if(w) loadModel(s); } });
+    // LOD: real models within lodMi miles of the receiver, arrows beyond — see lodWant
+    for(const s of AC.values()){ if(!s.yaw||!s.live) continue; const w=lodWant(siteMi(s.lat,s.lon),!!s.wantModel,lodMi);
+      if(s.wantModel!==w){ s.wantModel=w; setBody(s); if(w) loadModel(s); } }
     if(AV.apt&&SETTINGS.rwy) avUpdateActive();
     _trailsDirty=true; _polls++; _pollFail=0;
     if(_polls===1) st('live · '+seen.size+' aircraft with a position');
@@ -1097,13 +1096,13 @@ function loop(t){ if(map&&!paused&&!_failed&&t-_lastFrameReq>=FRAME_MS){ _lastFr
     // +/- buttons (and anything else that eases, like resetView) never get a frame to actually move in.
     if(RP&&RP.follow&&!map.isEasing()){ const p=rpAt(RP.pts,RP.t); map.setCenter([p.lon,p.lat]); }   // camera keeps the plane centred; zoom/pitch/bearing left as the user set them
     map.triggerRepaint(); } requestAnimationFrame(loop); }
-/* Busy-sky guard. Five consecutive seconds under 15 fps with models on → the nearest 4 only, said once.
+/* Busy-sky guard. Five consecutive seconds under 15 fps with models on → models within half the distance, said once.
    Ignored for the first 10 s after load (tiles still streaming) and while paused or hidden. */
 let _slow=0, _degraded=false, _loadedAt=performance.now();
 function degradeCheck(fps){
   if(_degraded||!USE_MODELS||paused||document.hidden||performance.now()-_loadedAt<10000){ _slow=0; return; }
   _slow=fps<15?_slow+1:0;
-  if(_slow>=5){ _degraded=true; modelNear=Math.min(modelNear,4); st('Busy sky — showing fewer 3D models to keep it smooth'); }
+  if(_slow>=5){ _degraded=true; lodMi=modelMi/2; st('Busy sky — 3D models within '+(+lodMi.toFixed(1))+' mi only, to keep it smooth'); }
 }
 /* Can't-keep-up guard. This page shares the dashboard's main thread (same-origin iframe), so a device
    that draws under ~3 fps (software GL, no GPU) makes the WHOLE dashboard crawl — even the Street button
