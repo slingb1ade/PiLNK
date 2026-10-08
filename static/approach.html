@@ -73,6 +73,7 @@
 <div class="hud card" id="tr">
   <div class="row"><span class="k">Callsign</span><span class="v" id="d_cs">—</span></div>
   <div class="row"><span class="k">Type</span><span class="v" id="d_t">—</span></div>
+  <div class="row" id="d_dlrow" style="display:none"><span class="k">From the aircraft</span><span class="v" id="d_dl">—</span></div>
   <div class="row"><span class="k">Alt</span><span class="v" id="d_alt">—</span></div>
   <div class="row"><span class="k">Dist</span><span class="v" id="d_dist">—</span></div>
   <div class="row"><span class="k">Hdg / Roll</span><span class="v" id="d_att">—</span></div>
@@ -100,6 +101,7 @@
 <script crossorigin="anonymous" src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
 <script crossorigin="anonymous" src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/loaders/GLTFLoader.js"></script>
 <script src="/static/models.js"></script>
+<script src="/static/datalink-card.js?v=dl5"></script>
 <script>
 const _q=new URLSearchParams(location.search);
 const D2R=Math.PI/180, R2D=180/Math.PI;
@@ -233,7 +235,7 @@ const st=(t)=>document.getElementById('st').textContent=t;
    Drawn only at night, because that is when the real ones are the useful thing to look for. */
 const LIGHTS_ON=(_q.get('lights')!=null)?(_q.get('lights')!=='0'):true;
 const RABBIT=12;      // sequenced-flasher steps per second — see the note where it is used
-let RWY_ENDS=[], rwyActive=null;
+let RWY_ENDS=[], rwyActive=null, APT_ICAO=null;   // APT_ICAO: the airport whose runways these are
 let APT_ELEV=null;    // published field elevation (m) — fallback only, see sampleElev
 async function loadRunways(){
   if(!LIGHTS_ON||SITE.lat==null) return;
@@ -242,6 +244,7 @@ async function loadRunways(){
     if(!j||!j.ok||!j.airports) return;
     const apt=(SITE.icao&&j.airports.find(a=>a.icao===SITE.icao))||j.airports[0];
     if(!apt) return;
+    APT_ICAO=apt.icao||null;
     const mine=!!(SITE.icao&&apt.icao===SITE.icao), els=[];
     for(const r of apt.runways||[]){
       if(r.le_lat==null||r.he_lat==null) continue;
@@ -258,11 +261,34 @@ async function loadRunways(){
     if(mine&&els.length) APT_ELEV=els.reduce((s,v)=>s+v,0)/els.length;
   }catch(e){ console.warn('3D: runway data unavailable (no approach lights):', e); }
 }
+/* ---------- datalink runway (8 Oct 2026) ----------
+   The aircraft's own datalink (ACARS/VDL2, decoded on this node) can name its landing runway. When it does,
+   and its destination is the airport these runways belong to, that runway is the one lit - not a guess from
+   the heading, which cannot tell parallels apart. Ignored once the aircraft reports it has landed. Every value
+   came over the air, so each is checked before use and only ever written as text. */
+const DL_RWY=/^(0[1-9]|[12][0-9]|3[0-6])[LRC]?$/;
+let acDl=null;   // the followed aircraft's datalink facts (from /flights), or null
+function dlRunwayEnd(dl, aptIcao, ends){
+  if(!dl||typeof dl!=='object'||!aptIcao||dl.dest!==aptIcao) return null;
+  if(dl.on_ts||dl.in_ts) return null;
+  const want=String(dl.rwy||'').replace(/^0/,'');
+  if(!DL_RWY.test(String(dl.rwy||''))&&!DL_RWY.test('0'+want)) return null;
+  for(const e of ends||[]) if(String(e.ident||'').toUpperCase().replace(/^0/,'')===want) return e;
+  return null;
+}
+function dlInfoText(dl, now){   // 'NZAA → NZWN · ETA 15:42 (in 12 min) · RWY 34' (static/datalink-card.js does the checking)
+  const b=(typeof datalinkBrief==='function')?datalinkBrief(dl,now):null;
+  return b?[b.route,b.line].filter(Boolean).join(' · '):'';
+}
+/* ---------- end datalink runway ---------- */
 /* Which end is in use: the one whose landing direction the aircraft is actually flying, and which it
    is still short of. Falls back to the site heading when nothing is inbound, so the lights are lit
    before the first arrival appears rather than after it. */
-function pickEnd(a){
+function pickEnd(a, dl){
   if(!RWY_ENDS.length) return null;
+  const rep=a?dlRunwayEnd(dl,APT_ICAO,RWY_ENDS):null;   // the aircraft named its runway: lit while it is still short of it
+  if(rep){ const dE=(a.lon-rep.lon)*mPerLon, dN=(a.lat-rep.lat)*mPerLat, h=rep.land*D2R;
+    if(dE*Math.sin(h)+dN*Math.cos(h)<=1500) return rep; }
   const hdg=a?a.hdg:(SITE.hdg!=null?SITE.hdg:null);
   if(hdg==null) return RWY_ENDS[0];
   let best=null,bestScore=1e9;
@@ -439,7 +465,7 @@ const acLayer={
        transform and a second render pass through the SAME renderer and camera — one GL context, one
        renderer, composited because autoClear is off. */
     if(LIGHTS_ON&&NIGHT_ON&&this.lightScene){
-      const end=pickEnd(aircraft);
+      const end=pickEnd(aircraft,acDl);
       if(end!==this.lightEnd){ this.lightEnd=end; this.lightData=buildLights(end,this.lightScene); }
       if(end&&this.lightData){
         const t=performance.now()/1000;
@@ -1262,6 +1288,8 @@ async function poll(){
            vE:Math.sin(trk)*gsMs, vN:Math.cos(trk)*gsMs, vU:a.alt_baro==='ground'?0:vsS*0.00508,
            gs:gsMs, trk, rate, t:tFix, key};
       acLayer.ensureModel(a.t,a.category);
+      acDl=(a&&a.datalink&&typeof a.datalink==='object')?a.datalink:null;
+      { const dlt=dlInfoText(acDl,Date.now()/1000); document.getElementById('d_dl').textContent=dlt; document.getElementById('d_dlrow').style.display=dlt?'':'none'; }
       document.getElementById('d_cs').textContent=(a.flight||'').trim()||(a.hex||'').toUpperCase();
       document.getElementById('d_t').textContent=a.t||'—';
       document.getElementById('d_alt').textContent=a.alt_baro==='ground'?'GROUND':Math.round(a.alt_baro).toLocaleString()+' ft'+(qnh?' (Q'+qnh+')':'');
@@ -1281,7 +1309,7 @@ async function poll(){
         :(mvLive!=null?'mag var '+fmtSigned(mvLive)+'° est · n='+mvS.length
         :(mvStored!=null?'mag var '+fmtSigned(mvStored)+'° (remembered) · refining n='+mvS.length:'mag var: calibrating from traffic…')));
       prefetchAhead();
-    } else { fix=null; aircraft=null; document.getElementById('d_cs').textContent='— no arrivals —'; }
+    } else { fix=null; aircraft=null; acDl=null; document.getElementById('d_dlrow').style.display='none'; document.getElementById('d_cs').textContent='— no arrivals —'; }
   }catch(e){
     /* AUDIT FIX #6 (24 Sep 2026): this was catch(e){} — any failure froze the view on its last fix with
        nothing said anywhere. Now it is logged (first time, then every 30th, so a dead link doesn't flood

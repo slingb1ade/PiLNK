@@ -1,0 +1,19 @@
+[Unit]
+Description=PiLNK datalink decoder (dumpvdl2, VDL2) — local only
+After=network.target
+
+[Service]
+Type=simple
+User=PILNK_USER
+ExecStart=PILNK_LIBEXEC/datalink-run.sh
+# Records which librtlsdr was loaded (driver_ok) in /run/pilnk-datalink/status.json
+ExecStartPost=PILNK_LIBEXEC/datalink-check.sh
+RuntimeDirectory=pilnk-datalink
+Restart=always
+# 30 s, not less: with no stick plugged in dumpvdl2 exits at once, and a
+# short delay would fill the journal while the owner fetches the stick.
+RestartSec=30
+Nice=5
+
+[Install]
+WantedBy=multi-user.target

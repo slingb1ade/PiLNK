@@ -12,6 +12,10 @@
      falls back to category silhouettes when it doesn't, so a missing/late file
      is harmless. Served locally so the dashboard needs no network for it. -->
 <script src="/static/aircraft-shapes.js"></script>
+<script src="/static/datalink-card.js?v=dl5"></script>
+<script defer src="/static/datalink-board.js?v=b4"></script>
+<script src="/static/datalink-map.js?v=m2"></script>
+<script src="/static/fixes-nz.js?v=f1"></script>
 <style>
   @import url('https://fonts.googleapis.com/css2?family=Orbitron:wght@400;600;700&family=Share+Tech+Mono&family=Noto+Color+Emoji&display=swap');
   :root{--bg-deep:#f0f4ff;--bg-panel:#ffffff;--bg-card:#f5f8ff;--border:#dbeafe;--blue-dim:#2563eb;--blue-mid:#3b82f6;--blue-light:#1d4ed8;--text:#1e3a6e;--text-dim:#5c7aa3;--green:#16a34a;--success:#16a34a;--warn:#d97706;--danger:#dc2626;--info:#2563eb;--shadow:0 1px 2px rgba(30,58,110,.06),0 4px 12px rgba(30,58,110,.09);--shadow-2:0 8px 24px rgba(30,58,110,.13);--edge:inset 0 1px 0 rgba(255,255,255,.65);--r-1:6px;--r-2:10px;--r-3:14px;--sp-1:4px;--sp-2:8px;--sp-3:12px;--sp-4:16px;--sp-5:24px;}
@@ -1407,6 +1411,8 @@
         </button>
         <div class="nav-menu" id="navMenu" role="menu">
           <button class="nav-item active" data-tab="traffic" role="menuitem" onclick="navPick('traffic','Traffic')">Traffic</button>
+          <!-- datalink board: shown by datalink-board.js only when this node has the datalink decoder installed -->
+          <button class="nav-item" id="navDlBoard" data-tab="dlboard" role="menuitem" onclick="navPick('dlboard','Arrivals / Departures')" style="display:none">Arrivals / Departures</button>
           <!-- Opens the 3D view in the map's place (AUTO: watches for arrivals). Not a sidebar pane, so the
                current pane (usually Traffic) stays put and its cards can retarget the view. -->
           <button class="nav-item" data-tab="approach3d" role="menuitem" onclick="open3D(null,'AUTO · watching for arrivals'); closeNavMenu();">3D Approach</button>
@@ -1450,6 +1456,9 @@
           <div id="flightList"><div class="no-flights">Loading aircraft...</div></div>
         </div>
       </div>
+
+      <!-- ARRIVALS / DEPARTURES (datalink-board.js fills it) -->
+      <div class="tab-content" id="tab-dlboard"></div>
 
       <!-- SDR AUDIO TAB (pilnk_bridge, grafted from db4ba11) -->
       <div class="tab-content" id="tab-sdr-audio">
@@ -2084,6 +2093,41 @@
   .cc-bds-on{ color:#34d399; font-weight:700; }
   .cc-bds-off{ color:#6b7280; }
   @media (max-width:600px){ .cc-bds-grid{ grid-template-columns:1fr; } }
+  /* Datalink (ACARS/VDL2) facts from the aircraft itself — 7 Oct 2026 */
+  .cc-dl{ flex:0 0 auto; border-color:rgba(56,189,248,0.35); background:rgba(56,189,248,0.08); }
+  .cc-dl-head .icn{width:12px;height:12px;vertical-align:-2px;margin-right:2px;fill:none;stroke:currentColor;stroke-width:2;}
+  /* Datalink Arrivals / Departures board + ATIS chip (static/datalink-board.js) */
+  #map.ifr-lbl-hide .ifr-fix-lbl{display:none}
+.wc-atis{font-family:'Share Tech Mono',monospace;font-size:0.6rem;letter-spacing:0.06em;color:#38bdf8;white-space:nowrap;}   /* ATIS letter + runway, inside the wind chip (8 Oct) */
+  /* Datalink on the 2D map (static/datalink-map.js, 8 Oct): label route line, arrival ring, destination end */
+  .ac-label-dl{font-size:0.5rem;color:var(--info);letter-spacing:0.04em;}   /* --info: readable on both themes */
+  .dl-ring-wrap{pointer-events:none;}
+  .dl-ring{width:28px;height:28px;box-sizing:border-box;border:1.5px solid #38bdf8;border-radius:50%;box-shadow:0 0 6px rgba(56,189,248,0.6);}
+  .dl-ring-min{position:absolute;left:31px;top:6px;font-family:'Share Tech Mono',monospace;font-size:0.6rem;color:#38bdf8;white-space:nowrap;text-shadow:0 0 3px #000,0 0 3px #000;}
+  .dl-dest{pointer-events:none;}
+  .dl-dest-dot{position:absolute;left:-4px;top:-4px;width:8px;height:8px;border-radius:50%;background:#38bdf8;}
+  .dl-dest-txt{position:absolute;left:7px;top:-7px;font-family:'Share Tech Mono',monospace;font-size:0.6rem;color:#38bdf8;white-space:nowrap;text-shadow:0 0 3px #000,0 0 3px #000;}
+  #tab-dlboard{overflow-y:auto;padding:8px 10px;flex-direction:column;}
+  .dlb-sec{margin-bottom:14px;}
+  .dlb-head{font-family:'Orbitron',sans-serif;font-size:0.6rem;letter-spacing:0.12em;color:var(--text-dim);border-bottom:1px solid var(--border);padding-bottom:4px;margin-bottom:4px;}
+  .dlb-row{display:flex;align-items:center;gap:6px;font-family:'Share Tech Mono',monospace;font-size:0.68rem;color:var(--text);padding:4px 2px;border-bottom:1px solid var(--border);}
+  .dlb-row:not(.live)::before{content:'';flex:0 0 6px;}
+  .dlb-row.live{cursor:pointer;}
+  .dlb-row.live:hover{background:var(--bg-card);}
+  .dlb-dot{flex:0 0 6px;width:6px;height:6px;border-radius:50%;background:var(--green);}
+  .dlb-flight{flex:0 0 58px;font-weight:bold;}
+  .dlb-place{flex:0 0 40px;}
+  .dlb-time{flex:0 0 40px;}
+  .dlb-rwy{flex:0 0 32px;}
+  .dlb-extra{flex:0 0 58px;overflow:hidden;text-overflow:ellipsis;}
+  .dlb-status{flex:1 1 auto;color:var(--blue-mid);}
+  .dlb-notinview{flex:0 0 auto;font-size:0.55rem;color:var(--text-dim);opacity:0.7;}
+  .dlb-empty{font-size:0.65rem;color:var(--text-dim);padding:6px 2px;}
+  .dlb-note{font-size:0.6rem;color:var(--text-dim);padding:8px 2px 0;border-top:1px solid var(--border);}
+  .wx-atis-age{font-size:0.6rem;color:var(--text-dim);margin-bottom:6px;}
+  .wx-atis-also{font-size:0.62rem;color:var(--text-dim);margin-bottom:8px;}
+  .cc-dl-head{ padding:2px 12px 0; font-family:'Share Tech Mono',monospace; font-size:0.62rem;
+               letter-spacing:0.08em; color:#38bdf8; }
 </style>
 <div id="cinematicOverlay">
   <div id="cinematicCard">
@@ -2131,6 +2175,11 @@
           <div class="cc-stat"><div class="cc-stat-label">V/Speed</div><div class="cc-stat-val" id="ccVs">–</div></div>
         </div>
         <div class="cc-meta" id="ccMeta"></div>
+        <!-- Datalink (ACARS/VDL2): route, ETA, runway, next fix, takeoff/landing, straight from the aircraft. Local only; shown only when this node has decoded some. Filled by static/datalink-card.js with textContent. -->
+        <div class="cc-bds-primary cc-dl" id="ccDatalink" style="display:none;">
+          <div class="cc-dl-head" id="ccDatalinkHead"></div>
+          <div class="cc-bds-grid" id="ccDatalinkBody"></div>
+        </div>
         <!-- Mode S Comm-B enrichment (Hidden Sky Data) — single box; shown only when data present. Grows to fill the column down to the flight phase. -->
         <div class="cc-bds-primary" id="ccPrimary" style="display:none;">
           <div class="cc-bds-grid" id="ccPrimaryBody"></div>
@@ -2314,8 +2363,8 @@ function updateNearestAirport(lat, lon) {
   // Update weather panel if loaded
   if (typeof wxPanel !== 'undefined' && wxPanel.setStation) wxPanel.setStation(nearestAirport.icao);
   // Update IFR waypoints based on region
-  if (typeof IFR_WAYPOINTS_NZ !== 'undefined') {
-    IFR_WAYPOINTS = isInNZ() ? IFR_WAYPOINTS_NZ : [];
+  if (typeof nzIfrList === 'function') {
+    IFR_WAYPOINTS = isInNZ() ? nzIfrList() : [];
   }
   // Airspace and NAVAIDs were fetched around the old airport (Auckland by default): a node overseas kept Auckland's
   // until someone searched for an airport. Fetch again around the new one.
@@ -2336,6 +2385,7 @@ function showTab(name, e) {
   if (name === 'history' && typeof loadCapsules === 'function') loadCapsules();
   if (name === 'sdr-audio') saCheckVHF();
   if (name === 'badges') loadBadges();
+  if (name === 'dlboard' && window.dlBoard) dlBoard.show();
 }
 
 // ── Badges tab (badges Phase 4) ──────────────────────────────
@@ -5063,6 +5113,8 @@ function ttFields(cs, info){
   var a=lastAircraft[cs]; if(!a) return null;
   var ph=getPhase(a,cs), vr=a.baro_rate||a.geom_rate||0, pc=ph.color==='#ffffff'?'#dc2626':ph.color;
   var hasRoute=!!(info&&info.route), ok=routeIsPlausible(info,a);
+  // The aircraft's own datalink (static/datalink-card.js) beats a schedule lookup for the route, and adds ETA/runway.
+  var dlb=(typeof datalinkBrief==='function')?datalinkBrief(a.datalink, Date.now()/1000):null, dlr=!!(dlb&&dlb.route);
   return { cs:cs, flag:getFlag(cs), color:pc, phase:ph.label,
     alt: a.alt_baro==='ground'?'Ground':(a.alt_baro?Math.round(a.alt_baro).toLocaleString()+' ft':'--'),   // dump1090 sends 'ground' as a string
     spd: a.gs?Math.round(a.gs)+' kt':'--',
@@ -5071,7 +5123,8 @@ function ttFields(cs, info){
     typ: a.t?a.t:(a.category?TT_CAT[a.category]||a.category:'--'),
     sqk: a.squawk?a.squawk:'--',
     reg: (info&&info.reg)?info.reg:'--',
-    route: hasRoute?'✈ '+info.route:'', rsrc: hasRoute?routeSrcText(ok):'', rsus: hasRoute&&!ok };
+    route: dlr?'✈ '+dlb.route:(hasRoute?'✈ '+info.route:''), rsrc: dlr?'from the aircraft · datalink':(hasRoute?routeSrcText(ok):''),
+    rsus: !dlr&&hasRoute&&!ok, dl: dlb?dlb.line:'' };
 }
 function showTooltip(cs,ll){
   if(ccVisible) return; // never show tooltip while cinematic card is open
@@ -5651,6 +5704,7 @@ function updateFlights(){
     updateEmergencyPulses();
     if(typeof updateWatchlistPulses==='function') updateWatchlistPulses();
     skyRefreshBox();   // 3D Traffic box: fresh numbers, or closed when its plane has left the list
+    dlMapSync();       // datalink: line to the selected plane's destination + arrival rings (item 4)
     var list=document.getElementById('flightList');
     if(!ac.length){list.innerHTML='<div class="no-flights">No aircraft found</div>';return;}
     // Sort sidebar by sort mode (distance default, phase optional)
@@ -6203,6 +6257,8 @@ function refreshCinematicCardLive(a, cs) {
 
   // Mode S Comm-B enrichment sections (Hidden Sky Data) — additive, self-hiding
   populateBDS(a);
+  // Datalink facts from the aircraft (route, ETA, runway...) — self-hiding
+  if (typeof populateDatalink === 'function') populateDatalink(a);
 
   // Badge — only show for auto-triggered or transmitting
   var badge = document.getElementById('ccBadge');
@@ -6435,6 +6491,9 @@ function openCinematicCard(cs, auto) {
   // Show overlay
   var overlay = document.getElementById('cinematicOverlay');
   overlay.classList.add('active');
+  // 3D on: clicks on the sky never reach this document (they land in the iframe), so tell the page a card is open.
+  // Then empty sky closes it, whatever opened it (Arrivals/Departures board, auto card), not only a 3D plane click.
+  if (isSkyOpen() && a.hex) skyPost({ action: 'card-open', hex: String(a.hex).toLowerCase() });
 
   // Click ANYWHERE to dismiss. Deferred attach (setTimeout 0) so the click that
   // opened this card doesn't immediately close it; capture phase so it fires
@@ -6588,6 +6647,25 @@ function ccResetPhoto() {
   ccPendingSource = '';
 }
 
+// Datalink on the map (item 4, 8 Oct 2026): route under the label, a line from the selected plane to its
+// destination, 'N min' on planes landing at this node's airport within the hour. Airport positions: curated
+// list, else the OurAirports file the dashboard downloads whole - a destination code is never sent anywhere.
+// 3D gets the same thing from the same calculation (dlMap.skyView), sent only when it changes (AJ: no drift).
+var dlSkyLast = '';
+function dlMapSync() {
+  if (!window.dlMap) return;
+  var sky = (typeof isSkyOpen === 'function' && isSkyOpen()), now = Date.now() / 1000;
+  try {
+    window.dlMap.sync({ map: map, L: L, aircraft: lastAircraft, selected: sky ? null : selectedFlight,
+      station: METAR_STATION, now: now, airports: GLOBAL_AIRPORTS, db: airportDB, loadDb: loadAirportDB });
+    if (!sky) { dlSkyLast = ''; return; }
+    var v = window.dlMap.skyView({ aircraft: lastAircraft, selected: selectedFlight, station: METAR_STATION, now: now,
+      airports: GLOBAL_AIRPORTS, db: airportDB, loadDb: loadAirportDB });
+    var k = JSON.stringify(v);
+    if (k !== dlSkyLast) { dlSkyLast = k; skyPost({ action: 'dl', ac: v.ac, line: v.line }); }
+  } catch (e) { console.warn('[datalink map]', e); }
+}
+
 function closeCinematicCard() {
   ccVisible = false;
   ccCurrentCS = null;
@@ -6599,6 +6677,7 @@ function closeCinematicCard() {
   // updateMarker kept treating it as the focused aircraft with nothing on screen
   // to justify it.
   selectedFlight = null;
+  dlMapSync();   // the destination line goes with the selection
   if (ccDismissTimer) { clearTimeout(ccDismissTimer); ccDismissTimer = null; }
   stopCCWaveform();
   ccLiveStop();
@@ -6707,6 +6786,7 @@ window.addEventListener('message', function (e) {
     if (is3DOpen()) skyPost({ action: 'pause' });
     if (skySel) { skyPost({ action: 'select', hex: skySel, fly: true }); skySendBox(); }   // a Traffic-list pick made while the page was loading
     if (typeof capSkySend === 'function') capSkySend();   // a capsule replay open (or re-entered mid-replay) gets its track again
+    dlSkyLast = ''; dlMapSync();   // datalink route / minutes / line, straight away
   }
   else if (d.action === 'open-approach' && /^[0-9a-f~]{6,7}$/i.test(String(d.hex || ''))) open3D(d.hex, String(d.title || '').slice(0, 60));
   else if (d.action === 'select') {   // the page's selection changed: null = its plane left, or (click:true) empty sky was clicked
@@ -6898,11 +6978,13 @@ function updateLabel(a) {
   if (labelMarkers[cs]) { map.removeLayer(labelMarkers[cs]); delete labelMarkers[cs]; }
   if (!labelsOn || ccVisible) return;
 
+  // Datalink route as a second line (static/datalink-map.js): codes are checked there, 4 capital letters only.
+  var dlr = (window.dlMap && a.datalink) ? window.dlMap.routeLine(a.datalink) : '';
   var icon = L.divIcon({
     className: '',
-    html: '<div class="ac-label">' + text + '</div>',
+    html: '<div class="ac-label">' + text + (dlr ? '<div class="ac-label-dl">' + dlr + '</div>' : '') + '</div>',
     iconSize: null,
-    iconAnchor: [-4, 38] // centered above aircraft icon
+    iconAnchor: [-4, dlr ? 50 : 38] // centered above aircraft icon (two lines sit a little higher)
   });
   labelMarkers[cs] = L.marker([a.lat, a.lon], {
     icon: icon,
@@ -8412,45 +8494,58 @@ if (typeof loadRecordingsList === 'function') loadRecordingsList();
 // pairing flow: install → node shows a pairing code → claim it on your profile.
 
 
-// IFR WAYPOINTS - Auckland FIR fixes within 400km (only shown for NZ receivers)
-// NAVAIDs and IFR fixes for NZ airspace.
-// Optional `airfield` field on VOR/NDB entries names the aerodrome the
-// beacon serves (NAVAIDs are almost always co-located with an airport),
-// surfaced in the marker tooltip so users hovering on a purple/orange
-// dot get useful context.
-var IFR_WAYPOINTS_NZ = [
+// IFR Fixes layer (only shown for NZ receivers). 8 Oct 2026: the fixes come from static/fixes-nz.js, the
+// X-Plane/FlightGear fix list (GPL, data cycle 2013.10), within IFR_FIX_RANGE_KM of this node. The hand-typed
+// list it replaces had several positions 10-70 km out and names that are not NZ fixes (DAVEE, RIKDI, LAKET).
+// OpenAIP has no IFR fixes; current AIP data needs Aeropath's written permission (aim@aeropath.aero).
+// The four NAVAIDs stay hand-entered; the optional `airfield` field names the aerodrome the beacon serves,
+// shown in the marker tooltip.
+var IFR_NAVAIDS_NZ = [
   {name:'AA VOR',  lat:-37.0047, lon:174.8136, type:'VOR', airfield:'Auckland (NZAA)'},
-  {name:'AKLOM',   lat:-35.3578, lon:178.3942, type:'Enroute'},
-  {name:'ARADI',   lat:-36.9342, lon:173.1906, type:'Enroute'},
-  {name:'BASIV',   lat:-36.4039, lon:173.8364, type:'Enroute'},
-  {name:'BELRA',   lat:-37.7394, lon:175.2528, type:'Enroute'},
-  {name:'BIKOT',   lat:-37.4617, lon:175.7428, type:'Enroute'},
-  {name:'DAVEE',   lat:-37.6817, lon:174.2556, type:'Enroute'},
-  {name:'EXOPI',   lat:-36.3086, lon:175.5125, type:'Enroute'},
-  {name:'PEPPE',   lat:-38.1708, lon:174.8394, type:'Enroute'},
-  {name:'RIKDI',   lat:-36.0372, lon:174.1681, type:'Enroute'},
-  {name:'TAZEY',   lat:-37.2653, lon:173.6736, type:'Enroute'},
-  {name:'LAKET',   lat:-38.7450, lon:176.0817, type:'Enroute'},
-  {name:'OPUKE',   lat:-35.4217, lon:174.2050, type:'Enroute'},
-  {name:'ESKID',   lat:-36.6333, lon:175.9000, type:'Enroute'},
-  {name:'GULBI',   lat:-37.2833, lon:176.4500, type:'Enroute'},
-  {name:'AA001',   lat:-37.0261, lon:174.8478, type:'Terminal'},
-  {name:'AA005',   lat:-36.9775, lon:174.9119, type:'Terminal'},
-  {name:'AA007',   lat:-37.0425, lon:174.6758, type:'Terminal'},
-  {name:'AA009',   lat:-37.0533, lon:174.6361, type:'Terminal'},
-  {name:'AA014',   lat:-37.2108, lon:174.8975, type:'Terminal'},
-  {name:'AA024',   lat:-37.0383, lon:174.5464, type:'Terminal'},
   {name:'HN VOR',  lat:-37.8661, lon:175.3325, type:'VOR', airfield:'Hamilton (NZHN)'},
   {name:'TG VOR',  lat:-37.6719, lon:176.1961, type:'VOR', airfield:'Tauranga (NZTG)'},
   {name:'WP NDB',  lat:-36.7864, lon:174.6367, type:'NDB', airfield:'Whenuapai (NZWP)'},
 ];
+var IFR_FIX_RANGE_KM = 400;   // also keeps the 3D view under its 500-fix cap
+// Fixes newer than the 2013 GPL data, entered by hand (AJ, 8 Oct 2026; he will verify them). Shown with
+// "position not verified" in the tooltip. A name the GPL list (or a later real source) carries wins over these.
+var IFR_FIXES_MANUAL = [
+  { name: 'ANSER', lat: -37.343783, lon: 174.881889 }   // from a third-party copy of the NZ waypoint list, unverified
+];
+function nzIfrList() {
+  var out = (IFR_NAVAIDS_NZ || []).slice();
+  if (typeof RX_LAT !== 'number' || typeof RX_LON !== 'number') return out;
+  (window.IFR_FIXES_NZ || []).forEach(function (f) {
+    if (!f || !/^[A-Z0-9]{2,5}$/.test(f[0]) || !isFinite(f[1]) || !isFinite(f[2])) return;
+    if (haversineKm(RX_LAT, RX_LON, f[1], f[2]) > IFR_FIX_RANGE_KM) return;
+    out.push({ name: f[0], lat: f[1], lon: f[2], type: 'Enroute' });
+  });
+  var have = {};
+  out.forEach(function (w) { have[w.name] = true; });
+  (IFR_FIXES_MANUAL || []).forEach(function (f) {
+    if (!f || have[f.name] || !/^[A-Z0-9]{2,5}$/.test(f.name) || !isFinite(f.lat) || !isFinite(f.lon)) return;
+    if (haversineKm(RX_LAT, RX_LON, f.lat, f.lon) > IFR_FIX_RANGE_KM) return;
+    out.push({ name: f.name, lat: f.lat, lon: f.lon, type: 'Enroute', unverified: true });
+  });
+  return out;
+}
+window.IFR_FIXES_MANUAL = IFR_FIXES_MANUAL;
 
 // Only show waypoints if receiver is in New Zealand
 function isInNZ() { return RX_LAT < -34 && RX_LAT > -48 && RX_LON > 165 && RX_LON < 179; }
-var IFR_WAYPOINTS = isInNZ() ? IFR_WAYPOINTS_NZ : [];
+var IFR_WAYPOINTS = isInNZ() ? nzIfrList() : [];
 
 var waypointMarkers = [];
 var waypointsVisible = false;
+
+// Zoomed out, IFR fix labels hide and only the dots stay (8 Oct 2026: ~290 fixes round Auckland made a wall of text).
+// VOR/NDB labels always show. Hovering a dot still gives its name.
+var IFR_LABEL_MIN_ZOOM = 9;
+function ifrLabelZoom() {
+  if (typeof map === 'undefined' || !map) return;
+  map.getContainer().classList.toggle('ifr-lbl-hide', map.getZoom() < IFR_LABEL_MIN_ZOOM);
+}
+if (typeof map !== 'undefined' && map) { map.on('zoomend', ifrLabelZoom); ifrLabelZoom(); }
 
 // IFR Fixes toggle just drives a redraw — actual filtering is per-type
 // inside drawWaypoints(). VOR/NDB entries respect the NAVAIDs toggle,
@@ -8499,7 +8594,7 @@ function drawWaypoints() {
             '<div style="background:' + bg + ';border:1px solid ' + color + ';border-radius:50%;width:16px;height:16px;display:flex;align-items:center;justify-content:center;">' +
             '<span style="font-size:9px;color:' + color + ';line-height:1;">' + symbol + '</span>' +
             '</div>' +
-            '<span style="font-size:8px;color:' + color + ';font-family:monospace;white-space:nowrap;background:rgba(7,10,15,0.85);padding:0px 3px;border-radius:2px;margin-top:1px;border:1px solid ' + color + ';letter-spacing:0.05em;">' + wp.name + '</span>' +
+            '<span' + (isNavaid ? '' : ' class="ifr-fix-lbl"') + ' style="font-size:8px;color:' + color + ';font-family:monospace;white-space:nowrap;background:rgba(7,10,15,0.85);padding:0px 3px;border-radius:2px;margin-top:1px;border:1px solid ' + color + ';letter-spacing:0.05em;">' + wp.name + '</span>' +
             '</div>',
       iconSize: [60, 32],
       iconAnchor: [30, 16]
@@ -8513,6 +8608,7 @@ function drawWaypoints() {
                   : wp.type === 'Terminal' ? 'Terminal fix'
                   : 'IFR waypoint';
     var tipHtml = '<b>' + wp.name + '</b><br>' + typeLabel;
+    if (wp.unverified) tipHtml += '<br><span style="color:#f59e0b;">Hand-entered, position not verified</span>';
     if (wp.airfield) {
       tipHtml += '<br><span style="color:#7dd3fc;"><svg width="9" height="9" viewBox="0 0 24 24" fill="#7dd3fc" style="vertical-align:-1px;"><path d="M12 2C8.1 2 5 5.1 5 9c0 5.2 7 13 7 13s7-7.8 7-13c0-3.9-3.1-7-7-7z"/><circle cx="12" cy="9" r="2.5" fill="#0b0f1a"/></svg> ' + wp.airfield + '</span>';
     }
@@ -9023,7 +9119,7 @@ var wxPanel = (function() {
   function outsideClick(e) {
     var panel = document.getElementById('wxPanel');
     var btn   = document.getElementById('windCompass');
-    if (!panel.contains(e.target) && !btn.contains(e.target)) {
+    if (!panel.contains(e.target) && !btn.contains(e.target)) {   // the ATIS line sits inside btn (8 Oct)
       close();
     }
   }
@@ -9555,6 +9651,7 @@ setInterval(raPoll, 5000);
 <!-- WEATHER W BUTTON -->
 <!-- Weather panel — toggled by clicking the wind compass at top-LH of map -->
 <div id="wxPanel">
+  <div id="wxAtis" style="display:none;"></div>
   <div class="wx-loading" id="wxLoading">Loading weather data...</div>
   <div id="wxContent" style="display:none;"></div>
 </div>

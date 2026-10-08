@@ -1,0 +1,4 @@
+# PiLNK datalink message log (optional; used when config.json has "log_dir").
+# Installed as /etc/tmpfiles.d/pilnk-datalink.conf. systemd-tmpfiles-clean
+# (daily) deletes files in here older than 7 days. Local only.
+d /var/log/pilnk-datalink 0750 PILNK_USER PILNK_USER 7d

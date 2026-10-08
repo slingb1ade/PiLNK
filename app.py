@@ -4460,6 +4460,30 @@ def _bds_bootstrap():
 threading.Thread(target=_bds_bootstrap, name='bds-bootstrap', daemon=True).start()
 
 
+# ── Datalink: ACARS over VDL2 (Phase 1 c, 7 Oct 2026) ────────────────────────
+# datalink.py listens on 127.0.0.1 for pilnk-datalink.service (dumpvdl2, set up
+# by datalink-install.sh). It is OFF unless /etc/pilnk-datalink/config.json
+# exists, so nodes without a datalink stick get no thread, no socket and an
+# unchanged /flights. HARD RULE: nothing from it is ever added to the ping or
+# sent anywhere; it is shown on this node's own dashboard only. A missing or
+# broken datalink.py must never take the dashboard down, hence the guard.
+try:
+    import datalink as _dl
+    _DATALINK = _dl.start()
+    _dl.register(app, _DATALINK)
+    if _DATALINK is not None:
+        logging.info('[datalink] ingest on — /api/datalink/status, /api/datalink/<hex>')
+
+    def _datalink_merge(ac, hex_upper):
+        _dl.merge_into(_DATALINK, ac, hex_upper)
+except Exception as _dl_err:      # never let datalink cost the dashboard
+    _DATALINK = None
+    logging.warning('[datalink] disabled: %s', _dl_err)
+
+    def _datalink_merge(ac, hex_upper):
+        return None
+
+
 # ── Military aircraft overlay ────────────────────────
 # Loaded once at startup from mil_catalog_seed.json (generated from the myHost
 # mil_hex_ranges + mil_aircraft_catalog tables). classify_icao() is called for
@@ -4588,7 +4612,7 @@ def flights():
 
     # Fast path: nothing to enrich at all → pass raw bytes through unchanged.
     # Engages only when there's neither a type/reg DB nor live Mode S data.
-    if not AIRCRAFT_DB and not enrichment_cache and not MIL_HEX_RANGES:
+    if not AIRCRAFT_DB and not enrichment_cache and not MIL_HEX_RANGES and _DATALINK is None:
         return Response(raw, mimetype='application/json')
 
     # Slow path: parse, enrich, re-serialize. Adds ~5ms for typical
@@ -4610,6 +4634,9 @@ def flights():
                     ac['r'] = entry['r']
             # Mode S Comm-B enrichment — additive, no-op without fresh cache
             _merge_bds(ac, hex_code)
+            # Datalink (ACARS/VDL2) summary {n, last_label, last_ts} — local only,
+            # no-op without the datalink stick or without recent messages
+            _datalink_merge(ac, hex_code)
             # Military overlay — a reserved national military hex block, OR the
             # aircraft DB's own per-airframe military flag (v1.5.22). Hex blocks
             # alone missed every air arm that shares its nation's civil block:

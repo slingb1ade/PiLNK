@@ -20,6 +20,8 @@
   .lbl b{font-weight:700}
   .lbl i{font-style:normal;opacity:.85}
   .lbl.emerg{color:#ff6677;font-weight:700}
+  .lbl .dl{display:block;color:#38bdf8;font-size:9px}
+  .lbl .dl:empty{display:none}
   .hud{position:fixed;z-index:10;font-size:12px;line-height:1.5}
   .card{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:10px 12px;backdrop-filter:blur(6px)}
   #tl{top:12px;left:12px;max-width:360px}
@@ -69,6 +71,7 @@
   .sb-route{font-size:11.2px;color:#3b82f6;font-weight:bold;margin-bottom:6px;padding-bottom:6px;border-bottom:1px solid var(--ln)}
   .sb-src{display:block;font-size:8px;line-height:1.3;margin-top:1px;color:var(--dm);opacity:.9;font-weight:normal}
   .sb-route.sus .sb-src{color:#f59e0b;opacity:1}
+  .sb-dl{font-size:10.4px;color:#38bdf8;margin:-2px 0 6px;padding-bottom:6px;border-bottom:1px solid var(--ln)}   /* datalink: ETA/RWY or Took off, from the aircraft */
   .sb-row{display:flex;justify-content:space-between;gap:16px;margin-top:4px;font-size:10.4px}
   .sb-row span{color:var(--dm)}
   .sb-row b{color:var(--tx)}
@@ -93,6 +96,7 @@
 <div id="skyBox" role="dialog" aria-label="Aircraft info">
   <div class="sb-hd"><span class="sb-flag" id="sbFlag"></span><span class="sb-cs" id="sbCs"></span></div>
   <div class="sb-route" id="sbRoute" style="display:none"><span id="sbRouteTxt"></span><span class="sb-src" id="sbRouteSrc"></span></div>
+  <div class="sb-dl" id="sbDl" style="display:none"><span id="sbDlTxt"></span></div>
   <div class="sb-row"><span>Altitude</span><b id="sbAlt">--</b></div>
   <div class="sb-row"><span>Speed</span><b id="sbSpd">--</b></div>
   <div class="sb-row"><span>Heading</span><b id="sbHdg">--</b></div>
@@ -164,16 +168,18 @@ window.addEventListener('message',e=>{
   if(e.origin!==location.origin||e.source!==window.parent) return;
   const d=e.data; if(!d||d.type!=='pilnk-sky') return;
   if(d.action==='pause') paused=true;
-  else if(d.action==='resume'){ paused=false; _lastDrawAt=0; if(map) map.triggerRepaint(); }
+  else if(d.action==='resume'){ paused=false; _lastDrawAt=0; dlLineApply(); if(map) map.triggerRepaint(); }
   else if(d.action==='theme') applyTheme(d.theme==='night');
   else if(d.action==='settings') applySettings(d);
   else if(d.action==='aviation') applyAviation(d);   // Aviation Overlay: runways + airfields the dashboard already holds
   else if(d.action==='select'){ if(!RP) selectFromDash(d); }   // Traffic box: the dashboard's selected plane (or null) — final review F4: a list pick must not fly the camera to a plane hidden during replay
+  else if(d.action==='card-open') cardFromDash(d);  // the dashboard opened a card some other way (Arrivals/Departures board): empty sky closes it too
   else if(d.action==='box') boxFromDash(d);         // Traffic box: its contents
   else if(d.action==='home') resetView();           // the dashboard's Re-center on node button
   else if(d.action==='replay'){ if(d.on) enterReplay(d); else exitReplay(); }   // capsule replay: on enters/replaces, off leaves
   else if(d.action==='replayT'){ if(RP) RP.t=d.t; }   // the replay bar's clock, every capUpdate — never run our own
   else if(d.action==='replayFit'){ if(RP) rpFit(); }  // ⤢ Fit pressed while 3D is open
+  else if(d.action==='dl') dlFromDash(d);           // datalink: route + 'N min' on labels, the selected plane's line (same as 2D)
 });
 
 /* ---------- aircraft models: MODEL_ORIENT, MODEL_SPAN, modelFor and modelWingWidth come from /static/models.js,
@@ -730,6 +736,37 @@ function ribbonGeo(segs){   // segs: [{a:[x,y,z], b:[x,y,z], c:'#rrggbb', al, w}
 
 /* ---------- aircraft state ---------- */
 const AC=new Map();       // hex -> state
+/* Datalink, from the dashboard's own calculation (dlMap.skyView — the one the 2D map draws from, so 2D and 3D never
+   drift; AJ 8 Oct 2026). DL: hex -> {route:'NZAA → NZWN', min:12}; DL_LINE: the selected plane's line to its
+   destination. Everything is shape-checked here: it came over the air, and textContent is the only way it is shown. */
+let DL={}, DL_LINE=null;
+const DL_ROUTE=/^([A-Z]{4} )?→ [A-Z]{4}$/, DL_ICAO=/^[A-Z]{4}$/, DL_HEX=/^[0-9a-f~]{6,7}$/;
+function dlFromDash(d){
+  const ac={}; let n=0;
+  if(d.ac&&typeof d.ac==='object') for(const h in d.ac){
+    if(n>=1000) break; if(!Object.prototype.hasOwnProperty.call(d.ac,h)||!DL_HEX.test(h)) continue;
+    const v=d.ac[h]; if(!v||typeof v!=='object') continue;
+    const e={}; if(typeof v.route==='string'&&DL_ROUTE.test(v.route)) e.route=v.route;
+    if(Number.isInteger(v.min)&&v.min>=1&&v.min<=60) e.min=v.min;
+    if(e.route||e.min){ ac[h]=e; n++; } }
+  DL=ac; DL_LINE=null;
+  const l=d.line;
+  if(l&&typeof l==='object'&&DL_HEX.test(String(l.hex))&&DL_ICAO.test(String(l.dest))&&Array.isArray(l.pts)&&l.pts.length>=2&&l.pts.length<=200&&
+     l.pts.every(p=>Array.isArray(p)&&p.length===2&&Number.isFinite(p[0])&&Number.isFinite(p[1])&&Math.abs(p[1])<=90&&Math.abs(p[0])<=540))
+    DL_LINE={hex:String(l.hex), dest:String(l.dest), pts:l.pts.map(p=>[p[0],p[1]])};
+  dlLineApply();
+}
+function dlText(s){ const e=!RP&&DL[s.hex]; if(!e) return ''; return (e.route||'')+(e.route&&e.min?' · ':'')+(e.min?e.min+' min':''); }
+let _dlKey='';   // what the map shows now: only touched when that changes (a needless setData stalls a software-GL frame)
+function dlLineApply(){   // the line follows the dashboard's selection; hidden in capsule replay (live traffic is hidden then too)
+  if(paused||!map||!map.getSource||!map.getSource('dl-line')) return;   // paused (3D Approach open): resume catches up
+  const on=!!(DL_LINE&&!RP), key=on?JSON.stringify(DL_LINE):'';
+  if(key===_dlKey) return; _dlKey=key;
+  const f=on?[{type:'Feature',properties:{},geometry:{type:'LineString',coordinates:DL_LINE.pts}},
+              {type:'Feature',properties:{dest:DL_LINE.dest},geometry:{type:'Point',coordinates:DL_LINE.pts[DL_LINE.pts.length-1]}}]:[];
+  map.getSource('dl-line').setData({type:'FeatureCollection',features:f});
+  ['dl-line','dl-dest','dl-dot'].forEach(id=>{ try{ map.setLayoutProperty(id,'visibility',on?'visible':'none'); }catch(e){} });
+}
 let _trailsDirty=true;
 const labelsBox=document.getElementById('labels');
 
@@ -819,8 +856,9 @@ function acLabel(s){   // label text + colour, at s.sx/s.sy; caller is responsib
   // final review F3: PLC1 (and other PLC1-pattern capsules) log numeric baro of -350..-450 ft on the pad with no
   // gnd flag — a negative reading is never airborne, so show GND the same as rpY already puts it on the ground.
   const onGnd=ground||altFt<0;
-  const txt=(s.emerg?'⚠ '+s.sq+' ':'')+(s.cs||s.reg||s.hex.toUpperCase())+'|'+(onGnd?'GND':('FL'+String(Math.round(altFt/100)).padStart(3,'0')))+'|'+(s.t||'');
-  if(s._txt!==txt){ s._txt=txt; const p=txt.split('|'); s.lbl.innerHTML='<b></b> <i></i>'; s.lbl.firstChild.textContent=p[0]; s.lbl.lastChild.textContent=p[1]+(p[2]?' · '+p[2]:''); }
+  const txt=(s.emerg?'⚠ '+s.sq+' ':'')+(s.cs||s.reg||s.hex.toUpperCase())+'|'+(onGnd?'GND':('FL'+String(Math.round(altFt/100)).padStart(3,'0')))+'|'+(s.t||'')+'|'+(s===RS?'':dlText(s));
+  if(s._txt!==txt){ s._txt=txt; const p=txt.split('|'); s.lbl.innerHTML='<b></b> <i></i><span class="dl"></span>';
+    s.lbl.children[0].textContent=p[0]; s.lbl.children[1].textContent=p[1]+(p[2]?' · '+p[2]:''); s.lbl.children[2].textContent=p[3]; }
   if(s.emerg!==undefined) s.lbl.classList.toggle('emerg',!!s.emerg);   // RS has no emerg concept (emerg is always undefined there) — leave its class alone
   s.lbl.style.setProperty('--c',s.emerg?'#ff3344':cssColor(altColor(altFt,ground)));
   s.lbl.style.display=''; s.lbl.style.transform='translate('+Math.round(s.sx+6)+'px,'+Math.round(s.sy-8)+'px)';
@@ -850,6 +888,7 @@ function renderBox(){
   const route=txt(b.route,80), r=document.getElementById('sbRoute');
   r.style.display=route?'':'none'; r.classList.toggle('sus',b.rsus===true);
   document.getElementById('sbRouteTxt').textContent=route; document.getElementById('sbRouteSrc').textContent=txt(b.rsrc,100);
+  const dl=txt(b.dl,80); document.getElementById('sbDlTxt').textContent=dl; document.getElementById('sbDl').style.display=dl?'':'none';
   const phase=txt(b.phase,40); document.getElementById('sbPhase').textContent=phase; document.getElementById('sbPh').style.display=phase?'':'none';
   const c=(typeof b.color==='string'&&/^#[0-9a-f]{6}$/i.test(b.color))?b.color:BOX_COLOR, el=document.getElementById('skyBox');
   el.style.setProperty('--bc',c); el.style.boxShadow='0 6px 24px '+c+'44'; el._w=0; }   // new contents: placeBox measures the size again
@@ -858,6 +897,7 @@ function clearSel(post){ if(SEL===null) return; setSel(null); if(post) toParent(
 // Embedded clicks, as on the 2D map: a plane opens the dashboard's dropdown card (any list-pick box goes); empty sky closes
 // both. CARD is the plane a card was asked for, so an empty click after it still tells the dashboard (click:true = close the card).
 function cardFor(h){ setSel(null); CARD=h; toParent({action:'card',hex:h}); }
+function cardFromDash(d){ const h=String(d.hex||'').toLowerCase(); if(!HEX_RE.test(h)) return; setSel(null); CARD=h; }
 function emptyClick(){ if(SEL===null&&CARD===null) return; setSel(null); CARD=null; toParent({action:'select',hex:null,click:true}); }
 function zoomCtl(){ return { onAdd(m){ const d=document.createElement('div'); d.className='maplibregl-ctrl sky-zoom';
     d.innerHTML='<button type="button" id="zIn" aria-label="Zoom in" title="Zoom in">+</button><button type="button" id="zOut" aria-label="Zoom out" title="Zoom out">−</button>';
@@ -1073,6 +1113,8 @@ const skyLayer={
     vis.sort((a,b)=>a.cd-b.cd);
     const shown=new Set(), placed=[];
     for(const s of vis) if(s.emerg){ shown.add(s); placed.push([s.sx,s.sy]); }   // emergencies first, always, even with labels off
+    // then planes landing here within the hour: the 2D map's 'N min' ring never depends on labels, so neither does this (no drift)
+    if(!RP) for(const s of vis) if(!shown.has(s)&&DL[s.hex]&&DL[s.hex].min){ shown.add(s); placed.push([s.sx,s.sy]); }
     if(SHOW_LABELS) for(const s of vis){ if(shown.size>=MAX_LABELS) break; if(shown.has(s)) continue;
       let clash=false; for(const q of placed){ if(Math.abs(q[0]-s.sx)<92&&Math.abs(q[1]-s.sy)<13){ clash=true; break; } }
       if(clash) continue; placed.push([s.sx,s.sy]); shown.add(s); }
@@ -1200,10 +1242,11 @@ function enterReplay(d){   // Task 3 frames the camera + Follow; this draws the 
   ensureVisual(RS);
   if(skyLayer.rpRib) skyLayer.rebuildRpRib();   // drawn once on entry, synchronously — a 2,000-point capsule must not stall the dashboard
   rpFit(); syncBtns();   // frame the whole track (keeping pitch/bearing) and show the Follow button
+  dlLineApply();         // the datalink line hides with the rest of live traffic
   if(map) map.triggerRepaint();
 }
 function exitReplay(){   // the replay plane and ribbon go; live traffic (already kept current by the poll loop) comes back next frame
-  RP=null;
+  RP=null; dlLineApply();
   document.body.classList.remove('replay');   // #btns back to its normal bottom-centre spot
   removeRS();
   if(skyLayer.rpRib) skyLayer.rebuildRpRib();
@@ -1271,6 +1314,16 @@ async function boot(){
     map.addLayer({id:'rings-label',type:'symbol',source:'rings',filter:['==',['geometry-type'],'Point'],
       layout:{'text-field':['get','label'],'text-font':['Noto Sans Regular'],'text-size':11,'text-allow-overlap':true},
       paint:{'text-color':ringColor(),'text-halo-color':NIGHT_ON?'#04070e':'#ffffff','text-halo-width':1}});
+    // Datalink: dashed line from the selected plane to its destination + the ICAO tag, as on the 2D map
+    map.addSource('dl-line',{type:'geojson',data:{type:'FeatureCollection',features:[]}});
+    map.addLayer({id:'dl-line',type:'line',source:'dl-line',filter:['==',['geometry-type'],'LineString'],layout:{visibility:'none'},
+      paint:{'line-color':'#38bdf8','line-opacity':0.85,'line-width':2,'line-dasharray':[3,3]}});
+    map.addLayer({id:'dl-dot',type:'circle',source:'dl-line',filter:['==',['geometry-type'],'Point'],layout:{visibility:'none'},
+      paint:{'circle-radius':4,'circle-color':'#38bdf8','circle-stroke-color':'#04070e','circle-stroke-width':1,'circle-pitch-alignment':'map'}});
+    map.addLayer({id:'dl-dest',type:'symbol',source:'dl-line',filter:['==',['geometry-type'],'Point'],
+      layout:{visibility:'none','text-field':['get','dest'],'text-font':['Noto Sans Regular'],'text-size':11,'text-allow-overlap':true,'text-offset':[0,-1.1]},
+      paint:{'text-color':'#38bdf8','text-halo-color':'#04070e','text-halo-width':1}});
+    dlLineApply();
     avAddLayers();   // Aviation Overlay: under the rings, over the map, its names and the radar
     map.addSource('rx',{type:'geojson',data:{type:'Feature',properties:{},geometry:{type:'Point',coordinates:[SITE.lon,SITE.lat]}}});
     map.addLayer({id:'rx',type:'circle',source:'rx',paint:{'circle-radius':6,'circle-color':'#7c3aed','circle-stroke-color':'#fff','circle-stroke-width':2,'circle-pitch-alignment':'map'}});
