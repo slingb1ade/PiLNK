@@ -204,6 +204,32 @@
       + ' data-fb="' + svg.replace(/"/g, '&quot;') + '">';
   }
 
+  /* 3D Service Record art (9 Oct 2026): one model per family, baked in the five tier metals, so the file is
+   * <family>_t<tier>.webp. Earned tier only; a locked family keeps the flat scope. The live progress arc is
+   * drawn OVER the art (AJ, 9 Oct) so the wall still shows how close the next tier is. If the art fails to
+   * load, the wrapper's whole content becomes the flat SVG, which draws its own arc - the overlay goes with
+   * it, so the arc never doubles. r=57.5 sits on the baked bezel (measured: ring at 57-63 px of 64). */
+  var SERVICE_BASE = '/static/service/';
+  function arcOverlay(frac, size) {
+    if (!(frac > 0 && frac < 1)) return '';
+    return '<svg class="pb-arc" width="' + size + '" height="' + size + '" viewBox="-62 -62 124 124"'
+      + ' style="position:absolute;left:0;top:0;pointer-events:none" aria-hidden="true">'
+      + '<path d="' + arcPath(57.5, frac) + '" fill="none" stroke="' + PHOSPHOR + '" stroke-width="6" stroke-linecap="round"/></svg>';
+  }
+  function serviceArt(famKey, tier, svg, size, frac) {
+    if (!(tier >= 1 && tier <= 5) || typeof famKey !== 'string' || famKey.indexOf('fam_') !== 0) return svg;
+    var name = famKey.slice(4);
+    if (!/^[a-z0-9_]+$/.test(name)) return svg;
+    return '<span style="position:relative;display:block;width:' + size + 'px;height:' + size + 'px">'
+      + '<img src="' + SERVICE_BASE + name + '_t' + tier + '.webp"'
+      + ' width="' + size + '" height="' + size + '"'
+      + ' alt="" loading="lazy" decoding="async"'
+      + ' style="display:block;width:' + size + 'px;height:' + size + 'px;object-fit:contain;"'
+      + ' onerror="this.parentNode.innerHTML=this.dataset.fb"'
+      + ' data-fb="' + svg.replace(/"/g, '&quot;') + '">'
+      + arcOverlay(frac, size) + '</span>';
+  }
+
   function familiesFrom(defs) {
     var fams = {};
     defs.forEach(function (d) {
@@ -282,15 +308,17 @@
     var st = famState(tiers, earned, stats);
     var label = FAMILY_LABELS[famKey] || famKey.replace('fam_', '');
     var h = [];
-    h.push('<div class="pb-d-hero">' + scopeSVG({ glyph: tiers[0].icon, tier: st.tier, progressFrac: st.next ? st.frac : 0, sweep: st.tier > 0, size: 132 }) + '</div>');
+    var heroFrac = st.next ? st.frac : 0;
+    h.push('<div class="pb-d-hero">' + serviceArt(famKey, st.tier, scopeSVG({ glyph: tiers[0].icon, tier: st.tier, progressFrac: heroFrac, sweep: st.tier > 0, size: 132 }), 132, heroFrac) + '</div>');
     h.push('<div class="pb-d-stat">' + fmt(st.current) + '</div>');
     h.push('<div class="pb-d-name">' + esc(label) + (st.top ? ' — ' + esc(st.top.name) : '') + '</div>');
     h.push('<div class="pb-d-desc">' + esc(FAMILY_DESC[famKey] || tiers[0].description || '') + '</div>');
     h.push('<div class="pb-d-tiers">');
     tiers.forEach(function (t) {
       var e = earned[t.slug];
+      var rowSvg = scopeSVG({ glyph: t.icon, tier: e ? t.tier : 0, progressFrac: 0, size: 56 });
       h.push('<div class="pb-d-tier' + (e ? '' : ' pb-d-unearned') + '">' +
-        scopeSVG({ glyph: t.icon, tier: e ? t.tier : 0, progressFrac: 0, size: 56 }) +
+        (e ? serviceArt(famKey, t.tier, rowSvg, 56, 0) : rowSvg) +
         '<div class="pb-d-thr">' + fmt(t.threshold) + '</div>' +
         '<div class="pb-d-sub">' + esc(t.name) + '</div>' +
         (e && e.awarded_at ? '<div class="pb-d-date">' + dateStr(e.awarded_at) + '</div>' : '') +
@@ -424,8 +452,9 @@
       var label = (FAMILY_LABELS[k] || k) + (st2.top ? ' — ' + st2.top.name : ' — no contact yet');
       var tip = (FAMILY_LABELS[k] || k) + ': ' + (FAMILY_DESC[k] || '') +
         (st2.next ? ' (' + fmt(st2.current) + ' / ' + fmt(st2.next.threshold) + ' to ' + st2.next.name + ')' : ' (maximum tier)');
+      var wallFrac = st2.next ? st2.frac : 0;
       return hexBtn(
-        scopeSVG({ glyph: fams[k][0].icon, tier: st2.tier, progressFrac: st2.next ? st2.frac : 0, size: badgeSize }),
+        serviceArt(k, st2.tier, scopeSVG({ glyph: fams[k][0].icon, tier: st2.tier, progressFrac: wallFrac, size: badgeSize }), badgeSize, wallFrac),
         label, tip,
         function () { openDetail(familyDetail(k, fams[k], earned, stats)); }
       );
