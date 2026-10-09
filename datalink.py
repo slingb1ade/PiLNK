@@ -147,8 +147,11 @@ def parse(obj, now=None):
 class Store(object):
     """Recent messages per aircraft, thread-safe, bounded in count and age."""
 
-    def __init__(self):
+    def __init__(self, now=None):
         self._lock = threading.Lock()
+        # when this store began counting: a restart starts it again from empty,
+        # so readers can tell a fresh store from a quiet decoder (AJ, 9 Oct)
+        self.since = time.time() if now is None else float(now)
         self._by_key = collections.OrderedDict()   # 'C81E2A' or '~ZK-MCJ' -> deque
         self._reg_hex = {}                          # 'ZK-MCJ' -> 'C81E2A'
         self._times = collections.deque(maxlen=20000)
@@ -438,7 +441,7 @@ class Store(object):
                     'frames_last_hour': sum(1 for t in self._frames if t >= now - 3600),
                     'last_ts': self.last_ts, 'last_frame_ts': self.last_frame_ts,
                     'total': self.total, 'bad': self.bad, 'dupes': self.dupes,
-                    'aircraft': len(self._by_key)}
+                    'aircraft': len(self._by_key), 'since': self.since}
 
 
 def load_config(path=CFG_PATH):
@@ -529,7 +532,7 @@ def status(store, cfg_path=CFG_PATH, status_path=STATUS_PATH, now=None):
            'serial': (cfg or {}).get('serial', ''),
            'freqs_mhz': (cfg or {}).get('freqs_mhz', [136.975]) if cfg else [],
            'msgs_last_hour': 0, 'frames_last_hour': 0, 'last_ts': None, 'last_frame_ts': None,
-           'aircraft': 0, 'total': 0, 'bad': 0, 'dupes': 0}
+           'aircraft': 0, 'total': 0, 'bad': 0, 'dupes': 0, 'since': None}
     out['atis'] = []
     if store is not None:
         out.update(store.stats(now=now))
