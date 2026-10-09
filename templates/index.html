@@ -1080,6 +1080,10 @@
 /* ── BOOT SPLASH ───────────────────────────────────────────── */
 #pilnk-splash{position:fixed;inset:0;z-index:99999;background:radial-gradient(ellipse at 50% 30%,#0d1f3c 0%,#060d1a 75%);display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center;padding:0 20px;overflow:hidden;transition:opacity 0.8s ease;}
 #pilnk-splash.fading{opacity:0;pointer-events:none;}
+#pilnk-splash .ps-3d{position:absolute;inset:0;opacity:0;transition:opacity 0.5s ease;pointer-events:none;}
+#pilnk-splash .ps-3d.on{opacity:1;}
+#pilnk-splash.ps-3d-on .ps-radar{opacity:0 !important;transition:opacity 0.5s ease;}
+#pilnk-splash.ps-3d-pending .ps-radar{opacity:0 !important;}
 #pilnk-splash .ps-grid{position:absolute;left:-50%;right:-50%;bottom:0;height:72%;background-image:linear-gradient(rgba(96,165,250,0.40) 1px,transparent 1px),linear-gradient(90deg,rgba(96,165,250,0.40) 1px,transparent 1px);background-size:46px 46px;transform:perspective(340px) rotateX(72deg);transform-origin:50% 100%;-webkit-mask-image:linear-gradient(to top,#000 0%,#000 26%,transparent 76%);mask-image:linear-gradient(to top,#000 0%,#000 26%,transparent 76%);animation:ps-floor 3.2s linear infinite;}
 #pilnk-splash .ps-scan{position:absolute;left:0;right:0;height:1px;background:linear-gradient(90deg,transparent,rgba(59,130,246,0.6),transparent);animation:ps-scan 3.5s ease-in-out infinite;}
 #pilnk-splash .ps-skip{position:absolute;top:18px;right:18px;width:36px;height:36px;border-radius:50%;background:rgba(255,255,255,0.04);border:1px solid rgba(59,130,246,0.25);color:#8aabcf;font-size:16px;display:flex;align-items:center;justify-content:center;cursor:pointer;font-family:'Share Tech Mono',monospace;opacity:0;animation:ps-fadein 0.4s 1s forwards;transition:border-color 0.2s,color 0.2s;}
@@ -1196,6 +1200,7 @@
   #otaBanner.restart #otaCopyBtn { display:inline-block !important; }
 </style>
 <div id="pilnk-splash" role="status" aria-label="PiLNK loading">
+  <div class="ps-3d" aria-hidden="true"></div>
   <div class="ps-grid"></div>
   <div class="ps-scan"></div>
   <button class="ps-skip" type="button" onclick="hidePilnkSplash()" aria-label="Skip splash screen">×</button>
@@ -1239,6 +1244,7 @@
     <span class="ps-dot"></span><span class="ps-dot"></span><span class="ps-dot"></span>
   </div>
 </div>
+<script src="/static/splash3d.js?v=1"></script>
 <script>
 (function(){
   var splash=document.getElementById('pilnk-splash');
@@ -1250,7 +1256,7 @@
     if(hidden) return;
     hidden=true;
     splash.classList.add('fading');
-    setTimeout(function(){splash.parentNode&&splash.parentNode.removeChild(splash);},900);
+    setTimeout(function(){try{if(window.PilnkSplash3D&&PilnkSplash3D.stop){PilnkSplash3D.stop();}}catch(e){}splash.parentNode&&splash.parentNode.removeChild(splash);},900);
   };
   function tryHide(){
     var elapsed=Date.now()-startedAt;
@@ -1260,6 +1266,7 @@
   setTimeout(window.hidePilnkSplash,maxMs);
   if(document.readyState==='complete'){tryHide();}
   else{window.addEventListener('load',tryHide,{once:true});}
+  try{if(window.PilnkSplash3D&&PilnkSplash3D.start){PilnkSplash3D.start(splash);}}catch(e){}
 })();
 </script>
 <div id="app">
