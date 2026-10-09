@@ -2862,8 +2862,8 @@ function getPlaneSprite(cat, col, type){
   // silhouette instead of the category blob. Cache key includes type so the
   // canvas layer caches one sprite per (shape|colour) rather than per category.
   type = type ? String(type).toUpperCase().trim() : '';
-  var hasShape = type && (window.AIRCRAFT_SHAPES||{})[type];
-  var key = cat + '|' + col + '|' + (hasShape ? type : '');
+  var hasShape = typeShapeKey(type);   // '' or the shape to draw (an alias for STRK/JPRO)
+  var key = cat + '|' + col + '|' + hasShape;
   var e = planeSpriteCache[key];
   if(e) return e;
   e = { ready:false, size:38, canvas:null };
@@ -2871,7 +2871,7 @@ function getPlaneSprite(cat, col, type){
   try {
     // pass type so makeIcon builds the shape; h=0 (unrotated) — the canvas
     // layer applies heading rotation to the finished sprite.
-    var ic = makeIcon('', cat, 0, col, false, hasShape ? type : undefined);
+    var ic = makeIcon('', cat, 0, col, false, hasShape || undefined);
     e.size = (ic.options.iconSize && ic.options.iconSize[0]) || 38;
     var html = ic.options.html || '';
     var m = html.match(/<svg[\s\S]*?<\/svg>/);
@@ -4912,8 +4912,20 @@ var CAT_SIZE={lightsingle:28,lighttwin:30,heli:30,heavytwin:34,narrowbody:38,wid
 // Rex's shapes are drawn nose-up. If they ever render pointing sideways, this
 // is the one number to change (90 or -90) — everything else stays put.
 var SHAPE_ROT_OFFSET=0;
+// Types with no silhouette of their own that borrow a close one (9 Oct 2026). STRK72, a BAC 167 Strikemaster at Ardmore,
+// was drawn as a Cessna: STRK has no shape and its A1 category gave the light-single icon. The Alpha Jet is the nearest
+// two-seat jet trainer in the set. JPRO is the Jet Provost the Strikemaster grew from. Exact codes only.
+var SHAPE_ALIAS={STRK:'AJET',JPRO:'AJET'};
+// The AIRCRAFT_SHAPES key to draw this type with, or '' if none.
+function typeShapeKey(t){
+  var S=window.AIRCRAFT_SHAPES||{}; t=t?String(t).toUpperCase().trim():'';
+  if(!t)return'';
+  if(S[t])return t;
+  var a=SHAPE_ALIAS[t];
+  return (a&&S[a])?a:'';
+}
 function typeShapeIcon(type,cat,h,col,tx){
-  var s=(window.AIRCRAFT_SHAPES||{})[type];
+  var s=(window.AIRCRAFT_SHAPES||{})[typeShapeKey(type)];
   if(!s)return null;
   var size=CAT_SIZE[cat]||38;
   // color:col on the <svg> resolves the paths' fill=currentColor to the phase

@@ -16,6 +16,7 @@ const MODEL_ORIENT={ 'a320_200.glb':{yaw:-90}, 'atr72.glb':{yaw:90}, 'b777_klm.g
   'a400.glb':{yaw:0},
   'bizjet.glb':{yaw:180}, 'crj.glb':{yaw:180},
   'p8.glb':{yaw:0}, 't38.glb':{yaw:-90}, 'hawk.glb':{yaw:180},
+  'strk.glb':{yaw:90},   // Strikemaster: nose at +X in the file; yaw 90 puts it NORTH (render.py, 9 Oct)
   'e7.glb':{yaw:0}, 'c5.glb':{yaw:180}, 'nh90.glb':{yaw:-90},   // NH90: direction from the TAIL ROTOR, as for the AS350
   'sh60.glb':{yaw:180},   // SH-60: cockpit and nose gear at +Z, tail rotor at -Z
   'as350.glb':{yaw:0} };   /* all measured with the corrected mapping; confirm each on a LIVE aircraft before release. The
@@ -31,7 +32,7 @@ const MODEL_SPAN={ 'c172.glb':11.0, 'b429.glb':13.0, 'c208.glb':15.9, 'atr72.glb
   'b52.glb':56.4, 'e3.glb':44.4, 'kc135.glb':39.9, 'kc46.glb':47.6,
   'b787.glb':60.1, 'a350.glb':64.8, 'b1b.glb':41.8, 'c17.glb':51.8, 'a400.glb':42.4,
   'bizjet.glb':16.2, 'crj.glb':24.9,
-  'p8.glb':37.6, 't38.glb':7.7, 'hawk.glb':9.4,
+  'p8.glb':37.6, 't38.glb':7.7, 'hawk.glb':9.4, 'strk.glb':11.23,
   'e7.glb':34.4,
   'c5.glb':71.87,   /* C-5 Galaxy: real span 67.9 m. 71.87, not 67.9, because Box3.setFromObject reads this file 73.13 across
      when its true vertex extent is 69.09 (parts sit rotated inside the FBX hierarchy, so their boxes overhang). 67.9 here
@@ -124,6 +125,10 @@ function modelFor(t,cat){ t=(t||'').toUpperCase();
   if(t==='P8')return'p8.glb';            // P-8 Poseidon — RNZAF flies four from Ohakea; exact, no other code is just 'P8'
   if(t==='T38')return't38.glb';          // T-38 Talon, USAF trainer — exact
   if(t==='HAWK')return'hawk.glb';        // BAe Hawk, RAF/Red Arrows — exact
+  /* BAC 167 Strikemaster (42manako, Sketchfab, CC-BY-NC-4.0, added 9 Oct) - STRK72 flies from Ardmore and was drawn as a
+     Cessna 172: STRK was in no list, so its A1 light category won. JPRO, the Jet Provost it grew from, looks the same at
+     range. Exact codes. NC licence by AJ's ruling (9 Oct): PiLNK is not commercial; credited in-page; never in anything sold. */
+  if(t==='STRK'||t==='JPRO')return'strk.glb';
   /* E-7 Wedgetail (737-700 AEW&C), RAAF and now RAF from Lossiemouth. 'E737' is the ICAO Doc 8643 designator
      (doc8643.com/aircraft/E737). No node had reported one when this was added, and some databases list them as
      plain B737 — those still get the 737, the right airframe, just without the radar. Span 34.4 m: no winglets. */
