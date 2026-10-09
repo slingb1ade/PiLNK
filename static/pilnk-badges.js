@@ -98,7 +98,7 @@
    * matching family glyph, and each badge's own DB colour drives its bezel
    * and glyph — colour without a single emoji (Rev C, AJ's note). */
   var SPECIAL_GLYPHS = {
-    af1_spotter: 'tracker', vvip_spotted: 'tracker',
+    af1_spotter: 'tracker',
     mach_buster: 'fastmover', mach_2_club: 'fastmover',
     founder: 'tower', beta_tester: 'ghosthunter',
     squawk_7700: 'firstresponder', squawk_7600: 'firstresponder',
@@ -189,9 +189,14 @@
    * not exist — it silently draws the flat badge instead of a broken image.
    * That fallback is why this is safe to ship to both surfaces at once. */
   var HONOURS_BASE = '/static/honours/';
+  /* 3D Commendations art (9 Oct 2026): the same rule, its own folder. Steel (rare) and gold (special) are
+   * baked into the art, so the folder is shared and the category only says WHERE to look. Earned only, with
+   * the flat SVG as the onerror fallback, exactly as for the Honours. Any other category returns the SVG. */
+  var ART_BASE = { military: HONOURS_BASE, rare: '/static/commendations/', special: '/static/commendations/' };
   function honourArt(def, svg, size) {
-    if (!def || def.category !== 'military') return svg;
-    return '<img src="' + HONOURS_BASE + def.slug + '.webp"'
+    var base = def && ART_BASE[def.category];
+    if (!base) return svg;
+    return '<img src="' + base + def.slug + '.webp"'
       + ' width="' + size + '" height="' + size + '"'
       + ' alt="" loading="lazy" decoding="async"'
       + ' style="display:block;width:' + size + 'px;height:' + size + 'px;object-fit:contain;"'
@@ -308,7 +313,7 @@
     var col = commendColor(def);
     var h = [];
     var hero = scopeSVG({ glyph: specialGlyph(def), tier: isEarned ? (mil ? 3 : 2) : 0, military: mil, bezelColor: mil ? null : col, glyphColor: mil ? null : col, sweep: isEarned, size: 132 });
-    if (mil && isEarned) hero = honourArt(def, hero, 132);
+    if (isEarned) hero = honourArt(def, hero, 132);   // Honours and Commendations; anything else keeps the SVG
     h.push('<div class="pb-d-hero">' + hero + '</div>');
     h.push('<div class="pb-d-name">' + esc(def.name) + '</div>');
     h.push('<div class="pb-d-desc">' + esc(def.description || '') + '</div>');
@@ -431,8 +436,9 @@
       frag.appendChild(cat('COMMENDATIONS'));
       frag.appendChild(grid(specials, function (d) {
         var scol = commendColor(d);
+        var csvg = scopeSVG({ glyph: specialGlyph(d), tier: earned[d.slug] ? 2 : 0, bezelColor: scol, glyphColor: scol, size: badgeSize });
         return hexBtn(
-          scopeSVG({ glyph: specialGlyph(d), tier: earned[d.slug] ? 2 : 0, bezelColor: scol, glyphColor: scol, size: badgeSize }),
+          earned[d.slug] ? honourArt(d, csvg, badgeSize) : csvg,
           d.name, d.name + ': ' + (d.description || ''),
           function () { openDetail(specialDetail(d, earned[d.slug], remaining[d.slug], caps[d.slug])); }
         );
