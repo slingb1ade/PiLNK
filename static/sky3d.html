@@ -398,7 +398,7 @@ function wxTick(now){   // one step of the loop, from the page's frame loop (or 
    hPa, as the 3D Approach view does): an aircraft on the ILS rides on it. The end with traffic lined up on it is bright
    (the Glideslope view's rule: most aligned traffic within 20 km and 3 km of the centreline, else the last active end,
    else the longest runway). */
-const AV={ apt:null, fields:[], airspaces:[], navaids:[], fixes:[], icao:'', fp:null, notams:[], built:{asp:null,nav:null,rwy:null}, aspKey:'', aptKey:'', qnh:null, qnhIcao:'', qnhTimer:null, active:null, lastActive:null };
+const AV={ apt:null, apts:[], fields:[], airspaces:[], navaids:[], fixes:[], icao:'', fp:null, notams:[], built:{asp:null,nav:null,rwy:null}, aspKey:'', aptKey:'', qnh:null, qnhIcao:'', qnhTimer:null, active:null, lastActive:{} };
 let _pendingAv=null, _gpDirty=false, _aspDirty=false, _rpDirty=false;   // _rpDirty: the replay ribbon re-seats when DEM tiles arrive, same as _gpDirty/_aspDirty
 const AV_GS_TAN=Math.tan(3*Math.PI/180), AV_GS_KM=20, AV_TCH_FT=50, AV_CORR_KM=3;
 const AV_FLD_CLS=new Set(['large_airport','medium_airport','small_airport','heliport','seaplane_base']);
@@ -406,10 +406,12 @@ const AV_RWY_LAYERS=['av-rwy-body','av-rwy-ext','av-rwy-tick','av-rwy-lbl'], AV_
 function avNum(v,lo,hi){ if(typeof v==='string'&&v.trim()!=='') v=+v; return (typeof v==='number'&&isFinite(v)&&v>=lo&&v<=hi)?v:null; }
 function avIdent(v,max){ return (typeof v==='string'&&/^[A-Za-z0-9-]{1,8}$/.test(v))?v.toUpperCase().slice(0,max):''; }
 function cleanAviation(d){
-  const o={apt:null,fields:[],airspaces:[],navaids:[],fixes:[],icao:'',fp:null,notams:[]}; if(!d||typeof d!=='object') return o;
+  const o={apt:null,apts:[],fields:[],airspaces:[],navaids:[],fixes:[],icao:'',fp:null,notams:[]}; if(!d||typeof d!=='object') return o;
   if(typeof d.icao==='string'&&/^[A-Z]{4}$/.test(d.icao)) o.icao=d.icao;
   avClean2(d,o);
-  const a=d.runways;
+  // runways: one airport (older dashboards) or a list of them (AJ 10 Oct: several at once), at most 8
+  const list=Array.isArray(d.runways)?d.runways:(d.runways?[d.runways]:[]);
+  for(const a of list){ if(o.apts.length>=8) break;
   if(a&&typeof a==='object'&&/^[A-Z0-9-]{3,8}$/.test(String(a.icao||''))&&Array.isArray(a.runways)){
     const rws=[];
     for(const r of a.runways.slice(0,24)){ if(!r||typeof r!=='object') continue;
@@ -417,17 +419,18 @@ function cleanAviation(d){
       if(le_lat==null||le_lon==null||he_lat==null||he_lon==null) continue;
       rws.push({le_ident:avIdent(r.le_ident,4), le_lat, le_lon, le_elev_ft:avNum(r.le_elev_ft,-1500,15000)||0,
                 he_ident:avIdent(r.he_ident,4), he_lat, he_lon, he_elev_ft:avNum(r.he_elev_ft,-1500,15000)||0, length_ft:avNum(r.length_ft,0,30000)||0}); }
-    o.apt={icao:String(a.icao), runways:rws}; }
+    o.apts.push({icao:String(a.icao), runways:rws}); } }
+  o.apt=o.apts[0]||null;
   if(Array.isArray(d.airfields)) for(const f of d.airfields.slice(0,4000)){ if(!f||typeof f!=='object') continue;
     const lat=avNum(f.lat,-90,90), lon=avNum(f.lon,-180,180), id=avIdent(f.ident,8);
     if(lat==null||lon==null||!id||!AV_FLD_CLS.has(f.type)) continue; o.fields.push({ident:id,cls:f.type,lat,lon}); }
   return o; }
 function applyAviation(d){ const c=cleanAviation(d); if(!_mapReady){ _pendingAv=c; return; } avSet(c); }
 function avSet(c){   // rebuild the 3D geometry only for the parts whose data actually changed
-  const ak=JSON.stringify([c.airspaces,c.navaids]), pk=JSON.stringify(c.apt);
+  const ak=JSON.stringify([c.airspaces,c.navaids]), pk=JSON.stringify(c.apts);
   if(ak!==AV.aspKey){ AV.aspKey=ak; _aspDirty=true; }
   if(pk!==AV.aptKey){ AV.aptKey=pk; AV.active=null; _gpDirty=true; }
-  AV.apt=c.apt; AV.fields=c.fields; AV.airspaces=c.airspaces; AV.navaids=c.navaids; AV.fixes=c.fixes; AV.icao=c.icao; AV.fp=c.fp; AV.notams=c.notams;
+  AV.apt=c.apt; AV.apts=c.apts; AV.fields=c.fields; AV.airspaces=c.airspaces; AV.navaids=c.navaids; AV.fixes=c.fixes; AV.icao=c.icao; AV.fp=c.fp; AV.notams=c.notams;
   avLoadQnh(); avDraw(); }
 function avLoadQnh(){   // the field's METAR QNH, as the 3D Approach view does; only a plain 4-letter ICAO is ever asked for
   const icao=(AV.apt&&/^[A-Z]{4}$/.test(AV.apt.icao))?AV.apt.icao:AV.icao;   // the runway airport, else the dashboard's nearest airport
@@ -458,23 +461,24 @@ function avApproachCount(end){ let n=0;
     if(p.along<=0.2||p.along>AV_GS_KM||Math.abs(p.cross)>AV_CORR_KM) continue;
     if(typeof s.trk==='number'&&avAngDiff(s.trk,end.landB)>45) continue; n++; }
   return n; }
-function avActiveEnd(){ const ends=avEnds(AV.apt); if(!ends.length) return null; let best=null, bn=-1;
+function avActiveEnd(apt){ apt=apt||AV.apt; const ends=avEnds(apt); if(!ends.length) return null; let best=null, bn=-1;   // per airport
   for(const e of ends){ const n=avApproachCount(e); if(n>bn){ bn=n; best=e; } }
-  if(bn>0){ AV.lastActive=best.ident; return best; }
-  if(AV.lastActive){ const e=ends.find(e=>e.ident===AV.lastActive); if(e) return e; }
+  if(bn>0){ AV.lastActive[apt.icao]=best.ident; return best; }
+  const last=AV.lastActive[apt.icao]; if(last){ const e=ends.find(e=>e.ident===last); if(e) return e; }
   return ends.reduce((a,e)=>e.len>a.len?e:a,ends[0]); }
-function avUpdateActive(){ const e=avActiveEnd(), k=e?e.ident+'@'+e.tLat:null; if(k!==AV.active){ AV.active=k; _gpDirty=true; } }
+function avUpdateActive(){ const k=AV.apts.map(a=>{ const e=avActiveEnd(a); return e?e.ident+'@'+e.tLat:''; }).join('|')||null;
+  if(k!==AV.active){ AV.active=k; _gpDirty=true; } }
 function gpPoints(end,qnh){   // 21 points, threshold to 20 km; ft = pressure altitude, so it lines up with the aircraft
   const corr=qnh!=null?(qnh-1013.25)*27.3:0, pts=[];
   for(let km=0;km<=AV_GS_KM;km++){ const p=rwyProject(end.tLat,end.tLon,end.outB,km*1000);
     pts.push({lat:p[0],lon:p[1],ft:end.elev+AV_TCH_FT+km*1000*AV_GS_TAN/0.3048-corr}); }
   return pts; }
 function avColor(){ return NIGHT_ON?'#a3e635':'#4d7c0f'; }   // lime, dark green by day — as 2D
-function avRwyGeoJSON(){ const F=[]; if(!AV.apt) return {type:'FeatureCollection',features:F};
+function avRwyGeoJSON(){ const F=[]; if(!AV.apts.length) return {type:'FeatureCollection',features:F};
   const L=(a,b,kind)=>F.push({type:'Feature',properties:{kind},geometry:{type:'LineString',coordinates:[[a[1],a[0]],[b[1],b[0]]]}});
   const P=(p,text,kind)=>F.push({type:'Feature',properties:{kind,text},geometry:{type:'Point',coordinates:[p[1],p[0]]}});
-  for(const rw of AV.apt.runways) L([rw.le_lat,rw.le_lon],[rw.he_lat,rw.he_lon],'body');
-  for(const e of avEnds(AV.apt)){ L([e.tLat,e.tLon],rwyProject(e.tLat,e.tLon,e.outB,AV_GS_KM*1000),'ext');
+  for(const apt of AV.apts) for(const rw of apt.runways) L([rw.le_lat,rw.le_lon],[rw.he_lat,rw.he_lon],'body');
+  for(const apt of AV.apts) for(const e of avEnds(apt)){ L([e.tLat,e.tLon],rwyProject(e.tLat,e.tLon,e.outB,AV_GS_KM*1000),'ext');
     for(let km=1;km<=AV_GS_KM;km++){ const p=rwyProject(e.tLat,e.tLon,e.outB,km*1000), major=km%5===0, h=major?325:175;
       L(rwyProject(p[0],p[1],(e.outB+90)%360,h),rwyProject(p[0],p[1],(e.outB+270)%360,h),major?'tickM':'tick'); if(major) P(p,km+'km','lbl'); }
     if(e.ident) P([e.tLat,e.tLon],e.ident,'lbl'); }
@@ -1030,8 +1034,8 @@ const skyLayer={
   },
   rebuildGp(){   // one 3° path per runway end, in the air, with a fence post to the ground every km; the active end bright
     const segs=[]; AV.built.rwy=!!SETTINGS.rwy;
-    if(SETTINGS.rwy&&AV.apt){ const act=avActiveEnd(), col=avColor();
-      for(const e of avEnds(AV.apt)){ const on=!!act&&e.ident===act.ident&&e.tLat===act.tLat;
+    if(SETTINGS.rwy&&AV.apts.length) for(const apt of AV.apts){ const act=avActiveEnd(apt), col=avColor();
+      for(const e of avEnds(apt)){ const on=!!act&&e.ident===act.ident&&e.tLat===act.tLat;
         const xyz=gpPoints(e,AV.qnh).map(p=>{ const [x,z]=toScene(p.lon,p.lat); return [x,Math.max(0,p.ft)*0.3048*VE,z,p]; });
         for(let i=1;i<xyz.length;i++) segs.push({a:xyz[i-1].slice(0,3),b:xyz[i].slice(0,3),c:col,al:on?0.9:0.35,w:on?3:2});
         for(let i=1;i<xyz.length;i++){ const [x,y,z,p]=xyz[i]; segs.push({a:[x,groundY(p.lon,p.lat),z],b:[x,y,z],c:col,al:on?0.35:0.15,w:1}); } } }

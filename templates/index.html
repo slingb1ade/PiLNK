@@ -243,6 +243,18 @@
   .av-toggles{display:flex;flex-direction:column;gap:6px;margin-top:8px;padding:8px;background:var(--bg-card);border-radius:6px;border:1px solid var(--border);}
   .av-toggle-row{display:flex;align-items:center;justify-content:space-between;font-size:0.62rem;color:var(--text-dim);}
   .av-dot{width:8px;height:8px;border-radius:50%;flex-shrink:0;margin-right:4px;}
+  /* Runway airports: tap a chip to show or hide that field's runways (AJ 10 Oct) */
+  .rwy-chips{display:flex;flex-wrap:wrap;gap:5px;padding:2px 0 4px;}
+  .rwy-chip{display:inline-flex;align-items:center;gap:5px;background:var(--bg-card);color:var(--text-dim);border:1px solid rgba(100,116,139,0.35);border-radius:999px;padding:5px 10px;min-height:26px;box-sizing:border-box;font-family:'Share Tech Mono',monospace;font-size:0.62rem;letter-spacing:0.02em;cursor:pointer;transition:background .15s,border-color .15s,color .15s;}
+  .rwy-chip .rwy-nm{opacity:0.75;}
+  .rwy-chip .rwy-dot{width:6px;height:6px;border-radius:50%;background:rgba(100,116,139,0.45);}
+  .rwy-chip.on{background:rgba(77,124,15,0.12);border-color:#4d7c0f;color:#3f6212;}
+  .rwy-chip.on .rwy-dot{background:#4d7c0f;}
+  [data-theme="dark"] .rwy-chip{background:#0f1a2e;color:#8aa0bd;border-color:rgba(120,140,170,0.35);}
+  [data-theme="dark"] .rwy-chip.on{background:rgba(163,230,53,0.14);border-color:#a3e635;color:#d9f99d;}
+  [data-theme="dark"] .rwy-chip.on .rwy-dot{background:#a3e635;}
+  .rwy-chip:focus-visible{outline:1px solid #a3e635;outline-offset:1px;}
+  .rwy-msg{font-size:0.62rem;color:var(--text-dim);}
   /* ── Altitude Profile slide-up panel ─────────────────────────────── */
   /* Height: was 38% / min 220px, which ate a third of the map. Smaller by
      default and DRAGGABLE from the top edge — the right size depends on the
@@ -1788,7 +1800,7 @@
               <div class="av-toggle-row"><span style="display:flex;align-items:center;"><span class="av-dot" style="background:#7dd3fc;"></span>Airfields</span><label class="toggle-switch" style="transform:scale(0.85);"><input type="checkbox" id="avAirfields" onchange="toggleAirfields(this.checked)"/><span class="toggle-slider"></span></label></div>
               <div class="av-toggle-row" title="Side-on altitude view — slides up from the bottom. Shows the vertical separation between aircraft that the top-down map can't.">​<span style="display:flex;align-items:center;"><span class="av-dot" style="background:#36d3ff;"></span>Altitude View</span><label class="toggle-switch" style="transform:scale(0.85);"><input type="checkbox" id="avAltProfile" onchange="toggleAltProfile(this.checked)"/><span class="toggle-slider"></span></label></div>
               <div class="av-toggle-row" title="Extended runway centerlines with 1 km distance ticks — see whether an aircraft on approach is tracking the runway, and how far out it is."><span style="display:flex;align-items:center;"><span class="av-dot" style="background:#a3e635;"></span>Runway Centerlines</span><label class="toggle-switch" style="transform:scale(0.85);"><input type="checkbox" id="avRunways" onchange="toggleRunways(this.checked)"/><span class="toggle-slider"></span></label></div>
-              <div class="av-toggle-row" id="rwyPickRow" style="display:none;padding-left:18px;justify-content:flex-end;"><select id="rwyAirportSel" onchange="setRunwayAirport(this.value)" style="flex:1 1 auto;max-width:100%;background:#0f1a2e;color:#e8eef6;border:1px solid rgba(120,140,170,0.35);border-radius:5px;font-family:'Share Tech Mono',monospace;font-size:0.62rem;letter-spacing:0.02em;padding:4px 6px;cursor:pointer;"></select></div>
+              <div class="av-toggle-row" id="rwyPickRow" style="display:none;padding-left:18px;justify-content:flex-start;"><div id="rwyChips" class="rwy-chips" role="group" aria-label="Runway airports"></div></div>
             </div>
             <div class="av-status" id="avStatus">Enable overlay then select an airport</div>
             <div style="border-top:1px solid rgba(120,140,170,0.18);margin:10px 0 8px;"></div>
@@ -3443,16 +3455,16 @@ function skyAvExtra(m) {
   return m;
 }
 function skySendSettings() { if (isSkyOpen()) skyPost(skySettings()); }
-// Aviation Overlay data for the 3D view: the runway airport picked here and the same ±5° airfield list 2D draws.
+// Aviation Overlay data for the 3D view: the runway airports picked here (any number) and the same ±5° airfield list 2D draws.
 // Nothing is fetched for 3D; it gets what the dashboard already holds. Sent only when it changes (the list can be large).
 var skyAvLast = '';
 function skyAviation() {
-  var apt = null, fields = [];
-  if (runwaysVisible && runwaySelectedIcao) {
-    for (var i = 0; i < runwayAirports.length; i++) if (runwayAirports[i].icao === runwaySelectedIcao) { apt = runwayAirports[i]; break; }
+  var apts = null, fields = [];
+  if (runwaysVisible && runwaySelected.length) {
+    apts = runwayAirports.filter(function(a) { return runwaySelected.indexOf(a.icao) >= 0; });
   }
   if (airfieldsVisible && Array.isArray(airportDB)) fields = skyFieldList();
-  return skyAvExtra({ action: 'aviation', runways: apt, airfields: fields });
+  return skyAvExtra({ action: 'aviation', runways: apts, airfields: fields });
 }
 // Batched: a 2D redraw cascades through several wrapped functions; they all land in one build, after the 2D work is done.
 // A failure here is logged and never thrown back into the 2D code that triggered it.
@@ -8795,13 +8807,14 @@ function clearFootprint() {
 // whether an aircraft on approach is tracking the runway centreline and
 // how far out it is. Data comes from pilnk.io/api/runways.php (the
 // airport_runways table, scoped to fleet coverage — global-by-default).
-// Home airport is pre-selected; a dropdown offers the 5 closest fields.
-// One airport at a time, matching the Footprint/Airfields sub-feature
-// pattern (self-contained state + toggle + draw + clear).
+// The home airport is on by default; a row of chips offers the 6 closest
+// fields, and any number can be on at once (AJ 10 Oct 2026). Same
+// self-contained pattern as Footprint/Airfields (state + toggle + draw + clear).
 var runwaysVisible = false;
 var runwayLayer = null;         // L.featureGroup of all runway geometry
-var runwayAirports = [];        // 5 closest airports (each with .runways[])
-var runwaySelectedIcao = null;
+var runwayAirports = [];        // 6 closest airports (each with .runways[])
+var runwaySelected = [];        // ICAOs drawn, in runwayAirports order
+var rwyPending = null;          // a saved set waiting for the airport list (My Setup restore)
 
 // Project a point [lat,lon] along a true bearing (deg) for a distance (m).
 function rwyProject(lat, lon, brgDeg, distM) {
@@ -8843,43 +8856,67 @@ function toggleRunways(show) {
 }
 
 function loadRunwayData() {
-  // Runway data is static — fetch the 5 closest airports once and cache.
+  // Runway data is static — fetch the 6 closest airports once and cache.
   var url = 'https://pilnk.io/api/runways.php?lat=' + encodeURIComponent(RX_LAT) +
-            '&lon=' + encodeURIComponent(RX_LON) + '&limit=5';
+            '&lon=' + encodeURIComponent(RX_LON) + '&limit=6';
   fetch(url, {cache: 'no-store'})
     .then(function(r) { return r.ok ? r.json() : null; })
     .then(function(d) {
-      if (!d || !d.ok || !d.airports || !d.airports.length) {
-        var sel = document.getElementById('rwyAirportSel');
-        if (sel) sel.innerHTML = '<option>No airports in range</option>';
-        return;
-      }
+      if (!d || !d.ok || !d.airports || !d.airports.length) { rwyChipsMsg('No airports in range'); return; }
       runwayAirports = d.airports;
-      runwaySelectedIcao = runwayAirports[0].icao;   // nearest = home field
-      populateRunwayPicker();
-      if (runwaysVisible) drawRunways();
+      // A My Setup restore that arrived before the list did wins; else keep a choice already made; else the nearest.
+      var want = rwyPending || (runwaySelected.length ? runwaySelected : [runwayAirports[0].icao]);
+      rwyPending = null;
+      setRunwayAirports(want);
     })
-    .catch(function() {
-      var sel = document.getElementById('rwyAirportSel');
-      if (sel) sel.innerHTML = '<option>Fetch failed</option>';
-    });
+    .catch(function() { rwyChipsMsg('Could not load runways'); });
 }
 
+function rwyChipsMsg(text) {
+  var box = document.getElementById('rwyChips');
+  if (!box) return;
+  box.innerHTML = '';
+  var m = document.createElement('span'); m.className = 'rwy-msg'; m.textContent = text;
+  box.appendChild(m);
+}
+
+// One chip per airport, nearest first. Text from runways.php goes in as text, never as HTML.
 function populateRunwayPicker() {
-  var sel = document.getElementById('rwyAirportSel');
-  if (!sel) return;
-  sel.innerHTML = '';
+  var box = document.getElementById('rwyChips');
+  if (!box) return;
+  box.innerHTML = '';
   runwayAirports.forEach(function(a) {
-    var opt = document.createElement('option');
-    opt.value = a.icao;
-    opt.textContent = a.icao + ' — ' + a.name + ' (' + a.dist_nm + ' nm)';
-    if (a.icao === runwaySelectedIcao) opt.selected = true;
-    sel.appendChild(opt);
+    var on = runwaySelected.indexOf(a.icao) >= 0;
+    var b = document.createElement('button');
+    b.type = 'button';
+    b.className = 'rwy-chip' + (on ? ' on' : '');
+    b.dataset.icao = String(a.icao);
+    b.title = String(a.name || a.icao);
+    b.setAttribute('aria-pressed', on ? 'true' : 'false');
+    var dot = document.createElement('span'); dot.className = 'rwy-dot';
+    var nm = document.createElement('span'); nm.className = 'rwy-nm';
+    nm.textContent = (a.dist_nm != null ? a.dist_nm + ' nm' : '');
+    b.appendChild(dot);
+    b.appendChild(document.createTextNode(String(a.icao) + ' '));
+    b.appendChild(nm);
+    b.onclick = function() { toggleRunwayAirport(a.icao); };
+    box.appendChild(b);
   });
 }
 
-function setRunwayAirport(icao) {
-  runwaySelectedIcao = icao;
+// Tap a chip: that airport's runways go on or off; the others stay as they are.
+function toggleRunwayAirport(icao) {
+  var i = runwaySelected.indexOf(icao);
+  if (i >= 0) runwaySelected.splice(i, 1); else runwaySelected.push(icao);
+  setRunwayAirports(runwaySelected);
+}
+
+// The set to draw, kept in nearest-first order; unknown ICAOs are dropped.
+function setRunwayAirports(list) {
+  var want = Array.isArray(list) ? list : [];
+  runwaySelected = runwayAirports.map(function(a) { return a.icao; })
+                                 .filter(function(c) { return want.indexOf(c) >= 0; });
+  populateRunwayPicker();
   drawRunways();
 }
 
@@ -8887,19 +8924,15 @@ function drawRunways() {
   clearRunways();
   if (!runwaysVisible) return;
   if (typeof avOverlayOn !== 'undefined' && !avOverlayOn) return;
-  if (!runwayAirports.length || !runwaySelectedIcao) return;
-
-  var apt = null;
-  for (var i = 0; i < runwayAirports.length; i++) {
-    if (runwayAirports[i].icao === runwaySelectedIcao) { apt = runwayAirports[i]; break; }
-  }
-  if (!apt || !apt.runways || !apt.runways.length) return;
+  if (!runwayAirports.length || !runwaySelected.length) return;
 
   var dark = document.documentElement.getAttribute('data-theme') === 'dark';
   var col = dark ? '#a3e635' : '#4d7c0f';         // lime — distinct from other overlays
   var shadow = dark ? '#060a14' : '#ffffff';
   runwayLayer = L.featureGroup([]).addTo(map);
 
+  runwayAirports.forEach(function(apt) {
+  if (runwaySelected.indexOf(apt.icao) < 0 || !apt.runways) return;
   apt.runways.forEach(function(rw) {
     if (rw.le_lat == null || rw.le_lon == null || rw.he_lat == null || rw.he_lon == null) return;
     // Derive the centreline bearing from the two real thresholds so the
@@ -8922,6 +8955,7 @@ function drawRunways() {
     // Threshold idents (e.g. 05R / 23L).
     rwyEndLabel(rw.le_lat, rw.le_lon, rw.le_ident, col, shadow);
     rwyEndLabel(rw.he_lat, rw.he_lon, rw.he_ident, col, shadow);
+  });
   });
 }
 
@@ -10456,7 +10490,7 @@ window.PilnkOptions = (function () {
     var f = activeOf(['fpBtnRange', 'fpBtnHorizon', 'fpBtnRays']); if (f) s.footprintMode = FPM[f];
     var u = activeOf(['unitNm', 'unitKm']);                 if (u) s.ringUnit = (u === 'unitKm') ? 'km' : 'nm';
 
-    var sel = $('rwyAirportSel'); if (sel && sel.value) s.rwyAirport = sel.value;
+    if (typeof runwaySelected !== 'undefined' && runwayAirports.length) s.rwyAirports = runwaySelected.slice();
     var sl = wxSlider();          if (sl)               s.wxOpacity  = sl.value;
 
     s.theme    = lsGet('pilnk-theme');
@@ -10493,15 +10527,16 @@ window.PilnkOptions = (function () {
     if (s.hunter != null) { lsSet('pilnkHunter', s.hunter); call('setHunter', s.hunter === '1'); }
     if (s.sortMode) { lsSet('pilnk-sort-mode', s.sortMode); }
 
-    // The runway airport list is fetched from runways.php, so it may not be
-    // populated yet. Retry for up to ~10s rather than silently dropping it.
-    if (s.rwyAirport) {
-      var sel = $('rwyAirportSel');
-      if (sel && sel.options.length) {
-        sel.value = s.rwyAirport;
-        call('setRunwayAirport', s.rwyAirport);
-      } else if (pass < 10) {
-        setTimeout(function () { apply({ rwyAirport: s.rwyAirport }, pass + 1); }, 1000);
+    // The runway airport list is fetched from runways.php, so it may not be populated yet.
+    // rwyAirports is the set (10 Oct); rwyAirport is one airport from older saves.
+    var rwy = Array.isArray(s.rwyAirports) ? s.rwyAirports : (s.rwyAirport ? [s.rwyAirport] : null);
+    if (rwy) {
+      // Not loaded yet (runways off, or runways.php still answering): leave it for loadRunwayData,
+      // which applies it whenever the list arrives — no timer to run out (review, 10 Oct).
+      if (typeof runwayAirports !== 'undefined' && runwayAirports.length) {
+        call('setRunwayAirports', rwy);
+      } else if (typeof rwyPending !== 'undefined') {
+        rwyPending = rwy.slice();
       }
     }
   }
