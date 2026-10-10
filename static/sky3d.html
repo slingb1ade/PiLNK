@@ -169,7 +169,7 @@ window.addEventListener('message',e=>{
   const d=e.data; if(!d||d.type!=='pilnk-sky') return;
   if(d.action==='pause') paused=true;
   else if(d.action==='resume'){ paused=false; _lastDrawAt=0; dlLineApply(); if(map) map.triggerRepaint(); }
-  else if(d.action==='theme') applyTheme(d.theme==='night');
+  else if(d.action==='theme'){ CHOSEN_NIGHT=(d.theme==='night'); lightsTick(); }   // city lights: after dark the map is dark whatever the chosen theme
   else if(d.action==='settings') applySettings(d);
   else if(d.action==='aviation') applyAviation(d);   // Aviation Overlay: runways + airfields the dashboard already holds
   else if(d.action==='select'){ if(!RP) selectFromDash(d); }   // Traffic box: the dashboard's selected plane (or null) — final review F4: a list pick must not fly the camera to a plane hidden during replay
@@ -228,6 +228,91 @@ function isNight(){
   if(pref==='night')return true; if(pref==='day')return false;
   return sunElevation(SITE.lat,SITE.lon)<0;
 }
+/* ---------- city lights (10 Oct 2026): after dark at the receiver the map goes dark and the towns glow ----------
+   CHOSEN_NIGHT is the theme the user picked (dashboard message, ?theme=, saved pref); the sun overrules it after
+   sunset. window.__PILNK_SUN pins the sun for tests; ?lights=on|off for screenshots. The network copy flips
+   SUN_AT_CENTRE so the sun is read where the map is looking. */
+let SUN_AT_CENTRE=false, _lightsTimer=0;
+const LIGHTS_Q=_q.get('lights');
+function chosenNight(){
+  const q=_q.get('theme'); if(q==='night')return true; if(q==='day')return false;
+  let pref=null; try{ pref=localStorage.getItem('pilnk3d:theme'); }catch(e){}
+  return pref==='night';
+}
+let CHOSEN_NIGHT=chosenNight();
+function sunSpot(){
+  if((SUN_AT_CENTRE||SITE.lat==null) && map){ const c=map.getCenter(); return [c.lat,c.lng]; }
+  return [SITE.lat==null?0:SITE.lat, SITE.lon==null?0:SITE.lon];
+}
+function sunNow(){
+  const p=window.__PILNK_SUN; if(typeof p==='number'&&isFinite(p)) return p;
+  const s=sunSpot(); return sunElevation(s[0],s[1]);
+}
+function lightsLevel(elev){
+  if(LIGHTS_Q==='on') return 1; if(LIGHTS_Q==='off') return 0;
+  if(typeof elev!=='number'||!isFinite(elev)) return 0;
+  return Math.min(1,Math.max(0,-elev/6));
+}
+function effectiveNight(){ return CHOSEN_NIGHT || LIGHTS_Q==='on' || sunNow()<0; }
+const LIGHTS={level:0, orig:null};
+const NASA_LIGHTS='pilnk://gibs.earthdata.nasa.gov/wmts/epsg3857/best/VIIRS_Black_Marble/default/2016-01-01/GoogleMapsCompatible_Level8/{z}/{y}/{x}.png';
+const LIGHT_DIM=/casing|rail|path_pedestrian/, LIGHT_MAJOR=/motorway|trunk|primary/;
+/* The original style values of every paint property the lights touch, read from the style JSON before any
+   repaint (a live layer's paint is MapLibre's internal store). Called once with the style, next to captureDayPaint. */
+function captureLightOrig(style){ LIGHTS.orig={};
+  for(const l of style.layers){ const p=l.paint||{}, rec={};
+    if(l.type==='line'&&/^(road|bridge|tunnel)_/.test(l.id)) for(const k of ['line-color','line-width','line-blur','line-opacity']) rec[k]=(p[k]!==undefined)?p[k]:null;
+    else if(l.type==='fill-extrusion') rec['fill-extrusion-color']=(p['fill-extrusion-color']!==undefined)?p['fill-extrusion-color']:null;
+    else continue;
+    LIGHTS.orig[l.id]={type:l.type, p:rec}; } }
+const sc=(stops,k)=>stops.map((v,i)=>i%2?Math.round(v*k*1000)/1000:v);   // scale the VALUES of zoom stops: a zoom expression must stay top-level
+/* Every (layer, property) the lights set, with its lit value at a given level. Glow: road and bridge lines that are
+   not casings, rails or footpaths (tunnels stay as they are). Dim: casings, rails, footpaths - their pale lines are what
+   made a lit street look grey. Buildings: warm. */
+function lightTargets(){ const out=[]; if(!LIGHTS.orig) return out;
+  for(const id in LIGHTS.orig){ const o=LIGHTS.orig[id];
+    if(o.type==='fill-extrusion'){ out.push({id,prop:'fill-extrusion-color',val:()=>'#4a3522'}); continue; }
+    if(LIGHT_DIM.test(id)){ out.push({id,prop:'line-opacity',val:()=>0.08}); continue; }
+    if(/^tunnel_/.test(id)) continue;
+    const major=LIGHT_MAJOR.test(id);
+    out.push({id,prop:'line-color',val:()=>major?'#ffbe5c':'#ff9d3d'});
+    out.push({id,prop:'line-width',val:()=>['interpolate',['exponential',1.5],['zoom']].concat(major?[9,0.6,13,2.2,17,9]:[10,0.25,13,0.9,17,5])});
+    out.push({id,prop:'line-blur',val:()=>major?1.2:0.6});
+    out.push({id,prop:'line-opacity',val:k=>['interpolate',['linear'],['zoom']].concat(sc(major?[9,0,10.5,0.95,13,1]:[9,0,10.5,0.5,13,0.75],0.5+0.5*k))}); }   // street lamps come on at full strength: never below half, so streets never vanish at dusk
+  return out; }
+/* What a property goes back to when the lights are off: colours follow the theme (NIGHT_PAINT / DAY_PAINT), the rest
+   is the style's own value. null means the style never set it: undefined resets it to MapLibre's default. */
+function lightBase(id,prop){
+  if(prop==='line-color'||prop==='fill-extrusion-color'){
+    if(NIGHT_ON&&NIGHT_PAINT[id]){ const op=NIGHT_PAINT[id].find(x=>x[0]===prop); if(op) return op[1]; }
+    if(!NIGHT_ON&&DAY_PAINT[id]&&DAY_PAINT[id][prop]!==undefined) return DAY_PAINT[id][prop]===null?undefined:DAY_PAINT[id][prop]; }
+  const o=LIGHTS.orig&&LIGHTS.orig[id]; const v=o?o.p[prop]:null; return v===null||v===undefined?undefined:v; }
+/* The NASA photo is a glow on the ground: above land and water, under every street (so the lit streets stay crisp
+   on top of it), label, 3D building and PiLNK overlay. */
+function lightsBefore(){ const L=map.getStyle().layers;
+  const t=L.find(l=>l.type==='symbol'||l.type==='fill-extrusion'||/^av-/.test(l.id)||/^(tunnel|road|bridge)_/.test(l.id)||l.id==='rings');
+  return t?t.id:undefined; }
+function setLights(level,force){
+  const L=Math.round(Math.min(1,Math.max(0,+level||0))*100)/100;
+  if(!_mapReady||!map) return;
+  if(!force&&L===LIGHTS.level) return;
+  LIGHTS.level=L;
+  try{
+    if(L>0){
+      if(!map.getSource('citylights')) map.addSource('citylights',{type:'raster',tiles:[NASA_LIGHTS],tileSize:256,maxzoom:8,attribution:'Night lights: NASA Black Marble'});
+      if(!map.getLayer('citylights')) map.addLayer({id:'citylights',type:'raster',source:'citylights',
+        paint:{'raster-saturation':0.3,'raster-contrast':0.25,'raster-resampling':'linear'}}, lightsBefore());
+      map.setPaintProperty('citylights','raster-opacity',['interpolate',['linear'],['zoom']].concat(sc([6,0.95,9,0.6,10.5,0.22,12,0.1,13,0],L)));
+      map.setLayoutProperty('citylights','visibility','visible');
+      for(const t of lightTargets()) if(map.getLayer(t.id)) try{ map.setPaintProperty(t.id,t.prop,t.val(L)); }catch(e){}
+    } else {
+      if(map.getLayer('citylights')) map.setLayoutProperty('citylights','visibility','none');
+      for(const t of lightTargets()) if(map.getLayer(t.id)) try{ map.setPaintProperty(t.id,t.prop,lightBase(t.id,t.prop)); }catch(e){}
+    }
+  }catch(e){ try{ console.warn('city lights:',e&&e.message); }catch(_){} }
+  map.triggerRepaint();
+}
+function lightsTick(){ applyTheme(effectiveNight()); setLights(lightsLevel(sunNow())); }
 const NIGHT={ bg:'#060912', water:'#0a1526', green:'#0b1410', land:'#090d15',
   bldg:'#161d2b', road:'#1b2332', roadMajor:'#2b3448', rail:'#171d29', text:'#7488a8', halo:'#04070e',
   runway:'#ffd25e', taxi:'#3f5f86', apron:'#0e1420', boundary:'#2a3348' };
@@ -278,6 +363,7 @@ function applyTheme(night){
   applyBaseNight();
   try{ map.setPaintProperty('rings','line-color',ringColor()); map.setPaintProperty('rings-label','text-color',ringColor());
        map.setPaintProperty('rings-label','text-halo-color',NIGHT_ON?'#04070e':'#ffffff'); }catch(e){}
+  setLights(LIGHTS.level,true);   // city lights: the theme repaint just reset the road colours - put the glow (or the day values) back
   avPaint();
   skyLayer.relight();
   TPL.forEach(p=>p.then(t=>{ if(t) t.traverse(o=>{ if(o.isMesh&&o.material) (Array.isArray(o.material)?o.material:[o.material]).forEach(tintMaterial); }); }));
@@ -289,6 +375,7 @@ function applyTheme(night){
    have missed while the scripts were still loading (theme, and pause if the Approach view is covering us). */
 function onMapReady(){ _mapReady=true;
   if(_pendingNight!==null){ const n=_pendingNight; _pendingNight=null; applyTheme(n); }
+  setLights(lightsLevel(sunNow())); if(!_lightsTimer) _lightsTimer=setInterval(lightsTick,60000);   // city lights: the theme is already right; start the glow and the 60 s sun check
   if(_pendingSettings){ const s=_pendingSettings; _pendingSettings=null; applySettings(s); }
   if(_pendingAv){ const a=_pendingAv; _pendingAv=null; avSet(a); }
   toParent({action:'ready'}); }
@@ -1282,9 +1369,10 @@ async function boot(){
     for(const id in s.sources){ const src=s.sources[id]; if(src.type!=='vector')continue;
       if(!src.tiles&&src.url){ const tj=await fetch(src.url).then(r=>r.json()); src.tiles=tj.tiles; if(tj.minzoom!=null)src.minzoom=tj.minzoom; if(tj.maxzoom!=null)src.maxzoom=tj.maxzoom; if(tj.attribution)src.attribution=tj.attribution; delete src.url; }
       if(src.tiles) src.tiles=src.tiles.map(t=>t.replace(/^https:\/\//,'pilnk://')); }
-    NIGHT_ON=isNight();
+    NIGHT_ON=effectiveNight();
     s.layers=s.layers.filter(l=>STREET_LABELS.indexOf(l.id)<0);
     captureDayPaint(s);            // before anything is repainted
+    captureLightOrig(s);           // city lights: the style's own values, to restore at sunrise
     if(NIGHT_ON) paintNight(s);
     s.transition={duration:0,delay:0};   // terrain drapes flat layers into cached textures; a paint change must land in the frame that clears them, or brightness/night stay stale until the camera moves
     style=URL.createObjectURL(new Blob([JSON.stringify(s)],{type:'application/json'}));
@@ -1344,7 +1432,7 @@ async function boot(){
     if(EMBED){ if(best) cardFor(best.hex); else emptyClick(); return; }
     if(best) window.open('/static/approach.html?hex='+encodeURIComponent(best.hex),'_blank','noopener'); });
   // Satellite/Topo imagery is optional: a tile it can't fetch shows plain ground, not a fault line.
-  map.on('error',e=>{ if(e&&(e.sourceId==='base-sat'||e.sourceId==='base-topo')) return;
+  map.on('error',e=>{ if(e&&(e.sourceId==='base-sat'||e.sourceId==='base-topo'||e.sourceId==='citylights')) return;   // optional imagery: a missing tile is not a map error
     const m=(e&&e.error&&e.error.message)||''; if(!/sprite|glyph|tile/i.test(m)) st('map error: '+m); });
   map.on('webglcontextlost',()=>failSoft('the browser dropped the 3D context'));
   // Replay Follow: the user dragging/rotating/zooming the map turns it off; e.originalEvent is only set for real user input,
