@@ -101,6 +101,7 @@
 <script crossorigin="anonymous" src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
 <script crossorigin="anonymous" src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/loaders/GLTFLoader.js"></script>
 <script src="/static/models.js"></script>
+<script src="/static/city-lights.js"></script>
 <script src="/static/datalink-card.js?v=dl5"></script>
 <script>
 const _q=new URLSearchParams(location.search);
@@ -853,11 +854,12 @@ function sunElevation(lat,lon,when){
   return Math.asin(Math.sin(lat*rad)*Math.sin(dec)+Math.cos(lat*rad)*Math.cos(dec)*Math.cos(ha))/rad;
 }
 function isNight(){
+  if(_q.get('citylights')==='on') return true;                  // city lights forced on (screenshots): the map is dark too, whatever the saved theme
   const q=_q.get('theme');
   if(q==='night')return true; if(q==='day')return false;
   let pref=null; try{ pref=localStorage.getItem('pilnk3d:theme'); }catch(e){}
   if(pref==='night')return true; if(pref==='day')return false;
-  return sunElevation(SITE.lat,SITE.lon) < 0;                   // below the horizon: dusk counts as night
+  return sunNow() < 0;                                          // below the horizon: dusk counts as night
 }
 const NIGHT={ bg:'#060912', water:'#0a1526', wet:'#0a1526', green:'#0b1410', land:'#090d15',
   bldg:'#161d2b', road:'#1b2332', roadMajor:'#2b3448', rail:'#171d29', text:'#7488a8', halo:'#04070e',
@@ -978,14 +980,54 @@ function applyTheme(night){
   try{ map.setSky(night
     ? {'sky-color':'#03060e','horizon-color':'#0a1830','fog-color':'#04070f','sky-horizon-blend':0.5,'horizon-fog-blend':0.5,'fog-ground-blend':0.7}
     : {'sky-color':'#7fb2e5','horizon-color':'#cfe3f5','fog-color':'#dde8f2','sky-horizon-blend':0.7,'horizon-fog-blend':0.6,'fog-ground-blend':0.5}); }catch(e){}
+  cityUpdate(true);    // city lights: the repaint above just reset the street colours - put the glow (or the day values) back
   if(acLayer.relight) acLayer.relight();
   retintModel();       // the skin band differs day to night, and the model is already loaded
   const b=document.getElementById('themebtn'); if(b) b.textContent=night?'☾':'☀';
   map.triggerRepaint();
 }
 function setTheme(mode){   // 'day' | 'night' | 'auto'
+  THEME_MODE=mode;   // the latest choice wins over ?theme= (city lights read it)
   try{ localStorage.setItem('pilnk3d:theme',mode); }catch(e){}
-  applyTheme(mode==='auto'?(sunElevation(SITE.lat,SITE.lon)<0):(mode==='night'));
+  applyTheme(mode==='auto'?(sunNow()<0):(mode==='night'));
+}
+/* ---------- city lights (10 Oct 2026) ----------
+   After dark the towns glow - static/city-lights.js, profile 'approach': no blur (blur makes lines vanish at this
+   pitch), streets that keep their real width up close, and a soft glow layer under the main streets. The theme
+   decides: Night = full lights whatever the hour; Day = none; follow-the-sun (the default) = the map goes dark below
+   0 deg at the site and the lights come up to full by -6 deg, re-checked every minute. ?citylights=on|off for
+   screenshots (?lights= is the RUNWAY lights' switch). The satellite-hybrid comparison mode stays unlit.
+   window.__PILNK_SUN pins the sun for tests. Spec: pilnk-tasks/approach-city-lights.md. */
+const CITY_Q=_q.get('citylights');
+let CITY={level:0, orig:null, profile:'approach', targets:()=>[]}, CITY_STYLE=null, _cityTimer=0, THEME_MODE=null;
+function themeMode(){
+  if(THEME_MODE==='night'||THEME_MODE==='day'||THEME_MODE==='auto') return THEME_MODE;   // pressed in this visit
+  const q=_q.get('theme'); if(q==='night'||q==='day') return q;
+  let pref=null; try{ pref=localStorage.getItem('pilnk3d:theme'); }catch(e){}
+  return (pref==='night'||pref==='day')?pref:'auto';
+}
+function sunNow(){ const p=window.__PILNK_SUN; if(typeof p==='number'&&isFinite(p)) return p; return sunElevation(SITE.lat,SITE.lon); }
+function cityLevel(){
+  if(BASE==='sat'||CITY_Q==='off'||!NIGHT_ON) return 0;
+  if(CITY_Q==='on'||themeMode()==='night') return 1;
+  return CityLights.level(sunNow());
+}
+/* What a property goes back to when the lights are off: colours follow the theme (the night painter, or the vivid
+   day palette over stock Liberty), everything else is the style's own value. */
+function cityBase(id,prop){
+  if(prop==='line-color'||prop==='fill-extrusion-color'){
+    const l=map.getLayer(id);
+    if(NIGHT_ON){ const op=l?nightOps(l).find(x=>x[0]===prop):null; if(op) return op[1]; }
+    else { const v=l?vividOps(l).find(x=>x[0]===prop):null; if(v) return v[1];
+      if(DAY_PAINT[id]&&DAY_PAINT[id][prop]!==undefined) return DAY_PAINT[id][prop]===null?undefined:DAY_PAINT[id][prop]; }
+  }
+  return CityLights.origValue(CITY.orig,id,prop);
+}
+function cityUpdate(force){ if(!map||!CITY.set||BASE==='sat') return; /* sat is never lit, and a restore would undo its 35% roads */ CITY.set(cityLevel(),force); }
+// every minute: in follow-the-sun mode the map flips at sunset and sunrise, and the lights follow the dusk
+function cityTick(){
+  if(themeMode()==='auto'&&CITY_Q!=='on'){ const n=sunNow()<0; if(n!==NIGHT_ON){ applyTheme(n); return; } }
+  cityUpdate();
 }
 /* ---------- road-name labels ----------
    These are the "distance markers on the road" first reported in the opening week, and the reason
@@ -1038,6 +1080,7 @@ async function boot(){
       if(src.tiles) src.tiles=src.tiles.map(t=>t.replace(/^https:\/\//,'pilnk://')); }
     NIGHT_ON=isNight();
     dropStreetLabels(s);           // before the capture, so the painters never see layers that are gone
+    CITY_STYLE=JSON.parse(JSON.stringify(s));   // city lights: the stock style, before any painter touches it
     captureDayPaint(s);            // before anything is repainted, so the toggle can restore exactly
     if(NIGHT_ON) paintNight(s); else paintVivid(s);
     paintRunway(s,NIGHT_ON);
@@ -1095,12 +1138,15 @@ async function boot(){
       ? {'sky-color':'#03060e','horizon-color':'#0a1830','fog-color':'#04070f','sky-horizon-blend':0.5,'horizon-fog-blend':0.5,'fog-ground-blend':0.7}
       : {'sky-color':'#7fb2e5','horizon-color':'#cfe3f5','fog-color':'#dde8f2','sky-horizon-blend':0.7,'horizon-fog-blend':0.6,'fog-ground-blend':0.5}); }catch(e){}
     map.addLayer(acLayer);
+    CITY=CityLights.create({map, profile:'approach', orig:CityLights.captureOrig(CITY_STYLE), style:CITY_STYLE, base:cityBase});
+    cityUpdate(true); if(!_cityTimer) _cityTimer=setInterval(cityTick,60000);
     mapGestures(camMode==='free');
     st((BASE==='sat'?'satellite hybrid':'OpenFreeMap 3D map')+' + terrain loaded · waiting for an aircraft');
     poll();
     setTimeout(warmCorridor,4000);   // after the live view has what it needs
   });
-  map.on('error',e=>{ const m=(e&&e.error&&e.error.message)||''; if(!/sprite|glyph/i.test(m)) st('map error: '+m); });
+  map.on('error',e=>{ if(e&&e.sourceId==='citylights') return;   // optional night photo: a missing tile is not a map error
+    const m=(e&&e.error&&e.error.message)||''; if(!/sprite|glyph/i.test(m)) st('map error: '+m); });
   /* Last resort: the style resolved and MapLibre started, but nothing ever finished loading — a
      context lost on a weak GPU, or tiles that answer slowly enough to be useless. Give it 25 s. */
   /* Count only time the page is actually VISIBLE. A background tab gets no animation frames, so the
