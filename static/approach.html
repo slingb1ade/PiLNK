@@ -262,6 +262,82 @@ async function loadRunways(){
     if(mine&&els.length) APT_ELEV=els.reduce((s,v)=>s+v,0)/els.length;
   }catch(e){ console.warn('3D: runway data unavailable (no approach lights):', e); }
 }
+/* ---------- runway on the map (11 Oct 2026) ----------
+   OurAirports thresholds can sit tens of metres off the real runway: NZAA 05R/23L comes back 29 m and 19 m north
+   of it, so the whole approach array stood beside the runway the map draws (the yellow line at night). The map's
+   own runway line (OpenStreetMap, traced from imagery) is the better answer, and it is already on screen. When
+   it matches a runway - within 3 deg of parallel, both thresholds within 120 m of it, at least 200 m of it loaded -
+   each threshold is moved straight across onto that line (its distance along the runway is kept: displaced
+   thresholds are real) and both landing headings take the line's bearing. No match, nothing changes. Retried
+   every 2 s until each runway is placed, because the chase camera keeps the map from ever going idle. */
+let _snapTimer=0, _snapTries=0, _snapSlow=false;
+function mapRunwayLines(){
+  try{
+    const st=map.getStyle(), src=Object.keys(st.sources).find(k=>st.sources[k].type==='vector'&&st.layers.some(l=>l.source===k&&l['source-layer']==='aeroway'));
+    if(!src) return [];
+    const out=[];
+    for(const f of map.querySourceFeatures(src,{sourceLayer:'aeroway'})){
+      if(!f.properties||f.properties.class!=='runway'||!f.geometry||String(f.geometry.type).indexOf('Line')<0) continue;
+      const g=f.geometry.coordinates, segs=Array.isArray(g[0][0])?g:[g];
+      for(const sg of segs) if(sg.length>=2) out.push(sg);
+    }
+    return out;
+  }catch(e){ return []; }
+}
+/* lines: [[lon,lat],...] pieces (default: what the map has loaded now). Pieces are kept per runway across calls,
+   because the chase camera rarely has the whole runway loaded at once; the fit waits until they cover 80% of the
+   runway. Of several parallel lines in range, only the NEAREST is used - close parallels are never averaged. */
+function snapRunways(lines){
+  if(!RWY_ENDS.length) return false;
+  if(!lines){ if(!map) return false; lines=mapRunwayLines(); }
+  let pending=0, changed=false;
+  for(let i=0;i+1<RWY_ENDS.length;i+=2){
+    const a=RWY_ENDS[i], b=RWY_ENDS[i+1]; if(a.mapped||a.unsnappable) continue; pending++;
+    const kx=111320*Math.cos(a.lat*D2R), ky=110574, X=(lon)=>(lon-a.lon)*kx, Y=(lat)=>(lat-a.lat)*ky;
+    const bx=X(b.lon), by=Y(b.lat), L=Math.hypot(bx,by); if(L<200){ a.unsnappable=true; pending--; continue; }
+    const ux=bx/L, uy=by/L, cand=[];
+    for(const sg of lines){
+      const P=sg.map(c=>[X(c[0]),Y(c[1])]), p0=P[0], p1=P[P.length-1], sl=Math.hypot(p1[0]-p0[0],p1[1]-p0[1]); if(sl<1) continue;
+      const vx=(p1[0]-p0[0])/sl, vy=(p1[1]-p0[1])/sl;
+      if(Math.abs(vx*uy-vy*ux)>Math.sin(3*D2R)) continue;                       // not parallel
+      const dA=Math.abs((0-p0[0])*vy-(0-p0[1])*vx), dB=Math.abs((bx-p0[0])*vy-(by-p0[1])*vx);
+      if(dA>120||dB>120) continue;                                             // another runway
+      const mx=(p0[0]+p1[0])/2, my=(p0[1]+p1[1])/2;
+      cand.push({P, off:-mx*uy+my*ux});                                        // signed sideways offset, left +
+    }
+    if(!a.acc){ a.acc=[]; a.accOff=null; }
+    if(cand.length){
+      if(a.accOff==null){ let best=cand[0]; for(const c of cand) if(Math.abs(c.off)<Math.abs(best.off)) best=c; a.accOff=best.off; }
+      for(const c of cand) if(Math.abs(c.off-a.accOff)<=15) for(const q of c.P) a.acc.push(q);
+    }
+    const pts=a.acc; if(pts.length<2) continue;
+    let cx=0, cy=0; for(const q of pts){ cx+=q[0]; cy+=q[1]; } cx/=pts.length; cy/=pts.length;
+    let sxx=0, syy=0, sxy=0; for(const q of pts){ const dx=q[0]-cx, dy=q[1]-cy; sxx+=dx*dx; syy+=dy*dy; sxy+=dx*dy; }
+    const t=0.5*Math.atan2(2*sxy,sxx-syy); let vx=Math.cos(t), vy=Math.sin(t); if(vx*ux+vy*uy<0){ vx=-vx; vy=-vy; }
+    let lo=1e9, hi=-1e9; for(const q of pts){ const s=(q[0]-cx)*vx+(q[1]-cy)*vy; if(s<lo) lo=s; if(s>hi) hi=s; }
+    if(hi-lo<0.8*L) continue;                                                 // not enough of it loaded yet: keep collecting
+    const onto=(x,y)=>{ const s=(x-cx)*vx+(y-cy)*vy; return [cx+s*vx, cy+s*vy]; };
+    const pa=onto(0,0), pb=onto(bx,by), land=(Math.atan2(vx,vy)/D2R+360)%360;
+    for(const [e,q,h] of [[a,pa,land],[b,pb,(land+180)%360]]){
+      e.db={lat:e.lat, lon:e.lon, land:e.land};
+      e.lon=a.db.lon+q[0]/kx; e.lat=a.db.lat+q[1]/ky; e.land=Math.round(h*100)/100; e.mapped=true;
+    }
+    a.acc=null; pending--; changed=true;
+  }
+  if(changed&&typeof acLayer!=='undefined'&&acLayer) acLayer.lightEnd=undefined;   // rebuild the lights where the runway is
+  return pending===0;
+}
+/* Every 2 s for the first 5 minutes, then every 20 s for as long as a runway is still unplaced (the aircraft may be
+   far from the field when the page opens, and only drawn tiles can be read). Stops once every runway is placed. */
+function snapTick(){
+  if(snapRunways()&&RWY_ENDS.length){ clearInterval(_snapTimer); _snapTimer=0; return; }
+  if(!_snapSlow&&++_snapTries>150){ clearInterval(_snapTimer); _snapSlow=true; _snapTimer=setInterval(snapTick,20000); }
+}
+function startRunwaySnap(){
+  if(_snapTimer) return;
+  _snapTimer=setInterval(snapTick, 2000);
+}
+/* ---------- end runway on the map ---------- */
 /* ---------- datalink runway (8 Oct 2026) ----------
    The aircraft's own datalink (ACARS/VDL2, decoded on this node) can name its landing runway. When it does,
    and its destination is the airport these runways belong to, that runway is the one lit - not a guess from
@@ -369,7 +445,7 @@ function buildLights(end,scene){
   };
   const pts=mk(aPos,aCol,8,0.95);
   const rwy=rPos.length?mk(rPos,rCol,6,0.15):null;
-  return {pts,rwy,flashIdx,baseCol:aCol.slice()};
+  return {pts,rwy,flashIdx,baseCol:aCol.slice(),land:end.land};
 }
 
 /* ---------- Three.js custom layer: the aircraft ---------- */
@@ -1024,6 +1100,12 @@ function cityBase(id,prop){
   return CityLights.origValue(CITY.orig,id,prop);
 }
 function cityUpdate(force){ if(!map||!CITY.set||BASE==='sat') return; /* sat is never lit, and a restore would undo its 35% roads */ CITY.set(cityLevel(),force); }
+/* Pre-warm the night photo around the receiver, by day too, so the first night view is already in the tile cache
+   (city-lights.js warm). Not on the satellite comparison base or with ?citylights=off - they never show it. */
+function cityWarm(){
+  if(!window.CityLights||!CityLights.warm||BASE==='sat'||CITY_Q==='off') return Promise.resolve(null);
+  return CityLights.warm({lat:SITE.lat, lon:SITE.lon, fetch:u=>tileFetch(u), has:async u=>!!(await tileRec(u)), log:s=>{ try{ console.info(s); }catch(e){} }});
+}
 // every minute: in follow-the-sun mode the map flips at sunset and sunrise, and the lights follow the dusk
 function cityTick(){
   if(themeMode()==='auto'&&CITY_Q!=='on'){ const n=sunNow()<0; if(n!==NIGHT_ON){ applyTheme(n); return; } }
@@ -1140,6 +1222,8 @@ async function boot(){
     map.addLayer(acLayer);
     CITY=CityLights.create({map, profile:'approach', orig:CityLights.captureOrig(CITY_STYLE), style:CITY_STYLE, base:cityBase});
     cityUpdate(true); if(!_cityTimer) _cityTimer=setInterval(cityTick,60000);
+    startRunwaySnap();   // lights onto the map's runway, once its line is loaded
+    map.once('idle',()=>setTimeout(cityWarm,3000));   // after the first view has everything it needs
     mapGestures(camMode==='free');
     st((BASE==='sat'?'satellite hybrid':'OpenFreeMap 3D map')+' + terrain loaded · waiting for an aircraft');
     poll();

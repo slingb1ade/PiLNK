@@ -126,5 +126,47 @@
     };
     return C;
   }
-  return { level, sc, captureOrig, origValue, targets, glowSpecs, before, create, NASA, NASA_STOPS, PROFILES };
+  /* Night photo pre-warm (11 Oct 2026). The page cache already keeps every NASA tile it has shown; what is slow
+     is the FIRST fetch of each one from NASA (about 1.3 s a tile). So when a page opens - day or night - it
+     quietly fetches the tiles around the receiver at the zooms the photo is drawn from (z6 to z8, 3 x 3 each),
+     two at a time, and the first night view is already local. Tiles already cached cost nothing. One console
+     line says how many were already cached, which also tells us whether the cache is doing its job. */
+  const NASA_HTTPS = 'https://' + NASA.slice('pilnk://'.length);
+  function warmList(lat, lon) {
+    if (typeof lat !== 'number' || typeof lon !== 'number' || !isFinite(lat) || !isFinite(lon)) return [];
+    const out = [], seen = new Set(), la = Math.max(-85.0511, Math.min(85.0511, lat)) * Math.PI / 180;
+    for (const z of [6, 7, 8]) {
+      const n = 1 << z;
+      const cx = Math.min(n - 1, Math.floor((lon + 180) / 360 * n));
+      const cy = Math.min(n - 1, Math.max(0, Math.floor((1 - Math.log(Math.tan(la) + 1 / Math.cos(la)) / Math.PI) / 2 * n)));
+      for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) {
+        const x = ((cx + dx) % n + n) % n, y = cy + dy;   // east-west wraps (Auckland sits on the z6 edge at 180 deg); north-south does not
+        if (y < 0 || y >= n) continue;
+        const u = NASA_HTTPS.replace('{z}', z).replace('{y}', y).replace('{x}', x);
+        if (!seen.has(u)) { seen.add(u); out.push(u); }
+      }
+    }
+    return out;
+  }
+  /* opts: lat, lon, fetch(url) (the page's cached tile fetch), has(url) (is it cached already?), log(line). */
+  async function warm(o) {
+    o = o || {};
+    const t0 = Date.now(), list = warmList(o.lat, o.lon);
+    const r = { total: list.length, cached: 0, fetched: 0, failed: 0, ms: 0, done: false };
+    API.lastWarm = r;
+    let i = 0;
+    async function worker() {
+      while (i < list.length) {
+        const u = list[i++];
+        try { if (o.has && await o.has(u)) { r.cached++; continue; } await o.fetch(u); r.fetched++; } catch (e) { r.failed++; }
+      }
+    }
+    await Promise.all([worker(), worker()]);
+    r.ms = Date.now() - t0; r.done = true;
+    if (list.length && o.log) try { o.log('city lights: night photo ' + r.total + ' tiles, ' + r.cached + ' already cached, ' + r.fetched + ' fetched'
+      + (r.failed ? ', ' + r.failed + ' failed' : '') + ' (' + (r.ms / 1000).toFixed(1) + ' s)'); } catch (e) {}
+    return r;
+  }
+  const API = { level, sc, captureOrig, origValue, targets, glowSpecs, before, create, warmList, warm, lastWarm: null, NASA, NASA_STOPS, PROFILES };
+  return API;
 });

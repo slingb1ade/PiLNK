@@ -273,6 +273,12 @@ function setLights(level,force){
   LIGHTS.set(level,force);
 }
 function lightsTick(){ applyTheme(effectiveNight()); setLights(lightsLevel(sunNow())); }
+/* Pre-warm the night photo around the receiver, by day too, so the first night view is already in the tile cache
+   (city-lights.js warm). Not with ?lights=off - that never shows it. */
+function lightsWarm(){
+  if(!window.CityLights||!CityLights.warm||LIGHTS_Q==='off') return Promise.resolve(null);
+  return CityLights.warm({lat:SITE.lat, lon:SITE.lon, fetch:u=>tileFetch(u), has:async u=>!!(await tileGet(u)), log:s=>{ try{ console.info(s); }catch(e){} }});
+}
 const NIGHT={ bg:'#060912', water:'#0a1526', green:'#0b1410', land:'#090d15',
   bldg:'#161d2b', road:'#1b2332', roadMajor:'#2b3448', rail:'#171d29', text:'#7488a8', halo:'#04070e',
   runway:'#ffd25e', taxi:'#3f5f86', apron:'#0e1420', boundary:'#2a3348' };
@@ -336,6 +342,7 @@ function applyTheme(night){
 function onMapReady(){ _mapReady=true;
   if(_pendingNight!==null){ const n=_pendingNight; _pendingNight=null; applyTheme(n); }
   setLights(lightsLevel(sunNow())); if(!_lightsTimer) _lightsTimer=setInterval(lightsTick,60000);   // city lights: the theme is already right; start the glow and the 60 s sun check
+  map.once('idle',()=>setTimeout(lightsWarm,3000));   // night photo pre-warm, after the first view has what it needs
   if(_pendingSettings){ const s=_pendingSettings; _pendingSettings=null; applySettings(s); }
   if(_pendingAv){ const a=_pendingAv; _pendingAv=null; avSet(a); }
   toParent({action:'ready'}); }
