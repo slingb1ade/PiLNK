@@ -102,6 +102,7 @@
 <script crossorigin="anonymous" src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/loaders/GLTFLoader.js"></script>
 <script src="/static/models.js"></script>
 <script src="/static/city-lights.js"></script>
+<script src="/static/wmm.js"></script>
 <script src="/static/datalink-card.js?v=dl5"></script>
 <script>
 const _q=new URLSearchParams(location.search);
@@ -115,9 +116,10 @@ const CFG={magVar:(_q.get('magvar')!=null&&_q.get('magvar')!=='')?+_q.get('magva
            geomOff:(_q.get('geomoff')!=null&&_q.get('geomoff')!=='')?+_q.get('geomoff'):null,
            qnh:(_q.get('qnh')!=null&&_q.get('qnh')!=='')?+_q.get('qnh'):null};
 const SITE={lat:null,lon:null,elev:0,icao:null,name:'field',hdg:null,tower:null};
-/* learned calibration (mag var, GNSS datum) is remembered per site in this browser, so the next
-   load starts calibrated instead of from zero */
-let mvStored=null, gStored=null, _calRaw=null;
+/* learned calibration (GNSS datum) is remembered per site in this browser, so the next load starts
+   calibrated instead of from zero. Mag var was learned and kept here too until 12 Oct 2026; it is now
+   the WMM-2025 model (declAt), and the mv in older records is ignored. */
+let gStored=null, _calRaw=null;
 function siteKey(){return 'pilnk3d:'+SITE.lat.toFixed(2)+','+SITE.lon.toFixed(2);}
 /* This key was once shared with the retired approach-three.html, and the two pages derived field
    elevation from different ground: this page samples the map's terrain, that one sampled its own mesh
@@ -129,22 +131,60 @@ function siteKey(){return 'pilnk3d:'+SITE.lat.toFixed(2)+','+SITE.lon.toFixed(2)
    drawing against. Records written before that (no `e`) are used as-is, exactly as before. Keep this:
    browsers that ran the old page still hold its records, and they do not expire. */
 function loadCal(){try{const s=JSON.parse(localStorage.getItem(siteKey())||'null');
-  if(s){ _calRaw=s; if(typeof s.mv==='number')mvStored=s.mv; if(typeof s.g==='number')gStored=s.g; }}catch(e){}}
+  if(s){ _calRaw=s; if(typeof s.g==='number')gStored=s.g; }}catch(e){}}
 function rebaseCal(){   // called once the terrain has given us a real field elevation
   if(!_calRaw||typeof _calRaw.g!=='number'||typeof _calRaw.e!=='number')return;
   gStored=_calRaw.g+_calRaw.e-SITE.elev;
 }
-function saveCal(){try{localStorage.setItem(siteKey(),JSON.stringify({mv:mvStored,g:gStored,e:SITE.elev,t:Date.now()}));}catch(e){}}
+function saveCal(){try{localStorage.setItem(siteKey(),JSON.stringify({g:gStored,e:SITE.elev,t:Date.now()}));}catch(e){}}
 const fmtSigned=v=>(v>=0?'+':'')+v.toFixed(1);
 const KNOWN={ NZAA:{ tower:{lat:-37.006428,lon:174.7837,h:105} } };
+/* ---------- which airport (12 Oct 2026 audit, finding 1) ----------
+   The dashboard sends the nearest of its own 55 big airports, which for a receiver far from all of them is
+   nowhere near: MME1 at Teesside was given Manchester (73 nm), MITKURT in Turkey was given Dubai (1,202 nm).
+   The whole scene hangs off that airport - which arrivals count, the ground height, the tower, QNH, the
+   runway lights - so a far one leaves "no arrivals" and aircraft drawn tens of metres off the ground. The
+   dashboard's airport is kept whenever it is within the arrivals radius of the receiver (so a busy field a
+   little further away is not swapped for a quiet one next door); otherwise pilnk.io's runway database is asked
+   for the airport nearest the receiver, and it is used if it is nearer. Anything failing = as before. */
+const AP_KEEP_NM=30;   // = the arrivals radius in onApproach()
+function nmBetween(a,b){ const p=D2R, dl=(b.lat-a.lat)*p, dn=(b.lon-a.lon)*p;
+  const x=Math.sin(dl/2)*Math.sin(dl/2)+Math.cos(a.lat*p)*Math.cos(b.lat*p)*Math.sin(dn/2)*Math.sin(dn/2);
+  return 3440.065*2*Math.atan2(Math.sqrt(x),Math.sqrt(1-x)); }
+/* The receiver's position is user data: it leaves the node only rounded to 0.1 deg (~11 km, as config_read does),
+   and the airport is then picked against the EXACT position here, so the rounding cannot change the choice. */
+function round1(p){ return {lat:Math.round(p.lat*10)/10, lon:Math.round(p.lon*10)/10}; }
+function nearestOf(list,p){ let best=null, bd=Infinity;
+  for(const a of list||[]){ if(!a||typeof a.lat!=='number'||typeof a.lon!=='number') continue; const d=nmBetween(a,p); if(d<bd){ bd=d; best=a; } }
+  return best; }
+async function nearerAirport(recv){
+  try{
+    const ctl=new AbortController(), to=setTimeout(()=>ctl.abort(),4000);
+    const q=round1(recv);
+    const j=await fetch('https://pilnk.io/api/runways.php?lat='+q.lat+'&lon='+q.lon+'&limit=5',{signal:ctl.signal}).then(r=>r.json());
+    clearTimeout(to);
+    const a=nearestOf(j&&j.ok&&Array.isArray(j.airports)?j.airports:[],recv);
+    if(!a) return;
+    const was=nmBetween(SITE,recv), now=nmBetween(a,recv);
+    if(now>=was) return;   // not nearer: keep what the dashboard sent
+    console.info('3D: '+(SITE.icao||'the airport sent')+' is '+was.toFixed(0)+' nm from this receiver - using '+(a.icao||a.name)+' ('+now.toFixed(0)+' nm)');
+    const longest=(a.runways||[]).slice().sort((p,q)=>(q.length_ft||0)-(p.length_ft||0))[0];
+    SITE.lat=a.lat; SITE.lon=a.lon; SITE.icao=a.icao||null; SITE.name=a.name||a.icao||'field';
+    SITE.hdg=(longest&&typeof longest.le_hdg==='number')?longest.le_hdg:null;
+  }catch(e){ console.warn('3D: could not check for a nearer airport:', (e&&e.message)||e); }
+}
 async function resolveSite(){
-  if(_q.get('lat')&&_q.get('lon')){ SITE.lat=+_q.get('lat'); SITE.lon=+_q.get('lon'); SITE.icao=(_q.get('ap')||'').toUpperCase()||null; SITE.name=_q.get('name')||SITE.icao||'field'; if(_q.get('hdg'))SITE.hdg=+_q.get('hdg'); }
-  else { try{ const d=await fetch('/api/location',{cache:'no-store'}).then(r=>r.json()); if(typeof d.lat==='number'){SITE.lat=d.lat;SITE.lon=d.lon;SITE.name='your receiver';} }catch(e){} }
+  let recv=null;   // the receiver itself, from the node
+  try{ const d=await fetch('/api/location',{cache:'no-store'}).then(r=>r.json()); if(typeof d.lat==='number'&&typeof d.lon==='number') recv={lat:d.lat,lon:d.lon}; }catch(e){}
+  if(_q.get('lat')&&_q.get('lon')){ SITE.lat=+_q.get('lat'); SITE.lon=+_q.get('lon'); SITE.icao=(_q.get('ap')||'').toUpperCase()||null; SITE.name=_q.get('name')||SITE.icao||'field'; if(_q.get('hdg'))SITE.hdg=+_q.get('hdg');
+    if(recv&&nmBetween(SITE,recv)>AP_KEEP_NM) await nearerAirport(recv); }
+  else if(recv){ SITE.lat=recv.lat; SITE.lon=recv.lon; SITE.name='your receiver'; }
   if(SITE.lat==null) throw new Error('no location');
   if(SITE.icao&&KNOWN[SITE.icao]) Object.assign(SITE,KNOWN[SITE.icao]);
   if(!SITE.tower){ const side=(SITE.hdg!=null)?(SITE.hdg+90)*D2R:Math.PI, off=SITE.icao?600:0;
     SITE.tower={lat:SITE.lat+Math.cos(side)*off/111320, lon:SITE.lon+Math.sin(side)*off/(111320*Math.cos(SITE.lat*D2R)), h:SITE.icao?105:40}; }
   loadCal(); loadRunways();
+  loadQnh();   // here, once SITE.icao is final: a top-level call ran before /api/location had answered, and saw no airport
   document.getElementById('sub').textContent=(SITE.icao?SITE.name:'your receiver')+' · '+(BASE==='sat'?'satellite hybrid':'OpenFreeMap 3D map')+' + AWS terrain';
 }
 const mPerLat=111320; let mPerLon=111320;
@@ -164,12 +204,12 @@ function integrate(){   // predict where the aircraft is *now* from the last fix
   if(turning){ const r=fix.rate, th0=fix.trk, th=th0+r*dt;
     dE=(fix.gs/r)*(Math.cos(th0)-Math.cos(th)); dN=(fix.gs/r)*(Math.sin(th)-Math.sin(th0)); pHdg=(fix.hdg+r*dt*R2D+360)%360; }
   else { dE=fix.vE*dt; dN=fix.vN*dt; pHdg=fix.hdg; }
-  const pLon=fix.lon+dE/mPerLon, pLat=fix.lat+dN/mPerLat, pAlt=fix.gnd?SITE.elev:Math.max(SITE.elev,fix.altM+fix.vU*dt);   // real metres; VE is applied at draw time
+  const pLon=fix.lon+dE/mPerLon, pLat=fix.lat+dN/mPerLat, pAlt=fix.gnd?fix.ground:Math.max(fix.ground,fix.altM+fix.vU*dt);   // real metres; VE is applied at draw time
   const now=performance.now();
   /* AUDIT FIX #4 (24 Sep 2026): `bias` — the retained cross-track offset — belongs to one aircraft and
      must be dropped with `corr`. It wasn't: the next subject was drawn correctly for one frame, then
      jumped sideways by whatever the last one had left (measured 37.5 m) until its first fix. */
-  if(!aircraft||aircraft.key!==fix.key||document.hidden){ aircraft={lon:pLon,lat:pLat,altM:pAlt,hdg:pHdg,roll:fix.roll,pitch:fix.pitch,dist:fix.dist,gnd:fix.gnd,key:fix.key,fixT:fix.t}; corr=null; bias.e=0; bias.n=0; bias.alt=0; return; }
+  if(!aircraft||aircraft.key!==fix.key||document.hidden){ aircraft={lon:pLon,lat:pLat,altM:pAlt,hdg:pHdg,roll:fix.roll,pitch:fix.pitch,dist:fix.dist,gnd:fix.gnd,ground:fix.ground,key:fix.key,fixT:fix.t}; corr=null; bias.e=0; bias.n=0; bias.alt=0; return; }
   /* When a new fix lands, the prediction restarts from it — typically 10-30 m from where the old guess
      had the aircraft drawn (ordinary ADS-B noise). Snapping that closed, even over half a second, is a
      visible nudge every two seconds at chase range. Instead the gap is captured as an offset and faded
@@ -207,10 +247,10 @@ function integrate(){   // predict where the aircraft is *now* from the last fix
   let w=0;
   if(corr){ const u=Math.min(1,(now-corr.t0)/1000/CORR_T); w=1-u*u*(3-2*u); if(u>=1)corr=null; }
   aircraft.lon=pLon+(bias.e+(corr?corr.dE*w:0))/mPerLon; aircraft.lat=pLat+(bias.n+(corr?corr.dN*w:0))/mPerLat;
-  aircraft.altM=Math.max(SITE.elev,pAlt+bias.alt+(corr?corr.dAlt*w:0));
+  aircraft.altM=Math.max(fix.ground,pAlt+bias.alt+(corr?corr.dAlt*w:0));
   aircraft.hdg=(pHdg+(corr?corr.dHdg*w:0)+360)%360;
   const k=0.08; aircraft.roll+=(fix.roll-aircraft.roll)*k; aircraft.pitch+=(fix.pitch-aircraft.pitch)*k;   // attitude: plain easing is fine
-  aircraft.dist=fix.dist; aircraft.gnd=fix.gnd;
+  aircraft.dist=fix.dist; aircraft.gnd=fix.gnd; aircraft.ground=fix.ground;
 }
 let corr=null; const CORR_T=1.8;   // seconds to absorb a fix correction — just under the 2 s poll, so it is gone before the next one
 const bias={e:0,n:0,alt:0};        // retained offsets: the lateral, longitudinal and vertical low-pass
@@ -241,9 +281,10 @@ let APT_ELEV=null;    // published field elevation (m) — fallback only, see sa
 async function loadRunways(){
   if(!LIGHTS_ON||SITE.lat==null) return;
   try{
-    const j=await fetch('https://pilnk.io/api/runways.php?lat='+SITE.lat+'&lon='+SITE.lon+'&limit=6').then(r=>r.json());
+    const q=SITE.icao?SITE:round1(SITE);   // an airport's position is public; the receiver's goes out rounded
+    const j=await fetch('https://pilnk.io/api/runways.php?lat='+q.lat+'&lon='+q.lon+'&limit=6').then(r=>r.json());
     if(!j||!j.ok||!j.airports) return;
-    const apt=(SITE.icao&&j.airports.find(a=>a.icao===SITE.icao))||j.airports[0];
+    const apt=(SITE.icao&&j.airports.find(a=>a.icao===SITE.icao))||nearestOf(j.airports,SITE);
     if(!apt) return;
     APT_ICAO=apt.icao||null;
     const mine=!!(SITE.icao&&apt.icao===SITE.icao), els=[];
@@ -410,8 +451,13 @@ function buildLights(end,scene){
      off to one side of the approach path. */
   const aPos=[], aCol=[], rPos=[], rCol=[], flashIdx=[];
   const white=[1,1,1], green=[0.3,1,0.5], red=[1,0.22,0.18], edge=[0.8,0.72,0.5];
-  const pushA=(p,c)=>{ aPos.push(p[0],p[1],p[2]); aCol.push(c[0],c[1],c[2]); };
-  const pushR=(p,c)=>{ rPos.push(p[0],p[1],p[2]); rCol.push(c[0],c[1],c[2]); };
+  /* Each light also keeps where it is on the map and how high it stands, so drapeLights() can lay it on the ground
+     as drawn (12 Oct audit, finding 4). Mercator, exactly as render() places the cloud: x east, z south, metres. */
+  const mc0=maplibregl.MercatorCoordinate.fromLngLat([end.lon,end.lat]), s0=mc0.meterInMercatorCoordinateUnits();
+  const aLL=[], aUp=[], rLL=[], rUp=[];
+  const at=p=>{ const ll=new maplibregl.MercatorCoordinate(mc0.x+s0*p[0],mc0.y+s0*p[2],0).toLngLat(); return [ll.lng,ll.lat]; };
+  const pushA=(p,c)=>{ aPos.push(p[0],p[1],p[2]); aCol.push(c[0],c[1],c[2]); aLL.push(at(p)); aUp.push(p[1]); };
+  const pushR=(p,c)=>{ rPos.push(p[0],p[1],p[2]); rCol.push(c[0],c[1],c[2]); rLL.push(at(p)); rUp.push(p[1]); };
   /* Centreline BARRETTES — five lights across, not one dot. This is what gives the approach its
      ladder look from the air; a single line of points reads as a road at any distance. */
   for(let d=30; d<=900; d+=30){
@@ -445,9 +491,20 @@ function buildLights(end,scene){
   };
   const pts=mk(aPos,aCol,8,0.95);
   const rwy=rPos.length?mk(rPos,rCol,6,0.15):null;
-  return {pts,rwy,flashIdx,baseCol:aCol.slice(),land:end.land};
+  return {pts,rwy,flashIdx,baseCol:aCol.slice(),land:end.land,ll:[aLL,rLL],up:[aUp,rUp],drapeT:0};
 }
 
+/* The lights were one flat sheet at the published threshold elevation, so they floated where the ground falls away
+   (Teesside 05's approach array 29 m up) and sank where it rises (KICT 01L's far edge 5.5 m under, hidden). Every
+   light the map can see is now laid on the ground as drawn - read the same way as the aircraft's ground - at its own
+   height above it. Lights out of view keep the old sheet until they come into view. (12 Oct audit, finding 4) */
+function drapeLights(L,end){
+  if(!L||!L.ll) return;
+  const base=(end.elev!=null?end.elev:SITE.elev);
+  [L.pts,L.rwy].forEach((obj,k)=>{ if(!obj) return; const pos=obj.geometry.getAttribute('position'), ll=L.ll[k], up=L.up[k]; let n=0;
+    for(let i=0;i<ll.length;i++){ const g=groundAt(ll[i][0],ll[i][1]); if(g==null) continue; pos.setY(i,(g-base)*VE+up[i]); n++; }
+    if(n) pos.needsUpdate=true; });
+}
 /* ---------- Three.js custom layer: the aircraft ---------- */
 /* MODEL_ORIENT, MODEL_SPAN, TYPE_SPAN, the BIZJET/REGIONAL/EJET lists, spanFor, modelFor and modelWingWidth now
    live in /static/models.js — the ONE table, shared with 3D Sky (1 Oct 2026). Change a model there, not here. */
@@ -518,7 +575,20 @@ const acLayer={
      centre×(k−1). Harmless while every model happened to be built around its own origin; the C-130
      is not, and was drawn 109 m below and 72 m aside from the aircraft it was meant to be. */
   applySpan(span){ acSpan=span; const k=span/this.base.w, c=this.base.c;   // acSpan: the cameras frame by this
-    this.mm.scale.setScalar(k); this.mm.position.set(-c.x*k,-c.y*k,-c.z*k); },
+    this.mm.scale.setScalar(k); this.mm.position.set(-c.x*k,-c.y*k,-c.z*k);
+    if(this.mm.parent===this.holder) this.measureLow(); },
+  /* 12 Oct 2026 audit, finding 3: the model is centred on the reported position, which is right in the air (the
+     position is the aircraft, not its wheels) and wrong on the ground - half the model was under the runway, a third
+     of a Cessna in the 3x tower shot. lowY is how far the lowest point sits below the centre, measured level and at
+     1x; render() lifts the model by as much of it as the drawn clearance lacks (all of it on the ground). */
+  measureLow(){
+    const y=this.yaw, p=this.pitch, r=this.roll, sv=[y.rotation.y,p.rotation.x,r.rotation.z,y.scale.x,y.position.y];
+    y.rotation.y=0; p.rotation.x=0; r.rotation.z=0; y.scale.setScalar(1); y.position.y=0;
+    this.scene.updateMatrixWorld(true);
+    const bb=new THREE.Box3().setFromObject(this.holder);
+    this.lowY=isFinite(bb.min.y)?Math.min(0,bb.min.y):0;
+    y.rotation.y=sv[0]; p.rotation.x=sv[1]; r.rotation.z=sv[2]; y.scale.setScalar(sv[3]); y.position.y=sv[4];
+  },
   ensureModel(t,cat){
     const forced=_q.get('force'), key=forced||modelFor(t,cat);   // cat: ADS-B category, used only when the type is unknown (2 Oct)
     // a forced model keeps its own size, so ?force= tests the MODEL rather than resizing it to the live type
@@ -534,7 +604,7 @@ const acLayer={
       this.applySpan(this.wantSpan);   // the LATEST type's span, in case the subject changed while this loaded
       mm.traverse(o=>{if(o.isMesh&&o.material){(Array.isArray(o.material)?o.material:[o.material]).forEach(mt=>{mt.metalness=0.25;mt.roughness=0.6;tintMaterial(mt);});}});
       const or=MODEL_ORIENT[key]||{}; this.holder.rotation.set((or.pitch||0)*D2R,(or.yaw||0)*D2R,(or.roll||0)*D2R);
-      this.holder.add(mm); this.props=findProps(mm).concat(splitRotor(mm,key)).concat(splitParts(mm,key)); this.key=key; this.loading=false; },undefined,()=>{this.loading=false;});
+      this.holder.add(mm); this.props=findProps(mm).concat(splitRotor(mm,key)).concat(splitParts(mm,key)); this.measureLow(); this.key=key; this.loading=false; },undefined,()=>{this.loading=false;});
   },
   render(gl,args){
     const M0=(args&&args.defaultProjectionData)?args.defaultProjectionData.mainMatrix:args;
@@ -546,6 +616,7 @@ const acLayer={
       if(end!==this.lightEnd){ this.lightEnd=end; this.lightData=buildLights(end,this.lightScene); }
       if(end&&this.lightData){
         const t=performance.now()/1000;
+        if(t-this.lightData.drapeT>1){ this.lightData.drapeT=t; drapeLights(this.lightData,end); }
         // the sequenced flasher — "the rabbit" — runs from the outermost bar in toward the threshold
         const col=this.lightData.pts.geometry.getAttribute('color');
         const base=this.lightData.baseCol, idx=this.lightData.flashIdx;
@@ -589,6 +660,11 @@ const acLayer={
     this.camera.projectionMatrix=new THREE.Matrix4().fromArray(M).multiply(L);
     this.yaw.rotation.y=-a.hdg*D2R; this.pitch.rotation.x=a.pitch*D2R; this.roll.rotation.z=-a.roll*D2R;   // sign.roll = -1 as in approach.html
     this.yaw.scale.setScalar(modelScale);   // the tower shot enlarges the aircraft without touching the map's framing
+    /* wheels on the ground (finding 3). The centre is agl*VE above the drawn ground and the lowest point |lowY|*modelScale
+       below the centre: lift by the difference, never more. (A fixed 20 m blend let a deep model in the 3x tower shot,
+       an A380, dip up to 6 m under the runway on short final; 12 Oct review.) */
+    { const agl=a.gnd?0:Math.max(0,a.altM-(a.ground!=null?a.ground:SITE.elev));
+      this.yaw.position.y=Math.max(0,-(this.lowY||0)*modelScale-agl*VE); }
     if(this.props&&this.props.length){
       const pa=performance.now()/1000*PROP_REV*Math.PI*2;
       for(let i=0;i<this.props.length;i++) this.props[i].p.rotation[this.props[i].axis]=pa;
@@ -1192,8 +1268,8 @@ async function boot(){
        If the DEM never arrives, the airport's published threshold elevation is used rather than
        nothing, but only when runways.php returned THIS airport (not merely the nearest one). */
     (function sampleElev(n){ if(!TERRAIN)return;
-      const e=map.isSourceLoaded('dem')?map.queryTerrainElevation(new maplibregl.LngLat(SITE.lon,SITE.lat)):null;
-      if(typeof e==='number'&&isFinite(e)){ SITE.elev=Math.max(0,e/VE); terrainReady=true; rebaseCal(); }
+      const e=groundAt(SITE.lon,SITE.lat);   // 12 Oct: in view too - the chase camera can leave the field before this runs
+      if(e!=null){ SITE.elev=e; terrainReady=true; rebaseCal(); }
       else if(n<40) setTimeout(()=>sampleElev(n+1),500);
       else if(APT_ELEV!=null){ SITE.elev=APT_ELEV; terrainReady=true; rebaseCal();
         console.warn('3D: terrain never loaded at the field — using the published elevation', APT_ELEV.toFixed(1), 'm'); }
@@ -1246,6 +1322,33 @@ boot().catch(e=>{ const m=(e&&e.message)||'startup failed';
   if(/no location/i.test(m)) st('failed: '+m);      // a configuration problem, not a 3D one — the old engine would fail the same way
   else failSoft(m); });
 
+/* ---------- the ground where it is drawn (12 Oct 2026 audit, finding 2) ----------
+   Everything used to stand on ONE height, the field's: an aircraft on the ground at Ardmore was drawn on
+   Auckland's 5 m - 34 m inside Ardmore's terrain - and one 600 ft above Valdosta was held up at Atlanta's 293 m.
+   Now the ground is read under the aircraft itself, from the terrain MapLibre is drawing. A reading counts only
+   when the elevation tiles for the view are loaded AND the point is in view: MapLibre answers 0 for a tile it
+   does not have, and 0 is a perfectly good-looking number (the 24 Sep field-elevation bug). Until there is a
+   reading for an aircraft, the field's elevation stands in, as before. */
+function groundAt(lon,lat){
+  if(!TERRAIN||!map) return null;
+  try{
+    if(!map.isSourceLoaded('dem')||!map.getBounds().contains([lon,lat])) return null;
+    const e=map.queryTerrainElevation(new maplibregl.LngLat(lon,lat));
+    if(typeof e!=='number'||!isFinite(e)) return null;
+    /* 12 Oct review: getBounds() is a box AROUND the tilted view, about half of it off screen. MapLibre answers from
+       a coarser parent tile where it has one, and exactly 0 where it has no tile at all - so an exact 0 where the
+       field is known to stand well above the sea is a missing tile, not sea level. (Not map.project() to test for
+       on-screen: with terrain it put the screen centre 2,500 px down at Wichita.) */
+    if(e===0&&(APT_ELEV!=null?APT_ELEV:(terrainReady?SITE.elev:0))>20) return null;
+    return Math.max(0,e/VE);   // exaggerated metres from MapLibre -> real
+  }catch(e){ return null; }
+}
+const _gnd={key:null,m:null};   // last good reading for the followed aircraft
+function groundUnder(key,lon,lat){
+  if(_gnd.key!==key){ _gnd.key=key; _gnd.m=null; }
+  const g=groundAt(lon,lat); if(g!=null) _gnd.m=g;
+  return _gnd.m!=null?_gnd.m:SITE.elev;
+}
 /* ---------- data (same rules as approach.html, condensed) ---------- */
 let target=(_q.get('hex')||'__auto__').toLowerCase(), lockedHex=null, qnh=null;
 const distNm=a=>Math.hypot(enuE(a.lon),enuN(a.lat))/1852;
@@ -1254,7 +1357,7 @@ const altFt=a=>a.alt_baro==='ground'?0:(typeof a.alt_baro==='number'?a.alt_baro:
 const vsOf=a=>(typeof a.bds60_baro_vertical_rate==='number')?a.bds60_baro_vertical_rate:(a.baro_rate||0);
 const onApproach=a=>posOf(a)&&distNm(a)<30&&altFt(a)<12000&&a.alt_baro!=='ground'&&vsOf(a)<=100;
 async function loadQnh(){ if(CFG.qnh!=null){qnh=CFG.qnh;return;} if(!SITE.icao)return; try{const j=await fetch('/api/metar/'+SITE.icao).then(r=>r.json()); const m=Array.isArray(j)?j[0]:j; if(m&&typeof m.altim==='number'&&m.altim>900&&m.altim<1100)qnh=m.altim;}catch(e){} }
-loadQnh(); setInterval(loadQnh,600000);
+setInterval(loadQnh,600000);   // first call: end of resolveSite()
 let terrainReady=false;
 /* GNSS datum: every aircraft reporting ON GROUND at the field with a geometric altitude tells us
    (alt_geom − field elevation) — the local geoid/ellipsoid offset, constant per site. Median of many. */
@@ -1321,7 +1424,20 @@ async function warmCorridor(){
     _pfBusy++; tileFetch(u).catch(()=>{}).then(()=>{_pfBusy--;_warmed++;}); }
 }
 const _hdgMem={hex:null,magH:null,trk:null,crab:0};   // last fresh magnetic heading, the track at that moment, and the crab it implied
-const mvS=[]; function median(a){const s=a.slice().sort((x,y)=>x-y),m=s.length>>1;return s.length%2?s[m]:(s[m-1]+s[m])/2;}
+/* ---------- magnetic -> true (12 Oct 2026 audit, finding 5) ----------
+   BDS 6,0 sends MAGNETIC heading; the map is true north. Add the WMM-2025 declination at the aircraft
+   (static/wmm.js, the same model pilnk.io's AR page uses). This used to LEARN a "mag var" as the median of
+   (ADS-B track - magnetic heading). That difference is declination PLUS the wind's drift, so in a steady
+   crosswind every aircraft was drawn pointing straight down its track, never crabbed into the wind
+   (NZAA traffic, 12 Oct: learned +21.4, single aircraft up to +26.2, WMM +20.4). ?magvar= still overrides. No model (script failed to
+   load, or the 2025 coefficients have run out in 2030): null, and the caller follows the ADS-B track. */
+function declAt(lat,lon){
+  const W=window.PilnkWMM;
+  if(!W||!W.valid()) return null;
+  const d=W.declination(lat,lon);
+  return isFinite(d)?d:null;
+}
+function median(a){const s=a.slice().sort((x,y)=>x-y),m=s.length>>1;return s.length%2?s[m]:(s[m-1]+s[m])/2;}
 async function poll(){
   try{
     const j=await fetch('/flights',{cache:'no-store'}).then(r=>r.json()); const list=j.aircraft||[];
@@ -1347,11 +1463,7 @@ async function poll(){
       if(!a){ const inb=list.filter(onApproach).sort((p,q)=>distNm(p)-distNm(q)); a=inb[0]||list.filter(x=>posOf(x)&&distNm(x)<40&&x.alt_baro!=='ground').sort((p,q)=>distNm(p)-distNm(q))[0]||null; if(a&&onApproach(a))lockedHex=(a.hex||'').toLowerCase(); } }
     if(a&&posOf(a)){
       const magH=(typeof a.bds60_magnetic_heading==='number')?a.bds60_magnetic_heading:null, roll=(typeof a.bds50_roll==='number')?a.bds50_roll:0;
-      if(magH!=null&&typeof a.track==='number'&&Math.abs(roll)<2&&(a.gs||0)>60){let d=a.track-magH;d=((d+540)%360)-180;mvS.push(d);if(mvS.length>80)mvS.shift();}
-      const mvLive=mvS.length>=8?median(mvS):null;
-      if(mvLive!=null&&mvS.length%10===0&&mvStored!==mvLive){mvStored=mvLive;saveCal();}
-      const mvEst=(mvLive!=null)?mvLive:mvStored;
-      const mv=(CFG.magVar!=null)?CFG.magVar:(mvEst!=null?mvEst:0);
+      const decl=(CFG.magVar!=null)?CFG.magVar:declAt(a.lat,a.lon);   // magnetic -> true; null = no model
       /* Heading. Magnetic heading (BDS 6,0) is interrogated, not broadcast: away from the radar it
          can sit unchanged for many seconds while the ADS-B track keeps turning — the model paused
          facing north mid-turn on the 05R base. Its resolution is 0.35°, so in a turn a fresh reply
@@ -1360,9 +1472,9 @@ async function poll(){
       const trkNow=(typeof a.track==='number')?a.track:null, hx=(a.hex||'').toLowerCase();
       if(_hdgMem.hex!==hx){ _hdgMem.magH=null; _hdgMem.trk=null; _hdgMem.crab=0; }   // new subject: forget the old one's crab
       let hdg;
-      if(magH!=null){
+      if(magH!=null&&decl!=null){
         const fresh=(magH!==_hdgMem.magH), swung=(trkNow!=null&&_hdgMem.trk!=null&&Math.abs(((trkNow-_hdgMem.trk+540)%360)-180)>3);
-        if(fresh||!swung||trkNow==null){ hdg=((magH+mv)%360+360)%360; _hdgMem.stale=false; if(fresh){ _hdgMem.magH=magH; _hdgMem.trk=trkNow; if(trkNow!=null)_hdgMem.crab=((hdg-trkNow+540)%360)-180; } }
+        if(fresh||!swung||trkNow==null){ hdg=((magH+decl)%360+360)%360; _hdgMem.stale=false; if(fresh){ _hdgMem.magH=magH; _hdgMem.trk=trkNow; if(trkNow!=null)_hdgMem.crab=((hdg-trkNow+540)%360)-180; } }
         else { hdg=((trkNow+(_hdgMem.crab||0))%360+360)%360; _hdgMem.stale=true; }   // stale heading, aircraft turning: follow the track
       } else { hdg=trkNow!=null?trkNow:0; _hdgMem.stale=false; }
       _hdgMem.hex=hx;
@@ -1390,11 +1502,12 @@ async function poll(){
       const gOff=(CFG.geomOff!=null)?CFG.geomOff:(gLive!=null?gLive:gStored);
       const corr=qnh!=null?(qnh-1013.25)*27.3:0;
       let altM, altSrc;
-      if(a.alt_baro==='ground'){ altM=SITE.elev; altSrc='on ground'; }
-      else if(geomM!=null&&gOff!=null){ altM=Math.max(SITE.elev,geomM-gOff); altSrc='GNSS · datum '+fmtSigned(-gOff)+' m'+(CFG.geomOff!=null?' (set)':(gLive!=null?' learned n='+gSamples.length:' (remembered)')); }
-      else if(typeof a.alt_baro==='number'){ altM=Math.max(SITE.elev,(a.alt_baro+corr)*0.3048);
+      const gM=groundUnder(hx,a.lon,a.lat);   // the ground under this aircraft (12 Oct audit, finding 2)
+      if(a.alt_baro==='ground'){ altM=gM; altSrc='on ground'; }
+      else if(geomM!=null&&gOff!=null){ altM=Math.max(gM,geomM-gOff); altSrc='GNSS · datum '+fmtSigned(-gOff)+' m'+(CFG.geomOff!=null?' (set)':(gLive!=null?' learned n='+gSamples.length:' (remembered)')); }
+      else if(typeof a.alt_baro==='number'){ altM=Math.max(gM,(a.alt_baro+corr)*0.3048);
         altSrc=(qnh!=null?'baro + QNH '+Math.round(qnh)+' ('+(corr>=0?'+':'')+Math.round(corr)+' ft)':'baro (pressure alt, no QNH)')+(gSamples.length?' · GNSS datum '+gSamples.length+'/3':''); }
-      else { altM=SITE.elev; altSrc='—'; }
+      else { altM=gM; altSrc='—'; }
       document.getElementById('d_altsrc').textContent='alt: '+altSrc+' · fix '+(typeof a.seen_pos==='number'?a.seen_pos.toFixed(1):'?')+' s old';
       // dead-reckoning fix: position + velocity (m/s ENU) + age; tick() integrates and eases toward it
       const gsMs=(a.gs||0)*0.5144, trkDeg=(typeof a.track==='number'?a.track:hdg), trk=trkDeg*D2R;
@@ -1414,7 +1527,7 @@ async function poll(){
       else if(fix&&fix.key===key&&tFix-fix.t>800&&tFix-fix.t<12000){ let d=((trkDeg-fix.trk*R2D+540)%360)-180; rate=d*D2R/((tFix-fix.t)/1000); }
       rate=Math.max(-6*D2R,Math.min(6*D2R,rate));
       if(fix&&fix.key===key&&tFix-fix.t<300) rate=fix.rate;   // same fix re-served: keep the last estimate
-      fix={lon:a.lon,lat:a.lat,altM,hdg,roll,pitch,dist:distNm(a),gnd:a.alt_baro==='ground',
+      fix={lon:a.lon,lat:a.lat,altM,ground:gM,hdg,roll,pitch,dist:distNm(a),gnd:a.alt_baro==='ground',
            vE:Math.sin(trk)*gsMs, vN:Math.cos(trk)*gsMs, vU:a.alt_baro==='ground'?0:vsS*0.00508,
            gs:gsMs, trk, rate, t:tFix, key};
       acLayer.ensureModel(a.t,a.category);
@@ -1436,8 +1549,8 @@ async function poll(){
       const src=[]; if(a.bds40_selected_altitude_mcp!=null||a.bds40_baro_pressure_setting!=null)src.push('4,0'); if(a.bds50_roll!=null||a.bds50_true_airspeed!=null)src.push('5,0'); if(a.bds60_magnetic_heading!=null||a.bds60_indicated_airspeed!=null)src.push('6,0');
       document.getElementById('d_src').textContent=(src.length?'Mode S EHS: BDS '+src.join(' · ')+(a.bds50_track_rate!=null?' · turn rate from aircraft':(a.bds50_roll!=null?' · turn rate from bank':'')):'ADS-B only — no EHS from this aircraft')+(_hdgMem.stale?' · hdg stale → track':'');
       st(CFG.magVar!=null?'mag var '+fmtSigned(CFG.magVar)+'° (set)'
-        :(mvLive!=null?'mag var '+fmtSigned(mvLive)+'° est · n='+mvS.length
-        :(mvStored!=null?'mag var '+fmtSigned(mvStored)+'° (remembered) · refining n='+mvS.length:'mag var: calibrating from traffic…')));
+        :(decl!=null?'mag var '+fmtSigned(decl)+'° WMM-2025 · heading = magnetic + var'
+        :('mag var ?° (no WMM model) · heading follows the ADS-B track…')));
       prefetchAhead();
     } else { fix=null; aircraft=null; acDl=null; document.getElementById('d_dlrow').style.display='none'; document.getElementById('d_cs').textContent='— no arrivals —'; }
   }catch(e){
@@ -1567,7 +1680,9 @@ function tick(){
      the runway, whatever the runway length, wherever the reference point sits. (Distance from the
      reference point was 0.5 nm short of the 05R threshold at NZAA — a cut seconds from touchdown.)
      Hysteresis so a go-around returns to the chase once it climbs back through CUT_FT + 300. */
-  const aglFt=(a.altM-SITE.elev)/0.3048;
+  /* 12 Oct review: low only when low above BOTH the field and the ground under the aircraft. By the local ground
+     alone, one 100 m over a ridge 20 nm out was cut to the tower shot of a speck, and flapped as the ridge rose and fell. */
+  const aglFt=Math.max(a.altM-SITE.elev, a.altM-(a.ground!=null?a.ground:SITE.elev))/0.3048;
   if(camMode==='director'){ if(a.gnd||aglFt<CUT_FT) dirTower=true; else if(aglFt>CUT_FT+300&&!a.gnd) dirTower=false; }
   const useTower=(camMode==='tower')||(camMode==='director'&&dirTower);
   if(camMode==='director'){ shot=useTower?'tower':'chase'; const b=document.querySelector('[data-cam=director]'); b.textContent='Director · '+shot; }
