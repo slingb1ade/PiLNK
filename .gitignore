@@ -3,6 +3,7 @@
 # Sensitive / per-node config
 .secret_key
 config.json
+config.json.installer
 
 # Runtime / generated files
 update.log
@@ -10,6 +11,7 @@ stats_records.json
 coverage.json
 ota_state.json
 audio_build_state.json
+datalink_build_state.json
 denoise_state.json
 .audio_build_task
 badge_announced.json
@@ -31,6 +33,10 @@ __pycache__/
 
 # Dev artifacts / scratch / runtime data (never belong in the repo)
 _airspy_syntax_check.sh
+# Hub-only dev tools (VDL2 capture/retest, SDR audio extract) - not shipped.
+tools/extract-sdr-audio.py
+tools/vdl2-capture.py
+tools/vdl2-retest.sh
 aircraft.csv.gz
 aircraft-overlay.csv.gz
 recordings/
