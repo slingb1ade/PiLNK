@@ -30,6 +30,9 @@
   #perf{color:var(--good)!important}
   #perf{display:none} body.debug #perf{display:block}
   body.embed #tl{top:auto;bottom:8px;left:8px;right:auto;padding:6px 9px;max-width:300px}   /* top left: the dashboard's wind compass; top right: its map buttons */
+  /* 17 Oct (AJ): embedded, 'live · N aircraft' only repeated the dashboard's own count, so the card shows only when
+     st() is told something is wrong (no 3D, feed lost, busy sky, map error). Stand-alone pages keep it. */
+  body.embed #tl:not(.warn){display:none}
   body.embed #note{bottom:72px}
   body.embed #sub{display:none}
   body.embed #b_lbl, body.embed #b_trl, body.embed #b_rst{display:none}   /* embedded, the dashboard's Options control labels and trails */
@@ -152,7 +155,7 @@ const MI_URL=_q.has('mi');   // ?mi= is a manual test override: the dashboard's 
 let modelMi=MI_URL?Math.max(1,Math.min(500,num('mi',50)||50)):50, lodMi=modelMi, _appliedMi=null;
 const EMERG=new Set(['7500','7600','7700']);   // hijack · radio failure · emergency — never hidden, always red
 const SITE={lat:null,lon:null};
-const st=t=>{document.getElementById('st').textContent=t;};
+const st=(t,warn)=>{document.getElementById('st').textContent=t; document.getElementById('tl').classList.toggle('warn',!!warn);};
 let map=null, NIGHT_ON=false;
 const HOME={zoom:8.6,pitch:58,bearing:0};
 const EMBED=_q.get('embed')==='1' && window.parent!==window, DEBUG=_q.get('debug')==='1';
@@ -723,7 +726,7 @@ async function tileFetch(url,signal){
 
 let _failed=false;
 function failSoft(why){ if(_failed)return; _failed=true; try{console.warn('3D sky unavailable:',why);}catch(e){}
-  st('3D view unavailable — '+why+'. The 2D map on the dashboard still works.');
+  st('3D view unavailable — '+why+'. The 2D map on the dashboard still works.',true);
   toParent({action:'failed', reason:why}); }
 /* Which renderer the browser really draws with. Software GL (SwiftShader, llvmpipe, Microsoft Basic Render)
    takes 1–3 s a frame here — embedded, that would freeze the whole dashboard, so it gets its 2D map back at once. */
@@ -1026,10 +1029,10 @@ async function poll(){
     for(const s of AC.values()){ if(!s.yaw||!s.live) continue; const w=lodWant(siteMi(s.lat,s.lon),!!s.wantModel,lodMi);
       if(s.wantModel!==w){ s.wantModel=w; setBody(s); if(w) loadModel(s); } }
     if(AV.apt&&SETTINGS.rwy) avUpdateActive();
-    _trailsDirty=true; _polls++; _pollFail=0;
-    if(_polls===1) st('live · '+seen.size+' aircraft with a position');
+    _trailsDirty=true; _polls++; const _wasDown=_pollFail>=3; _pollFail=0;
+    if(_polls===1||_wasDown) st('live · '+seen.size+' aircraft with a position');
     if(SEL){ if(!BOX) renderBox(); flyToSel(); }   // Traffic box: the page's own numbers until the dashboard's arrive; a glide waiting for this plane
-  }catch(e){ if(++_pollFail>=3) st('live data unavailable — retrying'); }
+  }catch(e){ if(++_pollFail>=3) st('live data unavailable — retrying',true); }
   setTimeout(poll,POLL_MS);
 }
 
@@ -1202,7 +1205,7 @@ let _slow=0, _degraded=false, _loadedAt=performance.now();
 function degradeCheck(fps){
   if(_degraded||!USE_MODELS||paused||document.hidden||performance.now()-_loadedAt<10000){ _slow=0; return; }
   _slow=fps<15?_slow+1:0;
-  if(_slow>=5){ _degraded=true; lodMi=modelMi/2; st('Busy sky — 3D models within '+(+lodMi.toFixed(1))+' mi only, to keep it smooth'); }
+  if(_slow>=5){ _degraded=true; lodMi=modelMi/2; st('Busy sky — 3D models within '+(+lodMi.toFixed(1))+' mi only, to keep it smooth',true); }
 }
 /* Can't-keep-up guard. This page shares the dashboard's main thread (same-origin iframe), so a device
    that draws under ~3 fps (software GL, no GPU) makes the WHOLE dashboard crawl — even the Street button
@@ -1400,7 +1403,7 @@ async function boot(){
     if(best) window.open('/static/approach.html?hex='+encodeURIComponent(best.hex),'_blank','noopener'); });
   // Satellite/Topo imagery is optional: a tile it can't fetch shows plain ground, not a fault line.
   map.on('error',e=>{ if(e&&(e.sourceId==='base-sat'||e.sourceId==='base-topo'||e.sourceId==='citylights')) return;   // optional imagery: a missing tile is not a map error
-    const m=(e&&e.error&&e.error.message)||''; if(!/sprite|glyph|tile/i.test(m)) st('map error: '+m); });
+    const m=(e&&e.error&&e.error.message)||''; if(!/sprite|glyph|tile/i.test(m)) st('map error: '+m,true); });
   map.on('webglcontextlost',()=>failSoft('the browser dropped the 3D context'));
   // Replay Follow: the user dragging/rotating/zooming the map turns it off; e.originalEvent is only set for real user input,
   // never for a programmatic move (fitBounds, setCenter) — so Follow's own camera moves never cancel themselves.
