@@ -20,7 +20,7 @@ const MODEL_ORIENT={ 'a320_200.glb':{yaw:-90}, 'atr72.glb':{yaw:90}, 'b777_klm.g
   'e7.glb':{yaw:0}, 'c5.glb':{yaw:180}, 'nh90.glb':{yaw:-90},   // NH90: direction from the TAIL ROTOR, as for the AS350
   'sh60.glb':{yaw:180},   // SH-60: cockpit and nose gear at +Z, tail rotor at -Z
   'glider.glb':{yaw:180},   // Glider: canopy and nose wheel at +Z, rudder and tail wheel at -Z, as on the SH-60
-  'as350.glb':{yaw:0} };   /* all measured with the corrected mapping; confirm each on a LIVE aircraft before release. The
+  'as350.glb':{yaw:0}, 'pc24.glb':{yaw:-90}, 'tbm9.glb':{yaw:-90} };   /* all measured with the corrected mapping; confirm each on a LIVE aircraft before release. The
      AS350 is a helicopter: its direction came from the TAIL ROTOR's position, because the fin test reads the highest
      point and on a helicopter that is the main rotor. */
 /* Real wingspan in metres, per model. Every model is normalised to this at load, so a Cessna is drawn
@@ -43,7 +43,7 @@ const MODEL_SPAN={ 'c172.glb':11.0, 'b429.glb':13.0, 'c208.glb':15.9, 'atr72.glb
   'sh60.glb':14.06,  /* SH-60 Seahawk: 16.36 m rotor disc. Its four blades sit diagonally in the file, so the lateral extent
      (1689.6 units) is NOT the disc: the tips are 982.9 units from the hub (all four within 0.4). 14.06 draws the disc at 16.36 m. */
   'glider.glb':15.0,   // 15 m class sailplane (the file reads 14.99 m across)
-  'as350.glb':9.31 };    /* NOT the 10.69 m rotor diameter, deliberately. This number is applied to the model's lateral
+  'as350.glb':9.31, 'pc24.glb':17.0, 'tbm9.glb':12.8 };    /* NOT the 10.69 m rotor diameter, deliberately. This number is applied to the model's lateral
      extent, and with THREE blades at 120° no blade lies straight across, so the width undersells the disc. Sized at
      10.69 the rotor measured 12.3 m across and the fuselage 12.9 m (real 10.69 / 10.93) — both ~15–18% big. 9.31 puts
      the rotor at its true 10.69 m and the fuselage at 11.2 m (+2.5%). Two-blade rotors and fixed-wing are unaffected. */   // Phenom 300E and CRJ-900 as modelled; TYPE_SPAN resizes each type
@@ -152,6 +152,10 @@ function modelFor(t,cat){ t=(t||'').toUpperCase();
      motor-glider. ZK-GON, ZK-GFR and ZK-GSR over Maramarua were all drawn as 737s. A 15 m sailplane stands in for the
      lot; at range a Discus, a Ventus and a Mosquito read the same. Exact codes. */
   if(t==='GLID'||t==='GLIM')return'glider.glb';
+  /* Pilatus PC-24 - "Pilatus PC-24" by betterspace, CC-BY-4.0 (operator titles removed by PiLNK).
+     Daher TBM 700/850/9xx - "Daher TBM 930" by helijah, CC-BY-4.0. Low-wing, so no longer the Caravan. (main, 17 Oct 2026) */
+  if(t==='PC24')return'pc24.glb';
+  if(t==='TBM7'||t==='TBM8'||t==='TBM9')return'tbm9.glb';
   if(BIZJET_MODEL&&BIZJET.includes(t))return BIZJET_MODEL;
   if(REGIONAL_MODEL&&REGIONAL.includes(t))return REGIONAL_MODEL;
   if(EJET.includes(t))return'a320_200.glb';

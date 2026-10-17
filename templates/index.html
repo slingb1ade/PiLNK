@@ -13,9 +13,12 @@
      is harmless. Served locally so the dashboard needs no network for it. -->
 <script src="/static/aircraft-shapes.js"></script>
 <script src="/static/datalink-card.js?v=dl5"></script>
+<script src="/static/arrival-paths.js?v=ap1"></script>
 <script defer src="/static/datalink-board.js?v=b4"></script>
 <script src="/static/datalink-map.js?v=m2"></script>
 <script src="/static/fixes-nz.js?v=f1"></script>
+<!-- Airport live streams in the navbar: a red LIVE pill while a stream near this node is live (static/live-pill.js). -->
+<script src="/static/live-pill.js?v=lp1"></script>
 <style>
   @import url('https://fonts.googleapis.com/css2?family=Orbitron:wght@400;600;700&family=Share+Tech+Mono&family=Noto+Color+Emoji&display=swap');
   :root{--bg-deep:#f0f4ff;--bg-panel:#ffffff;--bg-card:#f5f8ff;--border:#dbeafe;--blue-dim:#2563eb;--blue-mid:#3b82f6;--blue-light:#1d4ed8;--text:#1e3a6e;--text-dim:#5c7aa3;--green:#16a34a;--success:#16a34a;--warn:#d97706;--danger:#dc2626;--info:#2563eb;--shadow:0 1px 2px rgba(30,58,110,.06),0 4px 12px rgba(30,58,110,.09);--shadow-2:0 8px 24px rgba(30,58,110,.13);--edge:inset 0 1px 0 rgba(255,255,255,.65);--r-1:6px;--r-2:10px;--r-3:14px;--sp-1:4px;--sp-2:8px;--sp-3:12px;--sp-4:16px;--sp-5:24px;}
@@ -1791,6 +1794,8 @@
               <div class="av-toggle-row"><span style="display:flex;align-items:center;"><span class="av-dot" style="background:#f59e0b;"></span>NAVAIDs</span><label class="toggle-switch" style="transform:scale(0.85);"><input type="checkbox" id="avNavaids" onchange="redrawAvOverlay()"/><span class="toggle-slider"></span></label></div>
               <div class="av-toggle-row"><span style="display:flex;align-items:center;"><span class="av-dot" style="background:#06b6d4;"></span>Airspace</span><label class="toggle-switch" style="transform:scale(0.85);"><input type="checkbox" id="avAirways" onchange="redrawAvOverlay()"/><span class="toggle-slider"></span></label></div>
               <div class="av-toggle-row"><span style="display:flex;align-items:center;"><span class="av-dot" style="background:#f472b6;"></span>IFR Fixes</span><label class="toggle-switch" style="transform:scale(0.85);"><input type="checkbox" id="avWaypoints" onchange="toggleWaypoints(this.checked)"/><span class="toggle-slider"></span></label></div>
+              <div class="av-toggle-row" id="arrRow" style="display:none;" title="Arrival paths into Auckland, learned from the tracks PiLNK has seen land. Not an official procedure — for watching aircraft only."><span style="display:flex;align-items:center;"><span class="av-dot" style="background:#fb923c;"></span>Arrival Paths</span><label class="toggle-switch" style="transform:scale(0.85);"><input type="checkbox" id="avArrivals" onchange="toggleArrivalPaths(this.checked)"/><span class="toggle-slider"></span></label></div>
+              <div class="av-status" id="arrStatus" style="display:none;padding-left:18px;"></div>
               <div class="av-toggle-row"><span style="display:flex;align-items:center;"><span class="av-dot" style="background:#22d3ee;"></span>Footprint</span><label class="toggle-switch" style="transform:scale(0.85);"><input type="checkbox" id="avFootprint" onchange="toggleFootprint(this.checked)"/><span class="toggle-slider"></span></label></div>
               <div class="av-toggle-row" id="fpViewRow" style="display:none;padding-left:18px;justify-content:flex-end;gap:4px;">
                 <button class="cov-btn active" id="fpBtnRange" onclick="setFootprintMode('range')" style="flex:0 0 auto;padding:2px 10px;">Range</button>
@@ -2194,6 +2199,8 @@
           <div class="cc-stat"><div class="cc-stat-label">V/Speed</div><div class="cc-stat-val" id="ccVs">–</div></div>
         </div>
         <div class="cc-meta" id="ccMeta"></div>
+        <!-- Arrival path this aircraft is flying (static/arrival-paths.js). Plain text; hidden unless the Arrival Paths flag is on and the aircraft is arriving. -->
+        <div class="cc-meta" id="ccArrival" style="display:none;color:#fb923c;"></div>
         <!-- Datalink (ACARS/VDL2): route, ETA, runway, next fix, takeoff/landing, straight from the aircraft. Local only; shown only when this node has decoded some. Filled by static/datalink-card.js with textContent. -->
         <div class="cc-bds-primary cc-dl" id="ccDatalink" style="display:none;">
           <div class="cc-dl-head" id="ccDatalinkHead"></div>
@@ -4161,6 +4168,8 @@ function clearAvOverlay() {
   if (typeof clearFootprint === 'function') clearFootprint();
   // Runway centerlines — same overlay, same lifecycle.
   if (typeof clearRunways === 'function') clearRunways();
+  // Arrival paths — same overlay, same lifecycle.
+  if (typeof clearArrivalPaths === 'function') clearArrivalPaths();
 }
 
 function redrawAvOverlay() {
@@ -4170,6 +4179,7 @@ function redrawAvOverlay() {
   var showNav = document.getElementById('avNavaids').checked;
   var showAw  = document.getElementById('avAirways').checked;
   avLayerGroup = L.featureGroup([]).addTo(map);
+  if (typeof drawArrivalPaths === 'function') drawArrivalPaths();
 
   if (showNav && avData.navaids) {
     avData.navaids.forEach(function(nav) {
@@ -4748,6 +4758,7 @@ function removeTrail(cs,fade){
   // Always fully remove — no fading, trails stay until aircraft gone
   if(trailPoly[cs]){map.removeLayer(trailPoly[cs]);delete trailPoly[cs];}
   delete trails[cs];
+  if (window.ArrivalPaths) ArrivalPaths.forget(cs);
   delete phaseAlt[cs];
   delete heliPhase[cs];
   delete _cloudState[cs];
@@ -5215,6 +5226,7 @@ function updateMarker(a){
   var isMil=!!a.is_military, rar=a.mil_rarity||'';
   var col=(isMil && MIL_RARITY_COL[rar])?MIL_RARITY_COL[rar]:ph.color;
   updateTrail(a);
+  if (window.ArrivalPaths) ArrivalPaths.observe(a, cs, Date.now() / 1000);
   if(window.SHOW_DOM_PLANES!==false){
     var sig=(isMil?'M'+(a.t||'')+rar:cat)+'|'+Math.round((a.track||0)/3)+'|'+col+'|'+(tx?1:0);
     var icon=isMil?milIcon(a.t,a.mil_class,rar,a.track,tx):makeIcon(cs,cat,a.track,col,tx,a.t);
@@ -6311,6 +6323,12 @@ function refreshCinematicCardLive(a, cs) {
   populateBDS(a);
   // Datalink facts from the aircraft (route, ETA, runway...) — self-hiding
   if (typeof populateDatalink === 'function') populateDatalink(a);
+  // Arrival path line (static/arrival-paths.js) — self-hiding, plain text
+  (function(){
+    var el = document.getElementById('ccArrival'); if (!el) return;
+    var s = window.ArrivalPaths ? ArrivalPaths.lineFor(a, cs, Date.now() / 1000) : '';
+    el.textContent = s; el.style.display = s ? 'block' : 'none';
+  })();
 
   // Badge — only show for auto-triggered or transmitting
   var badge = document.getElementById('ccBadge');
@@ -6623,8 +6641,9 @@ function loadLiveCams() {
     liveCams = (j && Array.isArray(j.cams)) ? j.cams.filter(function(c){
       return c && /^[A-Za-z0-9_-]{11}$/.test(String(c.video_id || '')) && isFinite(c.lat) && isFinite(c.lon);
     }) : [];
+    if (window.LivePill) LivePill.update(liveCams);    // navbar LIVE pill (static/live-pill.js)
     if (ccVisible && ccCurrentCS) ccLiveRefresh(lastAircraft[ccCurrentCS], ccCurrentCS);
-  }).catch(function(e){ console.warn('[live] cam list unavailable:', e); liveCams = []; });
+  }).catch(function(e){ console.warn('[live] cam list unavailable:', e); liveCams = []; if (window.LivePill) LivePill.update([]); });
 }
 function pickLiveCam(a, info) {
   if (!a || !liveCams.length) return null;
@@ -8686,6 +8705,35 @@ function drawWaypoints() {
     waypointMarkers.push(marker);
   });
 }
+
+// ── ARRIVAL PATHS (proof of concept, 17 Oct 2026) ─────────────────────────
+// Learned Auckland arrival paths from pilnk.io, via the node's own proxy
+// (/api/arrival-paths, off unless config.json has "arrival_paths": true).
+// static/arrival-paths.js does the work; this is the Aviation Overlay wiring.
+function toggleArrivalPaths(on) {
+  if (!window.ArrivalPaths) return;
+  ArrivalPaths._state.on = !!on;
+  drawArrivalPaths();
+}
+function drawArrivalPaths() {
+  if (!window.ArrivalPaths) return;
+  var st = document.getElementById('arrStatus');
+  if (st) { st.style.display = ArrivalPaths._state.on ? 'block' : 'none'; st.textContent = ArrivalPaths.statusText(); }
+  if (typeof avOverlayOn !== 'undefined' && !avOverlayOn) { ArrivalPaths.clear(map); return; }
+  ArrivalPaths.draw(L, map, Date.now() / 1000);
+}
+function clearArrivalPaths() { if (window.ArrivalPaths) ArrivalPaths.clear(map); }
+function loadArrivalPaths() {
+  if (!window.ArrivalPaths) return;
+  ArrivalPaths.load(fetch.bind(window), function (S) {
+    var row = document.getElementById('arrRow'); if (row) row.style.display = S.enabled ? '' : 'none';
+    drawArrivalPaths();
+  });
+}
+loadArrivalPaths();
+setInterval(loadArrivalPaths, 3600000);
+// the runway in use can change (landings seen in the last 30 min), so restyle once a minute while shown
+setInterval(function () { if (window.ArrivalPaths && ArrivalPaths._state.on) drawArrivalPaths(); }, 60000);
 
 // ── RANGESCOPE FOOTPRINT LAYER (Jun 2026) ──────────────────
 // Draws this node's own reception footprint — per-bearing max range

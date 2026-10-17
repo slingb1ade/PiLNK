@@ -27,8 +27,43 @@ const LIVERIES={
         A320:{ aft:{ col:'#111316', b0:0.50, b1:0.74 } }, A20N:{ aft:{ col:'#111316', b0:0.50, b1:0.74 } },
         AT76:{ aft:{ col:'#111316', b0:0.52, b1:0.78 } }, DH8C:{ aft:{ col:'#111316', b0:0.52, b1:0.78 } } },   // ATR: clear of the gear sponson
   JST:{ body:'#e6e9ec', belly:'#ff5a14', fin:'#5d636b', wing:'#b4b9bf',
-        A21N:{ fin:'#ff5a14' } }       // the 2022 A321neo scheme carries the orange up onto the tail
+        A21N:{ fin:'#ff5a14' } },      // the 2022 A321neo scheme carries the orange up onto the tail
+  /* United States (main, 17 Oct): each airline's current standard scheme in body / belly / fin colours only - the
+     painter has no stripes or gradients, so a striped or patterned tail takes its main colour. No titles or logos. */
+  AAL:{ body:'#b8bfc6', belly:'#b8bfc6', fin:'#1c3f75', wing:'#a9b0b7' },   // American 2013: silver all over; flag tail -> its blue
+  DAL:{ body:'#f2f4f6', belly:'#0a2a5c', fin:'#b5122c', wing:'#c9ced3' },   // Delta 2007: white over Delta blue; red tail
+  UAL:{ body:'#f2f4f6', belly:'#8a9199', fin:'#0a2a6b', wing:'#c9ced3' },   // United 2019: white over Runway Gray; blue tail
+  SWA:{ body:'#304cb2', belly:'#304cb2', fin:'#304cb2', wing:'#b9c0c7' },   // Southwest Heart 2014: Bold Blue; tail stripes -> blue
+  ASA:{ body:'#f2f4f6', belly:'#f2f4f6', fin:'#01426a', wing:'#c9ced3' },   // Alaska 2016: white; Midnight tail
+  JBU:{ body:'#f2f4f6', belly:'#003876', fin:'#1d4f9c', wing:'#c9ced3' },   // JetBlue 2014: white over blue; patterned tail -> blue
+  HAL:{ body:'#f2f4f6', belly:'#f2f4f6', fin:'#4e2a84', wing:'#c9ced3' },   // Hawaiian: white; purple tail
+  FDX:{ body:'#f2f4f6', belly:'#a7acb2', fin:'#4d148c', wing:'#c9ced3' },   // FedEx Express: white over grey; purple tail
+  /* UPS 2003, from AJ's side-view drawing (A300-600): white forward, brown rear and tail. The brown's front edge runs the
+     other way to Air NZ's - furthest forward at the roof (b1), furthest back at the belly (b0). The gold band along that
+     edge and the shield are not drawn. Wings and engines white. */
+  UPS:{ body:'#f4f5f6', belly:'#f4f5f6', fin:'#3a2619', wing:'#e3e6e9', aft:{ col:'#3a2619', b0:0.72, b1:0.34 } },
+  /* Europe (main, 17 Oct): each airline's current standard scheme, same rules as the US list - body / belly / fin
+     only, a striped or patterned tail takes its main colour, no titles, logos or emblems. Special and anniversary
+     schemes (Lufthansa 100, the SAS cobalt A330, World Cup jets) are one-offs and keep the standard colours. */
+  BAW:{ body:'#f2f4f6', belly:'#14264f', fin:'#0e2a66', wing:'#c9ced3' },   // British Airways Chatham: white over midnight blue; flag tail -> its blue
+  DLH:{ body:'#f2f4f6', belly:'#f2f4f6', fin:'#05164d', wing:'#c9ced3' },   // Lufthansa 2018: white; deep blue tail
+  AFR:{ body:'#f2f4f6', belly:'#f2f4f6', fin:'#002157', wing:'#c9ced3' },   // Air France: white; the tail's blue stripe, so it does not read all-white
+  KLM:{ body:'#00a1de', belly:'#f2f4f6', fin:'#00a1de', wing:'#c9ced3' },   // KLM: sky blue over white; blue tail
+  RYR:{ body:'#f2f4f6', belly:'#073590', fin:'#073590', wing:'#c9ced3' },   // Ryanair: white over dark blue; blue tail
+  EZY:{ body:'#f2f4f6', belly:'#f2f4f6', fin:'#ff6600', wing:'#c9ced3' },   // easyJet: white; orange tail
+  IBE:{ body:'#f2f4f6', belly:'#f2f4f6', fin:'#d7192d', wing:'#c9ced3' },   // Iberia 2013: white; red and yellow tail -> red
+  SWR:{ body:'#f2f4f6', belly:'#f2f4f6', fin:'#e30613', wing:'#c9ced3' },   // Swiss: white; red tail (the cross is not drawn)
+  AUA:{ body:'#f2f4f6', belly:'#f2f4f6', fin:'#e2001a', wing:'#c9ced3' },   // Austrian: white; red tail
+  THY:{ body:'#f2f4f6', belly:'#f2f4f6', fin:'#c8102e', wing:'#c9ced3' },   // Turkish: white; red tail
+  EWG:{ body:'#f2f4f6', belly:'#f2f4f6', fin:'#9b1b5a', wing:'#c9ced3' },   // Eurowings: white; burgundy tail
+  LOT:{ body:'#f2f4f6', belly:'#f2f4f6', fin:'#11397e', wing:'#c9ced3' },   // LOT: white; navy tail
+  ITY:{ body:'#0b2d6b', belly:'#0b2d6b', fin:'#0b2d6b', wing:'#c9ced3' },   // ITA Airways: Blu Italia all over
+  ICE:{ body:'#f2f4f6', belly:'#f2f4f6', fin:'#003a7d', wing:'#c9ced3' },   // Icelandair: white; blue tail
+  WZZ:{ body:'#f2f4f6', belly:'#f2f4f6', fin:'#c6007e', wing:'#c9ced3' }    // Wizz Air: white; magenta tail
 };
+/* Sister operators flying the parent's colours under their own callsign prefix: easyJet Europe and Switzerland; Ryanair's
+   Buzz, Malta Air and Lauda; Lufthansa CityLine; KLM Cityhopper; BA CityFlyer and the BA Shuttle callsign. */
+for(const [a,p] of [['EJU','EZY'],['EZS','EZY'],['RYS','RYR'],['MAY','RYR'],['LDM','RYR'],['CLH','DLH'],['KLC','KLM'],['CFE','BAW'],['SHT','BAW']]) LIVERIES[a]=LIVERIES[p];
 function liveryFor(callsign,t){
   const f=(_q.get('livery')||'').toUpperCase();
   if(f==='OFF') return null;

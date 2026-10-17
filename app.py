@@ -2589,6 +2589,58 @@ def api_watchlist_alerts():
             return jsonify(out)
         return jsonify({'enabled': True, 'alerts': [], 'unseen': 0, 'error': type(e).__name__}), 503
 
+# ── Arrival Paths proxy (Arrival Paths proof of concept, 17 Oct 2026) ───────
+# pilnk.io learns the arrival paths aircraft really fly into Auckland from
+# PiLNK's own ADS-B history (api/arrival-paths.php, rebuilt nightly). The
+# dashboard asks here and draws them in the Aviation Overlay. Server-to-server
+# with the node's verify_code, like Badges, so the code never reaches a
+# browser. Nothing goes UP from this route: no position, no datalink.
+#
+# OPT-IN, DEFAULT OFF ("arrival_paths": true in config.json), read fresh each
+# call. AJ's hub only for the proof of concept. Auckland (NZAA) only.
+# Spec: pilnk-tasks/arrival-paths-spec.md
+_ARRIVAL_CACHE = {'ts': 0.0, 'data': None}
+_ARRIVAL_TTL = 3600   # paths are rebuilt once a night; an hour is plenty
+
+def _arrival_paths_enabled():
+    """Fresh-read config.json so the owner can toggle without restarting."""
+    try:
+        with open(CONFIG_PATH, 'r') as f:
+            return bool(json.load(f).get('arrival_paths', False))
+    except Exception:
+        return False
+
+@app.route('/api/arrival-paths', methods=['GET'])
+def api_arrival_paths():
+    if not _arrival_paths_enabled():
+        return jsonify({'enabled': False})
+    unavailable = {'enabled': True, 'paths': [], 'unavailable': True}
+    if not NODE_VERIFY_CODE:
+        return jsonify(unavailable)
+    now = time.time()
+    if _ARRIVAL_CACHE['data'] is not None and (now - _ARRIVAL_CACHE['ts']) < _ARRIVAL_TTL:
+        out = dict(_ARRIVAL_CACHE['data']); out['cached'] = True
+        return jsonify(out)
+    try:
+        req = urllib.request.Request(
+            'https://pilnk.io/api/arrival-paths.php?apt=NZAA&verify_code=' + urllib.parse.quote(NODE_VERIFY_CODE),
+            headers={'User-Agent': 'PiLNK/1.0'})
+        with urllib.request.urlopen(req, timeout=10) as r:
+            data = json.loads(r.read())
+        if not isinstance(data, dict) or not isinstance(data.get('paths'), list):
+            raise ValueError('unexpected payload: ' + str(data)[:120])
+        out = dict(data); out['enabled'] = True; out['fetched_at'] = int(now)
+        _ARRIVAL_CACHE['ts'] = now
+        _ARRIVAL_CACHE['data'] = out
+        return jsonify(out)
+    except Exception as e:
+        # Fail-soft but never silent: log, then the last good copy or a quiet 200.
+        logging.warning('[arrivals] path fetch failed (serving cache if any): %s', e)
+        if _ARRIVAL_CACHE['data'] is not None:
+            out = dict(_ARRIVAL_CACHE['data']); out['stale'] = True
+            return jsonify(out)
+        return jsonify(unavailable)
+
 # ── Airport live cams near this node (v1.5.51, 3 Oct 2026) ──────────────────
 # pilnk.io keeps a hand-verified list of airport live streams and re-checks
 # every 10 min which are live (api/cams.php + api/cron/cams_check.php). The
