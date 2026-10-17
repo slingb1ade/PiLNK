@@ -19,7 +19,13 @@
   #tl:not(.show){display:none}
   #tl .t{color:var(--purple);font-weight:700;letter-spacing:.06em;font-size:13px}
   #tl .s{color:var(--dim);font-size:11px;margin-top:2px}
-  #tr{top:12px;right:12px;min-width:220px}
+  /* 17 Oct (AJ): the data card was too big on a desktop (13 rows, ~315 x 230 px). It now works as it already did on a
+     phone: callsign, type, alt, dist and heading at a glance, the rest one click away on "more". */
+  #tr{top:12px;right:12px;min-width:0;max-width:240px;font-size:11px;line-height:1.4;padding:7px 10px}
+  #tr .row{gap:10px}
+  #tr .row.x{display:none}
+  #tr.open .row.x{display:flex}
+  #tr .more{display:block;margin-top:3px;color:var(--purple);font-size:10px;text-align:right;cursor:pointer}
   .row{display:flex;justify-content:space-between;gap:14px}.row .k{color:var(--dim)}.row .v{font-variant-numeric:tabular-nums}
   #cams{bottom:12px;left:50%;transform:translateX(-50%);display:flex;gap:6px;pointer-events:auto}
   .cambtn{font-family:inherit;font-size:11px;background:#0e1526;color:var(--dim);border:1px solid var(--line);border-radius:6px;padding:6px 10px;cursor:pointer}
@@ -101,6 +107,7 @@
 <script crossorigin="anonymous" src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
 <script crossorigin="anonymous" src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/loaders/GLTFLoader.js"></script>
 <script src="/static/models.js"></script>
+<script src="/static/livery.js"></script>
 <script src="/static/city-lights.js"></script>
 <script src="/static/wmm.js"></script>
 <script src="/static/datalink-card.js?v=dl5"></script>
@@ -525,6 +532,17 @@ function tintMaterial(mt){
      already-tinted material and the aircraft would march darker on every theme change. */
   if(mt.userData._origMap===undefined) mt.userData._origMap=mt.map||null;
   if(mt.userData._origCol===undefined && mt.color) mt.userData._origCol=mt.color.clone();
+  /* Painted by paintAircraft (static/livery.js): the material takes the painter's picture as its map. With an airline
+     livery it goes plain white and lets the picture's colours through, in both themes - the lights already do day and
+     night. Without one it keeps its grey, and the picture (white but for windows and doors) only adds the detail. */
+  if(mt.userData.paintMap){ mt.map=mt.userData.paintMap;
+    if(mt.color){ if(mt.userData.livery) mt.color.setRGB(1,1,1);
+      else { const o=mt.userData._origCol||mt.color, l=0.3*o.r+0.59*o.g+0.11*o.b; let v=lo+(hi-lo)*l;
+        /* A grey model the painter took over (TAKEOVER in livery.js) is one tone, the one it showed before: plain skin was
+           the top of the band, textured skin darker - its greyed texture and its grey colour multiplied. */
+        if(mt.userData.paintTone==='flat') v=hi; else if(mt.userData.paintTone==='tex') v=hi*Math.pow(hi,2.2);
+        mt.color.setRGB(v,v,v); } }
+    if(mt.emissive) mt.emissive.setRGB(0,0,0); mt.needsUpdate=true; return; }
   const src=mt.userData._origMap;
   if(src&&src.image&&src.image.width){ try{
     const ck=(NIGHT_ON?'n:':'d:')+(src.uuid||'');
@@ -549,6 +567,7 @@ function retintModel(){
   const h=(typeof acLayer!=='undefined')&&acLayer.holder; if(!h) return;
   h.traverse(o=>{ if(o.isMesh&&o.material){ (Array.isArray(o.material)?o.material:[o.material]).forEach(tintMaterial); } });
 }
+/* Airline liveries and airframe detail (windows, cockpit, doors): static/livery.js - paintAircraft, liveryFor. */
 const acLayer={
   id:'pilnk-aircraft', type:'custom', renderingMode:'3d',
   onAdd(m,gl){
@@ -589,10 +608,14 @@ const acLayer={
     this.lowY=isFinite(bb.min.y)?Math.min(0,bb.min.y):0;
     y.rotation.y=sv[0]; p.rotation.x=sv[1]; r.rotation.z=sv[2]; y.scale.setScalar(sv[3]); y.position.y=sv[4];
   },
-  ensureModel(t,cat){
+  ensureModel(t,cat,cs){
     const forced=_q.get('force'), key=forced||modelFor(t,cat);   // cat: ADS-B category, used only when the type is unknown (2 Oct)
     // a forced model keeps its own size, so ?force= tests the MODEL rather than resizing it to the live type
     this.wantSpan=(forced?null:spanFor(t,key))||MODEL_SPAN[key]||this.targetSpan;
+    /* cs: the callsign, for the livery. Same model, different airline - an Air NZ A320 followed by a Jetstar one -
+       repaints in place rather than reloading. '' is the neutral grey. */
+    this.wantLiv=liveryFor(cs,t); const lk=this.wantLk=this.wantLiv?this.wantLiv.op+'/'+(t||''):'';
+    if(this.mm&&key===this.key&&!this.loading&&lk!==this.livKey){ paintAircraft(this.mm,key,this.wantLiv,this.renderer); this.livKey=lk; }
     /* Same model, different type — a Phenom followed by a Global on the bizjet stand-in. The reload below is
        skipped when the model has not changed, which used to mean the second aircraft kept the first one's
        size. Rescale in place instead: no reload, no flash. */
@@ -604,7 +627,10 @@ const acLayer={
       this.applySpan(this.wantSpan);   // the LATEST type's span, in case the subject changed while this loaded
       mm.traverse(o=>{if(o.isMesh&&o.material){(Array.isArray(o.material)?o.material:[o.material]).forEach(mt=>{mt.metalness=0.25;mt.roughness=0.6;tintMaterial(mt);});}});
       const or=MODEL_ORIENT[key]||{}; this.holder.rotation.set((or.pitch||0)*D2R,(or.yaw||0)*D2R,(or.roll||0)*D2R);
-      this.holder.add(mm); this.props=findProps(mm).concat(splitRotor(mm,key)).concat(splitParts(mm,key)); this.measureLow(); this.key=key; this.loading=false; },undefined,()=>{this.loading=false;});
+      this.holder.add(mm); this.props=findProps(mm).concat(splitRotor(mm,key)).concat(splitParts(mm,key));
+      // painted AFTER the props and rotors are split out, so the parts that turn are painted where they ended up
+      paintAircraft(mm,key,this.wantLiv,this.renderer); this.livKey=this.wantLk;   // every load: windows on the grey ones too
+      this.measureLow(); this.key=key; this.loading=false; },undefined,()=>{this.loading=false;});
   },
   render(gl,args){
     const M0=(args&&args.defaultProjectionData)?args.defaultProjectionData.mainMatrix:args;
@@ -1530,7 +1556,7 @@ async function poll(){
       fix={lon:a.lon,lat:a.lat,altM,ground:gM,hdg,roll,pitch,dist:distNm(a),gnd:a.alt_baro==='ground',
            vE:Math.sin(trk)*gsMs, vN:Math.cos(trk)*gsMs, vU:a.alt_baro==='ground'?0:vsS*0.00508,
            gs:gsMs, trk, rate, t:tFix, key};
-      acLayer.ensureModel(a.t,a.category);
+      acLayer.ensureModel(a.t,a.category,a.flight);
       acDl=(a&&a.datalink&&typeof a.datalink==='object')?a.datalink:null;
       { const dlt=dlInfoText(acDl,Date.now()/1000); document.getElementById('d_dl').textContent=dlt; document.getElementById('d_dlrow').style.display=dlt?'':'none'; }
       document.getElementById('d_cs').textContent=(a.flight||'').trim()||(a.hex||'').toUpperCase();
