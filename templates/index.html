@@ -1790,7 +1790,7 @@
             <div class="av-toggles" id="avSubToggles" style="opacity:0.4;pointer-events:none;">
               <div class="av-toggle-row"><span style="display:flex;align-items:center;"><span class="av-dot" style="background:#f59e0b;"></span>NAVAIDs</span><label class="toggle-switch" style="transform:scale(0.85);"><input type="checkbox" id="avNavaids" onchange="redrawAvOverlay()"/><span class="toggle-slider"></span></label></div>
               <div class="av-toggle-row"><span style="display:flex;align-items:center;"><span class="av-dot" style="background:#06b6d4;"></span>Airspace</span><label class="toggle-switch" style="transform:scale(0.85);"><input type="checkbox" id="avAirways" onchange="redrawAvOverlay()"/><span class="toggle-slider"></span></label></div>
-              <div class="av-toggle-row"><span style="display:flex;align-items:center;"><span class="av-dot" style="background:#94a3b8;"></span>IFR Fixes</span><label class="toggle-switch" style="transform:scale(0.85);"><input type="checkbox" id="avWaypoints" onchange="toggleWaypoints(this.checked)"/><span class="toggle-slider"></span></label></div>
+              <div class="av-toggle-row"><span style="display:flex;align-items:center;"><span class="av-dot" style="background:#f472b6;"></span>IFR Fixes</span><label class="toggle-switch" style="transform:scale(0.85);"><input type="checkbox" id="avWaypoints" onchange="toggleWaypoints(this.checked)"/><span class="toggle-slider"></span></label></div>
               <div class="av-toggle-row"><span style="display:flex;align-items:center;"><span class="av-dot" style="background:#22d3ee;"></span>Footprint</span><label class="toggle-switch" style="transform:scale(0.85);"><input type="checkbox" id="avFootprint" onchange="toggleFootprint(this.checked)"/><span class="toggle-slider"></span></label></div>
               <div class="av-toggle-row" id="fpViewRow" style="display:none;padding-left:18px;justify-content:flex-end;gap:4px;">
                 <button class="cov-btn active" id="fpBtnRange" onclick="setFootprintMode('range')" style="flex:0 0 auto;padding:2px 10px;">Range</button>
@@ -8564,13 +8564,19 @@ var IFR_FIX_RANGE_KM = 400;   // also keeps the 3D view under its 500-fix cap
 var IFR_FIXES_MANUAL = [
   { name: 'ANSER', lat: -37.343783, lon: 174.881889 }   // from a third-party copy of the NZ waypoint list, unverified
 ];
+// AIRAC 2608 (6 Aug 2026) renamed these NZ fixes in place (same position, new name). The 2013 list above still has the
+// old names - AJ caught it when ANZ993's datalink said "next fix OLRIK" and the map only had STORK. Source: the VATNZ
+// cycle 2608 changelog (sops.vatnz.net/changelog/2026/2608), which mirrors the AIP change. Old name kept in the tooltip.
+var IFR_FIX_RENAMES = { ARROW:'ENBIS', MASKU:'PEDVI', KINGS:'SUGEM', ADBAD:'IPMUL', ALBOX:'ISBIT', BIGUL:'AGTAN',
+  STORK:'OLRIK', TEVUC:'APIPO', ZORBA:'AKDER', SCARY:'LEBIP', TOMAS:'BEMSA' };
 function nzIfrList() {
   var out = (IFR_NAVAIDS_NZ || []).slice();
   if (typeof RX_LAT !== 'number' || typeof RX_LON !== 'number') return out;
   (window.IFR_FIXES_NZ || []).forEach(function (f) {
     if (!f || !/^[A-Z0-9]{2,5}$/.test(f[0]) || !isFinite(f[1]) || !isFinite(f[2])) return;
     if (haversineKm(RX_LAT, RX_LON, f[1], f[2]) > IFR_FIX_RANGE_KM) return;
-    out.push({ name: f[0], lat: f[1], lon: f[2], type: 'Enroute' });
+    var nn = IFR_FIX_RENAMES[f[0]];
+    out.push(nn ? { name: nn, lat: f[1], lon: f[2], type: 'Enroute', was: f[0] } : { name: f[0], lat: f[1], lon: f[2], type: 'Enroute' });
   });
   var have = {};
   out.forEach(function (w) { have[w.name] = true; });
@@ -8637,7 +8643,9 @@ function drawWaypoints() {
     } else if (wp.type === 'Terminal') {
       color = '#38bdf8'; symbol = '△'; bg = 'rgba(56,189,248,0.12)';
     } else {
-      color = '#94a3b8'; symbol = '⊕'; bg = 'rgba(148,163,184,0.1)';
+      // 17 Oct (AJ): was #94a3b8 grey, the same as the map's town names. Pink now (no other overlay uses it; lime is
+      // the runway centerline), so a fix never reads as a place.
+      color = '#f472b6'; symbol = '⊕'; bg = 'rgba(244,114,182,0.12)';
     }
 
     var icon = L.divIcon({
@@ -8646,7 +8654,7 @@ function drawWaypoints() {
             '<div style="background:' + bg + ';border:1px solid ' + color + ';border-radius:50%;width:16px;height:16px;display:flex;align-items:center;justify-content:center;">' +
             '<span style="font-size:9px;color:' + color + ';line-height:1;">' + symbol + '</span>' +
             '</div>' +
-            '<span' + (isNavaid ? '' : ' class="ifr-fix-lbl"') + ' style="font-size:8px;color:' + color + ';font-family:monospace;white-space:nowrap;background:rgba(7,10,15,0.85);padding:0px 3px;border-radius:2px;margin-top:1px;border:1px solid ' + color + ';letter-spacing:0.05em;">' + wp.name + '</span>' +
+            '<span' + (isNavaid ? '' : ' class="ifr-fix-lbl"') + ' style="font-size:' + (isNavaid ? 8 : 9) + 'px;font-weight:' + (isNavaid ? 400 : 700) + ';color:' + color + ';font-family:monospace;white-space:nowrap;background:rgba(7,10,15,0.85);padding:0px 3px;border-radius:2px;margin-top:1px;border:1px solid ' + color + ';letter-spacing:0.05em;">' + wp.name + '</span>' +
             '</div>',
       iconSize: [60, 32],
       iconAnchor: [30, 16]
@@ -8661,6 +8669,7 @@ function drawWaypoints() {
                   : 'IFR waypoint';
     var tipHtml = '<b>' + wp.name + '</b><br>' + typeLabel;
     if (wp.unverified) tipHtml += '<br><span style="color:#f59e0b;">Hand-entered, position not verified</span>';
+    if (wp.was) tipHtml += '<br><span style="color:#94a3b8;">Was ' + wp.was + ' (renamed Aug 2026)</span>';
     if (wp.airfield) {
       tipHtml += '<br><span style="color:#7dd3fc;"><svg width="9" height="9" viewBox="0 0 24 24" fill="#7dd3fc" style="vertical-align:-1px;"><path d="M12 2C8.1 2 5 5.1 5 9c0 5.2 7 13 7 13s7-7.8 7-13c0-3.9-3.1-7-7-7z"/><circle cx="12" cy="9" r="2.5" fill="#0b0f1a"/></svg> ' + wp.airfield + '</span>';
     }
