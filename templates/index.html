@@ -4848,6 +4848,10 @@ var TYPE_ICONS={
 function getCat(t,cat){
   // Helicopter — direct ADS-B emitter-category match
   if(cat==='A7')return'heli';
+  // Glider/sailplane — ADS-B emitter category B1, or the DB's GLID / GLIM (motor-glider)
+  // types (17 Oct 2026: ZK-GON, ZK-GFR, ZK-GSR over Maramarua were drawn as 737s).
+  if(cat==='B1')return'glider';
+  if(t&&/^GLI[DM]$/.test(String(t).toUpperCase().trim()))return'glider';
   // Type-code lookup (requires AIRCRAFT_DB enrichment from v1.0.7+)
   if(t){
     var u=t.toUpperCase().trim();
@@ -4877,6 +4881,7 @@ function getCat(t,cat){
 function getCatDisplay(c){
   switch(c){
     case'heli':return'Helicopter';
+    case'glider':return'Glider';
     case'lightsingle':return'Light single';
     case'lighttwin':return'Light twin';
     case'heavytwin':return'Heavy twin';
@@ -4902,6 +4907,8 @@ function mkIcon(svg,size,tx){
   }
   return L.divIcon({className:'',html:'<div style="cursor:pointer;"><div style="'+p+'">'+svg+'</div></div>',iconSize:[size,size],iconAnchor:[size/2,size/2]});
 }
+// Glider — long thin wing, slim fuselage, canopy, T-tail (17 Oct 2026)
+function gliderIcon(cs,h,col,tx){return mkIcon('<svg width="40" height="40" viewBox="0 0 40 40" style="transform:rotate('+h+'deg);display:block;"><g class="pk-glider" transform="translate(20,20)"><path d="M-19,-3.2 L-1.2,-4.6 L1.2,-4.6 L19,-3.2 L19,-2.2 L1.2,-2.4 L-1.2,-2.4 L-19,-2.2 Z" fill="'+col+'"/><path d="M0,-15 C1.3,-15 1.5,-12 1.4,-8 L0.8,13 L-0.8,13 L-1.4,-8 C-1.5,-12 -1.3,-15 0,-15 Z" fill="'+col+'"/><ellipse cx="0" cy="-10.5" rx="0.9" ry="2.6" fill="#000" opacity="0.35"/><path d="M-5.5,12.2 L5.5,12.2 L5.5,13.6 L-5.5,13.6 Z" fill="'+col+'"/></g></svg>',40,tx);}
 // Helicopter — X-rotor over body, tail boom, small tail rotor
 function heliIcon(cs,h,col,tx){return mkIcon('<svg width="41" height="41" viewBox="0 0 44 44" style="transform:rotate('+h+'deg);display:block;"><g transform="translate(22,22)"><ellipse cx="0" cy="0" rx="4.5" ry="8" fill="'+col+'"/><rect x="-1.5" y="7" width="3" height="12" fill="'+col+'"/><line x1="-3.5" y1="17" x2="3.5" y2="17" stroke="'+col+'" stroke-width="1.2" stroke-linecap="round"/><path d="M-1.5,19 L-3,22 L3,22 L1.5,19 Z" fill="'+col+'"/><line x1="-10" y1="-10" x2="10" y2="10" stroke="'+col+'" stroke-width="1.5" stroke-linecap="round"/><line x1="-10" y1="10" x2="10" y2="-10" stroke="'+col+'" stroke-width="1.5" stroke-linecap="round"/><circle cx="0" cy="0" r="1.5" fill="'+col+'"/></g></svg>',41,tx);}
 // Light single — Cessna-class single-engine prop. Smallest icon, prop disc at nose.
@@ -4927,7 +4934,7 @@ function superheavyIcon(cs,h,col,tx){return mkIcon('<svg width="54" height="54" 
 // fill their marker, so these give a gentle, readable size hierarchy rather
 // than the wild 7x true-scale spread (A388 vs C172) that made small types
 // unreadable. Tight range, legible floor.
-var CAT_SIZE={lightsingle:28,lighttwin:30,heli:30,heavytwin:34,narrowbody:38,widebody:44,superheavy:50};
+var CAT_SIZE={lightsingle:28,lighttwin:30,heli:30,glider:40,heavytwin:34,narrowbody:38,widebody:44,superheavy:50};
 // Rex's shapes are drawn nose-up. If they ever render pointing sideways, this
 // is the one number to change (90 or -90) — everything else stays put.
 var SHAPE_ROT_OFFSET=0;
@@ -4957,6 +4964,7 @@ function makeIcon(cs,cat,h,col,tx,type){
   if(type){ var ti=typeShapeIcon(String(type).toUpperCase().trim(),cat,h,col,tx); if(ti)return ti; }
   switch(cat){
     case'heli':return heliIcon(cs,h||0,col,tx);
+    case'glider':return gliderIcon(cs,h||0,col,tx);
     case'lightsingle':return lightsingleIcon(cs,h||0,col,tx);
     case'lighttwin':return lighttwinIcon(cs,h||0,col,tx);
     case'heavytwin':return heavytwinIcon(cs,h||0,col,tx);
@@ -4982,6 +4990,17 @@ var MIL_PATHS = {
   "K46":"M1165 2366 c-60 -79 -67 -116 -77 -426 -11 -324 -1 -292 -113 -370 -91 -62 -84 -64 -87 23 l-3 72 -55 0 -55 0 0 -95 c0 -52 4 -102 8 -111 6 -13 -43 -51 -242 -187 -269 -186 -281 -193 -281 -168 0 9 -4 16 -9 16 -10 0 -21 -24 -21 -48 0 -10 -27 -34 -60 -56 -72 -46 -90 -69 -90 -114 0 -44 14 -47 88 -17 72 29 72 29 72 10 0 -23 18 -18 22 6 2 16 19 28 63 45 205 79 299 115 313 118 9 2 35 11 57 21 22 9 55 23 73 31 31 13 117 26 254 39 l66 6 5 -298 c3 -164 9 -314 12 -334 l7 -35 -171 -138 c-160 -130 -171 -140 -171 -172 0 -43 -7 -44 212 11 99 25 181 45 182 43 8 -13 26 -61 26 -68 0 -6 -11 -10 -25 -10 -16 0 -25 -6 -25 -15 0 -9 9 -15 25 -15 24 0 25 -3 25 -54 0 -30 5 -58 10 -61 6 -4 10 17 10 54 0 58 1 61 25 61 16 0 25 6 25 15 0 9 -9 15 -25 15 -30 0 -29 -2 -10 44 12 27 20 36 33 32 54 -16 344 -86 357 -86 11 0 15 10 15 35 0 33 -9 42 -171 172 l-171 137 7 35 c3 20 9 170 12 334 3 214 8 297 16 297 93 -1 283 -33 347 -58 75 -29 207 -80 375 -144 73 -27 91 -38 93 -56 4 -25 22 -31 22 -7 0 20 6 19 80 -11 72 -29 83 -24 78 32 -3 35 -10 44 -73 91 -49 37 -72 62 -78 83 -8 32 -27 41 -27 14 0 -24 -5 -21 -279 167 -224 153 -251 174 -244 193 5 12 8 62 8 111 l0 90 -55 0 -55 0 -3 -72 c-3 -87 6 -86 -98 -15 -106 72 -102 59 -107 382 -5 277 -11 314 -65 394 -36 52 -45 54 -77 12z",
   "V22":"M1370 2261 c0 -11 -9 -35 -20 -53 -33 -57 -50 -153 -50 -296 l0 -133 -42 -60 c-33 -47 -47 -59 -63 -55 -11 2 -114 15 -230 27 -127 14 -219 29 -232 37 -24 15 -32 52 -12 52 26 0 484 62 488 66 2 2 -81 4 -185 4 -274 0 -314 5 -339 43 -29 44 -41 43 -70 -3 l-27 -42 -275 3 c-295 4 -307 0 -63 -25 85 -9 188 -25 229 -35 40 -11 79 -17 87 -14 18 7 18 -7 0 -33 -30 -43 -28 -202 5 -336 30 -126 27 -119 67 -116 l36 3 13 69 c7 38 14 70 15 71 3 2 483 -52 483 -54 0 -142 21 -241 81 -389 34 -85 58 -280 46 -371 -5 -30 -116 -26 -139 5 -30 42 -36 -125 -8 -253 l5 -23 274 0 274 0 6 28 c29 143 25 292 -7 248 -9 -12 -32 -19 -75 -23 l-62 -6 0 147 c0 141 1 151 29 214 61 141 109 334 96 392 -8 36 -21 33 235 60 107 11 207 22 221 25 26 4 27 2 41 -68 l13 -72 37 -3 c36 -3 37 -2 48 40 6 24 13 50 16 58 31 89 35 314 8 355 -19 27 -18 30 15 31 48 2 61 11 61 44 0 29 -1 30 -47 30 -55 0 -63 4 -82 42 -24 47 -81 35 -81 -17 0 -17 -98 -25 -324 -25 -104 0 -187 -2 -185 -5 5 -4 457 -65 487 -65 20 0 13 -37 -10 -52 -15 -9 -103 -23 -238 -37 -118 -13 -222 -25 -231 -27 -10 -3 -30 17 -57 55 l-42 60 0 133 c0 148 -13 219 -58 308 l-28 55 -67 3 c-61 3 -67 1 -67 -17z m70 -115 c0 -21 -6 -25 -46 -31 -58 -8 -67 0 -31 31 38 32 77 32 77 0z m78 8 c44 -31 75 -130 44 -141 -9 -4 -20 -11 -23 -15 -3 -5 -23 -6 -43 -3 l-37 7 3 52 c2 28 8 50 13 50 6 -1 25 -4 43 -7 17 -4 32 -3 32 2 0 5 -22 12 -50 16 -44 6 -50 10 -50 31 0 29 33 33 68 8z m-88 -103 c0 -48 0 -49 -37 -56 -24 -4 -39 -3 -41 4 -2 6 -12 11 -23 11 -17 0 -19 5 -13 38 8 43 13 54 22 48 4 -2 23 -1 42 3 47 10 50 7 50 -48z m-810 -356 c0 -13 -4 -27 -10 -30 -11 -7 -25 39 -15 55 10 16 25 2 25 -25z m1680 13 c0 -33 -13 -60 -21 -46 -14 22 -10 58 6 58 8 0 15 -6 15 -12z m-1280 -168 l145 -19 -150 5 c-82 2 -172 8 -200 11 l-50 7 35 7 c53 10 63 9 220 -11z m1085 1 c19 -5 -24 -10 -115 -14 -80 -4 -179 -9 -220 -12 -100 -6 -65 4 73 19 125 15 217 17 262 7z"
 };
+// Which way each silhouette's nose points in its path, as drawn (17 Oct 2026). The map rotates
+// the icon by the aircraft's track assuming the nose points NORTH; five of these were traced
+// pointing elsewhere, so a C-130 flying north showed facing west. Measured by drawing every
+// path at rotate(0) against a north marker: C130, E3, K35 nose-west; F16 nose-east; H60
+// nose-south (tail rotor at the top). The others already point north. Any new path: draw it at
+// rotate(0) first and add its correction here.
+var MIL_ROT = { C130:90, E3:90, K35:90, F16:-90, H60:180 };
+function milRotWrap(key, inner){
+  var r = MIL_ROT[key] || 0;
+  return r ? '<g transform="rotate(' + r + ' 120 120)">' + inner + '</g>' : inner;
+}
 var MIL_RARITY_COL = { common:'#9ca3af', uncommon:'#22c55e', rare:'#3b82f6', legendary:'#f59e0b', mythical:'#a855f7' };
 var MIL_CLASS_FALLBACK = { fighter:'F16', bomber:'B52', tanker:'K35', cargo:'C130', rotary:'H60', tilt_rotor:'V22', special_mission:'E3', mythical:'B2' };
 var MIL_CLASS_SIZE = { fighter:38, bomber:46, tanker:46, cargo:44, rotary:40, tilt_rotor:40, special_mission:46, mythical:46 };
@@ -4996,7 +5015,7 @@ function milSVG(type, cls, rarity, h){
   var col = MIL_RARITY_COL[rarity] || '#9ca3af';
   var sz = MIL_CLASS_SIZE[cls] || 40;
   return '<svg width="'+sz+'" height="'+sz+'" viewBox="0 0 240 240" style="transform:rotate('+(h||0)+'deg);display:block;">'
-       + '<g transform="translate(0,240) scale(0.1,-0.1)" fill="'+col+'"><path d="'+d+'"/></g></svg>';
+       + milRotWrap(key, '<g transform="translate(0,240) scale(0.1,-0.1)" fill="'+col+'"><path d="'+d+'"/></g>') + '</svg>';
 }
 // Map marker (L.divIcon) — mirrors makeIcon(); used when a.is_military is set.
 function milIcon(type, cls, rarity, h, tx){
@@ -5035,7 +5054,7 @@ function getMilSprite(type, cls, rarity){
   try {
     var col = MIL_RARITY_COL[rarity] || '#9ca3af';
     var svg = '<svg xmlns="http://www.w3.org/2000/svg" width="' + e.size + '" height="' + e.size + '" viewBox="0 0 240 240">'
-            + '<g transform="translate(0,240) scale(0.1,-0.1)" fill="' + col + '"><path d="' + MIL_PATHS[key] + '"/></g></svg>';
+            + milRotWrap(key, '<g transform="translate(0,240) scale(0.1,-0.1)" fill="' + col + '"><path d="' + MIL_PATHS[key] + '"/></g>') + '</svg>';
     var sz = e.size, dpr = window.devicePixelRatio || 1, img = new Image();
     img.onload = function(){
       var c = document.createElement('canvas');
@@ -5072,6 +5091,8 @@ function inlineIcon(cat, size, color) {
         '<line x1="-9" y1="9" x2="9" y2="-9" stroke="'+color+'" stroke-width="1.3" stroke-linecap="round"/>' +
         '<circle cx="0" cy="0" r="1.3" fill="'+color+'"/>' +
         '</g></svg>';
+    case 'glider':
+      return '<svg '+attrs+'><g class="pk-glider" transform="translate(20,20)"><path d="M-19,-3.2 L-1.2,-4.6 L1.2,-4.6 L19,-3.2 L19,-2.2 L1.2,-2.4 L-1.2,-2.4 L-19,-2.2 Z" fill="'+color+'"/><path d="M0,-15 C1.3,-15 1.5,-12 1.4,-8 L0.8,13 L-0.8,13 L-1.4,-8 C-1.5,-12 -1.3,-15 0,-15 Z" fill="'+color+'"/><ellipse cx="0" cy="-10.5" rx="0.9" ry="2.6" fill="#000" opacity="0.35"/><path d="M-5.5,12.2 L5.5,12.2 L5.5,13.6 L-5.5,13.6 Z" fill="'+color+'"/></g></svg>';
     case 'lightsingle':
       return '<svg '+attrs+'><g transform="translate(20,20)">' +
         '<ellipse cx="0" cy="0" rx="1.8" ry="10" fill="'+color+'"/>' +

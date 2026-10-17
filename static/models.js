@@ -19,6 +19,7 @@ const MODEL_ORIENT={ 'a320_200.glb':{yaw:-90}, 'atr72.glb':{yaw:90}, 'b777_klm.g
   'strk.glb':{yaw:90},   // Strikemaster: nose at +X in the file; yaw 90 puts it NORTH (render.py, 9 Oct)
   'e7.glb':{yaw:0}, 'c5.glb':{yaw:180}, 'nh90.glb':{yaw:-90},   // NH90: direction from the TAIL ROTOR, as for the AS350
   'sh60.glb':{yaw:180},   // SH-60: cockpit and nose gear at +Z, tail rotor at -Z
+  'glider.glb':{yaw:180},   // Glider: canopy and nose wheel at +Z, rudder and tail wheel at -Z, as on the SH-60
   'as350.glb':{yaw:0} };   /* all measured with the corrected mapping; confirm each on a LIVE aircraft before release. The
      AS350 is a helicopter: its direction came from the TAIL ROTOR's position, because the fin test reads the highest
      point and on a helicopter that is the main rotor. */
@@ -41,6 +42,7 @@ const MODEL_SPAN={ 'c172.glb':11.0, 'b429.glb':13.0, 'c208.glb':15.9, 'atr72.glb
      lateral extent IS the disc, and Box3 reads this file exactly (0.184 = 0.184 by vertex pass) - no correction. */
   'sh60.glb':14.06,  /* SH-60 Seahawk: 16.36 m rotor disc. Its four blades sit diagonally in the file, so the lateral extent
      (1689.6 units) is NOT the disc: the tips are 982.9 units from the hub (all four within 0.4). 14.06 draws the disc at 16.36 m. */
+  'glider.glb':15.0,   // 15 m class sailplane (the file reads 14.99 m across)
   'as350.glb':9.31 };    /* NOT the 10.69 m rotor diameter, deliberately. This number is applied to the model's lateral
      extent, and with THREE blades at 120° no blade lies straight across, so the width undersells the disc. Sized at
      10.69 the rotor measured 12.3 m across and the fuselage 12.9 m (real 10.69 / 10.93) — both ~15–18% big. 9.31 puts
@@ -146,6 +148,10 @@ function modelFor(t,cat){ t=(t||'').toUpperCase();
      ICAO designator for the whole Black Hawk / Seahawk family (2,845 airframes in adsb_database), S70 the civil/export S-70;
      UH60 is kept for databases that use it. Exact codes. Rotors split into named parts (MainRotor, TailRotor) so findProps turns both. */
   if(['H60','S70','UH60'].includes(t))return'sh60.glb';
+  /* Gliders (UNDERPOLY Project, Sketchfab, CC-BY-4.0, added 17 Oct). GLID is the database's sailplane type, GLIM a
+     motor-glider. ZK-GON, ZK-GFR and ZK-GSR over Maramarua were all drawn as 737s. A 15 m sailplane stands in for the
+     lot; at range a Discus, a Ventus and a Mosquito read the same. Exact codes. */
+  if(t==='GLID'||t==='GLIM')return'glider.glb';
   if(BIZJET_MODEL&&BIZJET.includes(t))return BIZJET_MODEL;
   if(REGIONAL_MODEL&&REGIONAL.includes(t))return REGIONAL_MODEL;
   if(EJET.includes(t))return'a320_200.glb';
@@ -194,5 +200,6 @@ function modelFor(t,cat){ t=(t||'').toUpperCase();
   cat=(cat||'').toUpperCase();
   if(cat==='A1')return'c172.glb';
   if(cat==='A7')return'b429.glb';
+  if(cat==='B1')return'glider.glb';   // B1 = glider / sailplane
   return t[0]==='A'?'a320_v2.glb':'b738_v2.glb';
 }
