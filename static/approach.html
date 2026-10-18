@@ -532,6 +532,10 @@ function tintMaterial(mt){
      already-tinted material and the aircraft would march darker on every theme change. */
   if(mt.userData._origMap===undefined) mt.userData._origMap=mt.map||null;
   if(mt.userData._origCol===undefined && mt.color) mt.userData._origCol=mt.color.clone();
+  /* A model painted as the real airframe (OWN_PAINT in models.js, e.g. ZK-VVS) keeps its own colours in both themes:
+     greying it would throw away the very thing it is for. The lights still do day and night. */
+  if(mt.userData.ownPaint){ mt.map=mt.userData._origMap; if(mt.color&&mt.userData._origCol) mt.color.copy(mt.userData._origCol);
+    if(mt.emissive) mt.emissive.setRGB(0,0,0); mt.needsUpdate=true; return; }
   /* Painted by paintAircraft (static/livery.js): the material takes the painter's picture as its map. With an airline
      livery it goes plain white and lets the picture's colours through, in both themes - the lights already do day and
      night. Without one it keeps its grey, and the picture (white but for windows and doors) only adds the detail. */
@@ -608,14 +612,15 @@ const acLayer={
     this.lowY=isFinite(bb.min.y)?Math.min(0,bb.min.y):0;
     y.rotation.y=sv[0]; p.rotation.x=sv[1]; r.rotation.z=sv[2]; y.scale.setScalar(sv[3]); y.position.y=sv[4];
   },
-  ensureModel(t,cat,cs){
-    const forced=_q.get('force'), key=forced||modelFor(t,cat);   // cat: ADS-B category, used only when the type is unknown (2 Oct)
+  ensureModel(t,cat,cs,hex,reg){
+    const forced=_q.get('force'), key=forced||(typeof modelForAirframe==='function'?modelForAirframe(t,cat,hex,reg):modelFor(t,cat));   // cat: ADS-B category, used only when the type is unknown (2 Oct)
+    const own=typeof OWN_PAINT!=='undefined'&&OWN_PAINT.has(key);   // its own paint (ZK-VVS): no livery, no grey (18 Oct)
     // a forced model keeps its own size, so ?force= tests the MODEL rather than resizing it to the live type
     this.wantSpan=(forced?null:spanFor(t,key))||MODEL_SPAN[key]||this.targetSpan;
     /* cs: the callsign, for the livery. Same model, different airline - an Air NZ A320 followed by a Jetstar one -
        repaints in place rather than reloading. '' is the neutral grey. */
-    this.wantLiv=liveryFor(cs,t); const lk=this.wantLk=this.wantLiv?this.wantLiv.op+'/'+(t||''):'';
-    if(this.mm&&key===this.key&&!this.loading&&lk!==this.livKey){ paintAircraft(this.mm,key,this.wantLiv,this.renderer); this.livKey=lk; }
+    this.wantLiv=own?null:liveryFor(cs,t); const lk=this.wantLk=this.wantLiv?this.wantLiv.op+'/'+(t||''):'';
+    if(this.mm&&key===this.key&&!this.loading&&!own&&lk!==this.livKey){ paintAircraft(this.mm,key,this.wantLiv,this.renderer); this.livKey=lk; }
     /* Same model, different type — a Phenom followed by a Global on the bizjet stand-in. The reload below is
        skipped when the model has not changed, which used to mean the second aircraft kept the first one's
        size. Rescale in place instead: no reload, no flash. */
@@ -624,12 +629,13 @@ const acLayer={
     this.loader.load('/static/'+key,(g)=>{ while(this.holder.children.length){ const old=this.holder.children[0]; this.holder.remove(old); disposeTree(old); } this.props=[];
       const mm=g.scene,box=new THREE.Box3().setFromObject(mm),size=new THREE.Vector3(),c=new THREE.Vector3(); box.getSize(size);box.getCenter(c);
       this.base={w:modelWingWidth(key,size), c:c.clone()}; this.mm=mm;   // true size: by the wings, not the longest side (1 Oct)
+      this.gear=[]; mm.traverse(o=>{ if(o.name&&/^gear_/i.test(o.name)) this.gear.push(o); });   // retracting gear, see gearUp
       this.applySpan(this.wantSpan);   // the LATEST type's span, in case the subject changed while this loaded
-      mm.traverse(o=>{if(o.isMesh&&o.material){(Array.isArray(o.material)?o.material:[o.material]).forEach(mt=>{mt.metalness=0.25;mt.roughness=0.6;tintMaterial(mt);});}});
+      mm.traverse(o=>{if(o.isMesh&&o.material){(Array.isArray(o.material)?o.material:[o.material]).forEach(mt=>{mt.metalness=0.25;mt.roughness=0.6;mt.userData.ownPaint=own;tintMaterial(mt);});}});
       const or=MODEL_ORIENT[key]||{}; this.holder.rotation.set((or.pitch||0)*D2R,(or.yaw||0)*D2R,(or.roll||0)*D2R);
       this.holder.add(mm); this.props=findProps(mm).concat(splitRotor(mm,key)).concat(splitParts(mm,key));
       // painted AFTER the props and rotors are split out, so the parts that turn are painted where they ended up
-      paintAircraft(mm,key,this.wantLiv,this.renderer); this.livKey=this.wantLk;   // every load: windows on the grey ones too
+      if(!own) paintAircraft(mm,key,this.wantLiv,this.renderer); this.livKey=this.wantLk;   // every load: windows on the grey ones too (own paint has its own)
       this.measureLow(); this.key=key; this.loading=false; },undefined,()=>{this.loading=false;});
   },
   render(gl,args){
@@ -690,7 +696,8 @@ const acLayer={
        below the centre: lift by the difference, never more. (A fixed 20 m blend let a deep model in the 3x tower shot,
        an A380, dip up to 6 m under the runway on short final; 12 Oct review.) */
     { const agl=a.gnd?0:Math.max(0,a.altM-(a.ground!=null?a.ground:SITE.elev));
-      this.yaw.position.y=Math.max(0,-(this.lowY||0)*modelScale-agl*VE); }
+      this.yaw.position.y=Math.max(0,-(this.lowY||0)*modelScale-agl*VE);
+      if(this.gear&&this.gear.length){ this.gearIsUp=gearUp(this.gearIsUp,a.gnd,agl,_q.get('gear')); for(const o of this.gear) o.visible=!this.gearIsUp; } }
     if(this.props&&this.props.length){
       const pa=performance.now()/1000*PROP_REV*Math.PI*2;
       for(let i=0;i<this.props.length;i++) this.props[i].p.rotation[this.props[i].axis]=pa;
@@ -867,6 +874,12 @@ function webglOK(){
    60 fps with six blades aliases into standing still or running backwards — the wagon-wheel effect,
    where the true number produces a false picture. PROP_REV is chosen to read as turning. */
 const PROP_REV=2.0;
+/* ---------- retracting landing gear (main, 18 Oct 2026) ----------
+   A model whose gear meshes are named gear_* (the Yak-3 so far) shows its wheels on the ground and on the way in and
+   hides them in the air: up once the aircraft is more than GEAR_UP_M above the ground, down again below GEAR_DN_M.
+   Two heights, not one, so an aircraft holding 300 m does not flicker. ?gear=up or ?gear=down overrides. */
+const GEAR_UP_M=300, GEAR_DN_M=250;
+function gearUp(wasUp,gnd,agl,q){ if(q==='up') return true; if(q==='down') return false; if(gnd) return false; return wasUp?agl>=GEAR_DN_M:agl>GEAR_UP_M; }
 function isAncestor(a,b){ let n=b.parent; while(n){ if(n===a) return true; n=n.parent; } return false; }
 function findProps(root){
   const out=[];
@@ -1556,7 +1569,7 @@ async function poll(){
       fix={lon:a.lon,lat:a.lat,altM,ground:gM,hdg,roll,pitch,dist:distNm(a),gnd:a.alt_baro==='ground',
            vE:Math.sin(trk)*gsMs, vN:Math.cos(trk)*gsMs, vU:a.alt_baro==='ground'?0:vsS*0.00508,
            gs:gsMs, trk, rate, t:tFix, key};
-      acLayer.ensureModel(a.t,a.category,a.flight);
+      acLayer.ensureModel(a.t,a.category,a.flight,a.hex,a.r);   // hex + registration: an airframe with its own paint (ZK-VVS)
       acDl=(a&&a.datalink&&typeof a.datalink==='object')?a.datalink:null;
       { const dlt=dlInfoText(acDl,Date.now()/1000); document.getElementById('d_dl').textContent=dlt; document.getElementById('d_dlrow').style.display=dlt?'':'none'; }
       document.getElementById('d_cs').textContent=(a.flight||'').trim()||(a.hex||'').toUpperCase();
@@ -1618,6 +1631,12 @@ const CAM_TAU_POS=0.6, CAM_TAU_HDG=1.5;   // seconds; heading is smoothed harder
    the map keeps its framing, the aircraft reads clearly, and the chase view stays true to scale. */
 const TOWER_AC=(_q.get('acscale')!=null&&_q.get('acscale')!=='')?+_q.get('acscale'):3;
 let modelScale=1, modelWant=1;
+/* Zoom limits that scale with the aircraft (main, 18 Oct 2026). The tower lens and the chase distance already scale with
+   the span, but their limits did not: 2.5 deg and 20 m are where an A320 just reaches full zoom, so a 9 m Yak-3 or L-39 hit
+   them early and stayed a quarter the size. Below 36 m the limits now shrink with the span; at 36 m and up they are
+   exactly what they were. Floors of 0.6 deg and 5 m keep the lens and the camera sane for anything smaller. */
+function towerFov(span,zoom){ const k=Math.min(1,span/36); return Math.max(Math.max(0.6,2.5*k),Math.min(50,TOWER_FOV*(span/36)/zoom)); }
+function chaseBack(span,zoom){ const k=Math.min(1,span/36); return Math.max(Math.max(5,20*k),Math.min(1500,span*CHASE_SPANS/zoom)); }
 /* Map gestures belong to the user only in Free mode. On the rails the camera is ours every frame, so
    the map's own scroll/pinch/drag are turned off — otherwise a pinch fights the camera and loses. */
 function mapGestures(on){ if(!map)return;
@@ -1677,6 +1696,15 @@ document.getElementById('map').addEventListener('wheel',e=>{ if(camMode==='free'
     const f=document.querySelector('.cambtn[data-cam=free]'); if(f) f.textContent='Free';
   }
 })();
+/* Free travels with the aircraft (main, 18 Oct 2026). Free hands the camera to the map's own gestures; it used to stay
+   where it was left while the aircraft flew on, so within seconds a small aircraft was a speck. Each frame the view now
+   moves by exactly as far as the aircraft did - your zoom, tilt, rotation and any panning are kept as they are. Never
+   while the map is being dragged or zoomed: the next frame catches up. A different aircraft starts fresh. */
+let freePrev=null;
+function freeFollow(ac){ if(!ac) return; if(!freePrev||freePrev.key!==ac.key){ freePrev={lon:ac.lon,lat:ac.lat,key:ac.key}; return; }
+  if(map.isMoving()) return;
+  const c=map.getCenter(); map.jumpTo({center:[c.lng+(ac.lon-freePrev.lon), c.lat+(ac.lat-freePrev.lat)]}); freePrev.lon=ac.lon; freePrev.lat=ac.lat;
+}
 function aimCamera(fromLon,fromLat,fromAlt,toLon,toLat,toAlt){
   // MapLibre has no free-camera API (that's Mapbox) — derive center/zoom/pitch/bearing from a from→to pair instead.
   // Pitch is clamped to maxPitch (85°): the camera can never look *up*, so a tower shot at an aircraft above the
@@ -1699,7 +1727,8 @@ function tick(){
     return;
   }
   lastSeenT=performance.now(); idle=false;
-  if(camMode==='free'){ map.triggerRepaint(); return; }
+  if(camMode==='free'){ freeFollow(aircraft); map.triggerRepaint(); return; }
+  freePrev=null;
   const a=aircraft;
   /* Director cut, chase → tower. Measured as height above the field, not distance from the airport
      reference point: on a 3° slope CUT_FT ≈ 500 ft is ~1.6 nm from the threshold — whichever end of
@@ -1718,7 +1747,7 @@ function tick(){
     const dE=(a.lon-SITE.tower.lon)*mPerLon, dN=(a.lat-SITE.tower.lat)*mPerLat, dH=Math.hypot(dE,dN)||1;
     const acAlt=a.altM*VE+10;
     // the tower lens scales with the aircraft too, so a Cessna on short final reads like an airliner does
-    const fov=Math.max(2.5,Math.min(50,TOWER_FOV*(acSpan/36)/towerZoom));
+    const fov=towerFov(acSpan,towerZoom);
     map.setVerticalFieldOfView(fov); camS=null;   // re-seed the chase smoothing on the way back
     // MapLibre clamps pitch at 85, so the camera can never sit below the aircraft's eye line; it is
     // lifted only as far as that limit demands, which keeps it as close to the cab as the engine allows.
@@ -1741,9 +1770,13 @@ function tick(){
     else { const kp=1-Math.exp(-dtC/CAM_TAU_POS), kh=1-Math.exp(-dtC/CAM_TAU_HDG);
       camS.lon+=(a.lon-camS.lon)*kp; camS.lat+=(a.lat-camS.lat)*kp; camS.alt+=(a.altM-camS.alt)*kp;
       camS.hdg=lerpAng(camS.hdg,a.hdg,kh); camS.t=tNow; }
-    const back=Math.max(20,Math.min(1500, acSpan*CHASE_SPANS/chaseZoom)), up=back*0.35, h=camS.hdg*D2R;
-    if(shot==='orbit'){ const p=orbitPos({lon:camS.lon,lat:camS.lat,alt:camS.alt*VE,hdg:camS.hdg},back);
-      aimCamera(p.lon,p.lat,p.alt, camS.lon,camS.lat,camS.alt*VE); return; }
+    const back=chaseBack(acSpan,chaseZoom), up=back*0.35, h=camS.hdg*D2R;
+    /* Orbit pivots on the aircraft AS DRAWN, not on the smoothed chase point (main, 18 Oct 2026). The smoothed point lags
+       the aircraft by speed x CAM_TAU_POS - about 46 m at 150 kt - which a 200 m orbit round a C-5 hides, but a 28 m orbit
+       round a Yak-3 cannot: the circle's centre sat behind the tail, so "in front" was still behind it and the camera
+       swung through the model on the way round. Only the heading stays smoothed, so the view still holds through turns. */
+    if(shot==='orbit'){ const p=orbitPos({lon:a.lon,lat:a.lat,alt:a.altM*VE,hdg:camS.hdg},back);
+      aimCamera(p.lon,p.lat,p.alt, a.lon,a.lat,a.altM*VE); return; }
     const cLon=camS.lon-Math.sin(h)*back/mPerLon, cLat=camS.lat-Math.cos(h)*back/mPerLat;
     aimCamera(cLon,cLat,camS.alt*VE+up, camS.lon,camS.lat,camS.alt*VE); }
 }

@@ -20,7 +20,7 @@ const MODEL_ORIENT={ 'a320_200.glb':{yaw:-90}, 'atr72.glb':{yaw:90}, 'b777_klm.g
   'e7.glb':{yaw:0}, 'c5.glb':{yaw:180}, 'nh90.glb':{yaw:-90},   // NH90: direction from the TAIL ROTOR, as for the AS350
   'sh60.glb':{yaw:180},   // SH-60: cockpit and nose gear at +Z, tail rotor at -Z
   'glider.glb':{yaw:180},   // Glider: canopy and nose wheel at +Z, rudder and tail wheel at -Z, as on the SH-60
-  'as350.glb':{yaw:0}, 'pc24.glb':{yaw:-90}, 'tbm9.glb':{yaw:-90} };   /* all measured with the corrected mapping; confirm each on a LIVE aircraft before release. The
+  'as350.glb':{yaw:0}, 'pc24.glb':{yaw:-90}, 'tbm9.glb':{yaw:-90}, 'yak3.glb':{yaw:-90}, 'yak3_zkvvs.glb':{yaw:-90}, 'l39.glb':{yaw:0}, 'spit.glb':{yaw:180} };   /* all measured with the corrected mapping; confirm each on a LIVE aircraft before release. The
      AS350 is a helicopter: its direction came from the TAIL ROTOR's position, because the fin test reads the highest
      point and on a helicopter that is the main rotor. */
 /* Real wingspan in metres, per model. Every model is normalised to this at load, so a Cessna is drawn
@@ -43,7 +43,7 @@ const MODEL_SPAN={ 'c172.glb':11.0, 'b429.glb':13.0, 'c208.glb':15.9, 'atr72.glb
   'sh60.glb':14.06,  /* SH-60 Seahawk: 16.36 m rotor disc. Its four blades sit diagonally in the file, so the lateral extent
      (1689.6 units) is NOT the disc: the tips are 982.9 units from the hub (all four within 0.4). 14.06 draws the disc at 16.36 m. */
   'glider.glb':15.0,   // 15 m class sailplane (the file reads 14.99 m across)
-  'as350.glb':9.31, 'pc24.glb':17.0, 'tbm9.glb':12.8 };    /* NOT the 10.69 m rotor diameter, deliberately. This number is applied to the model's lateral
+  'as350.glb':9.31, 'pc24.glb':17.0, 'tbm9.glb':12.8, 'yak3.glb':9.2, 'yak3_zkvvs.glb':9.2, 'l39.glb':9.46, 'spit.glb':11.23 };    /* NOT the 10.69 m rotor diameter, deliberately. This number is applied to the model's lateral
      extent, and with THREE blades at 120° no blade lies straight across, so the width undersells the disc. Sized at
      10.69 the rotor measured 12.3 m across and the fuselage 12.9 m (real 10.69 / 10.93) — both ~15–18% big. 9.31 puts
      the rotor at its true 10.69 m and the fuselage at 11.2 m (+2.5%). Two-blade rotors and fixed-wing are unaffected. */   // Phenom 300E and CRJ-900 as modelled; TYPE_SPAN resizes each type
@@ -65,6 +65,7 @@ function modelWingWidth(key,size){
    The catch-all deliberately IGNORES this table (see spanFor): a 16 m Phenom shrunk onto a 737 is not an
    improvement. */
 const TYPE_SPAN={
+  YK9:9.74, L59:9.54,   // on the Yak-3 and L-39 models (main, 18 Oct)
   // twin turboprops on the ATR stand-in — previously all 27 m
   B350:17.65, BE20:16.61, BE30:16.61, BE9L:15.32, SF34:21.44, SB20:24.76, DH8A:25.91, DH8B:25.91, DH8C:27.43, DH8D:28.42,
   JS31:15.85, JS32:16.00, JS41:18.42, E120:19.78, D228:16.97, DHC6:19.81, F50:29.0, ATP:30.63, AT43:24.57, AT45:24.57, AT46:24.57,
@@ -96,6 +97,17 @@ function spanFor(t,key){
   t=(t||'').toUpperCase();
   if(key==='b738_v2.glb'||key==='a320_v2.glb') return MODEL_SPAN[key]||null;   // the catch-all keeps its own size
   return TYPE_SPAN[t]||MODEL_SPAN[key]||null;
+}
+/* ---------- one airframe, its own paint (18 Oct 2026) ----------
+   A few aircraft get a model painted as the real one, matched by ICAO hex first and registration second.
+   ZK-VVS: the Yak-3M flown at Omaka (Blenheim) - red nose with the black arrow and FULL NOISE, yellow 35,
+   ZK-VVS on the tail; painted from AJ's photo onto the Yak's own fuselage texture.
+   OWN_PAINT: models whose textures ARE the paint - approach.html keeps their colours instead of greying them. */
+const REG_MODEL={ 'C81ECD':'yak3_zkvvs.glb', 'ZK-VVS':'yak3_zkvvs.glb' };
+const OWN_PAINT=new Set(['yak3_zkvvs.glb']);
+function modelForAirframe(t,cat,hex,reg){
+  const k=REG_MODEL[String(hex||'').trim().toUpperCase()]||REG_MODEL[String(reg||'').trim().toUpperCase()];
+  return k||modelFor(t,cat);
 }
 function modelFor(t,cat){ t=(t||'').toUpperCase();
   /* Single-engine turboprops get the Caravan; the twins and the regionals keep the ATR. */
@@ -156,6 +168,13 @@ function modelFor(t,cat){ t=(t||'').toUpperCase();
      Daher TBM 700/850/9xx - "Daher TBM 930" by helijah, CC-BY-4.0. Low-wing, so no longer the Caravan. (main, 17 Oct 2026) */
   if(t==='PC24')return'pc24.glb';
   if(t==='TBM7'||t==='TBM8'||t==='TBM9')return'tbm9.glb';
+  /* Yakovlev Yak-3 (and the near-identical Yak-9) - "Yak3" by manilov.ap, CC-BY-4.0. The file sat 38.8 deg skewed; PiLNK
+     squared it with a root rotation, geometry untouched. Aero L-39 / L-59 Albatros - "L39" by manilov.ap, CC-BY-4.0.
+     Both were drawn as the 737 catch-all before. (main, 18 Oct 2026) */
+  if(t==='YK3'||t==='YK9'||t==='YAK3'||t==='YAK9')return'yak3.glb';   // adsb_database spells them YAK3/YAK9 (ZK-VVS is YAK3)
+  if(t==='L39'||t==='L59')return'l39.glb';
+  /* Supermarine Spitfire - "Spitfire 1.0" by graphix, CC-BY-SA-4.0 (the adapted model stays CC-BY-SA). Nose at +Z. (main, 18 Oct) */
+  if(t==='SPIT')return'spit.glb';
   if(BIZJET_MODEL&&BIZJET.includes(t))return BIZJET_MODEL;
   if(REGIONAL_MODEL&&REGIONAL.includes(t))return REGIONAL_MODEL;
   if(EJET.includes(t))return'a320_200.glb';
