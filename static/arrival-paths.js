@@ -21,6 +21,12 @@
     matchKm: 4,                                  // best path under 4 km mean distance
     lookS: 300,                                  // ...over the last 5 minutes of track
     lockKm: 35,                                  // a match made further out than this sticks (paths share the final)
+    // Looser ribbon criteria (AJ, 19 Oct 2026, QFA147): being ON a learned arrival path is what counts, not pointing at
+    // the airport - a downwind leg flies away from it. A fresh match needs: below maxAltFt, within matchKm of the path
+    // now, descended over the remembered track, not climbing away from its lowest point, and moving forward along the
+    // path by progressKm. Once matched it sticks while it stays on (or comes back to) that path within stickyS - level
+    // holds and vectors included - until it climbs gaClimbFt above its lowest point (go-around / missed approach).
+    maxAltFt: 20000, progressKm: 1, stickyS: 600, gaClimbFt: 500,
     keepEveryS: 10,                              // track memory: one point per 10 s
     activeS: 1800,                               // active runway from the last 30 min of landings
     dimOpacity: 0.3, brightOpacity: 0.85,
@@ -122,7 +128,7 @@
   }
 
   // ── memory of recent tracks + landings (browser only, never sent anywhere) ──
-  var tracks = {}, landings = [], landedBy = {}, locked = {};
+  var tracks = {}, landings = [], landedBy = {}, locked = {}, stick = {};
   function observe(a, cs, nowS) {
     if (!a || !cs || a.lat == null || a.lon == null) return;
     var t = tracks[cs] || (tracks[cs] = []);
@@ -135,7 +141,7 @@
     if (r && (!landedBy[cs] || nowS - landedBy[cs] > 600)) { landedBy[cs] = nowS; landings.push({ t: nowS, rwy: r }); }
     while (landings.length && nowS - landings[0].t > C.activeS) landings.shift();
   }
-  function forget(cs) { delete tracks[cs]; delete locked[cs]; }
+  function forget(cs) { delete tracks[cs]; delete locked[cs]; delete stick[cs]; }
 
   // ── state + Leaflet drawing (only when the overlay is on) ──
   var S = { enabled: false, doc: null, unavailable: false, on: false, layer: null, timer: null };
@@ -167,30 +173,65 @@
   function clear(map) { if (S.layer && map) { try { map.removeLayer(S.layer); } catch (e) {} } S.layer = null; }
 
   // The followed/selected aircraft's path ({path, dist_km}) or null. Same decision the card line uses.
+  function pathById(id) { return id == null ? null : S.doc.paths.filter(function (p) { return p.id === id; })[0] || null; }
+  // km from the start of the path to the point on it nearest (lat, lon)
+  function alongKm(p, lat, lon) {
+    var pr = profileAt(p, lat, lon); if (!pr) return 0;
+    var d = 0;
+    for (var i = 0; i < pr.seg; i++) d += km(p.line[i][0], p.line[i][1], p.line[i + 1][0], p.line[i + 1][1]);
+    var b = p.line[Math.min(pr.seg + 1, p.line.length - 1)];
+    return d + pr.t * km(p.line[pr.seg][0], p.line[pr.seg][1], b[0], b[1]);
+  }
+
   function matchFor(a, cs, nowS) {
     if (!S.enabled || !S.doc || !S.doc.paths || !S.doc.paths.length) return null;
-    var tr = tracks[cs]; if (!isArriving(tr)) return null;
+    var tr = tracks[cs]; if (!tr || !tr.length) return null;
+    var first = tr[0], last = tr[tr.length - 1];
+    // Never: no altitude, or above FL200 (cruise overhead). Distance needs no cap of its own: being within matchKm of
+    // a learned path already keeps it near the airport.
+    if (last.alt == null || last.alt > C.maxAltFt) {
+      delete stick[cs]; delete locked[cs]; return null;
+    }
+    var st = stick[cs];
+    if (st && nowS - st.t > C.stickyS) { delete stick[cs]; delete locked[cs]; st = null; }
+    if (st) {
+      st.minAlt = Math.min(st.minAlt, last.alt);
+      if (last.alt - st.minAlt > C.gaClimbFt) { delete stick[cs]; delete locked[cs]; return null; }   // climbing away
+    }
     var dl = a && a.datalink;
     var own = dl && dl.rwy && C.rwys[String(dl.rwy).toUpperCase()] != null ? String(dl.rwy).toUpperCase() : null;
     var rwy = own || activeRwy(landings, nowS), m = null;
     // All paths share the last few km of final, so a path matched while the aircraft was still
     // further out than lockKm is kept as long as the aircraft stays within matchKm of it.
-    var lk = locked[cs] && S.doc.paths.filter(function (p) { return p.id === locked[cs]; })[0];
-    if (lk) m = match(tr, [lk], null);
-    if (!m) {
-      m = match(tr, S.doc.paths, rwy);
-      var last = tr[tr.length - 1];
-      if (m && km(C.refLat, C.refLon, last.lat, last.lon) > C.lockKm) locked[cs] = m.path.id;
-      else if (!m) delete locked[cs];
+    // Whatever matched before, the aircraft has to be within matchKm of the path NOW: a ribbon 10 km away is wrong.
+    var near = function (p) { return p && kmToLine(last.lat, last.lon, p.line) < C.matchKm; };
+    var lk = pathById(locked[cs]);
+    if (lk && near(lk)) m = match(tr, [lk], null);
+    // Matched within stickyS and still (or again) on that path: keep it - level holds, vectors back onto it and the
+    // 5-minute average spoiled by an excursion all included. Its descent/progress was proven when it first matched.
+    if (!m && st) {
+      var sp = pathById(st.id);
+      if (near(sp)) m = { path: sp, dist_km: kmToLine(last.lat, last.lon, sp.line) };
     }
+    if (!m) {
+      var cand = match(tr, S.doc.paths, rwy);
+      // A fresh match must look like an arrival flying the path: on it now, coming down (not climbing away from its
+      // lowest point), and moving forward along it - a departure on the same line goes the other way and climbs.
+      var low = Math.min.apply(null, tr.map(function (q) { return q.alt == null ? Infinity : q.alt; }));
+      if (cand && near(cand.path) && first.alt != null && first.alt - last.alt >= 300 && last.alt - low <= C.gaClimbFt &&
+          alongKm(cand.path, last.lat, last.lon) - alongKm(cand.path, first.lat, first.lon) >= C.progressKm) m = cand;
+      if (m && km(C.refLat, C.refLon, last.lat, last.lon) > C.lockKm) locked[cs] = m.path.id;
+    }
+    if (m) stick[cs] = { id: m.path.id, t: nowS, minAlt: st ? st.minAlt : last.alt };
     return m;
   }
 
   function lineFor(a, cs, nowS) {
     if (!S.enabled || !S.doc || !S.doc.paths || !S.doc.paths.length) return '';
+    var dl = a && a.datalink, m = matchFor(a, cs, nowS);
+    if (m) return cardLine(true, m, dl && dl.next_wp, S.doc.window_days);
     if (!isArriving(tracks[cs])) return '';
-    var dl = a && a.datalink;
-    return cardLine(true, matchFor(a, cs, nowS), dl && dl.next_wp, S.doc.window_days);
+    return cardLine(true, null, dl && dl.next_wp, S.doc.window_days);   // arriving, but off every learned path
   }
 
   // ── 3D Approach helpers (17 Oct 2026) ──
@@ -217,6 +258,29 @@
     for (var i = pr.seg + 1; i < p.line.length; i++) out.push(p.line[i]);
     return out;
   }
+  /* The camera's position from a combined clip matrix (projection * view * model, 16 numbers column-major as three.js and
+     maplibre store them), in the model's own frame. The eye is the one point a perspective matrix sends to clip w = 0 with
+     x = y = 0, so it is the inverse applied to (0,0,1,0). null for an orthographic or broken matrix (no eye point). */
+  function eyeFromClip(m) {
+    if (!m || m.length !== 16) return null;
+    var a00 = m[0], a01 = m[1], a02 = m[2], a03 = m[3], a10 = m[4], a11 = m[5], a12 = m[6], a13 = m[7],
+        a20 = m[8], a21 = m[9], a22 = m[10], a23 = m[11], a30 = m[12], a31 = m[13], a32 = m[14], a33 = m[15];
+    var b00 = a00 * a11 - a01 * a10, b01 = a00 * a12 - a02 * a10, b02 = a00 * a13 - a03 * a10, b03 = a01 * a12 - a02 * a11,
+        b04 = a01 * a13 - a03 * a11, b05 = a02 * a13 - a03 * a12, b06 = a20 * a31 - a21 * a30, b07 = a20 * a32 - a22 * a30,
+        b08 = a20 * a33 - a23 * a30, b09 = a21 * a32 - a22 * a31, b10 = a21 * a33 - a23 * a31, b11 = a22 * a33 - a23 * a32;
+    var det = b00 * b11 - b01 * b10 + b02 * b09 + b03 * b08 - b04 * b07 + b05 * b06;
+    if (!isFinite(det) || Math.abs(det) < 1e-300) return null;
+    // third column of the inverse (gl-matrix invert, entries 8..11), without the 1/det: it cancels in x/w
+    var x = a10 * b10 - a11 * b08 + a13 * b06, y = a01 * b08 - a00 * b10 - a03 * b06,
+        z = a30 * b04 - a31 * b02 + a33 * b00, w = a21 * b02 - a20 * b04 - a23 * b00;
+    if (!isFinite(w) || Math.abs(w) < 1e-12 * (Math.abs(x) + Math.abs(y) + Math.abs(z) + 1e-300)) return null;
+    return [x / w, y / w, z / w];
+  }
+  /* What the whole-approach ribbon depends on. While this stays the same the page keeps the ribbon it built - the aircraft
+     flies along a still ribbon instead of one re-cut at its position every poll. QNH and terrain exaggeration move heights. */
+  function ribbonSig(key, path, qnh, ve) {
+    return [key || '', path ? path.id : '', typeof qnh === 'number' ? Math.round(qnh * 10) : 'std', ve].join('|');
+  }
   // '400 ft above usual' / '300 ft below usual' / 'on the usual profile' (within 100 ft) / '' when unknown.
   function deltaText(alt, usual) {
     if (typeof alt !== 'number' || typeof usual !== 'number') return '';
@@ -230,6 +294,7 @@
     finalRwy: finalRwy, lineWidth: lineWidth, lineStyle: lineStyle, cardLine: cardLine,
     observe: observe, forget: forget, draw: draw, clear: clear, lineFor: lineFor, statusText: statusText,
     matchFor: matchFor, profileAt: profileAt, ribbonAhead: ribbonAhead, deltaText: deltaText,
+    eyeFromClip: eyeFromClip, ribbonSig: ribbonSig,
     _state: S, _tracks: tracks, _landings: landings,
     // Browser glue: fetch, show the toggle row, keep the card line current.
     load: function (fetchFn, onDone) {

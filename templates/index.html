@@ -13,7 +13,7 @@
      is harmless. Served locally so the dashboard needs no network for it. -->
 <script src="/static/aircraft-shapes.js"></script>
 <script src="/static/datalink-card.js?v=dl5"></script>
-<script src="/static/arrival-paths.js?v=ap1"></script>
+<script src="/static/arrival-paths.js?v=ap4"></script>
 <script defer src="/static/datalink-board.js?v=b4"></script>
 <script src="/static/datalink-map.js?v=m2"></script>
 <script src="/static/fixes-nz.js?v=f1"></script>
@@ -258,6 +258,8 @@
   [data-theme="dark"] .rwy-chip.on .rwy-dot{background:#a3e635;}
   .rwy-chip:focus-visible{outline:1px solid #a3e635;outline-offset:1px;}
   .rwy-msg{font-size:0.62rem;color:var(--text-dim);}
+  .rwy-km{display:inline-flex;align-items:center;gap:5px;font-family:'Share Tech Mono',monospace;font-size:0.62rem;color:var(--text-dim);}
+  .rwy-km select{min-height:26px;background:var(--bg-card);color:var(--text);border:1px solid rgba(100,116,139,0.35);border-radius:6px;font:inherit;padding:2px 4px;}
   /* ── Altitude Profile slide-up panel ─────────────────────────────── */
   /* Height: was 38% / min 220px, which ate a third of the map. Smaller by
      default and DRAGGABLE from the top edge — the right size depends on the
@@ -1805,7 +1807,7 @@
               <div class="av-toggle-row"><span style="display:flex;align-items:center;"><span class="av-dot" style="background:#7dd3fc;"></span>Airfields</span><label class="toggle-switch" style="transform:scale(0.85);"><input type="checkbox" id="avAirfields" onchange="toggleAirfields(this.checked)"/><span class="toggle-slider"></span></label></div>
               <div class="av-toggle-row" title="Side-on altitude view — slides up from the bottom. Shows the vertical separation between aircraft that the top-down map can't.">​<span style="display:flex;align-items:center;"><span class="av-dot" style="background:#36d3ff;"></span>Altitude View</span><label class="toggle-switch" style="transform:scale(0.85);"><input type="checkbox" id="avAltProfile" onchange="toggleAltProfile(this.checked)"/><span class="toggle-slider"></span></label></div>
               <div class="av-toggle-row" title="Extended runway centerlines with 1 km distance ticks — see whether an aircraft on approach is tracking the runway, and how far out it is."><span style="display:flex;align-items:center;"><span class="av-dot" style="background:#a3e635;"></span>Runway Centerlines</span><label class="toggle-switch" style="transform:scale(0.85);"><input type="checkbox" id="avRunways" onchange="toggleRunways(this.checked)"/><span class="toggle-slider"></span></label></div>
-              <div class="av-toggle-row" id="rwyPickRow" style="display:none;padding-left:18px;justify-content:flex-start;"><div id="rwyChips" class="rwy-chips" role="group" aria-label="Runway airports"></div></div>
+              <div class="av-toggle-row" id="rwyPickRow" style="display:none;padding-left:18px;justify-content:flex-start;flex-wrap:wrap;gap:6px;"><div id="rwyChips" class="rwy-chips" role="group" aria-label="Runway airports"></div><label class="rwy-km" title="How far out the centrelines are drawn">Length <select id="rwyKm" onchange="setRunwayKm(this.value)"><option value="5">5 km</option><option value="10">10 km</option><option value="15">15 km</option><option value="20" selected>20 km</option><option value="25">25 km</option><option value="30">30 km</option></select></label></div>
             </div>
             <div class="av-status" id="avStatus">Enable overlay then select an airport</div>
             <div style="border-top:1px solid rgba(120,140,170,0.18);margin:10px 0 8px;"></div>
@@ -3471,7 +3473,7 @@ function skyAviation() {
     apts = runwayAirports.filter(function(a) { return runwaySelected.indexOf(a.icao) >= 0; });
   }
   if (airfieldsVisible && Array.isArray(airportDB)) fields = skyFieldList();
-  return skyAvExtra({ action: 'aviation', runways: apts, airfields: fields });
+  return skyAvExtra({ action: 'aviation', runways: apts, airfields: fields, rwyKm: rwyKm });
 }
 // Batched: a 2D redraw cascades through several wrapped functions; they all land in one build, after the 2D work is done.
 // A failure here is logged and never thrown back into the 2D code that triggered it.
@@ -8881,7 +8883,7 @@ function clearFootprint() {
 
 // ── RUNWAY CENTERLINES (July 2026) ─────────────────────────
 // Extended runway centerlines for the selected airport, with 1 km
-// distance ticks out to 20 km off each threshold — so you can eyeball
+// distance ticks out to 20 km (5-30 km, chosen next to the chips) off each threshold — so you can eyeball
 // whether an aircraft on approach is tracking the runway centreline and
 // how far out it is. Data comes from pilnk.io/api/runways.php (the
 // airport_runways table, scoped to fleet coverage — global-by-default).
@@ -8893,6 +8895,22 @@ var runwayLayer = null;         // L.featureGroup of all runway geometry
 var runwayAirports = [];        // 6 closest airports (each with .runways[])
 var runwaySelected = [];        // ICAOs drawn, in runwayAirports order
 var rwyPending = null;          // a saved set waiting for the airport list (My Setup restore)
+// Centreline length (AJ 18 Oct 2026): 5-30 km in 5 km steps, 20 by default; anything else is 20.
+var RWY_KMS = [5, 10, 15, 20, 25, 30];
+var rwyKm = 20;
+function rwyKmOk(v) { v = Number(v); return RWY_KMS.indexOf(v) >= 0 ? v : 20; }
+function setRunwayKm(v) {
+  rwyKm = rwyKmOk(v);
+  var s = document.getElementById('rwyKm'); if (s) s.value = String(rwyKm);
+  drawRunways();
+}
+// An end's approach bearing: the one pilnk.io fitted to the arrivals PiLNK recorded there (runways.php
+// <end>_brg_obs, 18 Oct 2026) when it has one and it is within 3 deg of the runway; else the runway's own line.
+function rwyOutBearing(obs, own) {
+  if (typeof obs !== 'number' || !isFinite(obs)) return own;
+  var d = Math.abs(obs - own) % 360; if (d > 180) d = 360 - d;
+  return d <= 3 ? obs : own;
+}
 
 // Project a point [lat,lon] along a true bearing (deg) for a distance (m).
 function rwyProject(lat, lon, brgDeg, distM) {
@@ -9018,8 +9036,8 @@ function drawRunways() {
     // heading is rounded to whole degrees and drifts ~1° from the true track,
     // which fans out to a few hundred metres by 20 km.
     var brg = rwyBearing(rw.le_lat, rw.le_lon, rw.he_lat, rw.he_lon);
-    var leOut = (brg + 180) % 360;   // off the le threshold, away from the runway
-    var heOut = brg;                 // off the he threshold, away from the runway
+    var leOut = rwyOutBearing(rw.le_brg_obs, (brg + 180) % 360);   // off the le threshold, away from the runway
+    var heOut = rwyOutBearing(rw.he_brg_obs, brg);                 // off the he threshold, away from the runway
 
     // Runway body — solid, bright.
     L.polyline([[rw.le_lat, rw.le_lon], [rw.he_lat, rw.he_lon]], {
@@ -9038,12 +9056,12 @@ function drawRunways() {
 }
 
 function rwyCenterline(lat, lon, brg, col, shadow) {
-  var end = rwyProject(lat, lon, brg, 20000);
+  var end = rwyProject(lat, lon, brg, rwyKm * 1000);
   L.polyline([[lat, lon], end], {
     color: col, weight: 1.5, opacity: 0.7, dashArray: '6 5', pane: 'avOverlay', interactive: false
   }).addTo(runwayLayer);
-  // Distance ticks every 1 km; longer + labelled at 5/10/15/20 km.
-  for (var km = 1; km <= 20; km++) {
+  // Distance ticks every 1 km; longer + labelled every 5 km, out to the chosen length.
+  for (var km = 1; km <= rwyKm; km++) {
     var p = rwyProject(lat, lon, brg, km * 1000);
     var major = (km % 5 === 0);
     var halfM = major ? 325 : 175;
@@ -10569,6 +10587,7 @@ window.PilnkOptions = (function () {
     var u = activeOf(['unitNm', 'unitKm']);                 if (u) s.ringUnit = (u === 'unitKm') ? 'km' : 'nm';
 
     if (typeof runwaySelected !== 'undefined' && runwayAirports.length) s.rwyAirports = runwaySelected.slice();
+    if (typeof rwyKm !== 'undefined') s.rwyKm = rwyKm;
     var sl = wxSlider();          if (sl)               s.wxOpacity  = sl.value;
 
     s.theme    = lsGet('pilnk-theme');
@@ -10607,6 +10626,7 @@ window.PilnkOptions = (function () {
 
     // The runway airport list is fetched from runways.php, so it may not be populated yet.
     // rwyAirports is the set (10 Oct); rwyAirport is one airport from older saves.
+    if (s.rwyKm != null) call('setRunwayKm', s.rwyKm);   // checked there: anything but 5-30 in 5s is 20
     var rwy = Array.isArray(s.rwyAirports) ? s.rwyAirports : (s.rwyAirport ? [s.rwyAirport] : null);
     if (rwy) {
       // Not loaded yet (runways off, or runways.php still answering): leave it for loadRunwayData,

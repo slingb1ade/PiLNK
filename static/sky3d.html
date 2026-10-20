@@ -450,20 +450,25 @@ function wxTick(now){   // one step of the loop, from the page's frame loop (or 
    The dashboard's Runway Centerlines / Airfields toggles and its airport picker drive this view too, and the dashboard
    sends the data it already holds in an 'aviation' message; nothing is refetched here. Centrelines, 1 km ticks, idents
    and airfields are MapLibre layers draped on the terrain, drawn as 2D draws them. The glide path is new: 3° from 50 ft
-   over each threshold out to 20 km, in the aircraft scene at the aircraft's own vertical scale, with a fence post to the
+   over each threshold out to the chosen length (20 km unless the dashboard says 5-30), in the aircraft scene at the aircraft's own vertical scale, with a fence post to the
    ground every km. ADS-B altitudes are pressure altitudes, so the path is shifted by the field's METAR QNH (27.3 ft per
    hPa, as the 3D Approach view does): an aircraft on the ILS rides on it. The end with traffic lined up on it is bright
    (the Glideslope view's rule: most aligned traffic within 20 km and 3 km of the centreline, else the last active end,
    else the longest runway). */
-const AV={ apt:null, apts:[], fields:[], airspaces:[], navaids:[], fixes:[], icao:'', fp:null, notams:[], built:{asp:null,nav:null,rwy:null}, aspKey:'', aptKey:'', qnh:null, qnhIcao:'', qnhTimer:null, active:null, lastActive:{} };
+const AV={ km:20, apt:null, apts:[], fields:[], airspaces:[], navaids:[], fixes:[], icao:'', fp:null, notams:[], built:{asp:null,nav:null,rwy:null}, aspKey:'', aptKey:'', qnh:null, qnhIcao:'', qnhTimer:null, active:null, lastActive:{} };
 let _pendingAv=null, _gpDirty=false, _aspDirty=false, _rpDirty=false;   // _rpDirty: the replay ribbon re-seats when DEM tiles arrive, same as _gpDirty/_aspDirty
-const AV_GS_TAN=Math.tan(3*Math.PI/180), AV_GS_KM=20, AV_TCH_FT=50, AV_CORR_KM=3;
+const AV_GS_TAN=Math.tan(3*Math.PI/180), AV_GS_KM=20, AV_TCH_FT=50, AV_CORR_KM=3;   // AV_GS_KM: how far out traffic counts as lined up
+/* Centreline length (main, 18 Oct 2026): the dashboard's 5-30 km choice, in 5 km steps; anything else (or an older dashboard
+   that sends none) is the old 20 km. Lines, ticks, labels and the glide path all stop there. */
+const AV_KMS=[5,10,15,20,25,30]; function AV_KM(){ return AV.km; }
+function avKm(v){ return (typeof v==='number'&&AV_KMS.includes(v))?v:20; }
 const AV_FLD_CLS=new Set(['large_airport','medium_airport','small_airport','heliport','seaplane_base']);
 const AV_RWY_LAYERS=['av-rwy-body','av-rwy-ext','av-rwy-tick','av-rwy-lbl'], AV_FLD_LAYERS=['av-fld-dot','av-fld-lbl'];
 function avNum(v,lo,hi){ if(typeof v==='string'&&v.trim()!=='') v=+v; return (typeof v==='number'&&isFinite(v)&&v>=lo&&v<=hi)?v:null; }
 function avIdent(v,max){ return (typeof v==='string'&&/^[A-Za-z0-9-]{1,8}$/.test(v))?v.toUpperCase().slice(0,max):''; }
 function cleanAviation(d){
-  const o={apt:null,apts:[],fields:[],airspaces:[],navaids:[],fixes:[],icao:'',fp:null,notams:[]}; if(!d||typeof d!=='object') return o;
+  const o={km:20,apt:null,apts:[],fields:[],airspaces:[],navaids:[],fixes:[],icao:'',fp:null,notams:[]}; if(!d||typeof d!=='object') return o;
+  o.km=avKm(d.rwyKm);
   if(typeof d.icao==='string'&&/^[A-Z]{4}$/.test(d.icao)) o.icao=d.icao;
   avClean2(d,o);
   // runways: one airport (older dashboards) or a list of them (AJ 10 Oct: several at once), at most 8
@@ -475,7 +480,8 @@ function cleanAviation(d){
       const le_lat=avNum(r.le_lat,-90,90), le_lon=avNum(r.le_lon,-180,180), he_lat=avNum(r.he_lat,-90,90), he_lon=avNum(r.he_lon,-180,180);
       if(le_lat==null||le_lon==null||he_lat==null||he_lon==null) continue;
       rws.push({le_ident:avIdent(r.le_ident,4), le_lat, le_lon, le_elev_ft:avNum(r.le_elev_ft,-1500,15000)||0,
-                he_ident:avIdent(r.he_ident,4), he_lat, he_lon, he_elev_ft:avNum(r.he_elev_ft,-1500,15000)||0, length_ft:avNum(r.length_ft,0,30000)||0}); }
+                he_ident:avIdent(r.he_ident,4), he_lat, he_lon, he_elev_ft:avNum(r.he_elev_ft,-1500,15000)||0, length_ft:avNum(r.length_ft,0,30000)||0,
+                le_obs:avNum(r.le_brg_obs,0,360), he_obs:avNum(r.he_brg_obs,0,360)}); }   // approach bearings fitted to real traffic (runways.php), when known
     o.apts.push({icao:String(a.icao), runways:rws}); } }
   o.apt=o.apts[0]||null;
   if(Array.isArray(d.airfields)) for(const f of d.airfields.slice(0,4000)){ if(!f||typeof f!=='object') continue;
@@ -487,6 +493,7 @@ function avSet(c){   // rebuild the 3D geometry only for the parts whose data ac
   const ak=JSON.stringify([c.airspaces,c.navaids]), pk=JSON.stringify(c.apts);
   if(ak!==AV.aspKey){ AV.aspKey=ak; _aspDirty=true; }
   if(pk!==AV.aptKey){ AV.aptKey=pk; AV.active=null; _gpDirty=true; }
+  if(c.km!==AV.km){ AV.km=c.km; _gpDirty=true; }
   AV.apt=c.apt; AV.apts=c.apts; AV.fields=c.fields; AV.airspaces=c.airspaces; AV.navaids=c.navaids; AV.fixes=c.fixes; AV.icao=c.icao; AV.fp=c.fp; AV.notams=c.notams;
   avLoadQnh(); avDraw(); }
 function avLoadQnh(){   // the field's METAR QNH, as the 3D Approach view does; only a plain 4-letter ICAO is ever asked for
@@ -505,10 +512,14 @@ function rwyProject(lat,lon,brgDeg,distM){   // same great-circle step as the 2D
   return [la2*180/Math.PI, lo2*180/Math.PI]; }
 function rwyBearing(lat1,lon1,lat2,lon2){ const p1=lat1*Math.PI/180, p2=lat2*Math.PI/180, dl=(lon2-lon1)*Math.PI/180;
   return (Math.atan2(Math.sin(dl)*Math.cos(p2),Math.cos(p1)*Math.sin(p2)-Math.sin(p1)*Math.cos(p2)*Math.cos(dl))*180/Math.PI+360)%360; }
+/* An end's outward bearing is the runway's own line, unless pilnk.io has fitted it to the arrivals PiLNK recorded there
+   (runways.php <end>_brg_obs): then that, so the line runs where aircraft really fly. A fitted bearing more than 3 deg off
+   the runway is not trusted. */
+function avOutB(obs,own){ return (typeof obs==='number'&&isFinite(obs)&&avAngDiff(obs,own)<=3)?obs:own; }
 function avEnds(apt){ const ends=[]; if(!apt) return ends;   // threshold, landing bearing, outward (approach-side) bearing — as the Glideslope view
-  for(const rw of apt.runways){ const rb=rwyBearing(rw.le_lat,rw.le_lon,rw.he_lat,rw.he_lon);
-    ends.push({ident:rw.le_ident,tLat:rw.le_lat,tLon:rw.le_lon,elev:rw.le_elev_ft,landB:rb,outB:(rb+180)%360,len:rw.length_ft});
-    ends.push({ident:rw.he_ident,tLat:rw.he_lat,tLon:rw.he_lon,elev:rw.he_elev_ft,landB:(rb+180)%360,outB:rb,len:rw.length_ft}); }
+  for(const rw of apt.runways){ const rb=rwyBearing(rw.le_lat,rw.le_lon,rw.he_lat,rw.he_lon), lo=avOutB(rw.le_obs,(rb+180)%360), ho=avOutB(rw.he_obs,rb);
+    ends.push({ident:rw.le_ident,tLat:rw.le_lat,tLon:rw.le_lon,elev:rw.le_elev_ft,landB:(lo+180)%360,outB:lo,len:rw.length_ft});
+    ends.push({ident:rw.he_ident,tLat:rw.he_lat,tLon:rw.he_lon,elev:rw.he_elev_ft,landB:(ho+180)%360,outB:ho,len:rw.length_ft}); }
   return ends; }
 function avProject(end,lat,lon){ const r=Math.PI/180, dE=(lon-end.tLon)*Math.cos(end.tLat*r), dN=lat-end.tLat, o=end.outB*r;
   return { along:(dE*Math.sin(o)+dN*Math.cos(o))*111.32, cross:(dE*Math.cos(o)-dN*Math.sin(o))*111.32 }; }
@@ -525,9 +536,9 @@ function avActiveEnd(apt){ apt=apt||AV.apt; const ends=avEnds(apt); if(!ends.len
   return ends.reduce((a,e)=>e.len>a.len?e:a,ends[0]); }
 function avUpdateActive(){ const k=AV.apts.map(a=>{ const e=avActiveEnd(a); return e?e.ident+'@'+e.tLat:''; }).join('|')||null;
   if(k!==AV.active){ AV.active=k; _gpDirty=true; } }
-function gpPoints(end,qnh){   // 21 points, threshold to 20 km; ft = pressure altitude, so it lines up with the aircraft
+function gpPoints(end,qnh){   // one point a km, threshold to the chosen length (21 at the default 20 km); ft = pressure altitude, so it lines up with the aircraft
   const corr=qnh!=null?(qnh-1013.25)*27.3:0, pts=[];
-  for(let km=0;km<=AV_GS_KM;km++){ const p=rwyProject(end.tLat,end.tLon,end.outB,km*1000);
+  for(let km=0;km<=AV.km;km++){ const p=rwyProject(end.tLat,end.tLon,end.outB,km*1000);
     pts.push({lat:p[0],lon:p[1],ft:end.elev+AV_TCH_FT+km*1000*AV_GS_TAN/0.3048-corr}); }
   return pts; }
 function avColor(){ return NIGHT_ON?'#a3e635':'#4d7c0f'; }   // lime, dark green by day — as 2D
@@ -535,8 +546,8 @@ function avRwyGeoJSON(){ const F=[]; if(!AV.apts.length) return {type:'FeatureCo
   const L=(a,b,kind)=>F.push({type:'Feature',properties:{kind},geometry:{type:'LineString',coordinates:[[a[1],a[0]],[b[1],b[0]]]}});
   const P=(p,text,kind)=>F.push({type:'Feature',properties:{kind,text},geometry:{type:'Point',coordinates:[p[1],p[0]]}});
   for(const apt of AV.apts) for(const rw of apt.runways) L([rw.le_lat,rw.le_lon],[rw.he_lat,rw.he_lon],'body');
-  for(const apt of AV.apts) for(const e of avEnds(apt)){ L([e.tLat,e.tLon],rwyProject(e.tLat,e.tLon,e.outB,AV_GS_KM*1000),'ext');
-    for(let km=1;km<=AV_GS_KM;km++){ const p=rwyProject(e.tLat,e.tLon,e.outB,km*1000), major=km%5===0, h=major?325:175;
+  for(const apt of AV.apts) for(const e of avEnds(apt)){ L([e.tLat,e.tLon],rwyProject(e.tLat,e.tLon,e.outB,AV.km*1000),'ext');
+    for(let km=1;km<=AV.km;km++){ const p=rwyProject(e.tLat,e.tLon,e.outB,km*1000), major=km%5===0, h=major?325:175;
       L(rwyProject(p[0],p[1],(e.outB+90)%360,h),rwyProject(p[0],p[1],(e.outB+270)%360,h),major?'tickM':'tick'); if(major) P(p,km+'km','lbl'); }
     if(e.ident) P([e.tLat,e.tLon],e.ident,'lbl'); }
   return {type:'FeatureCollection',features:F}; }

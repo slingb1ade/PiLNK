@@ -80,6 +80,7 @@
   <div class="row"><span class="k">Callsign</span><span class="v" id="d_cs">—</span></div>
   <div class="row"><span class="k">Type</span><span class="v" id="d_t">—</span></div>
   <div class="row" id="d_dlrow" style="display:none"><span class="k">From the aircraft</span><span class="v" id="d_dl">—</span></div>
+  <div class="row" id="d_aprow" style="display:none"><span class="k">Path</span><span class="v" id="d_ap">—</span></div>
   <div class="row"><span class="k">Alt</span><span class="v" id="d_alt">—</span></div>
   <div class="row"><span class="k">Dist</span><span class="v" id="d_dist">—</span></div>
   <div class="row"><span class="k">Hdg / Roll</span><span class="v" id="d_att">—</span></div>
@@ -111,6 +112,8 @@
 <script src="/static/city-lights.js"></script>
 <script src="/static/wmm.js"></script>
 <script src="/static/datalink-card.js?v=dl5"></script>
+<script src="/static/arrival-paths.js?v=ap4"></script>
+<script src="/static/nav-lights.js?v=nl1"></script>
 <script>
 const _q=new URLSearchParams(location.search);
 const D2R=Math.PI/180, R2D=180/Math.PI;
@@ -259,6 +262,63 @@ function integrate(){   // predict where the aircraft is *now* from the last fix
   const k=0.08; aircraft.roll+=(fix.roll-aircraft.roll)*k; aircraft.pitch+=(fix.pitch-aircraft.pitch)*k;   // attitude: plain easing is fine
   aircraft.dist=fix.dist; aircraft.gnd=fix.gnd; aircraft.ground=fix.ground;
 }
+/* ---------- Arrival Paths ribbon (main, 18 Oct 2026) ----------
+   The path arrivals usually fly into the airport, learned by pilnk.io from the network's own flights (static/arrival-paths.js,
+   off unless the node's config.json has "arrival_paths": true). When the followed aircraft is arriving on one of them, the
+   rest of that path is drawn ahead of it as a translucent ribbon at the usual height - orange for 23L, purple for 05R - and
+   the card says which path it is and how its height compares: "23L via OLRIK · 400 ft above usual". Nothing is drawn for an
+   aircraft that is not arriving, or on a node with the flag off. Track memory stays in this browser. */
+const _apr=window._apr={pts:null,key:null,sig:null,color:null,mesh:null,line:null,scene:null,anchor:null};
+if(window.ArrivalPaths) ArrivalPaths.load(fetch.bind(window));
+function aprDrop(){ for(const k of ['mesh','line']) if(_apr[k]){ _apr.scene.remove(_apr[k]); _apr[k].geometry.dispose(); _apr[k].material.dispose(); _apr[k]=null; } }
+function aprClear(){ _apr.pts=null; _apr.key=null; _apr.sig=null; _apr.anchor=null; aprDrop();
+  const row=document.getElementById('d_aprow'); if(row) row.style.display='none'; }
+function aprUpdate(list,a){
+  const AP=window.ArrivalPaths; if(!AP||!AP._state.enabled||!a){ aprClear(); return; }
+  const nowS=Date.now()/1000, csOf=x=>((x.flight||'').trim()||(x.hex||'').toLowerCase());
+  for(const x of list) if(x&&x.lat!=null&&x.lon!=null) AP.observe(x,csOf(x),nowS);   // every aircraft: landings tell the runway in use
+  const key=(a.hex||'').toLowerCase(), m=AP.matchFor(a,csOf(a),nowS);
+  if(!m){ aprClear(); return; }
+  const pr=AP.profileAt(m.path,a.lat,a.lon), dt=(pr&&typeof a.alt_baro==='number')?AP.deltaText(a.alt_baro,pr.alt):'';
+  const row=document.getElementById('d_aprow'); row.style.display=''; document.getElementById('d_ap').textContent=m.path.name+(dt?' · '+dt:'');
+  /* The whole approach, built once per aircraft + path (AJ, 19 Oct): the aircraft flies along a still ribbon. It used to be
+     re-cut at the aircraft every poll, so it crept back towards the plane for 2 s and jumped ahead again. */
+  const sig=AP.ribbonSig(key,m.path,qnh,VE);
+  if(sig!==_apr.sig||!_apr.mesh){ _apr.key=key; _apr.sig=sig; _apr.pts=m.path.line; _apr.color=AP.C.colours[m.path.rwy]||'#fb923c'; aprBuild(); }
+}
+/* The ribbon is a flat band RIB_W wide along the path, in a local frame anchored at its first point: x east, y up, z south,
+   metres, as the approach lights are. A level band and a vertical fin through it: a flat band alone vanishes edge-on. Height is the path's usual barometric altitude through the same QNH correction the
+   aircraft's own baro height uses, times the page's vertical exaggeration. Built once per aircraft + path (about 100 points).
+   Near the camera it fades out in the shader (RIB_FADE0 m: gone, RIB_FADE1 m: full): the camera rides close behind the
+   aircraft, and a ribbon running right under the lens filled the screen with orange whenever it was on its usual profile. */
+const RIB_W=40, RIB_FIN=16, RIB_OP=0.3, RIB_FADE0=200, RIB_FADE1=700;   // band width, fin height (m), opacity, camera fade (m)
+const APR_VS='varying vec3 vP; void main(){ vP=position; gl_Position=projectionMatrix*modelViewMatrix*vec4(position,1.0); }';
+const APR_FS='uniform vec3 uC; uniform float uOp; uniform vec3 uEye; uniform float uF0; uniform float uF1; varying vec3 vP;'+
+  ' void main(){ float k=uF1>uF0?smoothstep(uF0,uF1,distance(vP,uEye)):1.0; if(k<=0.0) discard; gl_FragColor=vec4(uC,uOp*k); }';
+function aprMat(op){ return new THREE.ShaderMaterial({vertexShader:APR_VS,fragmentShader:APR_FS,transparent:true,depthWrite:false,side:THREE.DoubleSide,
+  uniforms:{uC:{value:new THREE.Color(_apr.color)},uOp:{value:op},uEye:{value:new THREE.Vector3()},uF0:{value:RIB_FADE0},uF1:{value:0}}}); }
+function aprBuild(){
+  const pts=_apr.pts; if(!pts||pts.length<2||typeof THREE==='undefined'){ return; }
+  if(!_apr.scene) _apr.scene=new THREE.Scene();
+  aprDrop();
+  const qc=(typeof qnh==='number')?(qnh-1013.25)*27.3:0, mc0=maplibregl.MercatorCoordinate.fromLngLat([pts[0][1],pts[0][0]],0), s0=mc0.meterInMercatorCoordinateUnits();
+  let P=pts.map(q=>{ const mc=maplibregl.MercatorCoordinate.fromLngLat([q[1],q[0]],0); return [(mc.x-mc0.x)/s0, Math.max(0,(q[2]+qc)*0.3048)*VE, (mc.y-mc0.y)/s0]; });
+  if(P.length<2) return;
+  const pos=[], idx=[];
+  for(let i=0;i<P.length;i++){
+    const a=P[Math.max(0,i-1)], b=P[Math.min(P.length-1,i+1)]; let dx=b[0]-a[0], dz=b[2]-a[2]; const L=Math.hypot(dx,dz)||1; dx/=L; dz/=L;
+    const nx=-dz*RIB_W/2, nz=dx*RIB_W/2;   // across the path, level
+    // a level band across the path, and a fin standing up through it, so the ribbon still reads edge-on from the side
+    pos.push(P[i][0]+nx,P[i][1],P[i][2]+nz, P[i][0]-nx,P[i][1],P[i][2]-nz, P[i][0],P[i][1]+RIB_FIN/2,P[i][2], P[i][0],P[i][1]-RIB_FIN/2,P[i][2]);
+    if(i){ const o=4*(i-1), n=4*i; idx.push(o,o+1,n, o+1,n+1,n, o+2,o+3,n+2, o+3,n+3,n+2); }
+  }
+  const g=new THREE.BufferGeometry(); g.setAttribute('position',new THREE.Float32BufferAttribute(pos,3)); g.setIndex(idx);
+  _apr.mesh=new THREE.Mesh(g,aprMat(RIB_OP)); _apr.mesh.frustumCulled=false; _apr.scene.add(_apr.mesh);
+  // plus a solid line down the middle: WebGL draws a line the same from every angle, so the path never vanishes edge-on
+  const lg=new THREE.BufferGeometry().setFromPoints(P.map(q=>new THREE.Vector3(q[0],q[1],q[2])));
+  _apr.line=new THREE.Line(lg,aprMat(0.95)); _apr.line.frustumCulled=false;
+  _apr.scene.add(_apr.line); _apr.anchor={lon:pts[0][1],lat:pts[0][0]};
+}
 let corr=null; const CORR_T=1.8;   // seconds to absorb a fix correction — just under the 2 s poll, so it is gone before the next one
 const bias={e:0,n:0,alt:0};        // retained offsets: the lateral, longitudinal and vertical low-pass
 /* All three are "how much of the last disagreement with the fix do we keep". 0 follows every fix
@@ -282,6 +342,8 @@ const st=(t)=>document.getElementById('st').textContent=t;
    the same source the dashboard's glideslope view uses, so the two agree about which runway is which.
    Drawn only at night, because that is when the real ones are the useful thing to look for. */
 const LIGHTS_ON=(_q.get('lights')!=null)?(_q.get('lights')!=='0'):true;
+// The aircraft's own navigation lights at night (AJ, 20 Oct 2026): static/nav-lights.js. ?navlights=0 turns them off.
+const NAVLIGHTS_ON=(_q.get('navlights')!=null)?(_q.get('navlights')!=='0'):true;
 const RABBIT=12;      // sequenced-flasher steps per second — see the note where it is used
 let RWY_ENDS=[], rwyActive=null, APT_ICAO=null;   // APT_ICAO: the airport whose runways these are
 let APT_ELEV=null;    // published field elevation (m) — fallback only, see sampleElev
@@ -599,7 +661,19 @@ const acLayer={
      is not, and was drawn 109 m below and 72 m aside from the aircraft it was meant to be. */
   applySpan(span){ acSpan=span; const k=span/this.base.w, c=this.base.c;   // acSpan: the cameras frame by this
     this.mm.scale.setScalar(k); this.mm.position.set(-c.x*k,-c.y*k,-c.z*k);
-    if(this.mm.parent===this.holder) this.measureLow(); },
+    if(this.mm.parent===this.holder){ this.measureLow(); this.navBuild(); } },
+  /* Navigation lights (20 Oct 2026, static/nav-lights.js): placed from the model's own vertices in the roll group's
+     frame (nose -Z, right +X, up +Y), so they bank, pitch and turn with it. Rebuilt whenever the model or its size
+     changes; shown only at night (render). */
+  navBuild(key){
+    if(this.nav){ this.roll.remove(this.nav.group); this.nav.group.traverse(o=>{ if(o.geometry) o.geometry.dispose(); if(o.material) o.material.dispose(); }); this.nav=null; }
+    if(!NAVLIGHTS_ON||!window.NavLights||!this.mm) return;
+    try{
+      this.scene.updateMatrixWorld(true);
+      const a=NavLights.anchors(NavLights.collect(THREE,this.mm,this.roll),{heli:NavLights.isHeli(key||this.key)});
+      this.nav=NavLights.build(THREE,a,{pixelRatio:window.devicePixelRatio||1}); this.nav.set({},false); this.roll.add(this.nav.group);
+    }catch(e){ this.nav=null; }   // lights are decoration: never allowed to break the aircraft
+  },
   /* 12 Oct 2026 audit, finding 3: the model is centred on the reported position, which is right in the air (the
      position is the aircraft, not its wheels) and wrong on the ground - half the model was under the runway, a third
      of a Cessna in the 3x tower shot. lowY is how far the lowest point sits below the centre, measured level and at
@@ -636,7 +710,7 @@ const acLayer={
       this.holder.add(mm); this.props=findProps(mm).concat(splitRotor(mm,key)).concat(splitParts(mm,key));
       // painted AFTER the props and rotors are split out, so the parts that turn are painted where they ended up
       if(!own) paintAircraft(mm,key,this.wantLiv,this.renderer); this.livKey=this.wantLk;   // every load: windows on the grey ones too (own paint has its own)
-      this.measureLow(); this.key=key; this.loading=false; },undefined,()=>{this.loading=false;});
+      this.measureLow(); this.navBuild(key); this.key=key; this.loading=false; },undefined,()=>{this.loading=false;});
   },
   render(gl,args){
     const M0=(args&&args.defaultProjectionData)?args.defaultProjectionData.mainMatrix:args;
@@ -682,6 +756,14 @@ const acLayer={
         map.triggerRepaint();       // the flasher needs frames even when the camera is still
       }
     }
+    if(_apr.mesh&&_apr.anchor){   // arrival-path ribbon: its own local frame, same renderer and camera, like the lights
+      const mc=maplibregl.MercatorCoordinate.fromLngLat([_apr.anchor.lon,_apr.anchor.lat],0), s=mc.meterInMercatorCoordinateUnits();
+      const L=new THREE.Matrix4().makeTranslation(mc.x,mc.y,mc.z).scale(new THREE.Vector3(s,-s,s)).multiply(new THREE.Matrix4().makeRotationX(Math.PI/2));
+      this.camera.projectionMatrix=new THREE.Matrix4().fromArray(M0).multiply(L);
+      const e=ArrivalPaths.eyeFromClip(this.camera.projectionMatrix.elements);   // camera in the ribbon's frame: fade it near the lens
+      for(const k of ['mesh','line']) if(_apr[k]){ const u=_apr[k].material.uniforms; if(e){ u.uEye.value.set(e[0],e[1],e[2]); u.uF1.value=RIB_FADE1; } else u.uF1.value=0; }
+      this.renderer.resetState(); this.renderer.render(_apr.scene,this.camera);
+    }
     if(!aircraft||!this.holder.children.length)return;
     const a=aircraft;
     // Mercator placement: x east, y SOUTH (flip below), z up; model space = metres, Y-up (same rig as approach.html)
@@ -702,6 +784,10 @@ const acLayer={
       const pa=performance.now()/1000*PROP_REV*Math.PI*2;
       for(let i=0;i<this.props.length;i++) this.props[i].p.rotation[this.props[i].axis]=pa;
       map.triggerRepaint();       // the props need frames even when the aircraft is briefly still
+    }
+    if(this.nav){   // navigation lights: night only; strobes off on the ground; flashing needs frames
+      this.nav.set(NavLights.state(performance.now()/1000,!!a.gnd),NIGHT_ON);
+      if(NIGHT_ON) map.triggerRepaint();
     }
     this.renderer.resetState(); this.renderer.render(this.scene,this.camera);
     /* Hand the context back: reset Three's state tracker and unbind its VAO. Nothing else — MapLibre
@@ -1566,12 +1652,22 @@ async function poll(){
       else if(fix&&fix.key===key&&tFix-fix.t>800&&tFix-fix.t<12000){ let d=((trkDeg-fix.trk*R2D+540)%360)-180; rate=d*D2R/((tFix-fix.t)/1000); }
       rate=Math.max(-6*D2R,Math.min(6*D2R,rate));
       if(fix&&fix.key===key&&tFix-fix.t<300) rate=fix.rate;   // same fix re-served: keep the last estimate
-      fix={lon:a.lon,lat:a.lat,altM,ground:gM,hdg,roll,pitch,dist:distNm(a),gnd:a.alt_baro==='ground',
+      /* The SAME position report, served again (18 Oct 2026, police helicopter over Auckland). While no new position
+         arrives - a helicopter low over the city drops out for 10-50 s at a time - aircraft.json keeps the last one and
+         seen_pos climbs. Rebuilding the fix from it did two wrong things: under 12 s it paired that OLD position with the
+         NEWEST track and turn rate, so the predicted arc restarted from the old point pointing a new way (a sideways and
+         backwards jump each poll); past 12 s the age cap re-dated it as if it were fresh, so every poll dragged the drawn
+         aircraft back towards where it was 12 s earlier. Measured in the replay: 0 backward frames with steady reception,
+         up to 1,923 per 4 min with 30 s gaps. A position report is one moment: keep the fix it made, with the velocity of
+         that moment, and let the prediction run on (capped) until a real new position arrives. */
+      const samePos=!!(fix&&fix.key===key&&fix.lat===a.lat&&fix.lon===a.lon);
+      if(!samePos) fix={lon:a.lon,lat:a.lat,altM,ground:gM,hdg,roll,pitch,dist:distNm(a),gnd:a.alt_baro==='ground',
            vE:Math.sin(trk)*gsMs, vN:Math.cos(trk)*gsMs, vU:a.alt_baro==='ground'?0:vsS*0.00508,
            gs:gsMs, trk, rate, t:tFix, key};
       acLayer.ensureModel(a.t,a.category,a.flight,a.hex,a.r);   // hex + registration: an airframe with its own paint (ZK-VVS)
       acDl=(a&&a.datalink&&typeof a.datalink==='object')?a.datalink:null;
       { const dlt=dlInfoText(acDl,Date.now()/1000); document.getElementById('d_dl').textContent=dlt; document.getElementById('d_dlrow').style.display=dlt?'':'none'; }
+      try{ aprUpdate(list,a); }catch(e){ aprClear(); }   // arrival-path ribbon: never allowed to break the poll
       document.getElementById('d_cs').textContent=(a.flight||'').trim()||(a.hex||'').toUpperCase();
       document.getElementById('d_t').textContent=a.t||'—';
       document.getElementById('d_alt').textContent=a.alt_baro==='ground'?'GROUND':Math.round(a.alt_baro).toLocaleString()+' ft'+(qnh?' (Q'+qnh+')':'');
@@ -1591,7 +1687,7 @@ async function poll(){
         :(decl!=null?'mag var '+fmtSigned(decl)+'° WMM-2025 · heading = magnetic + var'
         :('mag var ?° (no WMM model) · heading follows the ADS-B track…')));
       prefetchAhead();
-    } else { fix=null; aircraft=null; acDl=null; document.getElementById('d_dlrow').style.display='none'; document.getElementById('d_cs').textContent='— no arrivals —'; }
+    } else { fix=null; aircraft=null; acDl=null; aprClear(); document.getElementById('d_dlrow').style.display='none'; document.getElementById('d_cs').textContent='— no arrivals —'; }
   }catch(e){
     /* AUDIT FIX #6 (24 Sep 2026): this was catch(e){} — any failure froze the view on its last fix with
        nothing said anywhere. Now it is logged (first time, then every 30th, so a dead link doesn't flood
