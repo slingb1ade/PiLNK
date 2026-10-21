@@ -1835,9 +1835,13 @@ def _reconcile_pending_ota_result():
     py_compile-passes-names-don't bug from the 26 Aug postmortem)."""
     _pend = _load_ota_state().get('last_result', '')
     if isinstance(_pend, str) and _pend.startswith('started@'):
-        _save_ota_state(last_result=(
-            'success' if _pend.split('@', 1)[1] != _get_local_version()
-            else 'interrupted'))
+        if _pend.split('@', 1)[1] != _get_local_version():
+            # A real success restarts us before _run_update can clear the old
+            # fault, so clear it HERE — else the node advertises a fixed
+            # fault forever (MITKURT, 'restart_blocked', 21 Oct).
+            _save_ota_state(last_result='success', last_fail='')
+        else:
+            _save_ota_state(last_result='interrupted')
 
 AUDIO_BUILD_STATE_FILE = os.path.join(PILNK_DIR, 'audio_build_state.json')
 
