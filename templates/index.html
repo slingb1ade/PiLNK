@@ -1889,18 +1889,13 @@
           </div>
 
           <!-- AIRCRAFT TRACKED
-               Scope note: these three tiles are computed from localStorage in
-               THIS browser, not from the node. "All Time" therefore means
-               "since this browser last cleared its site data" — on a fresh
-               browser today/all-time/best-day are mathematically identical,
-               which is exactly what it looked like on 15 Sep 2026 (62/62/62).
-               The title is scoped rather than the labels because all three
-               tiles share the limitation. Proper fix is to source Best Day
-               from the node's stats_records.json most_day (already persisted
-               and validated) and add server-side tracking for a true all-time
-               total; until then the honest thing is to say whose count it is. -->
+               Counted by the node (daily_counts.py, /api/stats/daily): unique
+               positioned aircraft per local day, the best day, and the sum of
+               every day since counting began (hover All Time for the date).
+               Until 21 Oct 2026 these came from this browser's localStorage,
+               so a fresh browser showed today = all time = best day. -->
           <div class="panel">
-            <div class="panel-title">Aircraft Tracked (this browser)</div>
+            <div class="panel-title">Aircraft Tracked</div>
             <div class="streak-grid" id="streakGrid">
               <div class="streak-item"><div class="streak-num" id="streakToday">0</div><div class="streak-label">Today</div></div>
               <div class="streak-item"><div class="streak-num" id="streakTotal">0</div><div class="streak-label">All Time</div></div>
@@ -5746,7 +5741,6 @@ function updateFlights(){
         // Watch Approach button visibility removed with v2.0 3D rebuild;
         // ccWatchBtn no longer in DOM, this block is a no-op now.
       }
-      trackStreak(a);
     });
     // Keep an open cinematic card live. lastAircraft[] has just been refreshed
     // for every aircraft above, so this re-reads the one the card is showing.
@@ -7414,45 +7408,43 @@ function renderMETAR(m) {
 loadMETAR();
 setInterval(loadMETAR, 30 * 60 * 1000);
 
-// ── FLIGHT STREAK ──────────────────────────────────────────
-var streakData = JSON.parse(localStorage.getItem('pilnk-streak') || '{"total":0,"best":0,"today":0,"date":""}');
+// ── AIRCRAFT TRACKED (Today / All Time / Best Day) ─────────
+// Counted by the node itself (/api/stats/daily), so the numbers keep growing
+// with no dashboard open and are the same in every browser. They used to live
+// in this browser's localStorage. todayStr is still used by the advanced
+// stats midnight reset below.
 var todayStr = new Date().toISOString().slice(0,10);
-var seenHexes;
-if (streakData.date !== todayStr) {
-  // A new day since this page was last open. checkMidnightReset() handles the
-  // rollover while the tab stays open; this is the same reset for the case where
-  // the dashboard was simply closed overnight. Clearing seenHexes is the part
-  // that matters — without it every aircraft seen yesterday is skipped today,
-  // and the Today counter silently under-counts for the rest of the day.
-  streakData.today = 0;
-  streakData.date = todayStr;
-  seenHexes = new Set();
-  localStorage.setItem('pilnk-streak-today', '[]');
-} else {
-  seenHexes = new Set(JSON.parse(localStorage.getItem('pilnk-streak-today') || '[]'));
-}
-
-function trackStreak(a) {
-  if (!a.hex || seenHexes.has(a.hex)) return;
-  seenHexes.add(a.hex);
-  streakData.today++;
-  streakData.total++;
-  if (streakData.today > streakData.best) streakData.best = streakData.today;
-  streakData.date = todayStr;
-  localStorage.setItem('pilnk-streak', JSON.stringify(streakData));
-  localStorage.setItem('pilnk-streak-today', JSON.stringify(Array.from(seenHexes)));
-  updateStreakUI();
-}
+var streakData = { today: 0, total: 0, best: 0, bestDate: '', since: '' };
 
 function updateStreakUI() {
   var t = document.getElementById('streakToday');
   var total = document.getElementById('streakTotal');
   var best = document.getElementById('streakBest');
   if (t) t.textContent = streakData.today.toLocaleString();
-  if (total) total.textContent = streakData.total.toLocaleString();
-  if (best) best.textContent = streakData.best.toLocaleString();
+  if (total) {
+    total.textContent = streakData.total.toLocaleString();
+    total.title = streakData.since ? 'Counted by this node since ' + streakData.since : '';
+  }
+  if (best) {
+    best.textContent = streakData.best.toLocaleString();
+    best.title = streakData.bestDate ? 'Best day: ' + streakData.bestDate : '';
+  }
+}
+
+function loadStreak() {
+  fetch('/api/stats/daily').then(function(r) { return r.ok ? r.json() : null; }).then(function(d) {
+    if (!d || typeof d.today !== 'number') return;
+    streakData.today = d.today;
+    streakData.total = typeof d.total === 'number' ? d.total : 0;
+    streakData.best = (d.best && typeof d.best.count === 'number') ? d.best.count : 0;
+    streakData.bestDate = (d.best && typeof d.best.date === 'string') ? d.best.date : '';
+    streakData.since = typeof d.since === 'string' ? d.since : '';
+    updateStreakUI();
+  }).catch(function() {});
 }
 updateStreakUI();
+loadStreak();
+setInterval(loadStreak, 30000);
 
 // -- ADVANCED STATS --
 var advTodayLeaders = { fastest: null, highest: null, furthest: null, squawk: null };
@@ -7709,11 +7701,7 @@ function checkMidnightReset() {
   var newDay = new Date().toISOString().slice(0,10);
   if (newDay !== todayStr) {
     todayStr = newDay;
-    streakData.today = 0;
-    streakData.date = newDay;
-    seenHexes = new Set();
-    localStorage.setItem('pilnk-streak-today', '[]');
-    updateStreakUI();
+    // Aircraft Tracked tiles roll over on the node (its own local midnight).
     // Reset advanced stats
     advTodayLeaders = { fastest: null, highest: null, furthest: null, squawk: null };
     advTypeCounts = {};

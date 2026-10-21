@@ -114,6 +114,7 @@
 <script src="/static/datalink-card.js?v=dl5"></script>
 <script src="/static/arrival-paths.js?v=ap4"></script>
 <script src="/static/nav-lights.js?v=nl1"></script>
+<script src="/static/runway-lights.js?v=rl1"></script>
 <script>
 const _q=new URLSearchParams(location.search);
 const D2R=Math.PI/180, R2D=180/Math.PI;
@@ -344,7 +345,12 @@ const st=(t)=>document.getElementById('st').textContent=t;
 const LIGHTS_ON=(_q.get('lights')!=null)?(_q.get('lights')!=='0'):true;
 // The aircraft's own navigation lights at night (AJ, 20 Oct 2026): static/nav-lights.js. ?navlights=0 turns them off.
 const NAVLIGHTS_ON=(_q.get('navlights')!=null)?(_q.get('navlights')!=='0'):true;
-const RABBIT=12;      // sequenced-flasher steps per second — see the note where it is used
+const RABBIT=12;      // fallback flasher steps per second (only if runway-lights.js fails to load; the real rabbit is RunwayLights.rabbit)
+/* PAPI box (20 Oct 2026): centre 300 m past the threshold, left of the runway, lights 3 m apart, 2 m up. buildLights places
+   the four lights from these and papiUpdate measures the aircraft's angle from them - one definition for both. */
+const PAPI_ALONG=300, PAPI_LAT=-36.5, PAPI_UP=2, PAPI_GAP=3;
+const PAPI_TAU=1.0;   // s: the angle is smoothed, as ADS-B altitude comes in 25 ft steps (0.2-0.4 deg on short final)
+const PAPI_SIDE=15;   // deg either side of the approach a real PAPI can be seen from
 let RWY_ENDS=[], rwyActive=null, APT_ICAO=null;   // APT_ICAO: the airport whose runways these are
 let APT_ELEV=null;    // published field elevation (m) — fallback only, see sampleElev
 async function loadRunways(){
@@ -518,15 +524,19 @@ function buildLights(end,scene){
      modest until short final. Drawing both at one brightness made the runway the loudest thing on the
      screen from 10 km out, which is backwards, and its long twin rows of edge lights pulled the glare
      off to one side of the approach path. */
-  const aPos=[], aCol=[], rPos=[], rCol=[], flashIdx=[];
+  const aPos=[], aCol=[], rPos=[], rCol=[], flashIdx=[], papiIdx=[];
+  /* Per light: screen size in px, how it is aimed (RunwayLights.KIND) and whether it gets a halo (20 Oct 2026, AJ:
+     "they're square and just don't look real" - static/runway-lights.js draws them as round glows). */
+  const aSz=[], aKd=[], aHl=[], rSz=[], rKd=[];
   const white=[1,1,1], green=[0.3,1,0.5], red=[1,0.22,0.18], edge=[0.8,0.72,0.5];
   /* Each light also keeps where it is on the map and how high it stands, so drapeLights() can lay it on the ground
      as drawn (12 Oct audit, finding 4). Mercator, exactly as render() places the cloud: x east, z south, metres. */
   const mc0=maplibregl.MercatorCoordinate.fromLngLat([end.lon,end.lat]), s0=mc0.meterInMercatorCoordinateUnits();
   const aLL=[], aUp=[], rLL=[], rUp=[];
   const at=p=>{ const ll=new maplibregl.MercatorCoordinate(mc0.x+s0*p[0],mc0.y+s0*p[2],0).toLngLat(); return [ll.lng,ll.lat]; };
-  const pushA=(p,c)=>{ aPos.push(p[0],p[1],p[2]); aCol.push(c[0],c[1],c[2]); aLL.push(at(p)); aUp.push(p[1]); };
-  const pushR=(p,c)=>{ rPos.push(p[0],p[1],p[2]); rCol.push(c[0],c[1],c[2]); rLL.push(at(p)); rUp.push(p[1]); };
+  const pushA=(p,c,sz,halo)=>{ aPos.push(p[0],p[1],p[2]); aCol.push(c[0],c[1],c[2]); aLL.push(at(p)); aUp.push(p[1]);
+    aSz.push(sz||7); aKd.push(0); aHl.push(halo||0); };
+  const pushR=(p,c)=>{ rPos.push(p[0],p[1],p[2]); rCol.push(c[0],c[1],c[2]); rLL.push(at(p)); rUp.push(p[1]); rSz.push(5); rKd.push(1); };
   /* Centreline BARRETTES — five lights across, not one dot. This is what gives the approach its
      ladder look from the air; a single line of points reads as a road at any distance. */
   for(let d=30; d<=900; d+=30){
@@ -536,17 +546,19 @@ function buildLights(end,scene){
   /* Red side rows, inner 300 m only. In the real system these are the warning that the threshold is
      close, and they are the one element that makes the picture unmistakably an approach. */
   for(let d=30; d<=300; d+=30){
-    for(let i=0;i<3;i++){ pushA(P(-d,-(6.5+i*1.5),3), red); pushA(P(-d,6.5+i*1.5,3), red); }
+    for(let i=0;i<3;i++){ pushA(P(-d,-(6.5+i*1.5),3), red, 6); pushA(P(-d,6.5+i*1.5,3), red, 6); }
   }
   /* Crossbars, widest at 300 m and shortening outward, so the array tapers toward the far end and
      gives a sense of distance run rather than a uniform corridor. */
   for(const bar of [[300,15],[450,12],[600,10.5],[750,9],[900,7.5]]){
-    for(let y=-bar[1]; y<=bar[1]; y+=1.5){ if(Math.abs(y)>3.6) pushA(P(-bar[0],y,3), white); }
+    for(let y=-bar[1]; y<=bar[1]; y+=1.5){ if(Math.abs(y)>3.6) pushA(P(-bar[0],y,3), white, 6); }
   }
   // threshold bar, green, across the full width
-  for(let lat=-22; lat<=22; lat+=3) pushA(P(0,lat,1.5), green);
-  // PAPI, four lights abeam the touchdown zone, outside the runway edge
-  for(let i=0;i<4;i++) pushA(P(300,-32-i*3,2), i<2?white:red);
+  for(let lat=-22; lat<=22; lat+=3) pushA(P(0,lat,1.5), green, 8, 1);
+  /* PAPI, four lights abeam the touchdown zone, outside the runway edge, nearest the runway first. papiUpdate() colours
+     them from the aircraft's real angle; until then the on-slope picture: the two inside red, the two outside white. */
+  const RL=window.RunwayLights;
+  for(let i=0;i<4;i++){ papiIdx.push(aPos.length/3); pushA(P(PAPI_ALONG,PAPI_LAT+1.5*PAPI_GAP-i*PAPI_GAP,PAPI_UP), RL?RL.papiRGB(i<2?0:1):(i<2?red:white), 9); }
   // runway edge lights — dimmer, wider spaced, and in their own object so range can fade them
   for(let d=0; d<=end.len; d+=60){ pushR(P(d,-22,1), edge); pushR(P(d,22,1), edge); }
 
@@ -558,9 +570,18 @@ function buildLights(end,scene){
       opacity:opacity,depthWrite:false,blending:THREE.AdditiveBlending});
     const p=new THREE.Points(g,m); scene.add(p); return p;
   };
-  const pts=mk(aPos,aCol,8,0.95);
-  const rwy=rPos.length?mk(rPos,rCol,6,0.15):null;
-  return {pts,rwy,flashIdx,baseCol:aCol.slice(),land:end.land,ll:[aLL,rLL],up:[aUp,rUp],drapeT:0};
+  flashIdx.reverse();   // outermost first: the order the rabbit runs in
+  if(!RL){   // the module failed to load: the old square points rather than no lights at all
+    const pts=mk(aPos,aCol,8,0.95), rwy=rPos.length?mk(rPos,rCol,6,0.15):null;
+    return {pts,rwy,flashIdx,papiIdx:[],baseCol:aCol.slice(),land:end.land,ll:[aLL,rLL],up:[aUp,rUp],drapeT:0};
+  }
+  const px=window.devicePixelRatio||1, beam=[-sh,ch];   // aimed back down the approach: x east, z south
+  const ac=RL.build(THREE,{pos:aPos,col:aCol,size:aSz,kind:aKd,halo:aHl},{pixelRatio:px,opacity:1});
+  ac.setBeam(beam[0],beam[1]); scene.add(ac.points);
+  let rc=null;
+  if(rPos.length){ rc=RL.build(THREE,{pos:rPos,col:rCol,size:rSz,kind:rKd,halo:0},{pixelRatio:px,opacity:0.15}); rc.setBeam(beam[0],beam[1]); scene.add(rc.points); }
+  return {pts:ac.points,rwy:rc?rc.points:null,ctl:ac,rctl:rc,flashIdx,papiIdx,papiW:[0,0,1,1],baseCol:aCol.slice(),
+          land:end.land,ll:[aLL,rLL],up:[aUp,rUp],drapeT:0};
 }
 
 /* The lights were one flat sheet at the published threshold elevation, so they floated where the ground falls away
@@ -573,6 +594,59 @@ function drapeLights(L,end){
   [L.pts,L.rwy].forEach((obj,k)=>{ if(!obj) return; const pos=obj.geometry.getAttribute('position'), ll=L.ll[k], up=L.up[k]; let n=0;
     for(let i=0;i<ll.length;i++){ const g=groundAt(ll[i][0],ll[i][1]); if(g==null) continue; pos.setY(i,(g-base)*VE+up[i]); n++; }
     if(n) pos.needsUpdate=true; });
+}
+/* PAPI (20 Oct 2026): the four lights read the aircraft's real angle above the box, as a pilot sees them - 2 white /
+   2 red on a 3 deg path, all white high, all red low. Real metres (no VE): it is the real glidepath. No aircraft, on
+   the ground, or past the box: keep the last picture rather than flick to something odd. */
+function papiUpdate(L,end,a,t){
+  if(!L||!L.ctl||!L.papiIdx||!L.papiIdx.length||!end||!window.RunwayLights) return;
+  let w=null;
+  if(a&&a.lat!=null&&!a.gnd){
+    const h=end.land*D2R, sh=Math.sin(h), ch=Math.cos(h);
+    const e=(a.lon-end.lon)*mPerLon, n=(a.lat-end.lat)*mPerLat, along=sh*e+ch*n, lat=ch*e-sh*n;
+    // short of the box, and inside the PAPI's side-to-side coverage (abeam on downwind it cannot be seen)
+    if(along<PAPI_ALONG-1 && Math.abs(Math.atan2(lat-PAPI_LAT, PAPI_ALONG-along))<=PAPI_SIDE*D2R){
+      const base=(end.elev!=null?end.elev:SITE.elev);
+      const ang=RunwayLights.elevAngle(a.altM-(base+PAPI_UP), Math.hypot(PAPI_ALONG-along, PAPI_LAT-lat));
+      if(ang!=null){
+        // smoothed over PAPI_TAU so one 25 ft step in the altitude does not flip a light (review I-1)
+        if(t==null||L.papiA==null||L.papiT==null||t<L.papiT) L.papiA=ang;
+        else L.papiA+=(ang-L.papiA)*(1-Math.exp(-Math.min(2,t-L.papiT)/PAPI_TAU));
+        L.papiT=(t==null)?null:t;
+        w=RunwayLights.papi(L.papiA);
+      }
+    }
+  }
+  if(!w) return;
+  // only touch the colours when the picture changed: setColor re-uploads the whole colour buffer (review M-4)
+  let same=true; for(let i=0;i<w.length;i++) if(Math.abs(w[i]-L.papiW[i])>0.01){ same=false; break; }
+  if(same) return;
+  L.papiW=w;
+  for(let i=0;i<L.papiIdx.length;i++) L.ctl.setColor(L.papiIdx[i], RunwayLights.papiRGB(L.papiW[i]));
+}
+/* Everything the lights do each frame: the rabbit, the PAPI, the runway's own lights coming up as the aircraft closes,
+   and where the camera is (eye, in the lights' frame) so the aimed lights dim off to the side. */
+function lightsFrame(L,end,a,t,eye){
+  if(!L||!end) return;
+  if(L.ctl){
+    L.ctl.setFlash(L.flashIdx, RunwayLights.rabbit(t, L.flashIdx.length));
+    L.ctl.setCamera(eye); if(L.rctl) L.rctl.setCamera(eye);
+    papiUpdate(L,end,a,t);
+  } else {   // fallback points: the old colour-swap flasher
+    const col=L.pts.geometry.getAttribute('color'), base=L.baseCol, idx=L.flashIdx, step=Math.floor((t*RABBIT)%(idx.length+6));
+    for(let k=0;k<idx.length;k++){ const i=idx[k], on=(k===step);
+      col.array[i*3]=on?2.5:base[i*3]; col.array[i*3+1]=on?2.5:base[i*3+1]; col.array[i*3+2]=on?2.5:base[i*3+2]; }
+    col.needsUpdate=true;
+  }
+  /* The runway's own lights come up as the aircraft closes, rather than burning at full strength from the far end of
+     the approach. Real edge lights are directional and modest; what a pilot has from 10 km is the approach array, and
+     the runway resolves later. Faint when nothing is inbound, so the airport still reads as lit. */
+  if(L.rwy){
+    let rng=1e9;
+    if(a&&a.lat!=null){ const rE=(a.lon-end.lon)*mPerLon, rN=(a.lat-end.lat)*mPerLat; rng=Math.sqrt(rE*rE+rN*rN); }
+    const o=Math.max(0.12,Math.min(0.9,(9000-rng)/6000));
+    if(L.rctl) L.rctl.setOpacity(o); else L.rwy.material.opacity=o;
+  }
 }
 /* ---------- Three.js custom layer: the aircraft ---------- */
 /* MODEL_ORIENT, MODEL_SPAN, TYPE_SPAN, the BIZJET/REGIONAL/EJET lists, spanFor, modelFor and modelWingWidth now
@@ -723,35 +797,13 @@ const acLayer={
       if(end&&this.lightData){
         const t=performance.now()/1000;
         if(t-this.lightData.drapeT>1){ this.lightData.drapeT=t; drapeLights(this.lightData,end); }
-        // the sequenced flasher — "the rabbit" — runs from the outermost bar in toward the threshold
-        const col=this.lightData.pts.geometry.getAttribute('color');
-        const base=this.lightData.baseCol, idx=this.lightData.flashIdx;
-        /* RABBIT is steps per second, not runs per second. The real thing completes about two runs
-           every second — roughly 40 here — which at 60 fps is close to one step per frame and reads as
-           a smear rather than a light running in. This is a deliberate slow-down, same trade as the
-           propeller speed: accuracy and legibility are not the same goal. Raise it for realism. */
-        const step=Math.floor((t*RABBIT)%(idx.length+6));   // a pause after each run, as the real ones have
-        for(let k=0;k<idx.length;k++){
-          const i=idx[k], on=(k===idx.length-1-step);
-          col.array[i*3]=on?2.5:base[i*3]; col.array[i*3+1]=on?2.5:base[i*3+1]; col.array[i*3+2]=on?2.5:base[i*3+2];
-        }
-        col.needsUpdate=true;
-        /* The runway's own lights come up as the aircraft closes, rather than burning at full strength
-           from the far end of the approach. Real edge lights are directional and modest; what a pilot
-           has from 10 km is the approach array, and the runway resolves later. Faint when nothing is
-           inbound, so the airport still reads as lit. */
-        if(this.lightData.rwy){
-          let rng=1e9;
-          if(aircraft&&aircraft.lat!=null){
-            const rE=(aircraft.lon-end.lon)*mPerLon, rN=(aircraft.lat-end.lat)*mPerLat;
-            rng=Math.sqrt(rE*rE+rN*rN);
-          }
-          this.lightData.rwy.material.opacity=Math.max(0.12,Math.min(0.9,(9000-rng)/6000));
-        }
         const mc=maplibregl.MercatorCoordinate.fromLngLat([end.lon,end.lat], (end.elev!=null?end.elev:SITE.elev)*VE);
         const s=mc.meterInMercatorCoordinateUnits();
         const L=new THREE.Matrix4().makeTranslation(mc.x,mc.y,mc.z).scale(new THREE.Vector3(s,-s,s)).multiply(new THREE.Matrix4().makeRotationX(Math.PI/2));
         this.camera.projectionMatrix=new THREE.Matrix4().fromArray(M0).multiply(L);
+        // the camera in the lights' own frame (the ribbon's helper), so the aimed lights know where they are seen from
+        const eye=(typeof ArrivalPaths!=='undefined'&&ArrivalPaths.eyeFromClip)?ArrivalPaths.eyeFromClip(this.camera.projectionMatrix.elements):null;
+        lightsFrame(this.lightData,end,aircraft,t,eye);   // the rabbit, the PAPI, the runway lights' fade, the camera
         this.renderer.resetState(); this.renderer.render(this.lightScene,this.camera);
         map.triggerRepaint();       // the flasher needs frames even when the camera is still
       }

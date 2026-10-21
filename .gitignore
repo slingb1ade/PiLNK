@@ -49,6 +49,9 @@ openaip_cache.json.tmp
 # History-tab day store — survives restarts (v1.5.23).
 history_day.json
 history_day.json.tmp
+# Aircraft Tracked tiles (Today / Best Day / All Time) — per-node counts.
+daily_counts.json
+daily_counts.json.tmp
 # Remote-maintenance action log — per-node runtime record, never committed.
 assist_actions.log
 # Tune my radio — "tuning now" marker (STT skips audio) + crash-restore file.

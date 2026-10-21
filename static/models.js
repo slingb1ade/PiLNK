@@ -12,7 +12,7 @@ const MODEL_ORIENT={ 'a320_200.glb':{yaw:-90}, 'atr72.glb':{yaw:90}, 'b777_klm.g
      confirmed on live approaches: the old mapping scored 0/8, every one exactly 180° off; corrected, 8/8.
      ⚠️ When adding a model: confirm its direction on a LIVE aircraft, or with ?force= on a live one. */
   'b52.glb':{yaw:0}, 'e3.glb':{yaw:-90}, 'kc135.glb':{yaw:180}, 'kc46.glb':{yaw:180},
-  'b787.glb':{yaw:180}, 'a350.glb':{yaw:180}, 'b1b.glb':{yaw:0}, 'c17.glb':{yaw:-90},
+  'b787.glb':{yaw:180}, 'a350.glb':{yaw:180}, 'b1b.glb':{yaw:0}, 'c17.glb':{yaw:180},   // C-17: the file's root node carried the author's 55.75 deg scene spin, so it flew ~34 deg crabbed at -90; spin removed 20 Oct (wings square, T-tail aft at 180)
   'a400.glb':{yaw:0},
   'bizjet.glb':{yaw:180}, 'crj.glb':{yaw:180},
   'p8.glb':{yaw:0}, 't38.glb':{yaw:-90}, 'hawk.glb':{yaw:180},

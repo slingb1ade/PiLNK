@@ -862,6 +862,49 @@ def _hist_note(a, now):
 
 _hist_load()
 
+# ── Aircraft Tracked tiles: Today / Best Day / All Time, counted by the node ──
+# These used to live in the dashboard browser's localStorage, so they only
+# counted while a tab was open and reset with the browser. Now the trail
+# recorder below counts every positioned aircraft (the same set the History
+# tab uses) and /api/stats/daily serves the numbers. The day runs on the
+# node's own local midnight. A missing or broken daily_counts.py must never
+# take the dashboard down, hence the guard.
+DAILY_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'daily_counts.json')
+try:
+    from daily_counts import DailyCounter
+    DAILY = DailyCounter(DAILY_FILE)
+    DAILY.load()
+except Exception as _daily_err:   # never let the counter cost the dashboard
+    DAILY = None
+    logging.warning('[daily] counter disabled: %s', _daily_err)
+
+def _daily_seed():
+    """Fold in what the node already knew before this counter existed:
+    today's aircraft from the 24 h history store, and the old Best Day from
+    stats_records.json most_day. Both are idempotent, so this runs every start."""
+    if DAILY is None:
+        return
+    try:
+        now = time.time()
+        lt = time.localtime(now)
+        midnight = time.mktime((lt.tm_year, lt.tm_mon, lt.tm_mday, 0, 0, 0, 0, 0, -1))
+        seen = set()
+        for h, hexes in HIST_HOURS.items():
+            if h * 3600 >= midnight:
+                seen |= hexes
+        DAILY.seed_today(seen, now)
+        rec_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'stats_records.json')
+        if os.path.exists(rec_path):
+            with open(rec_path, 'r') as f:
+                md = (json.load(f) or {}).get('most_day') or {}
+            if isinstance(md, dict) and isinstance(md.get('count'), int) and md['count'] <= 1000000:
+                DAILY.seed_best(md['count'], md.get('date') or '')
+        DAILY.save()
+    except Exception as e:
+        logging.warning('[daily] seed skipped: %s', e)
+
+_daily_seed()
+
 def record_trails():
     while True:
         try:
@@ -881,6 +924,13 @@ def record_trails():
                                 't': now
                             })
                             _hist_note(a, now)
+                    if DAILY is not None:
+                        DAILY.note([a.get('hex') for a in data.get('aircraft', [])
+                                    if a.get('lat') and a.get('lon')], now)
+                        try:
+                            DAILY.save_if_due(now, every=60)
+                        except Exception as e:
+                            logging.warning('[daily] save failed: %s', e)
                     # Clean old entries
                     cutoff = now - MAX_TRAIL_AGE
                     for hex in list(TRAIL_HISTORY.keys()):
@@ -5559,6 +5609,14 @@ def save_stats_records():
     except Exception:
         pass
     return jsonify({'success': False}), 400
+
+@app.route('/api/stats/daily', methods=['GET'])
+def get_stats_daily():
+    """Aircraft Tracked tiles: {today, date, best:{count,date}, total, since}.
+    Counted on the node (see DAILY near the trail recorder), not in a browser."""
+    if DAILY is None:
+        return jsonify({'error': 'daily counter unavailable'}), 503
+    return jsonify(DAILY.snapshot(time.time()))
 
 # -- Coverage map (polar reception footprint) --
 @app.route('/api/coverage')
