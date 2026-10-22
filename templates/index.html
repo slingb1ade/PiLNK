@@ -13,7 +13,7 @@
      is harmless. Served locally so the dashboard needs no network for it. -->
 <script src="/static/aircraft-shapes.js"></script>
 <script src="/static/datalink-card.js?v=dl5"></script>
-<script src="/static/arrival-paths.js?v=ap4"></script>
+<script src="/static/arrival-paths.js?v=ap6"></script>
 <script defer src="/static/datalink-board.js?v=b4"></script>
 <script src="/static/datalink-map.js?v=m2"></script>
 <script src="/static/fixes-nz.js?v=f1"></script>
@@ -1796,7 +1796,7 @@
               <div class="av-toggle-row"><span style="display:flex;align-items:center;"><span class="av-dot" style="background:#f59e0b;"></span>NAVAIDs</span><label class="toggle-switch" style="transform:scale(0.85);"><input type="checkbox" id="avNavaids" onchange="redrawAvOverlay()"/><span class="toggle-slider"></span></label></div>
               <div class="av-toggle-row"><span style="display:flex;align-items:center;"><span class="av-dot" style="background:#06b6d4;"></span>Airspace</span><label class="toggle-switch" style="transform:scale(0.85);"><input type="checkbox" id="avAirways" onchange="redrawAvOverlay()"/><span class="toggle-slider"></span></label></div>
               <div class="av-toggle-row"><span style="display:flex;align-items:center;"><span class="av-dot" style="background:#f472b6;"></span>IFR Fixes</span><label class="toggle-switch" style="transform:scale(0.85);"><input type="checkbox" id="avWaypoints" onchange="toggleWaypoints(this.checked)"/><span class="toggle-slider"></span></label></div>
-              <div class="av-toggle-row" id="arrRow" style="display:none;" title="Arrival paths into Auckland, learned from the tracks PiLNK has seen land. Not an official procedure — for watching aircraft only."><span style="display:flex;align-items:center;"><span class="av-dot" style="background:#fb923c;"></span>Arrival Paths</span><label class="toggle-switch" style="transform:scale(0.85);"><input type="checkbox" id="avArrivals" onchange="toggleArrivalPaths(this.checked)"/><span class="toggle-slider"></span></label></div>
+              <div class="av-toggle-row" id="arrRow" style="display:none;" title="Arrival paths into Auckland, learned from the tracks PiLNK has seen land. Not an official procedure — for watching aircraft only."><span style="display:flex;align-items:center;"><span class="av-dot" style="background:#ff3df2;"></span>Arrival Paths</span><label class="toggle-switch" style="transform:scale(0.85);"><input type="checkbox" id="avArrivals" onchange="toggleArrivalPaths(this.checked)"/><span class="toggle-slider"></span></label></div>
               <div class="av-status" id="arrStatus" style="display:none;padding-left:18px;"></div>
               <div class="av-toggle-row"><span style="display:flex;align-items:center;"><span class="av-dot" style="background:#22d3ee;"></span>Footprint</span><label class="toggle-switch" style="transform:scale(0.85);"><input type="checkbox" id="avFootprint" onchange="toggleFootprint(this.checked)"/><span class="toggle-slider"></span></label></div>
               <div class="av-toggle-row" id="fpViewRow" style="display:none;padding-left:18px;justify-content:flex-end;gap:4px;">
@@ -2197,7 +2197,7 @@
         </div>
         <div class="cc-meta" id="ccMeta"></div>
         <!-- Arrival path this aircraft is flying (static/arrival-paths.js). Plain text; hidden unless the Arrival Paths flag is on and the aircraft is arriving. -->
-        <div class="cc-meta" id="ccArrival" style="display:none;color:#fb923c;"></div>
+        <div class="cc-meta" id="ccArrival" style="display:none;color:#ff3df2;"></div>
         <!-- Datalink (ACARS/VDL2): route, ETA, runway, next fix, takeoff/landing, straight from the aircraft. Local only; shown only when this node has decoded some. Filled by static/datalink-card.js with textContent. -->
         <div class="cc-bds-primary cc-dl" id="ccDatalink" style="display:none;">
           <div class="cc-dl-head" id="ccDatalinkHead"></div>

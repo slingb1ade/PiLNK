@@ -17,7 +17,7 @@
   var C = {
     refLat: -37.0081, refLon: 174.7917,          // NZAA reference point
     rwys: { '05R': 72, '23L': 252 },             // true headings
-    colours: { '05R': '#c084fc', '23L': '#fb923c' },
+    colours: { '05R': '#c084fc', '23L': '#ff3df2' },   // 23L magenta (21 Oct): orange vanished against the lit streets
     matchKm: 4,                                  // best path under 4 km mean distance
     lookS: 300,                                  // ...over the last 5 minutes of track
     lockKm: 35,                                  // a match made further out than this sticks (paths share the final)
@@ -27,6 +27,11 @@
     // path by progressKm. Once matched it sticks while it stays on (or comes back to) that path within stickyS - level
     // holds and vectors included - until it climbs gaClimbFt above its lowest point (go-around / missed approach).
     maxAltFt: 20000, progressKm: 1, stickyS: 600, gaClimbFt: 500,
+    // Two paths on the same line (22 Oct: "via SURFY" and "via SURFY · short turn" share 100+ km of route): within
+    // tieKm of each other they are a tie, and height decides - short-turners fly the shared downwind 2-3,000 ft lower.
+    // A tie goes to the path whose usual height fits the last recentS clearly better (altMarginFt), else to the path
+    // more flights use. A matched path gives way only when another beats it clearly over recentS.
+    tieKm: 1, altMarginFt: 700, recentS: 120,
     keepEveryS: 10,                              // track memory: one point per 10 s
     activeS: 1800,                               // active runway from the last 30 min of landings
     dimOpacity: 0.3, brightOpacity: 0.85,
@@ -63,16 +68,54 @@
   // Track [{lat, lon, alt, t}, ...] (last 5 min) vs paths -> {path, dist_km} or null.
   // Only paths for `rwy` are tried when a runway is known (active one, or the aircraft's own).
   function match(track, paths, rwy) {
-    if (!track || track.length < 3 || !paths || !paths.length) return null;
-    var best = null;
+    var all = matchAll(track, paths, rwy);
+    return all.length ? all[0] : null;
+  }
+  // Every path under matchKm, closest first.
+  function matchAll(track, paths, rwy) {
+    if (!track || track.length < 3 || !paths || !paths.length) return [];
+    var out = [];
     paths.forEach(function (p) {
       if (rwy && p.rwy !== rwy) return;
-      var sum = 0;
-      for (var i = 0; i < track.length; i++) sum += kmToLine(track[i].lat, track[i].lon, p.line);
-      var d = sum / track.length;
-      if (d < C.matchKm && (!best || d < best.dist_km)) best = { path: p, dist_km: d };
+      var d = geoOn(track, p);
+      if (d < C.matchKm) out.push({ path: p, dist_km: d });
     });
-    return best;
+    return out.sort(function (a, b) { return a.dist_km - b.dist_km; });
+  }
+  function geoOn(pts, p) {
+    var sum = 0;
+    for (var i = 0; i < pts.length; i++) sum += kmToLine(pts[i].lat, pts[i].lon, p.line);
+    return pts.length ? sum / pts.length : Infinity;
+  }
+  // Mean |height - the path's usual height there| (ft) over the points that have a height, or null.
+  function altErr(pts, p) {
+    var sum = 0, n = 0;
+    pts.forEach(function (q) {
+      if (q.alt == null) return;
+      var pr = profileAt(p, q.lat, q.lon); if (!pr) return;
+      sum += Math.abs(q.alt - pr.alt); n++;
+    });
+    return n ? sum / n : null;
+  }
+  // Candidates (closest first) -> the one to show: alone, or the height winner of a tie, or the busiest of a tie.
+  function pick(cands, rec) {
+    if (!cands.length) return null;
+    var tied = cands.filter(function (c) { return c.dist_km <= cands[0].dist_km + C.tieKm; });
+    if (tied.length === 1) return tied[0];
+    var byAlt = tied.map(function (c) { return { c: c, e: altErr(rec, c.path) }; })
+                    .filter(function (x) { return x.e != null; }).sort(function (a, b) { return a.e - b.e; });
+    if (byAlt.length >= 2 && byAlt[1].e - byAlt[0].e >= C.altMarginFt) return byAlt[0].c;
+    return tied.slice().sort(function (a, b) { return (b.path.flights || 0) - (a.path.flights || 0) || a.dist_km - b.dist_km; })[0];
+  }
+  // Does `ch` beat the path the aircraft is on, clearly, over the recent track? On the shared final it never does.
+  function beats(cur, ch, rec) {
+    if (!rec.length) return false;
+    var gc = geoOn(rec, cur), gh = geoOn(rec, ch);
+    if (gh > C.tieKm) return false;          // only a path it has really been flying lately (not after a vector)
+    if (gc - gh > C.tieKm) return true;
+    if (gh > gc + C.tieKm) return false;
+    var ec = altErr(rec, cur), eh = altErr(rec, ch);
+    return ec != null && eh != null && ec - eh >= C.altMarginFt;
   }
 
   function brg(lat1, lon1, lat2, lon2) {
@@ -114,7 +157,7 @@
     return C.minW + (C.maxW - C.minW) * Math.max(0, Math.min(1, (flights - 1) / (maxFlights - 1)));
   }
   function lineStyle(p, maxFlights, active) {
-    return { color: C.colours[p.rwy] || '#fb923c', weight: lineWidth(p.flights, maxFlights),
+    return { color: C.colours[p.rwy] || '#ff3df2', weight: lineWidth(p.flights, maxFlights),
              opacity: (active && p.rwy !== active) ? C.dimOpacity : C.brightOpacity };
   }
 
@@ -142,6 +185,19 @@
     while (landings.length && nowS - landings[0].t > C.activeS) landings.shift();
   }
   function forget(cs) { delete tracks[cs]; delete locked[cs]; delete stick[cs]; }
+  // A rebuilt file numbers its paths afresh (yesterday's 23L-7 can be another path today), and on final every path is
+  // within matchKm - so a lock kept by id would quietly switch the card to whichever path took that id (22 Oct: NZ616
+  // in at WATEL, card "via SABAV"). Follow each lock / sticky match to the path of the same name; drop it if that path
+  // is gone, and the next fix makes a fresh match.
+  function carryLocks(was, now) {
+    if (!was || !was.paths || was.built_utc === now.built_utc) return;
+    var nameOf = {}, idOf = {};
+    was.paths.forEach(function (p) { nameOf[p.id] = p.name; });
+    (now.paths || []).forEach(function (p) { idOf[p.name] = p.id; });
+    var to = function (id) { var n = nameOf[id]; return n != null && idOf[n] != null ? idOf[n] : null; };
+    Object.keys(locked).forEach(function (cs) { var id = to(locked[cs]); if (id == null) delete locked[cs]; else locked[cs] = id; });
+    Object.keys(stick).forEach(function (cs) { var id = to(stick[cs].id); if (id == null) delete stick[cs]; else stick[cs].id = id; });
+  }
 
   // ── state + Leaflet drawing (only when the overlay is on) ──
   var S = { enabled: false, doc: null, unavailable: false, on: false, layer: null, timer: null };
@@ -213,8 +269,19 @@
       var sp = pathById(st.id);
       if (near(sp)) m = { path: sp, dist_km: kmToLine(last.lat, last.lon, sp.line) };
     }
+    var rec = tr.filter(function (q) { return nowS - q.t <= C.recentS; });
+    var cands = matchAll(tr, S.doc.paths, rwy).filter(function (c) { return near(c.path); });
+    if (m) {
+      // On a path already: switch only when another one clearly fits the recent track better (it turned off the
+      // shared line, or its height says short turn / long downwind). The lock follows the switch.
+      var ch = pick(cands, rec);
+      if (ch && ch.path.id !== m.path.id && beats(m.path, ch.path, rec)) {
+        m = ch;
+        if (locked[cs] != null) locked[cs] = ch.path.id;
+      }
+    }
     if (!m) {
-      var cand = match(tr, S.doc.paths, rwy);
+      var cand = pick(cands, rec);
       // A fresh match must look like an arrival flying the path: on it now, coming down (not climbing away from its
       // lowest point), and moving forward along it - a departure on the same line goes the other way and climbs.
       var low = Math.min.apply(null, tr.map(function (q) { return q.alt == null ? Infinity : q.alt; }));
@@ -293,14 +360,14 @@
     C: C, km: km, kmToLine: kmToLine, match: match, isArriving: isArriving, activeRwy: activeRwy,
     finalRwy: finalRwy, lineWidth: lineWidth, lineStyle: lineStyle, cardLine: cardLine,
     observe: observe, forget: forget, draw: draw, clear: clear, lineFor: lineFor, statusText: statusText,
-    matchFor: matchFor, profileAt: profileAt, ribbonAhead: ribbonAhead, deltaText: deltaText,
+    matchFor: matchFor, matchAll: matchAll, profileAt: profileAt, ribbonAhead: ribbonAhead, deltaText: deltaText,
     eyeFromClip: eyeFromClip, ribbonSig: ribbonSig,
     _state: S, _tracks: tracks, _landings: landings,
     // Browser glue: fetch, show the toggle row, keep the card line current.
     load: function (fetchFn, onDone) {
       return fetchFn('/api/arrival-paths').then(function (r) { return r.json(); }).then(function (d) {
         if (!d || d.enabled === false) { S.enabled = false; S.doc = null; }
-        else { S.enabled = true; S.unavailable = !!d.unavailable; S.doc = d; }
+        else { var was = S.doc; S.enabled = true; S.unavailable = !!d.unavailable; S.doc = d; carryLocks(was, d); }
         if (onDone) onDone(S);
       }).catch(function () {
         S.unavailable = true;

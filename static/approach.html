@@ -112,7 +112,7 @@
 <script src="/static/city-lights.js"></script>
 <script src="/static/wmm.js"></script>
 <script src="/static/datalink-card.js?v=dl5"></script>
-<script src="/static/arrival-paths.js?v=ap4"></script>
+<script src="/static/arrival-paths.js?v=ap6"></script>
 <script src="/static/nav-lights.js?v=nl1"></script>
 <script src="/static/runway-lights.js?v=rl1"></script>
 <script>
@@ -266,11 +266,11 @@ function integrate(){   // predict where the aircraft is *now* from the last fix
 /* ---------- Arrival Paths ribbon (main, 18 Oct 2026) ----------
    The path arrivals usually fly into the airport, learned by pilnk.io from the network's own flights (static/arrival-paths.js,
    off unless the node's config.json has "arrival_paths": true). When the followed aircraft is arriving on one of them, the
-   rest of that path is drawn ahead of it as a translucent ribbon at the usual height - orange for 23L, purple for 05R - and
+   rest of that path is drawn ahead of it as a translucent ribbon at the usual height - magenta for 23L, purple for 05R - and
    the card says which path it is and how its height compares: "23L via OLRIK · 400 ft above usual". Nothing is drawn for an
    aircraft that is not arriving, or on a node with the flag off. Track memory stays in this browser. */
 const _apr=window._apr={pts:null,key:null,sig:null,color:null,mesh:null,line:null,scene:null,anchor:null};
-if(window.ArrivalPaths) ArrivalPaths.load(fetch.bind(window));
+if(window.ArrivalPaths){ ArrivalPaths.load(fetch.bind(window)); setInterval(()=>ArrivalPaths.load(fetch.bind(window)),ArrivalPaths.C.refetchMs); }   // hourly, as the dashboard: a page left open across the nightly rebuild kept yesterday's paths (22 Oct)
 function aprDrop(){ for(const k of ['mesh','line']) if(_apr[k]){ _apr.scene.remove(_apr[k]); _apr[k].geometry.dispose(); _apr[k].material.dispose(); _apr[k]=null; } }
 function aprClear(){ _apr.pts=null; _apr.key=null; _apr.sig=null; _apr.anchor=null; aprDrop();
   const row=document.getElementById('d_aprow'); if(row) row.style.display='none'; }
@@ -285,7 +285,7 @@ function aprUpdate(list,a){
   /* The whole approach, built once per aircraft + path (AJ, 19 Oct): the aircraft flies along a still ribbon. It used to be
      re-cut at the aircraft every poll, so it crept back towards the plane for 2 s and jumped ahead again. */
   const sig=AP.ribbonSig(key,m.path,qnh,VE);
-  if(sig!==_apr.sig||!_apr.mesh){ _apr.key=key; _apr.sig=sig; _apr.pts=m.path.line; _apr.color=AP.C.colours[m.path.rwy]||'#fb923c'; aprBuild(); }
+  if(sig!==_apr.sig||!_apr.mesh){ _apr.key=key; _apr.sig=sig; _apr.pts=m.path.line; _apr.color=AP.C.colours[m.path.rwy]||'#ff3df2'; aprBuild(); }
 }
 /* The ribbon is a flat band RIB_W wide along the path, in a local frame anchored at its first point: x east, y up, z south,
    metres, as the approach lights are. A level band and a vertical fin through it: a flat band alone vanishes edge-on. Height is the path's usual barometric altitude through the same QNH correction the

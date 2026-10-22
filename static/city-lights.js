@@ -1,6 +1,6 @@
 /* PiLNK city lights (10 Oct 2026) - shared by the 3D Sky (static/sky3d.html) and the 3D Approach
    (static/approach.html). After dark the towns glow: NASA's Black Marble night photo from height, and the
-   map's own streets lit sodium orange close in. Each page decides WHEN (its own sun and theme logic) and
+   map's own streets lit a warm LED white close in. Each page decides WHEN (its own sun and theme logic) and
    hands this file a level 0..1; this file decides WHAT is drawn and puts every property it touched back
    exactly when the level returns to 0. Two looks: 'sky' (top-down, v1.6.5 Night VFR) and 'approach'
    (a chase camera ~300 m behind the aircraft at high pitch, where blur makes lines vanish and fixed-pixel
@@ -60,7 +60,7 @@
       if (DIM.test(id)) { out.push({ id, prop: 'line-opacity', val: () => 0.08 }); continue; }
       if (/^tunnel_/.test(id)) continue;
       const major = MAJOR.test(id);
-      out.push({ id, prop: 'line-color', val: () => major ? '#ffbe5c' : '#ff9d3d' });
+      out.push({ id, prop: 'line-color', val: () => major ? '#f3e2c0' : '#d9c6a0' });   // warm LED white, not sodium orange (21 Oct): the 23L ribbon was lost in orange streets
       out.push({ id, prop: 'line-width', val: () => ['interpolate', ['exponential', P.exp], ['zoom']].concat(major ? P.major : P.minor) });
       out.push({ id, prop: 'line-blur', val: () => major ? P.blurMajor : P.blurMinor });
       out.push({ id, prop: 'line-opacity', val: k => ['interpolate', ['linear'], ['zoom']].concat(sc(major ? P.opMajor : P.opMinor, lamp(k))) });
@@ -76,7 +76,7 @@
       const major = MAJOR.test(id), base = major ? 0.22 : 0.16;
       const layer = { id: 'cl-glow-' + id, type: 'line', source: l.source, 'source-layer': l['source-layer'], minzoom: 12,
         layout: { 'line-cap': 'round', 'line-join': 'round', visibility: 'none' },
-        paint: { 'line-color': major ? '#ffb347' : '#ff9a3c', 'line-opacity': base,
+        paint: { 'line-color': major ? '#ecd6ac' : '#d6c19a', 'line-opacity': base,
           'line-width': ['interpolate', ['exponential', 2], ['zoom']].concat(major ? [12, 6, 17, 48, 22, 1536] : [12, 3, 17, 28, 22, 896]) } };
       if (l.filter !== undefined) layer.filter = l.filter;
       out.push({ layer, before: id, opacity: k => Math.round(base * lamp(k) * 1000) / 1000 });
