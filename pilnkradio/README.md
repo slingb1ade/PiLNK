@@ -13,6 +13,25 @@ Control: GET /sdr/status · POST /sdr/{frequency,mode,bandwidth,playing,
                                       squelch,gain,agc}
 ```
 
+## Local unsquelched tap (engine 2.1.3)
+
+`ws://127.0.0.1:5656/sdr/audio_raw` is for programs on the node itself (the ATC
+STT), not for browsers. Same frames as `/sdr/audio` (binary float32 LE, mono,
+48 kHz), taken after the AGC and **before** the squelch gate and denoise.
+
+- **Local only.** Loopback peers, no browser `Origin` (a loopback one is fine), no
+  proxy headers (`X-Forwarded-For`, `Forwarded`, `Via`, ...). Anything else gets 403.
+  Captured ATC audio never leaves the node.
+- **Gap-free or closed.** Each reader has its own writer and queue. A reader about
+  4 s behind is closed, never skipped. If the radio thread stalls longer than the
+  dongle can buffer (150 ms), every raw reader is closed, because IQ may be lost.
+  Stopping the radio closes them too. While the radio is stopped, new readers get 503.
+- **Squelch edges as text frames.** `{"sq":0|1,"n":0}` comes first (the state at the
+  reader's sample 0), then `{"sq":..,"n":N}` at each edge. N counts samples since
+  that reader's first sample. `sq` is exactly the gate `/sdr/audio` applies. With
+  the squelch disabled it stays 1.
+- It keeps streaming through retunes. At most 4 readers (`rawTap` in `/sdr/status`).
+
 ## THE driver lesson (do not skip)
 
 The RTL-SDR **Blog V4 requires the rtl-sdr-blog librtlsdr fork**. With the

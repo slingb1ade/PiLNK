@@ -58,7 +58,7 @@
 
 using nlohmann::json;
 
-#define PILNKRADIO_VERSION "2.1.2"
+#define PILNKRADIO_VERSION "2.1.3"
 #define PILNK_FFT_SIZE     1024
 #define PILNK_FFT_RATE     25.0
 
@@ -554,6 +554,7 @@ public:
             controlThread = std::thread(&PilnkRadioDaemon::controlLoop, this);
         if (cfg.playing) {
             logI("consent was on (persisted) — resuming playback");
+            rawStreamStarting();
             rtl.startStream();
         }
     }
@@ -644,6 +645,19 @@ private:
 
     // called on the librtlsdr async thread with raw u8 IQ (I,Q interleaved)
     void iqHandler(const uint8_t* data, size_t len) {
+        // v2.1.3: the dongle buffers ~218 ms of IQ while this thread is busy. Past
+        // RAW_STALL_S between callbacks some may be gone, so the raw stream can't be
+        // trusted as unbroken: close its readers rather than hand them a splice.
+        const auto now = std::chrono::steady_clock::now();
+        if (iqSeen && nRawSubs.load(std::memory_order_relaxed) > 0) {
+            const double gap = std::chrono::duration<double>(now - lastIq).count();
+            if (gap > RAW_STALL_S) {
+                char why[96];
+                snprintf(why, sizeof(why), "radio thread stalled %.0f ms - possible gap", gap * 1000.0);
+                dropRawSubs(why, true);
+            }
+        }
+        lastIq = now; iqSeen = true;
         // demod always runs while streaming — audio flows whenever playing,
         // independent of clients (v1 semantics; audioSps is the watchdog key)
         demodBlock(data, len);
@@ -717,6 +731,47 @@ private:
     float dcState = 0.0f, dcPrev = 0.0f;      // DC blocker (one-pole HPF)
     float agcGain = 20.0f;                    // DSP thread only
     std::vector<float> audioAcc;              // pending output samples
+
+    // -------- v2.1.3: the unsquelched local tap, /sdr/audio_raw --------
+    // For node-local readers (the STT) that find transmissions themselves: the same
+    // float32 mono 48 kHz as /sdr/audio, taken AFTER the AGC and BEFORE the squelch gate
+    // (and before denoise, which only ever runs on listener copies). Rules, from STT:
+    //  - gap-free or closed: a reader is never skipped. Each reader has its own writer
+    //    thread and queue, so a stuck one can't hold up the radio or the others; one that
+    //    falls RAW_QMAX behind is closed. A stopped radio closes every reader, and so does
+    //    a radio-thread stall long enough that the dongle may have dropped IQ.
+    //  - a text frame {"sq":1|0,"n":N} first (state at sample 0) and at each squelch
+    //    edge, N = sample index since that reader's first sample. sq mirrors the gate
+    //    /sdr/audio applies (1 = passing). With squelch disabled it stays 1.
+    //  - loopback peers only, no browser Origin, no proxy headers (handleWS). Captured
+    //    ATC audio never leaves the node.
+    struct RawClient {
+        int fd = -1;
+        bool started = false; uint64_t base = 0;  // DSP thread only
+        std::mutex wmx;                           // one writer at a time: audio vs pongs
+        std::mutex qmx;
+        std::condition_variable qcv;
+        std::deque<std::vector<uint8_t>> q;       // ready-made WS frames
+        size_t qBytes = 0;
+        std::atomic<bool> dead{false};
+        std::thread worker;
+        ~RawClient() { if (worker.joinable()) worker.detach(); }   // see DnClient
+    };
+    std::mutex rawMtx;                            // guards rawSubs + rawAccepting (never held while sending)
+    std::vector<std::shared_ptr<RawClient>> rawSubs;
+    bool rawAccepting = false;                    // true only while the radio streams
+    std::atomic<int> nRawSubs{0};
+    static constexpr int    RAW_MAX     = 4;
+    static constexpr int    RAW_SNDBUF  = 192000;  // kernel doubles it: ~2 s of audio in the socket
+    static constexpr size_t RAW_QMAX    = 384000;  // + ~2 s queued, then the reader is closed
+    static constexpr double RAW_STALL_S = 0.15;    // the dongle holds 16 x 13.6 ms; past this, IQ may be gone
+    std::vector<float> rawAcc;                // DSP thread: pending unsquelched samples
+    uint64_t rawPushed = 0;                   // DSP thread: samples ever pushed into rawAcc
+    bool rawOpenNow = true;                   // DSP thread: gate state of the newest block
+    bool rawOpenEmit = true;                  // DSP thread: gate state at the next chunk to send
+    std::deque<std::pair<uint64_t, bool>> rawEdges; // DSP thread: (sample index, open) not yet sent
+    bool iqSeen = false;                      // DSP thread (reset by the control thread before a start)
+    std::chrono::steady_clock::time_point lastIq;
     std::vector<float> dspBufA, dspBufB, dspBufC; // reused work buffers
 
     void initDsp() {
@@ -784,6 +839,10 @@ private:
         bool muted = false;
         if (sqEnabled.load(std::memory_order_relaxed))
             muted = chanDb < sqLevel.load(std::memory_order_relaxed);
+        if (n3 && muted == rawOpenNow) {          // the gate flips at this block's first sample
+            rawOpenNow = !muted;
+            rawEdges.emplace_back(rawPushed + rawAcc.size(), rawOpenNow);
+        }
 
         // AM envelope -> DC block -> AGC
         for (size_t i = 0; i < n3; i++) {
@@ -797,7 +856,9 @@ private:
             if (a > 0.85f)      agcGain *= 0.98f;
             else if (a < 0.15f) agcGain *= 1.0002f;
             agcGain = std::clamp(agcGain, 0.5f, 200.0f);
-            audioAcc.push_back(muted ? 0.0f : std::clamp(s, -1.0f, 1.0f));
+            const float sc = std::clamp(s, -1.0f, 1.0f);
+            audioAcc.push_back(muted ? 0.0f : sc);
+            rawAcc.push_back(sc);
         }
 
         // emit fixed 512-sample chunks (same cadence the v1 packer produced)
@@ -809,6 +870,107 @@ private:
             off += AUDIO_CHUNK;
         }
         if (off) audioAcc.erase(audioAcc.begin(), audioAcc.begin() + off);
+        emitRaw();
+    }
+
+    // DSP thread. Queues every whole chunk in rawAcc for the raw readers, each preceded by
+    // the squelch edges that fall inside it. Edges are consumed even with no readers.
+    void emitRaw() {
+        size_t off = 0;
+        while (rawAcc.size() - off >= (size_t)AUDIO_CHUNK) {
+            const uint64_t c0 = rawPushed + off, c1 = c0 + AUDIO_CHUNK;
+            const bool openAtC0 = rawOpenEmit;
+            std::vector<std::pair<uint64_t, bool>> edges;
+            while (!rawEdges.empty() && rawEdges.front().first < c1) {
+                edges.push_back(rawEdges.front());
+                rawOpenEmit = rawEdges.front().second;
+                rawEdges.pop_front();
+            }
+            if (!testCapture && nRawSubs.load(std::memory_order_relaxed) > 0)
+                queueRaw(rawAcc.data() + off, c0, openAtC0, edges);
+            off += AUDIO_CHUNK;
+        }
+        if (off) { rawAcc.erase(rawAcc.begin(), rawAcc.begin() + off); rawPushed += off; }
+    }
+
+    static void appendFrame(std::vector<uint8_t>& out, uint8_t op, const void* data, size_t len) {
+        const uint64_t L = len;
+        out.push_back(0x80 | op);
+        if (L < 126) out.push_back((uint8_t)L);
+        else if (L <= 0xFFFF) { out.push_back(126); out.push_back((L >> 8) & 0xFF); out.push_back(L & 0xFF); }
+        else { out.push_back(127); for (int i = 0; i < 8; i++) out.push_back((L >> (8 * (7 - i))) & 0xFF); }
+        const uint8_t* p = (const uint8_t*)data;
+        out.insert(out.end(), p, p + len);
+    }
+
+    // DSP thread: copy only, never send. A reader too far behind is closed, never skipped.
+    void queueRaw(const float* chunk, uint64_t c0, bool openAtC0,
+                  const std::vector<std::pair<uint64_t, bool>>& edges) {
+        std::lock_guard<std::mutex> lk(rawMtx);
+        for (size_t i = 0; i < rawSubs.size();) {
+            auto& c = rawSubs[i];
+            std::vector<uint8_t> fr;
+            char txt[48];
+            size_t e = 0;
+            if (!c->started) {                // this reader's sample 0 is c0
+                c->started = true; c->base = c0;
+                bool st = openAtC0;
+                while (e < edges.size() && edges[e].first == c0) st = edges[e++].second;
+                int n = snprintf(txt, sizeof(txt), "{\"sq\":%d,\"n\":0}", st ? 1 : 0);
+                appendFrame(fr, 0x1, txt, (size_t)n);
+            }
+            for (; e < edges.size(); e++) {
+                int n = snprintf(txt, sizeof(txt), "{\"sq\":%d,\"n\":%llu}", edges[e].second ? 1 : 0,
+                                 (unsigned long long)(edges[e].first - c->base));
+                appendFrame(fr, 0x1, txt, (size_t)n);
+            }
+            appendFrame(fr, 0x2, chunk, AUDIO_CHUNK * sizeof(float));
+            bool full;
+            { std::lock_guard<std::mutex> ql(c->qmx);
+              full = c->qBytes + fr.size() > RAW_QMAX;
+              if (!full) { c->qBytes += fr.size(); c->q.push_back(std::move(fr)); } }
+            if (full || c->dead.load()) {
+                if (full) logW("raw tap: a reader fell %zu bytes behind - closing it (gap-free or closed)", RAW_QMAX);
+                c->dead = true; c->qcv.notify_all();
+                shutdown(c->fd, SHUT_RDWR);   // handleWS owns the fd and closes it once
+                rawSubs.erase(rawSubs.begin() + i);
+            } else { c->qcv.notify_one(); i++; }
+        }
+        nRawSubs.store((int)rawSubs.size());
+    }
+
+    void rawWorker(std::shared_ptr<RawClient> c) {
+        while (!c->dead.load() && running) {
+            std::vector<uint8_t> fr;
+            {
+                std::unique_lock<std::mutex> lk(c->qmx);
+                c->qcv.wait_for(lk, std::chrono::milliseconds(250),
+                                [&]{ return !c->q.empty() || c->dead.load(); });
+                if (c->q.empty()) continue;
+                fr.swap(c->q.front()); c->q.pop_front();
+                c->qBytes -= fr.size();
+            }
+            std::lock_guard<std::mutex> wl(c->wmx);
+            if (!sendAll(c->fd, fr.data(), fr.size())) break;
+        }
+        c->dead = true;
+        shutdown(c->fd, SHUT_RDWR);           // wakes handleWS's recv; it closes the fd
+    }
+
+    // Close every raw reader. accepting=false: the radio has stopped, refuse new readers
+    // until it streams again. accepting=true: a possible gap - readers reconnect at once.
+    void dropRawSubs(const char* why, bool accepting) {
+        std::lock_guard<std::mutex> lk(rawMtx);
+        rawAccepting = accepting;
+        if (!rawSubs.empty()) logW("raw tap: closing %d reader(s): %s", (int)rawSubs.size(), why);
+        for (auto& c : rawSubs) { c->dead = true; c->qcv.notify_all(); shutdown(c->fd, SHUT_RDWR); }
+        rawSubs.clear();
+        nRawSubs.store(0);
+    }
+    void rawStreamStarting() {                // control/acquire thread, before rtl.startStream()
+        iqSeen = false;
+        std::lock_guard<std::mutex> lk(rawMtx);
+        rawAccepting = true;
     }
 
 public:
@@ -915,11 +1077,17 @@ private:
             switch (c.type) {
                 case Command::PLAYING:
                     cfg.playing = c.bval;
+                    if (c.bval && !rtl.isStreaming()) rawStreamStarting();
                     if (c.bval) rtl.startStream(); else rtl.stopStream();
+                    if (c.bval && !rtl.isStreaming()) dropRawSubs("radio did not start", false);
                     // demodBlock only runs while the stream does, so a stopped
                     // radio would otherwise keep publishing its last reading
                     // as though it were current. Go back to "not measured".
                     if (!c.bval) chanPowValid.store(false, std::memory_order_relaxed);
+                    if (!c.bval) {                    // DSP thread is joined: its state is ours now
+                        dropRawSubs("radio stopped", false);
+                        rawAcc.clear(); rawEdges.clear(); rawOpenEmit = rawOpenNow;
+                    }
                     logI("control: playing -> %s", c.bval ? "true" : "false");
                     break;
                 case Command::FREQ:
@@ -1007,6 +1175,8 @@ private:
         json dn = { {"available", dfn::api.ok}, {"clients", nDnSubs.load()}, {"max", DN_MAX} };
         if (!dfn::api.ok) dn["why"] = dfn::api.why;
         j["denoise"] = dn;
+        // v2.1.3: the local unsquelched tap (/sdr/audio_raw, loopback only)
+        j["rawTap"] = { {"clients", nRawSubs.load()}, {"max", RAW_MAX} };
         return j.dump();
     }
 
@@ -1184,6 +1354,7 @@ private:
         for (int fd : fftSubs) close(fd);
         for (int fd : audioSubs) close(fd);
         fftSubs.clear(); audioSubs.clear();
+        dropRawSubs("engine stopping", false);
         // denoised listeners close themselves: flag them, wake them, unblock their sockets
         std::lock_guard<std::mutex> dl(dnMtx);
         for (auto& c : dnSubs) { c->dead = true; c->qcv.notify_all(); shutdown(c->fd, SHUT_RDWR); }
@@ -1419,9 +1590,51 @@ private:
     }
 
     // -------- WebSocket --------
+    // v2.1.3: is the TCP peer this machine? (the listener is AF_INET, 0.0.0.0)
+    static bool peerIsLoopback(int fd) {
+        sockaddr_storage ss{}; socklen_t sl = sizeof(ss);
+        if (getpeername(fd, (sockaddr*)&ss, &sl) != 0) return false;
+        if (ss.ss_family == AF_INET)
+            return (ntohl(((sockaddr_in*)&ss)->sin_addr.s_addr) >> 24) == 127;
+        if (ss.ss_family == AF_INET6) {
+            const in6_addr& a = ((sockaddr_in6*)&ss)->sin6_addr;
+            if (IN6_IS_ADDR_LOOPBACK(&a)) return true;
+            return IN6_IS_ADDR_V4MAPPED(&a) && a.s6_addr[12] == 127;
+        }
+        return false;
+    }
+
+    // v2.1.3: why a raw-tap request is refused ("" = allowed). Node-local only: a reader
+    // on this machine, not a web page, not something forwarded from elsewhere.
+    std::string rawRefusal(int fd, const std::string& req) {
+        std::string origin = header(req, "Origin");
+        if (!peerIsLoopback(fd)) return "403";
+        if (!origin.empty() && !isLoopbackOrigin(origin)) return "403";
+        for (const char* h : {"X-Forwarded-For", "X-Forwarded-Host", "X-Real-IP", "Forwarded", "Via"})
+            if (!header(req, h).empty()) return "403";
+        std::lock_guard<std::mutex> lk(rawMtx);
+        if (!rawAccepting) return "503 radio stopped";
+        if ((int)rawSubs.size() >= RAW_MAX) return "503 raw tap full";
+        return "";
+    }
+
     void handleWS(int fd, const std::string& req, const std::string& path) {
         std::string key = header(req, "Sec-WebSocket-Key");
         if (key.empty()) { close(fd); return; }
+        const bool rawAsked = path.substr(0, path.find('?')) == "/sdr/audio_raw";
+        if (rawAsked) {
+            std::string why = rawRefusal(fd, req);
+            if (why == "403") {
+                logW("raw tap: refused a reader that is not local");
+                httpResponse(fd, "403 Forbidden", "application/json", "{\"ok\":false,\"error\":\"local only\"}");
+                close(fd); return;
+            }
+            if (!why.empty()) {
+                httpResponse(fd, "503 Service Unavailable", "application/json",
+                             "{\"ok\":false,\"error\":\"" + why.substr(4) + "\"}");
+                close(fd); return;
+            }
+        }
         std::string accept = pilnk::wsAccept(key);
         std::string resp =
             "HTTP/1.1 101 Switching Protocols\r\n"
@@ -1451,7 +1664,7 @@ private:
             }
             if (!dn) subs = &audioSubs;   // not asked, not available, or full: plain audio (fail-soft)
         }
-        else { close(fd); return; }
+        else if (base != "/sdr/audio_raw") { close(fd); return; }
 
         // H2 fix (audit 2026-07-09): bound the send. broadcast() runs on the
         // producer (DSP/IQ) threads and drops any subscriber whose sendAll()
@@ -1464,7 +1677,19 @@ private:
         // bad client before eviction.
         struct timeval sndto{0, 250000};
         setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &sndto, sizeof(sndto));
-        if (dn) {
+        std::shared_ptr<RawClient> raw;
+        if (rawAsked) {
+            int sb = RAW_SNDBUF;
+            setsockopt(fd, SOL_SOCKET, SO_SNDBUF, &sb, sizeof(sb));
+            raw = std::make_shared<RawClient>();
+            raw->fd = fd;
+            std::lock_guard<std::mutex> lk(rawMtx);   // re-check: the radio may have stopped meanwhile
+            if (!rawAccepting || (int)rawSubs.size() >= RAW_MAX) { close(fd); return; }
+            raw->worker = std::thread(&PilnkRadioDaemon::rawWorker, this, raw);
+            rawSubs.push_back(raw);
+            nRawSubs.store((int)rawSubs.size());
+            logI("WS client subscribed to %s (unsquelched, local, %d of %d)", base.c_str(), (int)rawSubs.size(), RAW_MAX);
+        } else if (dn) {
             dn->worker = std::thread(&PilnkRadioDaemon::dnWorker, this, dn);
             logI("WS client subscribed to %s (denoised, %d of %d)", base.c_str(), nDnSubs.load(), DN_MAX);
         } else {
@@ -1475,7 +1700,7 @@ private:
         }
         // Pongs must not interleave with data frames on the same socket. Plain listeners
         // share subsMtx with broadcast(); a denoised listener's writer is its own worker.
-        std::mutex& wmx = dn ? dn->wmx : subsMtx;
+        std::mutex& wmx = raw ? raw->wmx : dn ? dn->wmx : subsMtx;
 
         // keep alive: parse client frames properly (audit L2) — PONG the
         // PINGs so protocol-correct non-browser clients don't drop us, unmask
@@ -1532,6 +1757,14 @@ private:
             auto it = std::find(dnSubs.begin(), dnSubs.end(), dn);
             if (it != dnSubs.end()) dnSubs.erase(it);
             nDnSubs.store((int)dnSubs.size());
+        } else if (raw) {
+            // Stop the writer BEFORE closing (same reason as the denoise worker above).
+            raw->dead = true; raw->qcv.notify_all();
+            if (raw->worker.joinable()) raw->worker.join();
+            std::lock_guard<std::mutex> lk(rawMtx);
+            auto it = std::find(rawSubs.begin(), rawSubs.end(), raw);
+            if (it != rawSubs.end()) rawSubs.erase(it);
+            nRawSubs.store((int)rawSubs.size());
         } else {
             std::lock_guard<std::mutex> lk(subsMtx);
             auto it = std::find(subs->begin(), subs->end(), fd);
@@ -1539,7 +1772,7 @@ private:
             refreshSubCounts();
         }
         close(fd);
-        logI("WS client left %s%s", base.c_str(), dn ? " (denoised)" : "");
+        logI("WS client left %s%s", base.c_str(), dn ? " (denoised)" : raw ? " (unsquelched)" : "");
     }
 
     void broadcast(std::vector<int>& subs, const uint8_t* data, size_t len) {
@@ -1553,7 +1786,10 @@ private:
         for (size_t i = 0; i < subs.size();) {
             int fd = subs[i];
             if (!sendAll(fd, hdr, hl) || (len && !sendAll(fd, data, len))) {
-                close(fd); subs.erase(subs.begin() + i);
+                // 2.1.3: shutdown, not close. handleWS still owns this fd and closes it when
+                // its recv wakes; closing here too was a double close that could hit an fd
+                // number already reused by a new connection.
+                shutdown(fd, SHUT_RDWR); subs.erase(subs.begin() + i);
             } else { i++; }
         }
         refreshSubCounts();

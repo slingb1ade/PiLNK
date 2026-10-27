@@ -46,7 +46,7 @@ _REG_DROP = re.compile(r'[^A-Z0-9-]')
 # How long a decoded fact stays on the aircraft. The route outlives the
 # 30-minute message list (one progress report can name the destination an hour
 # out); the fast-changing ones do not.
-ROUTE_FACTS = ('orig', 'dest', 'flight', 'out_ts', 'off_ts', 'on_ts', 'in_ts', 'arr_gate')
+ROUTE_FACTS = ('orig', 'dest', 'flight', 'leg_flight', 'out_ts', 'off_ts', 'on_ts', 'in_ts', 'arr_gate')
 ROUTE_TTL = 3 * 3600
 FAST_FACTS = ('eta_ts', 'rwy', 'next_wp', 'next_wp_eta_ts', 'last_wp', 'then_wp',
               'alt_ft', 'temp_c', 'lat', 'lon')
@@ -73,6 +73,20 @@ def norm_flight(s):
     if m:
         s = m.group(1) + m.group(2)
     return s if _FLIGHT_RE.match(s) else None
+
+
+# 'NZ0441', 'ANZ441', 'QFA144' -> the flight number (441, 441, 144). A rego, or a callsign with
+# letters after the digits ('ANZ583L': its digits need not be the IATA number) -> None, which
+# means "cannot judge". Lets the live ADS-B callsign (ICAO form) be compared with the ACARS
+# header (IATA form) without a table of airline codes.
+_FLIGHT_NO = re.compile(r'^(?:[A-Z0-9]{2}|[A-Z]{3})0*([0-9]{1,4})$')
+
+
+def flight_no(s):
+    if not isinstance(s, str):
+        return None
+    m = _FLIGHT_NO.match(s.strip().upper())
+    return int(m.group(1)) if m else None
 
 
 def _s(v, cap):
@@ -227,6 +241,12 @@ class Store(object):
             if key is None:
                 return
             if facts:
+                # Remember which flight a route came from: the next leg flies the same airframe under
+                # another number, and the live callsign is how merge() tells the two apart.
+                if 'orig' in facts or 'dest' in facts:
+                    lf = norm_flight(facts.get('flight')) or norm_flight(msg.get('flight'))
+                    if lf:
+                        facts['leg_flight'] = lf
                 self._merge_facts(key, {k: (v, msg['ts']) for k, v in facts.items()})
             dq = self._by_key.setdefault(key, collections.deque(maxlen=PER_AIRCRAFT))
             dq.append(dict(msg))
@@ -415,6 +435,16 @@ class Store(object):
         with self._lock:
             recent = self._recent(hex_upper, reg, now)
             facts = self._fact_summary(hex_upper, reg, now, ac.get('lat') is not None)
+            # Turnaround (27 Oct 2026): facts outlive a quick turn at the gate, where the hub rarely
+            # hears the new leg. If the aircraft now flies under a plainly different flight number,
+            # the route, times and runways on file are the last leg's - show none of them.
+            now_no = flight_no(ac.get('flight'))
+            was_no = flight_no(facts.get('leg_flight')) or flight_no(facts.get('flight'))
+            if now_no is not None and was_no is not None and now_no != was_no:
+                facts = {}
+            facts.pop('leg_flight', None)
+            if facts and set(facts) == {'src'}:
+                facts = {}
             if recent or facts:
                 d = {'n': len(recent)}
                 if recent:

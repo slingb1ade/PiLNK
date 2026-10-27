@@ -32,6 +32,11 @@
     // A tie goes to the path whose usual height fits the last recentS clearly better (altMarginFt), else to the path
     // more flights use. A matched path gives way only when another beats it clearly over recentS.
     tieKm: 1, altMarginFt: 700, recentS: 120,
+    // Height floor (AJ, 27 Oct 2026: a C172 in the Ardmore circuit read "Arrival via 23L"). Outside floorFromKm of
+    // the airport an Auckland arrival is never this low: 199 real arrivals bottomed out at 1,500 ft by 12 km, 2,175 ft
+    // by 16 km and 2,500 ft from 18 km out. Light aircraft into Ardmore, Whitford or the bays fly 500-1,400 ft there.
+    // Floor = floorFtPerKm per km beyond floorFromKm, capped at floorMaxFt: at least 700 ft under every real arrival.
+    floorFromKm: 8, floorFtPerKm: 150, floorMaxFt: 1600,
     keepEveryS: 10,                              // track memory: one point per 10 s
     activeS: 1800,                               // active runway from the last 30 min of landings
     dimOpacity: 0.3, brightOpacity: 0.85,
@@ -123,6 +128,14 @@
     var x = Math.cos(lat1 * r) * Math.sin(lat2 * r) - Math.sin(lat1 * r) * Math.cos(lat2 * r) * Math.cos((lon2 - lon1) * r);
     return (Math.atan2(y, x) / r + 360) % 360;
   }
+  // Below the lowest an Auckland arrival flies at this distance (see C.floorFromKm): satellite-field traffic, not ours.
+  function tooLowForArrival(lat, lon, alt) {
+    if (alt == null || lat == null || lon == null) return false;
+    var d = km(C.refLat, C.refLon, lat, lon);
+    if (d <= C.floorFromKm) return false;
+    return alt < Math.min(C.floorMaxFt, (d - C.floorFromKm) * C.floorFtPerKm);
+  }
+
   // Arriving = over the remembered track it came down (>= 300 ft), is below FL200, got closer to the
   // airport and is heading roughly at it (within 45 deg). Overflights and passing traffic are not.
   function isArriving(track) {
@@ -131,6 +144,7 @@
     var dA = km(C.refLat, C.refLon, a.lat, a.lon), dB = km(C.refLat, C.refLon, b.lat, b.lon);
     if (!(dB < 160 && dB < dA - 1)) return false;
     if (a.alt == null || b.alt == null || b.alt > 20000 || a.alt - b.alt < 300) return false;
+    if (tooLowForArrival(b.lat, b.lon, b.alt)) return false;
     return angDiff(brg(a.lat, a.lon, b.lat, b.lon), brg(b.lat, b.lon, C.refLat, C.refLon)) <= 45;
   }
 
@@ -245,7 +259,7 @@
     var first = tr[0], last = tr[tr.length - 1];
     // Never: no altitude, or above FL200 (cruise overhead). Distance needs no cap of its own: being within matchKm of
     // a learned path already keeps it near the airport.
-    if (last.alt == null || last.alt > C.maxAltFt) {
+    if (last.alt == null || last.alt > C.maxAltFt || tooLowForArrival(last.lat, last.lon, last.alt)) {
       delete stick[cs]; delete locked[cs]; return null;
     }
     var st = stick[cs];
@@ -358,7 +372,7 @@
 
   var API = {
     C: C, km: km, kmToLine: kmToLine, match: match, isArriving: isArriving, activeRwy: activeRwy,
-    finalRwy: finalRwy, lineWidth: lineWidth, lineStyle: lineStyle, cardLine: cardLine,
+    finalRwy: finalRwy, tooLowForArrival: tooLowForArrival, lineWidth: lineWidth, lineStyle: lineStyle, cardLine: cardLine,
     observe: observe, forget: forget, draw: draw, clear: clear, lineFor: lineFor, statusText: statusText,
     matchFor: matchFor, matchAll: matchAll, profileAt: profileAt, ribbonAhead: ribbonAhead, deltaText: deltaText,
     eyeFromClip: eyeFromClip, ribbonSig: ribbonSig,
