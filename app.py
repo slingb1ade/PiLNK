@@ -5352,6 +5352,14 @@ def taf_proxy(station):
         print('TAF ERROR:', str(e))
         return jsonify({'error': str(e)}), 500
 
+# ── Cloud tops for the 3D Approach cloud deck (29 Oct 2026, cloudtops.py) ──
+# The METAR gives cloud bases; Open-Meteo's cloud cover by height gives the tops. /api/cloudtops?lat=&lon=&elev=
+try:
+    import cloudtops as _cloudtops
+    _cloudtops.register(app)
+except Exception as _ct_e:   # the deck falls back to default thicknesses without it
+    print('cloudtops: off -', _ct_e)
+
 # ── PiLNK.io API Proxy — avoids CORS from local IP ───────
 @app.route('/api/pilnkio/<path:endpoint>', methods=['GET','POST','OPTIONS'])
 def pilnkio_proxy(endpoint):

@@ -32,6 +32,13 @@
   .cambtn.on{color:var(--txt);border-color:var(--purple)}
   #helpbtn{bottom:12px;left:12px;pointer-events:auto;width:28px;padding:6px 0;text-align:center}   /* bottom-right belongs to the map attribution */
   #themebtn{bottom:12px;left:46px;pointer-events:auto;width:28px;padding:6px 0;text-align:center}
+  #cloudbtn{bottom:12px;left:80px;pointer-events:auto;width:28px;padding:5px 0 3px;text-align:center;line-height:0}
+  #cloudbtn svg{width:16px;height:12px;fill:none;stroke:currentColor;stroke-width:1.6}
+  /* inside cloud (29 Oct): the view goes grey-white, and clears below the base. Over the map, under the HUD. */
+  #cldfog{position:fixed;inset:0;z-index:5;pointer-events:none;opacity:0;transition:opacity .25s linear;
+    background:radial-gradient(ellipse at 50% 45%,rgba(236,240,245,.97),rgba(214,221,230,.99))}
+  #cldfog.night{background:radial-gradient(ellipse at 50% 45%,rgba(52,58,70,.97),rgba(34,39,48,.99))}
+  #cldfog.in{opacity:1}
   #note{display:none;bottom:46px;left:12px;color:var(--dim);font-size:10px;text-align:left;max-width:320px;background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:8px 10px}
   #note.show{display:block}
   .maplibregl-ctrl-attrib{font-size:10px}
@@ -58,6 +65,7 @@
     .cambtn{font-size:10px;padding:6px 9px}
     #helpbtn{bottom:calc(10px + env(safe-area-inset-bottom));left:8px}
     #themebtn{bottom:calc(10px + env(safe-area-inset-bottom));left:42px}
+    #cloudbtn{bottom:calc(10px + env(safe-area-inset-bottom));left:76px}
     #note{bottom:calc(46px + env(safe-area-inset-bottom));left:8px;max-width:84vw}
   }
   /* landscape phone: the camera row and the cards compete for very little height */
@@ -84,6 +92,7 @@
   <div class="row"><span class="k">Alt</span><span class="v" id="d_alt">—</span></div>
   <div class="row"><span class="k">Dist</span><span class="v" id="d_dist">—</span></div>
   <div class="row"><span class="k">Hdg / Roll</span><span class="v" id="d_att">—</span></div>
+  <div class="row"><span class="k">Trk / crab</span><span class="v" id="d_crab">—</span></div>
   <div class="row x"><span class="k">GS / TAS / IAS</span><span class="v" id="d_spd">—</span></div>
   <div class="row x"><span class="k">Mach</span><span class="v" id="d_mach">—</span></div>
   <div class="row x"><span class="k">V/S</span><span class="v" id="d_vs">—</span></div>
@@ -101,8 +110,10 @@
   <button class="cambtn" data-cam="free">Free (drag · right-drag tilt)</button>
 </div>
 <button class="hud cambtn" id="themebtn" title="Day / night — long-press to follow the sun" onclick="setTheme(NIGHT_ON?'day':'night')" oncontextmenu="event.preventDefault();setTheme('auto');return false;">☀</button>
+<button class="hud cambtn" id="cloudbtn" title="Cloud deck from the airport weather (METAR) - on / off" onclick="cloudsSet(!CLOUDS_ON)"><svg viewBox="0 0 16 12" aria-hidden="true"><path d="M4.2 10.6h8a2.9 2.9 0 0 0 .3-5.8 4.1 4.1 0 0 0-7.9-.6A3.2 3.2 0 0 0 4.2 10.6z"/></svg></button>
+<div id="cldfog"></div>
 <button class="hud cambtn" id="helpbtn" title="Options" onclick="document.getElementById('note').classList.toggle('show')">?</button>
-<div class="hud" id="note"><b>Orbit</b>: drag to go round the aircraft, up/down for height, double-click to go back behind it. Wheel: chase distance / tower zoom. Buildings are OSM heights (patchy outside city centres). Options: <b>?buildings=0</b>, <b>?ve=</b> terrain exaggeration (1.5), <b>?fov=</b> tower lens (18), <b>?cut=</b> tower cut, ft above the field (500), <b>?acscale=</b> aircraft size in the tower shot (3), <b>?magvar= ?geomoff= ?qnh=</b> calibration overrides, <b>?terrain=0</b>, <b>?dem=</b>, <b>?base=sat</b>.</div>
+<div class="hud" id="note"><b>Orbit</b>: drag to go round the aircraft, up/down for height, double-click to go back behind it. Wheel: chase distance / tower zoom. Buildings are OSM heights (patchy outside city centres). Options: <b>?buildings=0</b>, <b>?ve=</b> terrain exaggeration (1.5), <b>?fov=</b> tower lens (18), <b>?cut=</b> tower cut, ft above the field (500), <b>?acscale=</b> aircraft size in the tower shot (3), <b>?magvar= ?geomoff= ?qnh=</b> calibration overrides, <b>?terrain=0</b>, <b>?dem=</b>, <b>?base=sat</b>, <b>?clouds=0</b>.</div>
 
 <script src="https://unpkg.com/maplibre-gl@5.24.0/dist/maplibre-gl.js"></script>
 <script crossorigin="anonymous" src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
@@ -115,6 +126,7 @@
 <script src="/static/arrival-paths.js?v=ap7"></script>
 <script src="/static/nav-lights.js?v=nl1"></script>
 <script src="/static/runway-lights.js?v=rl1"></script>
+<script src="/static/cloud-deck.js?v=cd2"></script>
 <script>
 const _q=new URLSearchParams(location.search);
 const D2R=Math.PI/180, R2D=180/Math.PI;
@@ -196,6 +208,7 @@ async function resolveSite(){
     SITE.tower={lat:SITE.lat+Math.cos(side)*off/111320, lon:SITE.lon+Math.sin(side)*off/(111320*Math.cos(SITE.lat*D2R)), h:SITE.icao?105:40}; }
   loadCal(); loadRunways();
   loadQnh();   // here, once SITE.icao is final: a top-level call ran before /api/location had answered, and saw no airport
+  cloudsLoad(); if(!_cld.timer) _cld.timer=setInterval(cloudsLoad, 20*60*1000);   // the cloud deck: same METAR, then every 20 min
   document.getElementById('sub').textContent=(SITE.icao?SITE.name:'your receiver')+' · '+(BASE==='sat'?'satellite hybrid':'OpenFreeMap 3D map')+' + AWS terrain';
 }
 const mPerLat=111320; let mPerLon=111320;
@@ -707,6 +720,171 @@ function retintModel(){
   const h=(typeof acLayer!=='undefined')&&acLayer.holder; if(!h) return;
   h.traverse(o=>{ if(o.isMesh&&o.material){ (Array.isArray(o.material)?o.material:[o.material]).forEach(tintMaterial); } });
 }
+/* ---------- cloud deck (29 Oct 2026, static/cloud-deck.js) ----------
+   AJ: watch an approach in clear air, see it go into the cloud and lose sight of it, then break out below the base.
+   It only has to look right. The airport METAR gives each layer's cover and base; /api/cloudtops (the forecast model,
+   cached on the node) gives the tops, or a default thickness. Each layer is a few stacked, soft, see-through sheets with
+   holes where the cover has gaps (FEW/SCT/BKN; OVC is solid), drawn after the aircraft so it disappears into them.
+   The same pattern decides when the CAMERA is inside cloud: then #cldfog fades the view to grey-white. The deck drifts
+   downwind with the METAR wind. ?clouds=0 or the cloud button turns it off (remembered per browser). */
+/* Software GL (llvmpipe, SwiftShader: a Pi or a VM with no GPU) already runs this page at 1-2 fps; 15 blended
+   screen-size sheets would stop it. There the deck starts off; the cloud button or ?clouds=1 still turns it on. */
+function isSoftGL(r){ return /swiftshader|llvmpipe|softpipe|software rasterizer|microsoft basic render/i.test(String(r||'')); }
+const SOFT_GL=(()=>{ try{ const gl=document.createElement('canvas').getContext('webgl'); if(!gl) return false;
+  const x=gl.getExtension('WEBGL_debug_renderer_info'), r=x?gl.getParameter(x.UNMASKED_RENDERER_WEBGL):gl.getParameter(gl.RENDERER);
+  const lose=gl.getExtension('WEBGL_lose_context'); if(lose) lose.loseContext(); return isSoftGL(r); }catch(e){ return false; } })();
+let CLOUDS_ON=(()=>{ const q=_q.get('clouds'); if(q!=null&&q!=='') return q!=='0';
+  try{ const v=localStorage.getItem('pilnk3d:clouds'); if(v==='0') return false; if(v==='1') return true; }catch(e){}
+  return !SOFT_GL; })();
+/* Drift is added up frame by frame (not wind x time since load): a new METAR wind then turns the deck's motion
+   instead of jumping the whole pattern kilometres sideways. */
+addEventListener('DOMContentLoaded',()=>{ const b=document.getElementById('cloudbtn'); if(b) b.classList.toggle('on',CLOUDS_ON); });
+const _cld={deck:undefined, done:false, dirty:false, group:null, scene:null, tex:[], fieldM:0, inside:-1, prof:null,
+  off:{e:0,n:0}, t0:performance.now()/1000,
+  drift(){ const now=performance.now()/1000, dt=now-this.t0; this.t0=now;
+    if(!window.CloudDeck||!this.deck||!(dt>0)) return this.off;
+    const E=CloudDeck.EXTENT_M, d=CloudDeck.drift(this.deck.wind, dt);
+    this.off={e:(((this.off.e+d.e)%E)+E)%E, n:(((this.off.n+d.n)%E)+E)%E}; return this.off; } };
+/* The airport METAR, one request shared by QNH and the clouds: an answer is reused for a minute (the two first
+   calls arrive together), never longer, and a failed fetch is not kept, so the next call asks again. */
+let _metarP=null, _metarT=0;
+function metarOnce(){
+  if(!SITE.icao) return Promise.resolve(null);
+  if(_metarP&&Date.now()-_metarT<60000) return _metarP;
+  _metarT=Date.now();
+  const p=fetch('/api/metar/'+SITE.icao,{cache:'no-store'}).then(r=>r.ok?r.json():null)
+    .then(j=>{ const m=Array.isArray(j)?j[0]:j; return (m&&typeof m==='object'&&!Array.isArray(m))?m:null; }).catch(()=>null);
+  _metarP=p; p.then(m=>{ if(m==null&&_metarP===p) _metarP=null; });
+  return p;
+}
+async function cloudsLoad(){
+  try{
+    if(!CLOUDS_ON||!window.CloudDeck){ _cld.deck=null; return; }
+    const m=await metarOnce();
+    if(!m){ if(!_cld.deck) _cld.deck=null; return; }   // no report this time: keep the deck we have
+    const L=CloudDeck.layersFromMetar(m); let prof=null;
+    const field=(typeof m.elev==='number'&&isFinite(m.elev))?m.elev:SITE.elev;
+    if(L&&L.length){ try{ const j=await fetch('/api/cloudtops?lat='+SITE.lat.toFixed(4)+'&lon='+SITE.lon.toFixed(4)+'&elev='+Math.round(field)).then(r=>r.ok?r.json():null);
+      prof=j&&Array.isArray(j.profile)&&j.profile.length?j.profile:null; }catch(e){}
+      if(prof) _cld.prof=prof; else prof=_cld.prof; }   // the model down this time: keep the last tops, not the defaults
+    _cld.fieldM=field; _cld.deck=CloudDeck.build(m, prof);
+  }catch(e){ _cld.deck=null; }
+  finally{ _cld.dirty=true; _cld.done=true; if(map) map.triggerRepaint(); }
+}
+function cloudsSet(on){
+  CLOUDS_ON=!!on; try{ localStorage.setItem('pilnk3d:clouds',CLOUDS_ON?'1':'0'); }catch(e){}
+  const b=document.getElementById('cloudbtn'); if(b) b.classList.toggle('on',CLOUDS_ON);
+  if(_cld.group) _cld.group.visible=CLOUDS_ON;
+  if(!CLOUDS_ON) cloudFog(-1); else if(!_cld.deck) cloudsLoad();
+  if(map) map.triggerRepaint();
+}
+function cloudFog(i, dens){   // i: the layer the lens is in (-1 none); dens 0..1: how thick it is there (the look)
+  const d=dens==null?(i>=0?1:0):Math.max(0,Math.min(1,dens));
+  _cld.inside=i; _cld.dens=d; const f=document.getElementById('cldfog');
+  if(f){ f.classList.toggle('in', d>=0.5); f.classList.toggle('night', NIGHT_ON); f.style.opacity=d.toFixed(2); }
+}
+/* How much cloud the aircraft is in, or hidden behind as seen from the camera, 0..1 (AJ 30 Oct: the lights help find
+   it in there). Behind = a layer lies between the lens and the aircraft, weighted by the pattern where the aircraft is. */
+function cloudHaze(a){
+  const D=_cld.deck; if(!CLOUDS_ON||!window.CloudDeck||!D||!D.layers.length||!a||SITE.lat==null||!isFinite(a.altM)) return 0;
+  const ft=(a.altM-_cld.fieldM)/0.3048, x=enuE(a.lon), y=enuN(a.lat);
+  if(Math.hypot(x,y)>(CLD_FADE[0]+CLD_FADE[1])/2) return 0;
+  const dr=_cld.drift(); let clear=1-CloudDeck.density(D.layers, ft, x-dr.e, y-dr.n);
+  try{ const t=map.transform, cft=(t.getCameraAltitude()/VE-_cld.fieldM)/0.3048;
+    for(const L of D.layers) if((cft<L.baseFt&&ft>L.topFt)||(cft>L.topFt&&ft<L.baseFt)) clear*=1-CloudDeck.mask(L, x-dr.e, y-dr.n); }catch(e){}
+  return 1-clear;
+}
+/* The lights through the cloud: a softer, wider glow the more cloud there is. Sizes are remembered on first use.
+   At night they add light (glow against the dark); by day they are painted normally, or red and green on a white
+   cloud would add up to plain white and vanish. */
+function navHaze(nav, hz){
+  const blend=NIGHT_ON?THREE.AdditiveBlending:THREE.NormalBlending;
+  nav.group.traverse(o=>{ if(!o.isPoints) return; const u=o.userData, m=o.material; if(u.size0==null) u.size0=m.size;
+    m.size=u.size0*(1+0.8*hz); m.opacity=+(1-0.45*hz).toFixed(2);
+    if(m.blending!==blend){ m.blending=blend; m.needsUpdate=true; } });
+}
+const CLD_VS=`varying vec2 vEN; void main(){ vEN=vec2(position.x,-position.z); gl_Position=projectionMatrix*modelViewMatrix*vec4(position,1.0); }`;
+/* The deck is solid out to CLD_FADE[0] (past 30 nm, where arrivals first meet a high top) and gone by CLD_FADE[1];
+   the white-out stops at the half-way radius, so what is drawn and what is felt agree. The pattern repeats every
+   EXTENT_M, so the wide sheet costs nothing extra. */
+const CLD_FADE=[60000, 90000];
+function cloudInsideAt(layers, ft, x, y){   // x east, y north: metres from the field
+  if(Math.hypot(x,y)>(CLD_FADE[0]+CLD_FADE[1])/2) return -1;
+  const d=_cld.drift(); return CloudDeck.inside(layers, ft, x-d.e, y-d.n);
+}
+function cloudDensityAt(layers, ft, x, y){   // 0..1, the same cut-off
+  if(Math.hypot(x,y)>(CLD_FADE[0]+CLD_FADE[1])/2) return 0;
+  const d=_cld.drift(); return CloudDeck.density(layers, ft, x-d.e, y-d.n);
+}
+const CLD_FS=`uniform sampler2D uMap; uniform vec2 uDrift, uFade; uniform vec3 uColor; uniform float uOpacity, uE, uShade; varying vec2 vEN;
+  void main(){ vec2 pc=vEN-uDrift; vec2 uv=vec2((pc.x+uE*0.5)/uE,(uE*0.5-pc.y)/uE);
+    float a=texture2D(uMap,uv).a*uOpacity*(1.0-smoothstep(uFade.x,uFade.y,length(vEN)));
+    if(a<0.004) discard; gl_FragColor=vec4(uColor*uShade,a); }`;
+function cloudsTint(){   // day: white-grey; night: dark slate (the lights below glow through the gaps)
+  if(!_cld.group) return;
+  for(const m of _cld.group.children) m.material.uniforms.uColor.value.setHex(NIGHT_ON?0x2c323d:0xeef1f5);
+  const f=document.getElementById('cldfog'); if(f) f.classList.toggle('night', NIGHT_ON);
+}
+/* 30 Oct: a refresh keeps the GPU objects. Rebuilding every mesh, material and texture made the GPU recompile the
+   shader and re-upload it all: a 433 ms frame on AJ's Vega 8, on load and at every 20-minute METAR refresh. Now the
+   texture pixels and layer heights are updated in place; meshes are added or dropped only when the layer count changes. */
+function cloudsBuild(){
+  _cld.dirty=false;
+  if(!_cld.group){ _cld.scene=new THREE.Scene(); _cld.group=new THREE.Group(); _cld.scene.add(_cld.group); }
+  _cld.group.visible=CLOUDS_ON;
+  const D=_cld.deck, n=(D&&D.layers.length)||0, E=CloudDeck.EXTENT_M, N=256, SL=5;
+  while(_cld.tex.length>n){   // fewer layers: drop the last layer's slices and its texture
+    for(let s=0;s<SL;s++){ const c=_cld.group.children[_cld.group.children.length-1]; _cld.group.remove(c); c.geometry.dispose(); c.material.dispose(); }
+    _cld.tex.pop().dispose();
+  }
+  for(let i=0;i<n;i++){
+    const L=D.layers[i], a=CloudDeck.alphaGrid(L,N);
+    let tex=_cld.tex[i];
+    if(!tex){
+      tex=new THREE.DataTexture(new Uint8Array(N*N*4),N,N,THREE.RGBAFormat);
+      tex.wrapS=tex.wrapT=THREE.RepeatWrapping; tex.magFilter=tex.minFilter=THREE.LinearFilter; _cld.tex.push(tex);
+      for(let s=0;s<SL;s++){   // underside, three soft middles, top: from the side it reads as a layer with depth
+        const g=new THREE.PlaneGeometry(2*CLD_FADE[1],2*CLD_FADE[1],1,1); g.rotateX(-Math.PI/2);
+        const mat=new THREE.ShaderMaterial({ vertexShader:CLD_VS, fragmentShader:CLD_FS, transparent:true, depthWrite:false, side:THREE.DoubleSide,
+          uniforms:{ uMap:{value:tex}, uDrift:{value:new THREE.Vector2()}, uColor:{value:new THREE.Color(NIGHT_ON?0x2c323d:0xeef1f5)},
+                     uOpacity:{value:(s===0||s===SL-1)?0.9:0.5}, uE:{value:E}, uFade:{value:new THREE.Vector2(CLD_FADE[0],CLD_FADE[1])}, uShade:{value:s===0?0.8:(s===SL-1?1.0:0.9)} } });
+        const mesh=new THREE.Mesh(g,mat); mesh.frustumCulled=false; _cld.group.add(mesh);
+      }
+    }
+    const px=tex.image.data;
+    for(let k=0;k<N*N;k++){ px[k*4]=px[k*4+1]=px[k*4+2]=255; px[k*4+3]=a[k]; }
+    tex.needsUpdate=true;   // same texture, new pixels: an upload, no new GPU object
+    for(let s=0;s<SL;s++) _cld.group.children[i*SL+s].position.y=(L.baseFt+(L.topFt-L.baseFt)*s/(SL-1))*0.3048*VE;
+  }
+}
+/* Drawn by the aircraft layer AFTER the aircraft (same renderer and camera), so an aircraft inside or behind the deck
+   is hidden by it. Also decides the white-out from where the camera is. */
+function drawClouds(rd,cam,M0){
+  if(_cld.dirty&&window.CloudDeck) cloudsBuild();
+  const D=_cld.deck;
+  if(!_cld.group||!CLOUDS_ON||!D||!D.layers.length||SITE.lat==null){ if(_cld.inside!==-1) cloudFog(-1); return; }
+  const d=_cld.drift();
+  for(const m of _cld.group.children) m.material.uniforms.uDrift.value.set(d.e,d.n);
+  const mc=maplibregl.MercatorCoordinate.fromLngLat([SITE.lon,SITE.lat],_cld.fieldM*VE), s=mc.meterInMercatorCoordinateUnits();
+  const L=new THREE.Matrix4().makeTranslation(mc.x,mc.y,mc.z).scale(new THREE.Vector3(s,-s,s)).multiply(new THREE.Matrix4().makeRotationX(Math.PI/2));
+  cam.projectionMatrix=new THREE.Matrix4().fromArray(M0).multiply(L);
+  rd.resetState(); rd.render(_cld.scene,cam);
+  let ins=-1, dens=0;
+  try{ const t=map.transform, ll=t.getCameraLngLat(), ft=(t.getCameraAltitude()/VE-_cld.fieldM)/0.3048;   // MapLibre: where the lens is
+    if(ll&&isFinite(ft)){ ins=cloudInsideAt(D.layers, ft, enuE(ll.lng), enuN(ll.lat)); dens=cloudDensityAt(D.layers, ft, enuE(ll.lng), enuN(ll.lat)); } }catch(e){}
+  if(ins!==_cld.inside||Math.abs(dens-(_cld.dens||0))>0.01) cloudFog(ins, dens);
+}
+/* Track and crab for the panel (30 Oct 2026). Heading is where the nose points (BDS 6,0 magnetic + WMM -> true), track is
+   where the aircraft goes over the ground; in a crosswind the nose points into the wind, so the model sits a few degrees
+   off its track. Crab = heading - track: L = nose left of the track. "~" = the heading reply is stale and the crab is the
+   last one known; "—" = no heading from this aircraft (the model then simply follows the track), or on the ground. */
+function crabText(hdg, trk, known, stale, gnd){
+  if(typeof trk!=='number'||!isFinite(trk)) return '—';
+  const t=Math.round(((trk%360)+360)%360)+'°';
+  if(!known||gnd||typeof hdg!=='number'||!isFinite(hdg)) return t+' / —';
+  const c=((hdg-trk+540)%360)-180, a=Math.round(Math.abs(c));
+  return t+' / '+(stale?'~':'')+a+'°'+(a===0?'':(c<0?' L':' R'));
+}
 /* Airline liveries and airframe detail (windows, cockpit, doors): static/livery.js - paintAircraft, liveryFor. */
 const acLayer={
   id:'pilnk-aircraft', type:'custom', renderingMode:'3d',
@@ -746,6 +924,7 @@ const acLayer={
       this.scene.updateMatrixWorld(true);
       const a=NavLights.anchors(NavLights.collect(THREE,this.mm,this.roll),{heli:NavLights.isHeli(key||this.key)});
       this.nav=NavLights.build(THREE,a,{pixelRatio:window.devicePixelRatio||1}); this.nav.set({},false); this.roll.add(this.nav.group);
+      this.nav.group.traverse(o=>{ if(o.isPoints) o.layers.set(1); });   // own pass, after the cloud (render)
     }catch(e){ this.nav=null; }   // lights are decoration: never allowed to break the aircraft
   },
   /* 12 Oct 2026 audit, finding 3: the model is centred on the reported position, which is right in the air (the
@@ -816,7 +995,7 @@ const acLayer={
       for(const k of ['mesh','line']) if(_apr[k]){ const u=_apr[k].material.uniforms; if(e){ u.uEye.value.set(e[0],e[1],e[2]); u.uF1.value=RIB_FADE1; } else u.uF1.value=0; }
       this.renderer.resetState(); this.renderer.render(_apr.scene,this.camera);
     }
-    if(!aircraft||!this.holder.children.length)return;
+    if(!aircraft||!this.holder.children.length){ drawClouds(this.renderer,this.camera,M0); this.renderer.resetState(); if(gl.bindVertexArray) gl.bindVertexArray(null); return; }
     const a=aircraft;
     // Mercator placement: x east, y SOUTH (flip below), z up; model space = metres, Y-up (same rig as approach.html)
     const mc=maplibregl.MercatorCoordinate.fromLngLat([a.lon,a.lat], a.altM*VE);
@@ -837,11 +1016,19 @@ const acLayer={
       for(let i=0;i<this.props.length;i++) this.props[i].p.rotation[this.props[i].axis]=pa;
       map.triggerRepaint();       // the props need frames even when the aircraft is briefly still
     }
-    if(this.nav){   // navigation lights: night only; strobes off on the ground; flashing needs frames
-      this.nav.set(NavLights.state(performance.now()/1000,!!a.gnd),NIGHT_ON);
-      if(NIGHT_ON) map.triggerRepaint();
+    let navOn=false;
+    if(this.nav){   // navigation lights: always on, day and night (AJ 30 Oct: they are on whenever it flies); strobes off on the ground
+      const hz=cloudHaze(a); navOn=true;
+      this.nav.set(NavLights.state(performance.now()/1000,!!a.gnd),navOn); navHaze(this.nav,hz);
+      if(navOn) map.triggerRepaint();   // flashing needs frames
     }
     this.renderer.resetState(); this.renderer.render(this.scene,this.camera);
+    const Pac=this.camera.projectionMatrix.clone();
+    drawClouds(this.renderer,this.camera,M0);   // after the aircraft: it goes INTO the cloud
+    if(navOn){   // then its lights, on top of the cloud (depth-tested against the aircraft, so it still hides its own)
+      this.camera.projectionMatrix.copy(Pac); this.camera.layers.set(1);
+      this.renderer.resetState(); this.renderer.render(this.scene,this.camera); this.camera.layers.set(0);
+    }
     /* Hand the context back: reset Three's state tracker and unbind its VAO. Nothing else — MapLibre
        caches its own GL state and re-applies it after custom layers; setting depth/cull/program
        behind its back desyncs that cache (it drew the aircraft mirrored when we tried). */
@@ -1311,6 +1498,7 @@ function applyTheme(night){
     : {'sky-color':'#7fb2e5','horizon-color':'#cfe3f5','fog-color':'#dde8f2','sky-horizon-blend':0.7,'horizon-fog-blend':0.6,'fog-ground-blend':0.5}); }catch(e){}
   cityUpdate(true);    // city lights: the repaint above just reset the street colours - put the glow (or the day values) back
   if(acLayer.relight) acLayer.relight();
+  cloudsTint();
   retintModel();       // the skin band differs day to night, and the model is already loaded
   const b=document.getElementById('themebtn'); if(b) b.textContent=night?'☾':'☀';
   map.triggerRepaint();
@@ -1533,7 +1721,7 @@ const posOf=a=>a.lat!=null&&a.lon!=null;
 const altFt=a=>a.alt_baro==='ground'?0:(typeof a.alt_baro==='number'?a.alt_baro:99999);
 const vsOf=a=>(typeof a.bds60_baro_vertical_rate==='number')?a.bds60_baro_vertical_rate:(a.baro_rate||0);
 const onApproach=a=>posOf(a)&&distNm(a)<30&&altFt(a)<12000&&a.alt_baro!=='ground'&&vsOf(a)<=100;
-async function loadQnh(){ if(CFG.qnh!=null){qnh=CFG.qnh;return;} if(!SITE.icao)return; try{const j=await fetch('/api/metar/'+SITE.icao).then(r=>r.json()); const m=Array.isArray(j)?j[0]:j; if(m&&typeof m.altim==='number'&&m.altim>900&&m.altim<1100)qnh=m.altim;}catch(e){} }
+async function loadQnh(){ if(CFG.qnh!=null){qnh=CFG.qnh;return;} if(!SITE.icao)return; try{const m=await metarOnce(); if(m&&typeof m.altim==='number'&&m.altim>900&&m.altim<1100)qnh=m.altim;}catch(e){} }
 setInterval(loadQnh,600000);   // first call: end of resolveSite()
 let terrainReady=false;
 /* GNSS datum: every aircraft reporting ON GROUND at the field with a geometric altitude tells us
@@ -1725,6 +1913,7 @@ async function poll(){
       document.getElementById('d_alt').textContent=a.alt_baro==='ground'?'GROUND':Math.round(a.alt_baro).toLocaleString()+' ft'+(qnh?' (Q'+qnh+')':'');
       document.getElementById('d_dist').textContent=fix.dist.toFixed(1)+' nm';
       document.getElementById('d_att').textContent=Math.round(hdg)+'° / '+roll.toFixed(1)+'°';
+      document.getElementById('d_crab').textContent=crabText(hdg,trkNow,magH!=null&&decl!=null,!!_hdgMem.stale,a.alt_baro==='ground');
       const n=(v,u,d)=>(typeof v==='number')?(d?v.toFixed(d):Math.round(v))+(u||''):'—';
       document.getElementById('d_spd').textContent=n(a.gs)+' / '+n(a.bds50_true_airspeed)+' / '+n(a.bds60_indicated_airspeed)+' kt';
       document.getElementById('d_mach').textContent=n(a.bds60_mach,'',3);
@@ -1792,7 +1981,7 @@ function mapGestures(on){ if(!map)return;
     try{ on?map[g].enable():map[g].disable(); }catch(e){}
   }
 }
-document.querySelectorAll('.cambtn').forEach(b=>b.addEventListener('click',()=>{document.querySelectorAll('.cambtn').forEach(x=>x.classList.remove('on'));b.classList.add('on');camMode=b.dataset.cam;
+document.querySelectorAll('.cambtn[data-cam]').forEach(b=>b.addEventListener('click',()=>{document.querySelectorAll('.cambtn[data-cam]').forEach(x=>x.classList.remove('on'));b.classList.add('on');camMode=b.dataset.cam;
   mapGestures(camMode==='free'); }));
 /* ---------- orbit camera (5 Oct 2026) ----------
    Chase, but you choose where to stand: drag sideways to go right round the aircraft (nose-on included), drag

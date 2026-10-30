@@ -46,6 +46,7 @@
 #include <condition_variable>
 
 #include <sys/socket.h>
+#include <sys/uio.h>
 #include <sys/time.h>
 #include <sys/stat.h>
 #include <netinet/in.h>
@@ -58,7 +59,7 @@
 
 using nlohmann::json;
 
-#define PILNKRADIO_VERSION "2.1.3"
+#define PILNKRADIO_VERSION "2.1.4"
 #define PILNK_FFT_SIZE     1024
 #define PILNK_FFT_RATE     25.0
 
@@ -1383,6 +1384,20 @@ private:
         return true;
     }
 
+    // 2.1.4: one whole WS frame now, or nothing. Never waits: callers hold subsMtx on the
+    // radio thread, and a browser that stops reading (background tab, dead Wi-Fi) used to
+    // cost 250 ms per send there (SO_SNDTIMEO) - long enough to lose IQ and close the raw
+    // tap. A short send can't be resumed (the next frame would land mid-frame), so any
+    // shortfall means the caller drops this listener; it reconnects.
+    static bool sendFrameNow(int fd, const uint8_t* hdr, size_t hl, const void* data, size_t len) {
+        struct iovec iov[2] = { { (void*)hdr, hl }, { const_cast<void*>(data), len } };
+        struct msghdr mh{};
+        mh.msg_iov = iov; mh.msg_iovlen = len ? 2 : 1;
+        ssize_t n;
+        do { n = sendmsg(fd, &mh, MSG_DONTWAIT | MSG_NOSIGNAL); } while (n < 0 && errno == EINTR);
+        return n == (ssize_t)(hl + len);
+    }
+
     void httpResponse(int fd, const char* status, const char* ctype, const std::string& body) {
         char hdr[512];
         int n = snprintf(hdr, sizeof(hdr),
@@ -1666,6 +1681,8 @@ private:
         }
         else if (base != "/sdr/audio_raw") { close(fd); return; }
 
+        // 2.1.4: broadcast() and plain-listener pongs no longer wait at all (sendFrameNow);
+        // this timeout now bounds the denoise/raw workers' own sends and the handshake.
         // H2 fix (audit 2026-07-09): bound the send. broadcast() runs on the
         // producer (DSP/IQ) threads and drops any subscriber whose sendAll()
         // fails. Without a send timeout, a stuck/paused client (socket buffer
@@ -1712,6 +1729,7 @@ private:
                 ssize_t n = recv(fd, buf + got, need - got, 0);
                 if (n > 0) { got += n; idleStrikes = 0; continue; }
                 if (n == 0) return -1; // peer closed
+                if (errno == EINTR) continue;   // 2.1.4: a stop/continue (or any signal) is not a hang-up
                 if (errno == EAGAIN || errno == EWOULDBLOCK) {
                     if (atFrameStart && got == 0) continue;   // idle subscriber: fine forever
                     if (++idleStrikes >= 3) return -1;        // stalled mid-frame: drop
@@ -1744,7 +1762,9 @@ private:
             if (op == 0x9) {              // ping -> pong with same payload
                 uint8_t ph[2] = { 0x8A, (uint8_t)plen };
                 std::lock_guard<std::mutex> lk(wmx); // serialize with this socket's data writes
-                if (!sendAll(fd, ph, 2) || (plen && !sendAll(fd, pay.data(), plen))) break;
+                if (!raw && !dn) {                   // plain listener: wmx is subsMtx - never wait under it
+                    if (!sendFrameNow(fd, ph, 2, pay.data(), plen)) break;
+                } else if (!sendAll(fd, ph, 2) || (plen && !sendAll(fd, pay.data(), plen))) break;
             }
             // 0xA (pong), 0x1/0x2 (client data): ignored
         }
@@ -1785,7 +1805,7 @@ private:
         std::lock_guard<std::mutex> lk(subsMtx);
         for (size_t i = 0; i < subs.size();) {
             int fd = subs[i];
-            if (!sendAll(fd, hdr, hl) || (len && !sendAll(fd, data, len))) {
+            if (!sendFrameNow(fd, hdr, hl, data, len)) {   // 2.1.4: full socket = evict, never wait
                 // 2.1.3: shutdown, not close. handleWS still owns this fd and closes it when
                 // its recv wakes; closing here too was a double close that could hit an fd
                 // number already reused by a new connection.
