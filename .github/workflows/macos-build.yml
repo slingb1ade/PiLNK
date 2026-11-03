@@ -1,0 +1,35 @@
+# macOS build check for the PiLNK Mac port (see mac-port/PORTABILITY-MAP.md).
+# Runs ONLY on the mac-port branch or by hand. It compiles; it does not
+# release, push, tag or touch any node. A red job = a portability finding.
+name: macOS build check
+
+on:
+  push:
+    branches: [mac-port]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: macos-build-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: ${{ matrix.component }} (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-15, macos-15-intel]   # Apple Silicon + the last Intel image
+        component: [pilnkradio, pilnk_bridge, dump1090-fa, readsb, python]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        if: matrix.component == 'python'
+        with:
+          python-version: '3.11'
+      - name: Build ${{ matrix.component }}
+        run: bash .github/mac-ci/build.sh "${{ matrix.component }}"
