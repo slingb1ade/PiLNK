@@ -4,7 +4,7 @@
 # It builds; it never installs anything onto a node and never runs a radio.
 set -euo pipefail
 
-COMPONENT="${1:?usage: build.sh <pilnkradio|pilnk_bridge|dump1090-fa|readsb|python>}"
+COMPONENT="${1:?usage: build.sh <pilnkradio|dump1090-fa|readsb|python>}"
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 WORK="${RUNNER_TEMP:-/tmp}/pilnk-mac"
 RTL_PREFIX="$WORK/rtlsdr-blog"
@@ -44,12 +44,6 @@ case "$COMPONENT" in
     cmake --build "$WORK/radio-build" -j "$JOBS"
     file "$WORK/radio-build/pilnkradio"
     summary "- pilnkradio: built OK ($(uname -m))"
-    ;;
-  pilnk_bridge)
-    deps
-    cmake -S "$ROOT/pilnk_bridge" -B "$WORK/bridge-build" -DCMAKE_PREFIX_PATH="$BREW"
-    cmake --build "$WORK/bridge-build" -j "$JOBS"
-    summary "- pilnk_bridge: built OK ($(uname -m))"
     ;;
   dump1090-fa)
     deps; rtlsdr_blog

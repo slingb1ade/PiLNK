@@ -3,6 +3,21 @@
 Read-only survey of the public repo at **v1.6.20 (5670a2d)**, 3 Nov 2026. Nothing was changed anywhere.
 Verdicts: **PORT** = works with small edits · **REPLACE** = needs a macOS equivalent · **SKIP** = leave out of the Mac node (at least at first).
 
+## First CI run — 3 Nov 2026 (run #1, commit 88d0c90, branch mac-port)
+
+| Component | Apple Silicon (macos-15) | Intel (macos-15-intel) |
+|---|---|---|
+| pilnkradio (engine) + rtl-sdr-blog fork | ✅ builds | ✅ builds |
+| dump1090-fa | ✅ builds | ✅ builds |
+| readsb | ✅ builds | ✅ builds |
+| Python (all `*.py` compile, deps import) | ✅ | ✅ |
+| pilnk_bridge | ❌ CI setup, not a port issue | ❌ same |
+
+- **The engine builds unchanged on macOS** — `MSG_NOSIGNAL` is in the current macOS SDK, so the predicted fix isn't needed. The `/proc/self/maps` driver log will just print "no librtlsdr mapped" on a Mac (harmless; tidy later).
+- **readsb builds** too, so the Mac node can use the same decoder as Linux nodes.
+- **pilnk_bridge** is the legacy SDR++ plug-in (needs the SDR++ source tree; pilnkradio replaced it). Dropped from the matrix — not part of a Mac node.
+- Builds ≠ runs: none of this has touched a real dongle yet. That's the test Mac's job.
+
 ## Headline
 
 The hard part is smaller than expected. The C++ radio engine is ~3 lines away from building on a Mac, and the dashboard (`app.py`) only reads an `aircraft.json` path from config, so it doesn't care which decoder writes it. Most of the work is **plumbing**: services, installer, OTA restart, and the Linux-only self-heal/diagnostics.

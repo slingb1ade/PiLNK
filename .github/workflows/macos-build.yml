@@ -1,6 +1,8 @@
 # macOS build check for the PiLNK Mac port (see mac-port/PORTABILITY-MAP.md).
 # Runs ONLY on the mac-port branch or by hand. It compiles; it does not
 # release, push, tag or touch any node. A red job = a portability finding.
+# pilnk_bridge is not built: it is the legacy SDR++ plug-in (needs the SDR++
+# source tree) and pilnkradio replaced it, so it is not part of a Mac node.
 name: macOS build check
 
 on:
@@ -24,10 +26,10 @@ jobs:
       fail-fast: false
       matrix:
         os: [macos-15, macos-15-intel]   # Apple Silicon + the last Intel image
-        component: [pilnkradio, pilnk_bridge, dump1090-fa, readsb, python]
+        component: [pilnkradio, dump1090-fa, readsb, python]
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
         if: matrix.component == 'python'
         with:
           python-version: '3.11'
