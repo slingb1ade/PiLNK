@@ -474,6 +474,77 @@ if command -v mkfs.ext4 >/dev/null && command -v debugfs >/dev/null; then
      "grep -qx 'HIT psk at /etc/NetworkManager/system-connections' <<< \"\$OUT4\" && grep -qx 'HIT psk at /etc/netplan' <<< \"\$OUT4\" && grep -qx 'HIT psk at /etc/wpa_supplicant' <<< \"\$OUT4\""
   ok "N6: no HIT line names a file in those directories" \
      "! grep -E '^HIT .*(HomeNet|at /etc/(NetworkManager/system-connections|netplan|wpa_supplicant)/)' <<< \"\$OUT4\" | grep -q ."
+
+  # N7: a partial clone whose promisor remote runs a command; a tree object is
+  # missing, so resolving HEAD:sub/p2.txt would lazy-fetch it through that command
+  T7="$ROOT/ext4tree7"; make_clean "$T7"; GD7="$T7/home/pilnk/pilnk"; LMARK="$ROOT/lazy-fetch-ran"
+  ( cd "$GD7" && git init -q . && git config user.email t@t && git config user.name t \
+    && mkdir sub && echo one > sub/p1.txt && echo two > sub/p2.txt && git add sub && git commit -qm init \
+    && st=$(git rev-parse HEAD:sub) && rm -f ".git/objects/${st:0:2}/${st:2}" \
+    && printf 'by %s\n' "$WORD" > sub/p2.txt \
+    && git config core.repositoryformatversion 1 && git config extensions.partialClone origin \
+    && git config remote.origin.url file:///nowhere && git config remote.origin.promisor true \
+    && git config remote.origin.uploadpack "touch '$LMARK'; false" && rm -rf .git/logs ) >/dev/null 2>&1
+  IMG7="$ROOT/map7.img"; truncate -s 64M "$IMG7"; mkfs.ext4 -q -F -d "$T7" "$IMG7" >/dev/null 2>&1
+  OUT7=$(bash "$VER" --root "$T7" --boot "$T7/boot/firmware" --raw "$IMG7" --ext4 --denylist "$DENY" 2>&1); RC7=$?
+  ok "N7: the image repo's promisor remote command never runs (no lazy fetch)" "[ ! -e '$LMARK' ]"
+  ok "N7: the hit in the partial clone stays a HIT" \
+     "[ '$RC7' = 1 ] && grep -qx 'HIT deny#1 at /home/pilnk/pilnk/sub/p2.txt' <<< \"\$OUT7\""
+
+  # dpkg: a secret-shaped hit inside an unmodified Debian package file (libgnutls
+  # embeds its FIPS self-test keys) is SKIPped; anything else stays a HIT
+  md5of() { md5sum < "$1" | cut -c1-32; }
+  T8="$ROOT/ext4tree8"; make_clean "$T8"; L8="$T8/usr/lib/aarch64-linux-gnu"; I8="$T8/var/lib/dpkg/info"
+  mkdir -p "$L8" "$I8" "$T8/usr/share/doc/libfake1"
+  { printf 'ELF\0\0'; pem_rsa; printf '\0\0'; } > "$L8/libfake.so.1"
+  { nm_keyfile; printf '\0'; ts_key; } > "$T8/usr/share/doc/libfake1/example.conf"
+  { printf 'ELF\0\0'; pem_rsa; } > "$L8/libedited.so.1"
+  { printf 'ELF\0\0'; pem_rsa; } > "$L8/libloose.so.1"
+  printf 'ELF\0by %s\0' "$WORD" > "$L8/libdeny.so.1"
+  echo x > "$L8/libtail.so.1"
+  { printf '%s  usr/lib/aarch64-linux-gnu/libfake.so.1\n' "$(md5of "$L8/libfake.so.1")"
+    printf '%s  usr/share/doc/libfake1/example.conf\n' "$(md5of "$T8/usr/share/doc/libfake1/example.conf")"
+    printf '%s  usr/lib/aarch64-linux-gnu/libtail.so.1\n' "$(md5of "$L8/libtail.so.1")"
+  } > "$I8/libfake1:arm64.md5sums"
+  { printf '%s  usr/lib/aarch64-linux-gnu/libedited.so.1\n' 0123456789abcdef0123456789abcdef
+    printf '%s  usr/lib/aarch64-linux-gnu/libdeny.so.1\n' "$(md5of "$L8/libdeny.so.1")"
+  } > "$I8/libother2.md5sums"
+  IMG8="$ROOT/map8.img"; truncate -s 64M "$IMG8"; mkfs.ext4 -q -F -d "$T8" "$IMG8" >/dev/null 2>&1
+  # a key in the slack after a listed, unmodified file (past i_size)
+  BSZ8=$(debugfs -R stats "$IMG8" 2>/dev/null | awk -F: '/^Block size:/ { gsub(/[ \t]/, "", $2); print $2 }')
+  TBLK8=$(debugfs -R 'bmap /usr/lib/aarch64-linux-gnu/libtail.so.1 0' "$IMG8" 2>/dev/null)
+  { printf '\n%s RSA %s\n' "$BEG" "$PKEY"; head -c 48 /dev/urandom | base64 -w 64; } \
+    | dd of="$IMG8" bs=1 seek=$((TBLK8 * BSZ8 + 16)) conv=notrunc status=none
+  OUT8=$(bash "$VER" --root "$T8" --boot "$T8/boot/firmware" --raw "$IMG8" --ext4 --denylist "$DENY" 2>&1); RC8=$?
+  ok "dpkg: key in a listed file whose md5 matches (multiarch .md5sums) -> SKIP, not a HIT" \
+     "grep -qx 'SKIP privkey in /usr/lib/aarch64-linux-gnu/libfake.so.1 (unmodified Debian package file)' <<< \"\$OUT8\" && ! grep -q '^HIT privkey at /usr/lib/aarch64-linux-gnu/libfake.so.1' <<< \"\$OUT8\""
+  ok "dpkg: psk and tailscale ids in a listed unmodified file -> SKIP" \
+     "grep -qx 'SKIP psk in /usr/share/doc/libfake1/example.conf (unmodified Debian package file)' <<< \"\$OUT8\" && grep -qx 'SKIP tailscale in /usr/share/doc/libfake1/example.conf (unmodified Debian package file)' <<< \"\$OUT8\""
+  ok "dpkg: listed file whose md5 differs -> HIT" "grep -qx 'HIT privkey at /usr/lib/aarch64-linux-gnu/libedited.so.1' <<< \"\$OUT8\""
+  ok "dpkg: file not listed in any md5sums -> HIT" "grep -qx 'HIT privkey at /usr/lib/aarch64-linux-gnu/libloose.so.1' <<< \"\$OUT8\""
+  ok "dpkg: a denylist word in a listed unmodified file -> HIT, never SKIP" \
+     "grep -qx 'HIT deny#1 at /usr/lib/aarch64-linux-gnu/libdeny.so.1' <<< \"\$OUT8\" && ! grep -q '^SKIP deny#1 in /usr/lib' <<< \"\$OUT8\""
+  ok "dpkg: a key in the slack after a listed file (past i_size) -> HIT" \
+     "grep -qx 'HIT privkey at /usr/lib/aarch64-linux-gnu/libtail.so.1' <<< \"\$OUT8\" && ! grep -q '^SKIP privkey in /usr/lib/aarch64-linux-gnu/libtail' <<< \"\$OUT8\""
+  ok "dpkg: exit 1, output holds no key, psk, tailscale or denylist bytes" \
+     "[ '$RC8' = 1 ] && ! grep -qiE 'hunter2|BEGIN|$TSK|kQ7x|MII|$WORD' <<< \"\$OUT8\""
+  ok "dpkg: every line has a known shape" \
+     "! grep -vE '^(HIT [a-z#0-9-]+ at (/[^ ]*|offset [0-9]+ \\((free space|fs metadata|unlinked file)\\))|SKIP (privkey|psk|tailscale) in /[^ ]* \\(unmodified Debian package file\\)|NOT CLEAN: .*)\$' <<< \"\$OUT8\""
+  OUT8R=$(bash "$VER" --root "$T8" --boot "$T8/boot/firmware" --raw "$IMG8" 2>&1); RC8R=$?
+  ok "dpkg: --raw without path mapping -> the same keys are HITs at offsets, no SKIP" \
+     "[ '$RC8R' = 1 ] && grep -qE '^HIT privkey at offset [0-9]+\$' <<< \"\$OUT8R\" && ! grep -q '^SKIP' <<< \"\$OUT8R\""
+  # only unmodified-package hits -> clean; unreadable md5sums -> HIT
+  T9="$ROOT/ext4tree9"; make_clean "$T9"; mkdir -p "$T9/usr/lib/aarch64-linux-gnu" "$T9/var/lib/dpkg/info"
+  cp "$L8/libfake.so.1" "$T9/usr/lib/aarch64-linux-gnu/"
+  grep libfake.so "$I8/libfake1:arm64.md5sums" > "$T9/var/lib/dpkg/info/libfake1:arm64.md5sums"
+  IMG9="$ROOT/map9.img"; truncate -s 64M "$IMG9"; mkfs.ext4 -q -F -d "$T9" "$IMG9" >/dev/null 2>&1
+  OUT9=$(bash "$VER" --root "$T9" --boot "$T9/boot/firmware" --raw "$IMG9" --ext4 2>&1); RC9=$?
+  ok "dpkg: an image whose only secret-shaped hits are unmodified package files is clean" \
+     "[ '$RC9' = 0 ] && grep -q '^SKIP privkey in /usr/lib/aarch64-linux-gnu/libfake.so.1' <<< \"\$OUT9\" && grep -q '^CLEAN' <<< \"\$OUT9\""
+  rm -f "$T9/var/lib/dpkg/info/libfake1:arm64.md5sums"; mkdir "$T9/var/lib/dpkg/info/libfake1:arm64.md5sums"
+  OUT9B=$(bash "$VER" --root "$T9" --boot "$T9/boot/firmware" --raw "$IMG9" --ext4 2>&1); RC9B=$?
+  ok "dpkg: md5sums missing or unreadable -> HIT" \
+     "[ '$RC9B' = 1 ] && grep -qx 'HIT privkey at /usr/lib/aarch64-linux-gnu/libfake.so.1' <<< \"\$OUT9B\""
 else
   echo "FAIL: ext4 tools (mkfs.ext4, debugfs) missing; raw-image tests cannot run"
 fi

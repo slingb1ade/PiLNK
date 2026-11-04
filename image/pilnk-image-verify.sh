@@ -39,7 +39,15 @@
 # names, deleted ones included), and only a hit inside the file's size (not in
 # the slack after it). "Unchanged" means the blob in HEAD equals
 # git hash-object --no-filters of the file; git never runs with the image's
-# hooks, filters or system/global config. Every other hit fails. A path that
+# hooks, filters or system/global config (and never fetches).
+# A privkey, psk or tailscale hit (never deny#N) inside a regular file that the
+# image's own /var/lib/dpkg/info/*.md5sums lists with the md5 the file has now
+# is a stock Debian file (libgnutls embeds its FIPS self-test keys): it prints
+# "SKIP <id> in <path> (unmodified Debian package file)" and does not fail.
+# Same limits: a regular file only, and only inside its size. Unlisted, a
+# different md5, or no readable md5sums -> HIT. With --raw and no --ext4 there
+# are no paths, so every hit stays a HIT.
+# Every other hit fails. A path that
 # itself contains a denylist word is printed as "<path withheld: contains
 # deny#N>", and a path under the NetworkManager system-connections, netplan or
 # wpa_supplicant directories as just that directory (file names can be SSIDs).
@@ -308,8 +316,8 @@ if [ -n "$FS_DEV" ]; then
         [ -n "${PATH_OF[$i]:-}" ] || PATH_OF[$i]="/${p#"${p%%[!/]*}"}"
       done < <(dbg_batch ncheck "$TMPD/inodes")
     fi
-    # type, size and logical->physical block map of the clone's inodes (for SKIP)
-    for i in "${!PATH_OF[@]}"; do [[ "${PATH_OF[$i]}" == "$CLONE/"* ]] && echo "stat <$i>"; done > "$TMPD/cmd"
+    # type, size and logical->physical block map of every hit file (for SKIP)
+    for i in "${!PATH_OF[@]}"; do echo "stat <$i>"; done > "$TMPD/cmd"
     if [ -s "$TMPD/cmd" ]; then
       while read -r i t z ext; do
         [[ "$i" =~ ^[0-9]+$ && "$z" =~ ^[0-9]+$ ]] || continue
@@ -373,7 +381,9 @@ in_file() { # offset inode len
 
 # the file at PATH is in HEAD of the PiLNK clone, byte for byte. git reads the
 # image's repo but never runs its hooks, filters, fsmonitor or diff drivers,
-# and never reads the system or global (laptop) config.
+# never reads the system or global (laptop) config, and never fetches (a
+# partial clone's missing objects are not lazy-fetched through the image's
+# remote: GIT_NO_LAZY_FETCH, and GIT_ALLOW_PROTOCOL=none for older git).
 declare -A PUBLIC
 same_as_head() { # path
   local p="$1" rel repo="$ROOTDIR$CLONE" head blob
@@ -382,6 +392,7 @@ same_as_head() { # path
   if [ -d "$repo/.git" ] && [ ! -L "$repo/.git" ] && command -v git >/dev/null 2>&1; then
     local g=(env -u GIT_WORK_TREE -u GIT_INDEX_FILE -u GIT_OBJECT_DIRECTORY -u GIT_ALTERNATE_OBJECT_DIRECTORIES
              GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null GIT_OPTIONAL_LOCKS=0
+             GIT_NO_LAZY_FETCH=1 GIT_ALLOW_PROTOCOL=none
              git --git-dir="$repo/.git" -c 'safe.directory=*' -c core.hooksPath=/dev/null -c core.fsmonitor=)
     head=$("${g[@]}" rev-parse --verify -q "HEAD:$rel" 2>/dev/null) || head=""
     blob=$("${g[@]}" hash-object --no-filters -- "$ROOTDIR$p" 2>/dev/null) || blob=""
@@ -401,6 +412,42 @@ is_public() { # path inode offset len
   same_as_head "$p"
 }
 
+# the file at PATH is a Debian package file exactly as shipped: the image's own
+# /var/lib/dpkg/info/*.md5sums ("<md5>  <path without leading />" lines; a
+# multiarch package's file is "<name>:<arch>.md5sums") lists it with the md5
+# the file has now. No md5sums, unreadable, unlisted or different -> no.
+declare -A PKGOK
+MD5IDX=""
+pkg_unmodified() { # path
+  local p="$1" d c sum
+  [ -n "${PKGOK[$p]:-}" ] && { [ "${PKGOK[$p]}" = 1 ]; return; }
+  PKGOK[$p]=0
+  if [ -z "$MD5IDX" ]; then
+    MD5IDX="$TMPD/md5sums"; : > "$MD5IDX"; d="$ROOTDIR"
+    for c in var lib dpkg info; do d="$d/$c"; if [ ! -d "$d" ] || [ -L "$d" ]; then d=""; break; fi; done
+    [ -n "$d" ] && find "$d" -maxdepth 1 -type f -name '*.md5sums' -print0 2>/dev/null \
+      | xargs -0 -r cat -- 2>/dev/null >> "$MD5IDX"
+  fi
+  sum=$(md5sum < "$ROOTDIR$p" 2>/dev/null) || return 1
+  sum="${sum%% *}"
+  [[ "$sum" =~ ^[0-9a-f]{32}$ ]] || return 1
+  R="${p#/}" S="$sum" awk 'substr($0, 33, 2) == "  " && substr($0, 35) == ENVIRON["R"] && substr($0, 1, 32) == ENVIRON["S"] { f = 1; exit }
+                           END { exit !f }' "$MD5IDX" || return 1
+  PKGOK[$p]=1
+}
+
+# a secret-shaped hit (id privkey, psk or tailscale; never deny#N) of at least
+# LEN bytes at OFFSET lies in the data of a regular file (not a directory or
+# symlink, not the slack past its size) that is an unmodified package file.
+# libgnutls, for one, embeds its FIPS self-test private keys.
+declare -A SECLEN=([privkey]=19 [psk]=12 [tailscale]=19)  # shortest match per id
+is_pkgfile() { # path inode offset len
+  local f="$ROOTDIR$1"
+  [ -n "$2" ] && [ -f "$f" ] && [ ! -L "$f" ] && [ "${ITYPE[$2]:-}" = regular ] || return 1
+  in_file "$3" "$2" "$4" || return 1
+  pkg_unmodified "$1"
+}
+
 declare -A NHIT SEEN
 while read -r id off; do
   if [[ "$off" == +* ]]; then
@@ -410,6 +457,11 @@ while read -r id off; do
   if [ -n "$LOC_PATH" ]; then
     if [[ "$id" == deny#* ]] && is_public "$LOC_PATH" "$LOC_INO" "$off" "${DENYLEN[${id#deny#} - 1]:-0}"; then
       line="SKIP $id in $(show_path "$LOC_PATH") (public PiLNK file)"
+      [ -n "${SEEN[$line]:-}" ] || { SEEN[$line]=1; echo "$line"; }
+      continue
+    fi
+    if [ -n "${SECLEN[$id]:-}" ] && is_pkgfile "$LOC_PATH" "$LOC_INO" "$off" "${SECLEN[$id]}"; then
+      line="SKIP $id in $(show_path "$LOC_PATH") (unmodified Debian package file)"
       [ -n "${SEEN[$line]:-}" ] || { SEEN[$line]=1; echo "$line"; }
       continue
     fi
