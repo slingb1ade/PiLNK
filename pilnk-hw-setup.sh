@@ -411,7 +411,7 @@ PYEOF
   if [ -z "$DASHBOARD_PORT" ]; then
     DASHBOARD_PORT=5000
     err "Ports 5000-5005 are all in use. Free one, or set dashboard_port in"
-    err "~/pilnk/config.json by hand, then: sudo systemctl restart pilnk"
+    err "$HOME/pilnk/config.json by hand, then: sudo systemctl restart pilnk"
   elif [ "$DASHBOARD_PORT" != "5000" ]; then
     # Name the occupant if we can — "port 5000 is in use by piaware-configurator"
     # is actionable; "port 5000 is in use" sends someone hunting.

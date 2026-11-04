@@ -147,6 +147,7 @@ stage_receiver() {
        # the image ships readsb disabled: an unpinned readsb would grab a dongle
        systemctl enable readsb || { log "receiver: enable readsb failed; will retry at next boot"; return 1; }
        # NO_BLOCK: self-heal must not start units that are After=pilnk.service
+       # shellcheck disable=SC2097,SC2098  # value is identical; the prefix exports it to the child
        PILNK_DIR="$PILNK_DIR" PILNK_SELFHEAL_NO_BLOCK=1 PILNK_SELFHEAL_LOG="$LOG" bash "$PILNK_DIR/bootstrap-selfheal.sh" || log "receiver: self-heal failed"
        log "receiver: bound" ;;
     2) touch "$PILNK_DIR/.no_receiver"
