@@ -381,6 +381,13 @@ if [ -e "$D/.git" ] && command -v git >/dev/null 2>&1; then
   GIT_CEILING_DIRECTORIES="$(dirname "$D")" git -c "safe.directory=$D" -C "$D" reflog expire --expire=now --all >/dev/null 2>&1 || true
 fi
 remove_paths "git reflogs (.git/logs)" "$D/.git/logs"
+# a git identity (user.name / user.email) set while building the clone; "no such
+# section" is the normal case and is ignored. Values are never printed.
+if [ -f "$D/.git/config" ] && command -v git >/dev/null 2>&1 \
+   && grep -qiE '^[[:space:]]*\[user([[:space:]]|\])' "$D/.git/config" 2>/dev/null; then
+  git config --file "$D/.git/config" --remove-section user >/dev/null 2>&1 || true
+  say "removed: git identity from the clone's .git/config"
+fi
 remove_paths "PiLNK secrets and runtime state" \
   "$D/.secret_key" "$D/update.log" "$D/ota_state.json" "$D/.no_receiver" "$D/config.json.installer"
 remove_matching "history day store" "$D" -maxdepth 1 -name 'history_day.json*'

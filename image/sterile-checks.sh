@@ -131,6 +131,11 @@ sterile_check() {
   fi
   _sc_absent secret-key "$D/.secret_key"
   _sc_absent git-reflog "$D/.git/logs"
+  # a [user] section in the clone's config is a git identity (name/email); only
+  # the section header is matched, the values are never read out
+  if [ -f "$D/.git/config" ] && grep -qiE '^[[:space:]]*\[user([[:space:]]|\])' "$D/.git/config" 2>/dev/null; then
+    _sc_fail git-identity "$D/.git/config"
+  fi
   _sc_absent update-log "$D/update.log"
   _sc_absent ota-state "$D/ota_state.json"
   _sc_absent no-receiver "$D/.no_receiver"

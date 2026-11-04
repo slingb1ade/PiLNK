@@ -22,13 +22,15 @@ Expect: `ssh pilnk@pilnk-build.local` asks for the temporary password and logs i
 Do this **before "ship it"**. The branch is not on `main` yet, so you get patches
 (they will be in `PiLNK/sterile-image/patches/`).
 
-**Laptop**: copy the patches to the build Pi.
+**Laptop**: put the patches in one dedicated directory, `~/sterile-patches/`, and copy that directory to the build Pi:
 
 ```
-scp ~/Downloads/PiLNK/sterile-image/patches/*.patch pilnk@pilnk-build.local:/home/pilnk/
+mkdir -p ~/sterile-patches
+cp ~/Downloads/PiLNK/sterile-image/patches/*.patch ~/sterile-patches/
+scp -r ~/sterile-patches pilnk@pilnk-build.local:/home/pilnk/
 ```
 
-Expect: one line per patch, no errors.
+Expect: one line per patch, no errors. The patches are now in `/home/pilnk/sterile-patches/` on the Pi.
 
 **Pi4 (build card)**:
 
@@ -36,18 +38,24 @@ Expect: one line per patch, no errors.
 sudo apt update
 sudo apt install -y git
 git clone https://github.com/slingb1ade/PiLNK.git ~/pilnk
-cd ~/pilnk
-git config user.name "AJ"
-git config user.email "aj@pilnk.io"
-git am ~/*.patch
-git log --oneline | head -5
+git -C ~/pilnk switch -c sterile-image
+git -C ~/pilnk -c user.name=AJ -c user.email=aj@pilnk.io am ~/sterile-patches/*.patch
+git -C ~/pilnk log --oneline | head -5
 ```
 
 Expect: `git am` prints "Applying: ..." for each patch with no conflict. The newest commit is the last patch.
+`git -C ~/pilnk branch --show-current` prints `sterile-image`.
 
-Note: first boot skips its self-update on a test build, because the clone is not on branch `main`
-(the update would reset it to `origin/main`, which lacks the new scripts). The log says
-"test build: update skipped". A shipped image is built from `main` and updates normally.
+Two things matter here:
+
+- **Do the `switch -c` before `git am`.** First boot skips its self-update only when the clone is on a branch
+  other than `main`. On `main` it would run the update, which does `git reset --hard origin/main` and throws
+  the patches away. On the first boot of a test card the log (`/var/log/pilnk-firstboot.log`) must read
+  `test build: update skipped (branch sterile-image)`. If it does not, the card is not running the branch's code.
+  A shipped image is built from `main` and updates normally.
+- **Never run `git config user.name` or `user.email` in the clone.** The identity above is passed with `-c`
+  for this one command only and is not stored. A stored identity would sit in `.git/config` on every card.
+  (Sterilise also removes any `[user]` section and its check fails if one is left, as a second guard.)
 
 ## 3. Build
 
@@ -106,7 +114,8 @@ Expect: either the Pi is off, or you have `pilnk-sterilise-failed.txt` telling y
 ## 6. Save the image
 
 **Laptop**: put the card in the laptop, open Inkpot v0.6, choose "Save to image", pick the card,
-leave Shrink and Compress on, choose a file name like `pilnk-sterile.img.xz` on a disk with room for the full card size.
+leave Shrink and Compress on, save it as `~/pilnk-images/pilnk-sterile.img.xz` (make the folder first: `mkdir -p ~/pilnk-images`;
+the disk needs room for the full card size).
 
 Expect: "Saved ... card -> pilnk-sterile.img.xz (...), sha256 saved". A `.sha256` file sits next to it.
 
@@ -115,21 +124,48 @@ Expect: "Saved ... card -> pilnk-sterile.img.xz (...), sha256 saved". A `.sha256
 **Laptop**: decompress (keep the `.xz`):
 
 ```
+cd ~/pilnk-images
 xz -dk pilnk-sterile.img.xz
 ```
 
 Expect: `pilnk-sterile.img` appears next to it.
 
+The verifier runs from a clone of the **branch** on the laptop (it is not on `main` yet, so a plain clone does not have it).
+**Laptop**: build that clone from the same patches (skip this if `~/pilnk-verify` already exists):
+
+```
+git clone https://github.com/slingb1ade/PiLNK.git ~/pilnk-verify
+git -C ~/pilnk-verify switch -c sterile-image
+git -C ~/pilnk-verify -c user.name=AJ -c user.email=aj@pilnk.io am ~/sterile-patches/*.patch
+```
+
+Expect: "Applying: ..." for each patch, no conflict.
+
 **Laptop**: run the verifier on the raw image:
 
 ```
-cd ~/pilnk
-sudo bash image/pilnk-image-verify.sh ~/pilnk-sterile.img --denylist ~/.config/pilnk/denylist
+cd ~/pilnk-verify
+sudo bash image/pilnk-image-verify.sh ~/pilnk-images/pilnk-sterile.img --denylist ~/.config/pilnk/denylist
 ```
 
-(Use the path where your clone and image really are. A card in the laptop works too: use `/dev/sdX`, it is opened read-only.)
-
 Expect: it ends with `CLEAN: no rule failures, no raw-image hits`.
+
+To check a card still in the laptop instead of an image file: first find it.
+
+```
+lsblk -o NAME,SIZE,MODEL,TRAN
+```
+
+Confirm the card's name and size (for example `sdb`, 32G, a USB reader) **before** you type any `/dev/sdX` command.
+The system disk is the one holding `/`; never use it. Then use that name in place of `/dev/sdX`
+(the verifier opens it read-only):
+
+```
+cd ~/pilnk-verify
+sudo bash image/pilnk-image-verify.sh /dev/sdX --denylist ~/.config/pilnk/denylist
+```
+
+Expect: the same `CLEAN` line.
 
 What the lines mean:
 

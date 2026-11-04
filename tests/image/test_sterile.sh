@@ -105,6 +105,7 @@ pilnk-enabled|mkdir -p "$R/etc/systemd/system/graphical.target.wants"; ln -sfn /
 ssh-enabled|mkdir -p "$R/etc/systemd/system/default.target.wants"; ln -sfn /lib/systemd/system/ssh.service "$R/etc/systemd/system/default.target.wants/ssh.service"
 sterilise-failed|echo 'FAIL x: /y' > "$B/pilnk-sterilise-failed.txt"
 git-reflog|mkdir -p "$D/.git/logs"; echo x > "$D/.git/logs/HEAD"
+git-identity|mkdir -p "$D/.git"; printf '[core]\n\tbare = false\n[user]\n\tname = Someone\n\temail = someone@example.invalid\n' > "$D/.git/config"
 wpa-examples|mkdir -p "$R/usr/share/doc/wpasupplicant/examples"; printf 'network={\n\t%s="examplepassphrase"\n}\n' "$PK" > "$R/usr/share/doc/wpasupplicant/examples/wpa_supplicant.conf"
 EOF
 )
@@ -188,6 +189,22 @@ ok "git clean removes ignored runtime files, keeps tracked ones" \
    "[ ! -e '$GD/junk.cache' ] && [ ! -e '$GD/__ignored_dir' ] && [ -f '$GD/app.py' ] && cmp -s '$GD/config.json' '$TEMPLATE'"
 ok "reflog: expired and .git/logs removed; the clone still works; check passes" \
    "[ '$RCG' = 0 ] && [ ! -e '$GD/.git/logs' ] && git -C '$GD' rev-parse -q --verify HEAD >/dev/null && [ -z \"\$(git -C '$GD' reflog 2>/dev/null)\" ]"
+
+# git identity: the clone's .git/config must hold no [user] section
+GI="$ROOT/gitid"; make_clean "$GI"; GID="$GI/home/pilnk/pilnk"
+( cd "$GID" && git init -q . && git config user.name Someone && git config user.email someone@example.invalid ) >/dev/null 2>&1
+ok "fixture: the clone has a [user] section" "grep -q '^\[user\]' '$GID/.git/config'"
+run_check "$GI"
+ok "git-identity alone: sterile_check names git-identity, never the email" \
+   "[ '$N' = 1 ] && grep -q '^FAIL git-identity: /home/pilnk/pilnk/.git/config' <<< \"\$OUT\" && ! grep -q 'example.invalid' <<< \"\$OUT\""
+OUTGI=$(PILNK_ROOT="$GI" PILNK_BOOT="$GI/boot/firmware" bash "$STER" --no-poweroff --no-zero 2>&1); RCGI=$?
+ok "sterilise removes the [user] section (other config kept); exit 0; email never printed" \
+   "[ '$RCGI' = 0 ] && ! grep -q '^\[user\]' '$GID/.git/config' && git -C '$GID' rev-parse --git-dir >/dev/null 2>&1 && grep -q '^\[core\]' '$GID/.git/config' && ! grep -q 'example.invalid' <<< \"\$OUTGI\""
+run_check "$GI"
+ok "after sterilise the git-identity check passes" "[ '$N' = 0 ]"
+git -C "$GID" config user.name Again >/dev/null 2>&1
+run_check "$GI"
+ok "re-adding a user key alone -> git-identity fails again" "[ '$N' = 1 ] && grep -q '^FAIL git-identity: ' <<< \"\$OUT\""
 
 # a fake root never powers off, even without --no-poweroff
 P1="$ROOT/p1"; make_clean "$P1"; apply_trace "$P1" 'echo x > "$R/home/pilnk/.bash_history"'
@@ -414,7 +431,7 @@ if command -v mkfs.ext4 >/dev/null && command -v debugfs >/dev/null; then
     && printf 'now %s\n' "$WORD" > changed.txt && printf 'mine %s\n' "$WORD" > extra.txt \
     && echo plain > "static/$WORD-notes.txt" \
     && git config filter.x.clean "touch '$FMARK'; cat" && echo '* filter=x' > .git/info/attributes \
-    && touch -d '2001-01-01' public.txt && rm -rf .git/logs ) >/dev/null 2>&1
+    && touch -d '2001-01-01' public.txt && rm -rf .git/logs && git config --remove-section user ) >/dev/null 2>&1
   IDX0=$(sha1sum < "$GD/.git/index")
   IMG2="$ROOT/map.img"; truncate -s 64M "$IMG2"
   mkfs.ext4 -q -F -L "$WORD" -d "$T" "$IMG2" >/dev/null 2>&1
@@ -457,7 +474,7 @@ if command -v mkfs.ext4 >/dev/null && command -v debugfs >/dev/null; then
   # only SKIPs left -> clean
   T2="$ROOT/ext4tree2"; make_clean "$T2"; GD2="$T2/home/pilnk/pilnk"
   ( cd "$GD2" && git init -q . && git config user.email t@t && git config user.name t \
-    && printf 'by %s\n' "$WORD" > public.txt && git add public.txt && git commit -qm init && rm -rf .git/logs ) >/dev/null 2>&1
+    && printf 'by %s\n' "$WORD" > public.txt && git add public.txt && git commit -qm init && rm -rf .git/logs && git config --remove-section user ) >/dev/null 2>&1
   IMG3="$ROOT/map3.img"; truncate -s 64M "$IMG3"; mkfs.ext4 -q -F -d "$T2" "$IMG3" >/dev/null 2>&1
   OUTS3=$(bash "$VER" --root "$T2" --boot "$T2/boot/firmware" --raw "$IMG3" --ext4 --denylist "$DENY" 2>&1); RCS3=$?
   ok "map: an image whose only denylist hits are public PiLNK files is clean" \
@@ -484,7 +501,7 @@ if command -v mkfs.ext4 >/dev/null && command -v debugfs >/dev/null; then
     && printf 'by %s\n' "$WORD" > sub/p2.txt \
     && git config core.repositoryformatversion 1 && git config extensions.partialClone origin \
     && git config remote.origin.url file:///nowhere && git config remote.origin.promisor true \
-    && git config remote.origin.uploadpack "touch '$LMARK'; false" && rm -rf .git/logs ) >/dev/null 2>&1
+    && git config remote.origin.uploadpack "touch '$LMARK'; false" && rm -rf .git/logs && git config --remove-section user ) >/dev/null 2>&1
   IMG7="$ROOT/map7.img"; truncate -s 64M "$IMG7"; mkfs.ext4 -q -F -d "$T7" "$IMG7" >/dev/null 2>&1
   OUT7=$(bash "$VER" --root "$T7" --boot "$T7/boot/firmware" --raw "$IMG7" --ext4 --denylist "$DENY" 2>&1); RC7=$?
   ok "N7: the image repo's promisor remote command never runs (no lazy fetch)" "[ ! -e '$LMARK' ]"
