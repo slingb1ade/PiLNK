@@ -176,267 +176,28 @@ for m in dvb_usb_rtl28xxu rtl2832_sdr rtl2832 rtl2830 dvb_usb_v2; do
 done
 ok "DVB driver stack blacklisted (prevents dongle conflicts, incl. dual-dongle nodes)"
 
-# ── EXISTING FEEDERS & DECODERS — look before we touch ────
-# CLAIM-SAFE RULE: before assigning any hardware or installing any decoder,
-# find out what is ALREADY running and what it owns. PiLNK coexists; it
-# never displaces a working feeder without explicit operator consent.
-#
-# Verified upstream behaviour (do not re-derive around this):
-#   • wiedehopf readsb-install.sh runs `apt remove -y dump1090-fa` — installing
-#     readsb REMOVES a working dump1090-fa. No readsb-alongside-dump1090-fa.
-#   • readsb-install.sh EXITS on a PiAware SD-card image (piaware-config.txt).
-#   • readsb-install.sh re-points fr24feed/rbfeeder to 127.0.0.1:30005, so
-#     network-mode FR24/RadarBox survive a readsb install; dump1090-fa does not.
-step "EXISTING FEEDERS & DECODERS"
-
-READSB_HEALTHY=0
-if systemctl is-active --quiet readsb 2>/dev/null && [ -s /run/readsb/aircraft.json ]; then
-  READSB_HEALTHY=1
-  ok "readsb is already running and healthy (/run/readsb/aircraft.json live)"
-fi
-
-DUMP1090_HEALTHY=0
-if systemctl is-active --quiet dump1090-fa 2>/dev/null && [ -s /run/dump1090-fa/aircraft.json ]; then
-  DUMP1090_HEALTHY=1
-  ok "dump1090-fa is running and healthy (FlightAware/PiAware feeder detected)"
-fi
-
-PIAWARE_IMAGE=0
-if [ -f /boot/piaware-config.txt ] || [ -f /boot/firmware/piaware-config.txt ]; then
-  PIAWARE_IMAGE=1
-  info "PiAware SD-card image detected"
-fi
-
-# Feeders that may hold a dongle DIRECTLY (no dump1090-fa in between).
-# fr24feed in receiver="dvbt"/sdr mode and rbfeeder in non-network mode own
-# an RTL dongle themselves, usually with NO serial named anywhere we can read.
-# We count these as UNNAMED claims and stay cautious around them.
-UNNAMED_CLAIMS=0
-UNNAMED_REPORT=""
-if systemctl is-active --quiet fr24feed 2>/dev/null; then
-  if grep -qiE '^[[:space:]]*receiver[[:space:]]*=[[:space:]]*"?(dvbt|sdr)' /etc/fr24feed.ini 2>/dev/null; then
-    UNNAMED_CLAIMS=$((UNNAMED_CLAIMS + 1))
-    UNNAMED_REPORT="${UNNAMED_REPORT}    fr24feed (FlightRadar24) — DIRECT SDR mode, holding a dongle"$'\n'
-    warn "fr24feed is running in direct SDR mode — it owns one RTL dongle itself."
-  else
-    info "fr24feed is running in network mode (consumes a decoder feed — holds no dongle)."
-  fi
-fi
-if systemctl is-active --quiet rbfeeder 2>/dev/null; then
-  if grep -qiE '^[[:space:]]*network_mode[[:space:]]*=[[:space:]]*(false|no)' /etc/rbfeeder.ini 2>/dev/null; then
-    UNNAMED_CLAIMS=$((UNNAMED_CLAIMS + 1))
-    UNNAMED_REPORT="${UNNAMED_REPORT}    rbfeeder (RadarBox) — DIRECT SDR mode, holding a dongle"$'\n'
-    warn "rbfeeder is running in direct SDR mode — it owns one RTL dongle itself."
-  else
-    info "rbfeeder is running in network mode (holds no dongle)."
-  fi
-fi
-
-# ── SDR HARDWARE DETECTION ────────────────────────────────
-# Airspy (Mini or R2) is INVISIBLE to rtl_test (different driver/USB stack), so
-# we detect it separately via lsusb text-match. RTL-SDR is enumerated by rtl_test.
-step "SDR HARDWARE DETECTION"
-
-AIRSPY_PRESENT=0
-if command -v lsusb &>/dev/null && lsusb | grep -iq airspy; then
-  AIRSPY_PRESENT=1
-  AIRSPY_DESC=$(lsusb | grep -i airspy | head -n1 | sed 's/^.*ID [0-9a-f:]* //')
-  ok "Airspy detected: ${AIRSPY_DESC:-Airspy device}"
-fi
-
-RTL_PRESENT=0
-RTL_SNS=""
-RTL_COUNT=0
-if command -v rtl_test &>/dev/null; then
-  RTL_OUT=$(timeout 3 rtl_test 2>&1 || true)
-  RTL_SNS=$(echo "$RTL_OUT" | grep -oE 'SN: [0-9A-Za-z]+' | awk '{print $2}' | grep . | sort -u)
-  RTL_COUNT=$(echo "$RTL_SNS" | grep -c . || true)
-  if [ "$RTL_COUNT" -gt 0 ]; then
-    RTL_PRESENT=1
-    ok "RTL-SDR detected: ${RTL_COUNT} dongle(s)"
-  fi
-fi
-if [ "$AIRSPY_PRESENT" -eq 0 ] && [ "$RTL_PRESENT" -eq 0 ]; then
-  info "No SDR hardware detected (yet)."
-fi
-
-# ── CLAIM-SAFE SERIAL ACCOUNTING ──────────────────────────
-# Enumerate every RTL serial already claimed by an ACTIVE decoder with a
-# named serial in /etc/default, subtract from detected, and only ever assign
-# from the FREE set. readsb is handled separately: if it's healthy we consume
-# its output (its dongle is moot); if we're (re)configuring readsb ourselves,
-# its old serial is ours to reuse — so readsb is NOT in this claims list.
-_decoder_serial() {
-  local conf="$1" s=""
-  [ -f "$conf" ] || return 0
-  s=$(grep -oE '^[A-Za-z_]*SERIAL=[^[:space:]]+' "$conf" 2>/dev/null | head -n1 | cut -d= -f2- | tr -d '\042\047')
-  if [ -z "$s" ]; then
-    s=$(grep -oE '(serial=|--device[ =])[0-9A-Za-z]+' "$conf" 2>/dev/null | head -n1 | sed -E 's/^(serial=|--device[ =])//')
-  fi
-  printf '%s' "$s" | tr -d '[:space:]'
-}
-
-CLAIMED_SNS=""
-CLAIMED_REPORT=""
-CLAIMED_COUNT=0
-for pair in "dump1090-fa:/etc/default/dump1090-fa" \
-            "dump978-fa:/etc/default/dump978-fa"; do
-  svc="${pair%%:*}"; conf="${pair##*:}"
-  systemctl is-active --quiet "$svc" 2>/dev/null || continue
-  sn=$(_decoder_serial "$conf")
-  if [ -n "$sn" ]; then
-    CLAIMED_SNS="${CLAIMED_SNS}${sn}"$'\n'
-    CLAIMED_REPORT="${CLAIMED_REPORT}    SN ${sn} — in use by ${svc}"$'\n'
-    CLAIMED_COUNT=$((CLAIMED_COUNT + 1))
-  else
-    UNNAMED_CLAIMS=$((UNNAMED_CLAIMS + 1))
-    UNNAMED_REPORT="${UNNAMED_REPORT}    ${svc} — active with no named serial, holding a dongle"$'\n'
-    warn "${svc} is running without a configured serial — staying cautious about its dongle."
-  fi
+# ── Hardware binding: the claim-safe rules live in pilnk-hw-setup.sh ──
+# EXISTING FEEDERS, SDR HARDWARE DETECTION, CLAIM-SAFE SERIAL ACCOUNTING,
+# DECODER MODE and VHF audio assignment moved there verbatim, so this
+# interactive installer and the unattended first-boot image share ONE copy of
+# the rules. Sourced here, it only defines hw_* functions; prompts stay
+# interactive (PILNK_HW_NONINTERACTIVE is forced off).
+PILNK_HW_NONINTERACTIVE=""
+HW_SETUP=""
+for _c in "${BASH_SOURCE[0]:+$(dirname "${BASH_SOURCE[0]}")/pilnk-hw-setup.sh}" "$HOME/pilnk/pilnk-hw-setup.sh"; do
+  if [ -n "$_c" ] && [ -f "$_c" ]; then HW_SETUP="$_c"; break; fi
 done
-
-FREE_SNS="$RTL_SNS"
-if [ -n "$CLAIMED_SNS" ] && [ -n "$RTL_SNS" ]; then
-  FREE_SNS=$(comm -23 <(echo "$RTL_SNS") <(echo "$CLAIMED_SNS" | grep . | sort -u))
-fi
-FREE_COUNT=$(echo "$FREE_SNS" | grep -c . || true)
-
-if [ "$RTL_PRESENT" -eq 1 ]; then
-  info "Dongles — detected: ${RTL_COUNT}, named claims: ${CLAIMED_COUNT}, unnamed claims: ${UNNAMED_CLAIMS}, free: ${FREE_COUNT}"
-  [ -n "$CLAIMED_REPORT" ] && printf '%s' "$CLAIMED_REPORT"
-  [ -n "$UNNAMED_REPORT" ] && printf '%s' "$UNNAMED_REPORT"
-fi
-
-# ── DECODER MODE DECISION (consume-first) ─────────────────
-#   1. healthy readsb       → consume — touch NOTHING
-#   2. healthy dump1090-fa  → consume — touch NOTHING (FR24/PiAware safe)
-#      (unless an Airspy is plugged in — then the operator clearly intends
-#       an upgrade; warn that readsb-install REMOVES dump1090-fa + confirm)
-#   3. Airspy present       → airspy branch (PiAware image → hard stop)
-#   4. free RTL-SDR         → rtlsdr branch (PiAware image → hard stop;
-#                              dongle ONLY from the FREE set)
-#   5. nothing              → install app only, decoder later
-step "DECODER MODE"
-
-DECODER_MODE=""
-ADSB_SERIAL=""
-VHF_SERIAL=""
-AIRCRAFT_JSON_PATH="/run/readsb/aircraft.json"   # default; consume overrides
-SVC_AFTER="readsb.service"
-
-if [ "$READSB_HEALTHY" -eq 1 ] && [ "$AIRSPY_PRESENT" -eq 0 ]; then
-  DECODER_MODE="consume"
-  AIRCRAFT_JSON_PATH="/run/readsb/aircraft.json"
-  ok "readsb already feeding — PiLNK will consume its aircraft.json. Installing NO decoder."
-
-elif [ "$DUMP1090_HEALTHY" -eq 1 ] && [ "$AIRSPY_PRESENT" -eq 0 ]; then
-  DECODER_MODE="consume"
-  AIRCRAFT_JSON_PATH="/run/dump1090-fa/aircraft.json"
-  SVC_AFTER="dump1090-fa.service"
-  ok "Healthy dump1090-fa found — PiLNK will read its feed. Installing NO decoder."
-  ok "Your FlightAware / FR24 / RadarBox setup stays EXACTLY as it is."
-
-elif [ "$AIRSPY_PRESENT" -eq 1 ]; then
-  DECODER_MODE="airspy"
-  if [ "$PIAWARE_IMAGE" -eq 1 ]; then
-    err "The Airspy path needs readsb, and readsb will not install on a PiAware"
-    err "SD-card image (it refuses, to protect the PiAware config)."
-    err "Use a separate non-PiAware box for the Airspy, or reflash with Raspberry Pi OS."
+if [ -z "$HW_SETUP" ]; then
+  # curl | bash: nothing alongside us yet — fetch the helper (the repo isn't cloned until later).
+  HW_SETUP="$(mktemp /tmp/pilnk-hw-setup.XXXXXX)"
+  curl -fsSL --max-time 20 https://raw.githubusercontent.com/slingb1ade/PiLNK/main/pilnk-hw-setup.sh -o "$HW_SETUP" || {
+    err "Could not fetch pilnk-hw-setup.sh from GitHub."
     exit 1
-  fi
-  if [ "$DUMP1090_HEALTHY" -eq 1 ]; then
-    echo "" > /dev/tty
-    warn "An Airspy is plugged in, but a HEALTHY dump1090-fa is also running."
-    warn "The Airspy path installs readsb, which REMOVES dump1090-fa —"
-    warn "FlightAware feeding from this box WILL STOP."
-    warn "(FR24/RadarBox in network mode are auto re-pointed to readsb and survive.)"
-    warn "Best practice: run the Airspy on its own Pi, keep FlightAware on this one."
-    printf "  Replace dump1090-fa with readsb and continue? [y/N] " > /dev/tty
-    read -r yn < /dev/tty
-    [[ ! "$yn" =~ ^[Yy]$ ]] && { echo "Cancelled — nothing was changed."; exit 1; }
-  fi
-  ok "Decoder mode: Airspy (airspy_adsb → readsb net-only)"
-
-elif [ "$RTL_PRESENT" -eq 1 ]; then
-  if [ "$PIAWARE_IMAGE" -eq 1 ]; then
-    err "readsb will not install on a PiAware SD-card image (it refuses, to"
-    err "protect the PiAware config) — and this box has no healthy dump1090-fa"
-    err "to consume. Start dump1090-fa first, or use a non-PiAware box."
-    exit 1
-  fi
-  # CLAIM-SAFE pick: PiLNK's readsb only ever takes a FREE dongle.
-  if [ "$FREE_COUNT" -eq 0 ]; then
-    DECODER_MODE=""
-    warn "All ${RTL_COUNT} detected dongle(s) are claimed by other decoders/feeders."
-    warn "PiLNK will NOT take a dongle another service is using."
-    warn "Add another RTL-SDR and re-run, or free one up. Installing the app only."
-  elif [ "$UNNAMED_CLAIMS" -gt 0 ]; then
-    # Something (e.g. fr24feed direct mode) holds a dongle we can't name, so
-    # the "free" list may still contain the claimed one. A human must pick.
-    DECODER_MODE="rtlsdr"
-    echo "" > /dev/tty
-    warn "${UNNAMED_CLAIMS} running feeder(s) hold a dongle whose serial can't be read,"
-    warn "so one of the dongles listed below may actually be THEIRS."
-    warn "Pick the dongle that is FREE for PiLNK — NOT the one your feeder uses:"
-    echo "$FREE_SNS" | grep . | nl -s '. SN: ' > /dev/tty
-    printf "  Enter the line number of the FREE dongle for ADS-B (or 0 to skip): " > /dev/tty
-    read -r ADSB_PICK < /dev/tty
-    ADSB_PICK=$(printf '%s' "${ADSB_PICK:-0}" | grep -oE '^[0-9]+' || echo 0)
-    if [ "$ADSB_PICK" -eq 0 ]; then
-      DECODER_MODE=""
-      warn "Skipped — installing the app only. Re-run when a free dongle is added."
-    else
-      ADSB_SERIAL=$(echo "$FREE_SNS" | grep . | sed -n "${ADSB_PICK}p")
-      if [ -z "$ADSB_SERIAL" ]; then
-        DECODER_MODE=""
-        warn "Invalid pick — installing the app only, decoder unconfigured."
-      else
-        ok "Decoder mode: RTL-SDR — ADS-B → SN $ADSB_SERIAL (operator-confirmed free)"
-      fi
-    fi
-  elif [ "$FREE_COUNT" -eq 1 ]; then
-    DECODER_MODE="rtlsdr"
-    ADSB_SERIAL=$(echo "$FREE_SNS" | grep . | head -n1)
-    ok "Decoder mode: RTL-SDR — single free dongle SN $ADSB_SERIAL → ADS-B"
-  else
-    DECODER_MODE="rtlsdr"
-    echo "" > /dev/tty
-    warn "Found $FREE_COUNT free RTL-SDR dongles:"
-    echo "$FREE_SNS" | grep . | nl -s '. SN: ' > /dev/tty
-    printf "  Which line is your ADS-B dongle? [1]: " > /dev/tty
-    read -r ADSB_PICK < /dev/tty
-    ADSB_PICK=$(printf '%s' "${ADSB_PICK:-1}" | grep -oE '^[0-9]+' || echo 1)
-    ADSB_SERIAL=$(echo "$FREE_SNS" | grep . | sed -n "${ADSB_PICK}p")
-    if [ -z "$ADSB_SERIAL" ]; then ADSB_SERIAL=$(echo "$FREE_SNS" | grep . | head -n1); fi
-    ok "Decoder mode: RTL-SDR — ADS-B → SN $ADSB_SERIAL"
-  fi
-
-else
-  DECODER_MODE=""
-  warn "No Airspy and no RTL-SDR detected, and no existing decoder to consume."
-  warn "PiLNK will still install; plug in a receiver and re-run."
+  }
 fi
-
-# ── VHF audio dongle assignment (claim-safe) ──────────────
-# VHF audio uses a FREE RTL-SDR that is NOT the ADS-B dongle. If an unnamed
-# claim exists (e.g. fr24feed direct mode) we cannot prove the leftover dongle
-# is free, so we leave VHF off rather than risk poaching — the operator can
-# set 'vhf_serial' in ~/pilnk/config.json by hand if they know better.
-if [ "$RTL_PRESENT" -eq 1 ] && [ "$DECODER_MODE" != "" ]; then
-  if [ "$UNNAMED_CLAIMS" -gt 0 ]; then
-    VHF_CAND=""
-    info "Unnamed dongle claims present — VHF audio left off to stay safe."
-    info "(Set 'vhf_serial' in ~/pilnk/config.json yourself if you have a spare.)"
-  else
-    VHF_CAND=$(echo "$FREE_SNS" | grep . | grep -v "^${ADSB_SERIAL}$" | head -n1)
-  fi
-  if [ -n "$VHF_CAND" ]; then
-    VHF_SERIAL="$VHF_CAND"
-    ok "VHF audio → free RTL-SDR SN $VHF_SERIAL"
-  elif [ "$UNNAMED_CLAIMS" -eq 0 ]; then
-    info "No spare free dongle for VHF audio — audio left off."
-  fi
-fi
+# shellcheck source=pilnk-hw-setup.sh
+. "$HW_SETUP"
+hw_decide
 
 # ── Install readsb (wiedehopf) — ONLY when WE provide the decoder ──
 if [ "$DECODER_MODE" = "airspy" ] || [ "$DECODER_MODE" = "rtlsdr" ]; then
@@ -478,21 +239,7 @@ if [ "$DECODER_MODE" = "airspy" ]; then
 
 elif [ "$DECODER_MODE" = "rtlsdr" ]; then
   step "PIN RTL-SDR DONGLE"
-  # Pin readsb to the chosen FREE ADS-B dongle so it can't auto-grab device
-  # index 0 — which could be a dongle another feeder owns.
-  READSB_DEFAULT="/etc/default/readsb"
-  if [ -n "$ADSB_SERIAL" ] && [ -f "$READSB_DEFAULT" ]; then
-    if grep -q -- "--device " "$READSB_DEFAULT"; then
-      sudo sed -i "s/--device [^ ]*/--device $ADSB_SERIAL/" "$READSB_DEFAULT"
-    else
-      sudo sed -i "s|RECEIVER_OPTIONS=\"|RECEIVER_OPTIONS=\"--device $ADSB_SERIAL |" "$READSB_DEFAULT"
-    fi
-    ok "readsb pinned to ADS-B dongle SN $ADSB_SERIAL"
-    sudo udevadm control --reload-rules 2>/dev/null || true
-    sudo udevadm trigger 2>/dev/null || true
-    sudo systemctl restart readsb 2>/dev/null || true
-    sleep 2
-  fi
+  hw_pin_readsb
 
 elif [ "$DECODER_MODE" = "consume" ]; then
   step "CONSUME MODE"
@@ -590,51 +337,8 @@ if ! grep -q "aircraft_json_path" "$APP_PY"; then
   warn "This app.py predates the aircraft_json_path key (1.2.10.1)."
   warn "The node may read the dump1090-fa path instead of the configured one. Update PiLNK."
 fi
-# ── Dashboard port (claim-safe) ────────────────────────────
-# PiLNK serves its dashboard on 5000. That is NOT always free: a PiAware
-# SD-card image ships piaware-configurator, a Flask app bound to
-# 127.0.0.1:5000. Because a wildcard bind (0.0.0.0) collides with an existing
-# loopback bind on the same port, PiLNK dies with EADDRINUSE and systemd
-# restart-loops it — silently, behind a misleading "check your connection".
-#
-# So: probe, and if 5000 is taken pick the next free port and write it to
-# config.json. It MUST live in config (gitignored) rather than app.py, because
-# update.sh does `git reset --hard` and would revert an app.py edit on the
-# next release — which is exactly how one node went down twice.
-DASHBOARD_PORT=""
-# Definitive test: actually TRY the bind Flask will make. Not a proxy for the
-# question — it IS the question. Parsing `ss` output would miss the subtlety
-# here (something holds 127.0.0.1:5000, and it's the WILDCARD bind that fails),
-# and `ss`/`netstat` aren't guaranteed present on a minimal image — a missing
-# tool would silently report "free" and we'd ship the collision. python3 is
-# guaranteed: it runs app.py.
-port_free() {
-  python3 - "$1" <<'PYEOF' 2>/dev/null
-import socket, sys
-s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-try:
-    s.bind(('0.0.0.0', int(sys.argv[1])))
-    sys.exit(0)          # free
-except OSError:
-    sys.exit(1)          # in use
-finally:
-    s.close()
-PYEOF
-}
-for CAND in 5000 5001 5002 5003 5004 5005; do
-  if port_free "$CAND"; then DASHBOARD_PORT="$CAND"; break; fi
-done
-
-if [ -z "$DASHBOARD_PORT" ]; then
-  DASHBOARD_PORT=5000
-  err "Ports 5000-5005 are all in use. Free one, or set dashboard_port in"
-  err "~/pilnk/config.json by hand, then: sudo systemctl restart pilnk"
-elif [ "$DASHBOARD_PORT" != "5000" ]; then
-  # Name the occupant if we can — "port 5000 is in use by piaware-configurator"
-  # is actionable; "port 5000 is in use" sends someone hunting.
-  PORT_OWNER=$(ss -tlnpH "sport = :5000" 2>/dev/null | grep -oE 'users:\(\("[^"]+' | head -n1 | sed 's/.*(("//')
-  warn "Port 5000 is already in use${PORT_OWNER:+ by ${PORT_OWNER}} — using ${DASHBOARD_PORT} instead."
-fi
+# ── Dashboard port (claim-safe) — probe + rationale live in pilnk-hw-setup.sh ──
+hw_dashboard_port
 
 printf '{\n  "auto_update": true,\n  "aircraft_json_path": "%s",\n  "vhf_serial": "%s",\n  "dashboard_port": %s\n}\n' "$AIRCRAFT_JSON_PATH" "$VHF_SERIAL" "$DASHBOARD_PORT" \
   > "$CONFIG_JSON"

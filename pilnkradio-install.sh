@@ -114,6 +114,14 @@ command -v sudo >/dev/null || die "sudo is required."
 
 J=$(nproc 2>/dev/null || echo 2)
 
+# ── PILNKRADIO_CONFIG_ONLY=1 (first-boot receiver binding) ──
+# Skips steps 1-5 (source lookup, deps, rtl-sdr-blog fork, build, selftest,
+# install): no compile, no network. Runs from the serial check on (config,
+# udev, service). The engine binary must already be installed (the image
+# bakes it); SRC is this checkout so step 7/8 can copy the unit + udev rule.
+if [ -n "${PILNKRADIO_CONFIG_ONLY:-}" ]; then
+    SRC="$(cd "$(dirname "$0")" && pwd)"
+else
 # ── [1/8] locate pilnkradio source ─────────────────────────
 step "1/8 locate pilnkradio source"
 SRC="$HOME/pilnk"
@@ -236,6 +244,8 @@ step "5/8 DSP selftest"
 ok "selftest PASS"
 sudo make -C "$SRC/pilnkradio/build" install >/dev/null
 ok "installed /usr/local/bin/pilnkradio"
+
+fi  # PILNKRADIO_CONFIG_ONLY
 
 # ── [6/8] dongle serial ────────────────────────────────────
 step "6/8 radio dongle"
