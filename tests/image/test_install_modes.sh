@@ -103,10 +103,14 @@ run_radio() {
 }
 run_radio
 ok "radio control: config.json written without the flag" '[ $RC -eq 0 ] && [ -s "$ROOT/tee/config.json" ]'
+ok "radio CONFIG_ONLY: udev rule installed + reloaded" 'calls | grep -q "^sudo cp .*99-pilnk-v4.rules /etc/udev/rules.d/" && calls | grep -q "^sudo udevadm control --reload"'
 run_radio PILNKRADIO_SKIP_CONFIG=1
 ok "radio SKIP_CONFIG: exit 0"             '[ $RC -eq 0 ]'
 ok "radio SKIP_CONFIG: no config.json written" '[ ! -e "$ROOT/tee/config.json" ] && ! calls | grep -q "mkdir -p /etc/pilnkradio"'
 ok "radio SKIP_CONFIG: engine not enabled/started" '! calls | grep -Eq "systemctl (enable|restart|start) pilnkradio"'
+ok "radio SKIP_CONFIG: no udev wake rule copied" '! calls | grep -q "99-pilnk-v4.rules"'
+ok "radio SKIP_CONFIG: udev not reloaded" '! calls | grep -q "udevadm control"'
+ok "radio SKIP_CONFIG: unit still copied + daemon-reload" 'calls | grep -q "^sudo cp .*pilnkradio.service /etc/systemd/system/" && calls | grep -q "systemctl daemon-reload"'
 
 # ---------- the Pi 5 must be able to run the build ----------
 ok "pilnkradio/CMakeLists.txt has no -march/-mcpu/-mtune" '! grep -Eq -- "-m(arch|cpu|tune)" "$REPO/pilnkradio/CMakeLists.txt"'

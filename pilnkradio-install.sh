@@ -478,8 +478,13 @@ fi
 # ── [8/8] services + verify ────────────────────────────────
 step "8/8 services + verify"
 sudo cp "$SRC/pilnkradio/pilnkradio.service" /etc/systemd/system/
-sudo cp "$SRC/pilnkradio/99-pilnk-v4.rules" /etc/udev/rules.d/
-sudo udevadm control --reload
+# Image build ships no udev wake rule: on the card it would restart the engine on
+# every dongle add (boot coldplug) before first boot has written the config and
+# pinned readsb. The first-boot CONFIG_ONLY run installs it.
+if [ -z "${PILNKRADIO_SKIP_CONFIG:-}" ]; then
+    sudo cp "$SRC/pilnkradio/99-pilnk-v4.rules" /etc/udev/rules.d/
+    sudo udevadm control --reload
+fi
 sudo systemctl daemon-reload
 # Image build: the engine has no config yet, so do not enable or start it (it
 # would only crash-loop, and the :5656 check below would fail the build). Install
