@@ -35,15 +35,13 @@ Expect: one line per patch, no errors.
 ```
 sudo apt update
 sudo apt install -y git
-git clone https://github.com/LinkLabs-NZ/PiLNK.git ~/pilnk
+git clone https://github.com/slingb1ade/PiLNK.git ~/pilnk
 cd ~/pilnk
 git config user.name "AJ"
 git config user.email "aj@pilnk.io"
 git am ~/*.patch
 git log --oneline | head -5
 ```
-
-If the clone URL is different for you, use the one you normally use.
 
 Expect: `git am` prints "Applying: ..." for each patch with no conflict. The newest commit is the last patch.
 
