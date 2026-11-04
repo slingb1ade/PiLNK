@@ -27,12 +27,19 @@ setup() {
   fakebin nm-online 'n=$(cat "$ROOT/.nm_fail" 2>/dev/null || echo 0)
     if [ "$n" -gt 0 ]; then echo $((n-1)) > "$ROOT/.nm_fail"; exit 1; fi'
   fakebin reboot '[ -e "$ROOT/var/lib/pilnk-firstboot/grown" ] && echo grown-first >> "$ROOT/.rb"; true'
-  fakebin runuser 'while [ "$1" != -- ]; do shift; done; shift; exec "$@"'
-  fakebin git 'if [ -e "$ROOT/.branch" ]; then cat "$ROOT/.branch"; else exit 128; fi'
+  fakebin hostname 'true'
+  fakebin ip 'n=$(cat "$ROOT/.noroute" 2>/dev/null || echo 0)
+    [ -e "$ROOT/var/lib/pilnk-firstboot/network" ] && echo early >> "$ROOT/.early"
+    if [ "$n" -gt 0 ]; then echo $((n-1)) > "$ROOT/.noroute"; exit 0; fi
+    echo "default via 192.168.1.1 dev wlan0"'
+  fakebin runuser 'while [ "$1" != -- ]; do shift; done; shift; VIA_RUNUSER=1 exec "$@"'
+  # like real git >= 2.35.2: a repo owned by another user is refused unless run
+  # as that user (runuser) or told safe.directory
+  fakebin git 'if [ -e "$ROOT/.branch" ] && { [ -n "$VIA_RUNUSER" ] || printf "%s " "$@" | grep -q "safe.directory"; }; then cat "$ROOT/.branch"; else exit 128; fi'
   fakebin sleep 'true'
   fakescript "$PD/update.sh" 'echo "update-flag=$PILNK_UPDATE_NO_RESTART" >> "$CALLS"; exit $(cat "$ROOT/.upd_rc" 2>/dev/null || echo 0)'
   fakescript "$PD/pilnk-hw-setup.sh" 'echo "hw-env root=$PILNK_ROOT ni=$PILNK_HW_NONINTERACTIVE" >> "$CALLS"; exit $(cat "$ROOT/.hw_rc" 2>/dev/null || echo 0)'
-  fakescript "$PD/bootstrap-selfheal.sh" 'true'
+  fakescript "$PD/bootstrap-selfheal.sh" 'echo "selfheal-env noblock=$PILNK_SELFHEAL_NO_BLOCK log=$PILNK_SELFHEAL_LOG" >> "$CALLS"'
 }
 run() {  # run [ENV=val ...]
   : > "$CALLS"
@@ -54,7 +61,7 @@ ok "full: nm-online -> update"    'before nm-online "update-flag"'
 ok "full: update -> hw-setup"     'before update-flag hw-env'
 ok "full: hw-setup -> enable readsb"       'before hw-env "systemctl enable readsb"'
 ok "full: enable readsb -> selfheal"       'before "systemctl enable readsb" bootstrap-selfheal'
-ok "full: selfheal -> enable --now pilnk"  'before bootstrap-selfheal "systemctl enable --now pilnk"'
+ok "full: selfheal -> enable pilnk -> no-block start"  'before bootstrap-selfheal "systemctl enable pilnk" && before "systemctl enable pilnk" "systemctl --no-block start pilnk"'
 ok "full: update runs with NO_RESTART=1"   'called "update-flag=1"'
 ok "full: update runs as pilnk user"       'called "runuser -u pilnk --"'
 ok "full: hw-setup gets PILNK_ROOT + non-interactive" 'called "hw-env root=$ROOT ni=1"'
@@ -66,7 +73,7 @@ ok "full: no .no_receiver"        '[ ! -e "$PD/.no_receiver" ]'
 ok "full: logged"                 '[ -s "$LOG" ]'
 ok "full: disables itself"        'called "systemctl disable pilnk-firstboot"'
 ok "full: never starts hotspot"   '! grep -qiE "nmcli|hotspot|wifi-setup" "$CALLS"'
-ok "full: never restarts pilnk"   '! grep -qE "(restart|start) pilnk" "$CALLS"'
+ok "full: never restarts pilnk"   '! grep -qE "restart pilnk" "$CALLS"'
 
 # --- grow needs a reboot: sub-marker before reboot, no second grow ---
 setup; echo 0 > "$ROOT/.grow_rc"; run
@@ -78,7 +85,7 @@ run
 ok "grow second run: no growpart" '! called growpart'
 ok "grow second run: no reboot"   '! called reboot'
 ok "grow second run: identity done" '[ -e "$S/identity" ] && called ssh-keygen'
-ok "grow second run: boots on to start" 'called "systemctl enable --now pilnk"'
+ok "grow second run: boots on to start" 'called "systemctl --no-block start pilnk"'
 
 # --- grow: nothing to do (growpart NOCHANGE) continues without reboot ---
 setup; echo 1 > "$ROOT/.grow_rc"; run
@@ -91,7 +98,7 @@ ok "no root device found: skip grow, not fatal" '! called growpart && [ -e "$S/i
 # --- resume ---
 setup; mkdir -p "$S"; touch "$S/identity" "$S/network"; run
 ok "resume: no identity/network work" '! called growpart && ! called ssh-keygen && ! called hostnamectl && ! called nm-online'
-ok "resume: update, receiver, start run" 'called update-flag && called hw-env && called "systemctl enable --now pilnk"'
+ok "resume: update, receiver, start run" 'called update-flag && called hw-env && called "systemctl --no-block start pilnk"'
 ok "resume: all markers"          '[ "$(markers)" = "identity,network,receiver,started,update" ]'
 
 # --- no network: keep polling, never start the hotspot ---
@@ -104,20 +111,20 @@ ok "no network: network marker written after success" '[ -e "$S/network" ] && [ 
 # --- receiver: exit 2 = no dongle ---
 setup; echo 2 > "$ROOT/.hw_rc"; run
 ok "no rx: exit 0"                '[ $RC -eq 0 ]'
-ok "no rx: pilnk still enabled+started" 'called "systemctl enable --now pilnk"'
+ok "no rx: pilnk still enabled+started" 'called "systemctl --no-block start pilnk"'
 ok "no rx: receiver marker NOT written" '[ ! -e "$S/receiver" ] && [ -e "$S/started" ]'
 ok "no rx: .no_receiver exists"   '[ -e "$PD/.no_receiver" ]'
 ok "no rx: readsb NOT enabled"    '! called "systemctl enable readsb"'
 ok "no rx: no self-heal"          '! called bootstrap-selfheal'
 ok "no rx: firstboot stays enabled" '! called "systemctl disable pilnk-firstboot"'
 run
-ok "no rx retry: hw-setup only"   'called hw-env && ! called update-flag && ! called growpart && ! called nm-online && ! called "enable --now pilnk"'
+ok "no rx retry: hw-setup only"   'called hw-env && ! called update-flag && ! called growpart && ! called nm-online && ! called "start pilnk"'
 ok "no rx retry: still no marker, flag kept" '[ ! -e "$S/receiver" ] && [ -e "$PD/.no_receiver" ]'
 echo 0 > "$ROOT/.hw_rc"; run
 ok "dongle plugged: receiver marker"  '[ -e "$S/receiver" ]'
 ok "dongle plugged: flag removed"     '[ ! -e "$PD/.no_receiver" ]'
 ok "dongle plugged: readsb then selfheal" 'before "systemctl enable readsb" bootstrap-selfheal'
-ok "dongle plugged: pilnk not restarted" '! called "enable --now pilnk"'
+ok "dongle plugged: pilnk not restarted" '! called "start pilnk"'
 ok "dongle plugged: now disables itself" 'called "systemctl disable pilnk-firstboot"'
 
 # --- hw-setup error (exit 1): not marked, PiLNK still starts, flag untouched ---
@@ -125,20 +132,20 @@ setup; echo 1 > "$ROOT/.hw_rc"; run
 ok "hw error: not marked, still starts" '[ ! -e "$S/receiver" ] && [ -e "$S/started" ] && ! called "enable readsb"'
 
 # --- test builds skip the update ---
-setup; echo sterile-image > "$ROOT/.branch"; run
+setup; mkdir "$PD/.git"; echo sterile-image > "$ROOT/.branch"; run
 ok "test build: update.sh not run" '! called update-flag'
 ok "test build: logged"           'grep -q "test build: update skipped" "$LOG"'
 ok "test build: update marker still written" '[ -e "$S/update" ]'
-ok "test build: rest proceeds"    'called hw-env && called "enable --now pilnk"'
-setup; echo main > "$ROOT/.branch"; run
+ok "test build: rest proceeds"    'called hw-env && called "--no-block start pilnk"'
+setup; mkdir "$PD/.git"; echo main > "$ROOT/.branch"; run
 ok "main checkout: update runs"   'called update-flag'
-setup; echo HEAD > "$ROOT/.branch"; run
+setup; mkdir "$PD/.git"; echo HEAD > "$ROOT/.branch"; run
 ok "detached HEAD counts as test build" '! called update-flag'
 
 # --- update failure: retried, then carries on ---
 setup; echo 1 > "$ROOT/.upd_rc"; run
 ok "update fails: retried 3 times" '[ "$(grep -c "^update-flag\|^update " "$CALLS")" -ge 3 ] && [ "$(grep -c "^update-flag" "$CALLS")" -eq 3 ]'
-ok "update fails: still starts PiLNK" '[ -e "$S/started" ] && called "enable --now pilnk"'
+ok "update fails: still starts PiLNK" '[ -e "$S/started" ] && called "--no-block start pilnk"'
 
 # --- hostname suffix ---
 setup; sed -i 's/10000000abcd7f3a/10000000ABCD7F3A/' "$ROOT/proc/cpuinfo"; run
@@ -146,6 +153,81 @@ ok "hostname: lowercased"         'called "set-hostname pilnk-7f3a"'
 setup; printf 'processor\t: 0\n' > "$ROOT/proc/cpuinfo"; echo 0123456789ABCDEF0123456789ABCDEF > "$ROOT/etc/machine-id"; run
 ok "hostname: machine-id fallback" 'called "set-hostname pilnk-cdef"'
 ok "hostname: fallback logged"    'grep -qi "machine-id" "$LOG"'
+
+# --- C-1: nothing ordered after firstboot may be started synchronously ---
+# firstboot is Before=pilnk.service; a blocking start from inside it deadlocks.
+nonblock_calls() {  # every systemctl start/restart/--now call lacks --no-block?
+  ! grep -E '^systemctl ' "$CALLS" | grep -E ' (start|restart|try-restart|reload-or-restart) | --now' | grep -qv -- '--no-block'
+}
+setup; run
+ok "C-1: start stage = enable, then --no-block start" 'before "systemctl enable pilnk" "systemctl --no-block start pilnk"'
+ok "C-1: no blocking start/restart/--now from firstboot" 'nonblock_calls'
+ok "C-1: no --now anywhere in firstboot calls" '! grep -E "^systemctl " "$CALLS" | grep -q -- "--now"'
+ok "C-1: selfheal told not to block" 'called "selfheal-env noblock=1"'
+# selfheal itself: the helper behind every start in bootstrap-selfheal.sh
+SH="$REPO/bootstrap-selfheal.sh"
+ok "selfheal: no bare 'enable --now' left outside the helper" '[ "$(grep -c "systemctl enable --now" "$SH")" -le 1 ]'
+selfheal_helper() {  # source the real helper with priv = passthrough, fake systemctl logging
+  eval "$(sed -n '/^svc_enable_start()/,/^}/p' "$SH")"
+  priv() { "$@"; }
+  svc_enable_start pilnk-dashboard-watchdog.service
+}
+setup; ( unset PILNK_SELFHEAL_NO_BLOCK; : > "$CALLS"; selfheal_helper )
+ok "selfheal default: unchanged 'enable --now X'" 'called "systemctl enable --now pilnk-dashboard-watchdog.service" && ! called "--no-block"'
+setup; ( export PILNK_SELFHEAL_NO_BLOCK=1; : > "$CALLS"; selfheal_helper )
+ok "selfheal NO_BLOCK: enable then --no-block start, no --now" 'before "systemctl enable pilnk-dashboard-watchdog.service" "systemctl --no-block start pilnk-dashboard-watchdog.service" && ! called "--now"'
+ok "selfheal NO_BLOCK: every start is --no-block" 'nonblock_calls'
+
+# --- I-1: online = nm-online ok AND a default route ---
+setup; echo 3 > "$ROOT/.noroute"; run
+ok "no default route: keeps polling" '[ "$(grep -c "^ip " "$CALLS")" -ge 4 ]'
+ok "no default route: asks for the IPv4 default route" 'called "ip -4 route show default"'
+ok "no default route: no network marker until a route exists" '[ ! -e "$ROOT/.early" ] && [ -e "$S/network" ]'
+ok "no default route: nm-online alone wasn't enough" '[ "$(grep -c "^nm-online" "$CALLS")" -ge 4 ]'
+
+# --- I-2: branch probe works despite git's ownership check; unknown = skip ---
+setup; mkdir "$PD/.git"; echo sterile-image > "$ROOT/.branch"; run
+ok "branch probe runs as pilnk (runuser ... git -C)" 'called "runuser -u pilnk -- git -C $PD rev-parse --abbrev-ref HEAD"'
+setup; mkdir "$PD/.git"; run   # .git present, git cannot say which branch
+ok "branch unknown: update skipped" '! called update-flag'
+ok "branch unknown: logged" 'grep -q "test build: update skipped (branch unknown)" "$LOG"'
+ok "branch unknown: update marker written, rest proceeds" '[ -e "$S/update" ] && called hw-env'
+
+# --- I-3: avahi follows the new hostname ---
+setup; run
+ok "avahi: no-block try-restart after hostname" 'before "set-hostname pilnk-7f3a" "systemctl --no-block try-restart avahi-daemon"'
+
+# --- M-1: readsb enable failure keeps receiver unmarked ---
+setup; fakebin systemctl 'case "$*" in "enable readsb") exit 1;; esac'; run
+ok "readsb enable fails: receiver not marked" '[ ! -e "$S/receiver" ]'
+ok "readsb enable fails: PiLNK still starts" '[ -e "$S/started" ] && called "--no-block start pilnk"'
+ok "readsb enable fails: firstboot stays enabled" '! called "systemctl disable pilnk-firstboot"'
+
+# --- M-2: hostnamectl failure/missing -> write /etc/hostname directly ---
+setup; fakebin hostnamectl 'exit 127'; run
+ok "hostnamectl fails: /etc/hostname written" '[ "$(cat "$ROOT/etc/hostname")" = pilnk-7f3a ]'
+ok "hostnamectl fails: hostname command run" 'called "hostname pilnk-7f3a"'
+ok "hostnamectl fails: identity still completes" '[ -e "$S/identity" ] && grep -q "^127.0.1.1[[:space:]]pilnk-7f3a" "$ROOT/etc/hosts"'
+setup; rm "$ROOT/etc/hosts"; mkdir "$ROOT/etc/hosts"; run
+ok "hosts edit fails: identity not marked" '[ ! -e "$S/identity" ] && grep -q "hosts" "$LOG"'
+
+# --- M-3: /dev/root is resolved, or the grow is skipped ---
+setup; fakebin findmnt 'echo /dev/root'; echo 'console=serial0 root=PARTUUID=abcd1234-02 rootfstype=ext4' > "$ROOT/proc/cmdline"
+fakebin blkid 'case "$*" in *PARTUUID=abcd1234-02*) echo /dev/mmcblk0p2;; esac'; run
+ok "/dev/root: resolved via cmdline PARTUUID + blkid" 'called "growpart /dev/mmcblk0 2"'
+setup; fakebin findmnt 'echo /dev/root'; echo 'root=PARTUUID=nope' > "$ROOT/proc/cmdline"; fakebin blkid 'true'; run
+ok "/dev/root unresolvable: no growpart" '! called growpart'
+ok "/dev/root unresolvable: logged, identity not blocked" 'grep -q "grow:" "$LOG" && [ -e "$S/identity" ] && [ -e "$S/started" ]'
+
+# --- M-4: reboot fails after growpart -> online resize2fs, carry on ---
+setup; echo 0 > "$ROOT/.grow_rc"; fakebin reboot 'exit 1'; run
+ok "reboot fails: resize2fs runs online" 'called "resize2fs /dev/mmcblk0p2"'
+ok "reboot fails: first boot continues" '[ -e "$S/identity" ] && [ -e "$S/started" ] && [ -e "$S/grown" ]'
+ok "reboot fails: logged" 'grep -q "reboot failed" "$LOG"'
+
+# --- M-7: selfheal logs into the firstboot log ---
+setup; run
+ok "selfheal log = firstboot log" 'called "selfheal-env noblock=1 log=$LOG"'
 
 # --- unit file ---
 ok "unit: Type=oneshot"           'grep -qx "Type=oneshot" "$UNIT"'

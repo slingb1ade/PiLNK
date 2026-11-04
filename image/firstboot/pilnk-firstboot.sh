@@ -36,11 +36,26 @@ host_suffix() {
   printf '%s\n' "${s: -4}" | tr 'A-F' 'a-f'
 }
 
+# A real partition node (/dev/mmcblk0p2, /dev/sda2, /dev/nvme0n1p2), not /dev/root.
+is_part() { [[ "$1" =~ ^/dev/([a-z]+[0-9]+|mmcblk[0-9]+p[0-9]+|nvme[0-9]+n[0-9]+p[0-9]+)$ ]] && [[ "$1" != /dev/root ]]; }
+
+# findmnt can say /dev/root; recover the device from root= on the kernel cmdline.
+resolve_root_from_cmdline() {
+  local v dev
+  v=$(tr ' ' '\n' < "$R/proc/cmdline" 2>/dev/null | sed -n 's/^root=//p' | head -1)
+  case "$v" in
+    PARTUUID=*|UUID=*|LABEL=*) dev=$(blkid -t "$v" -o device 2>/dev/null | head -1) ;;
+    /dev/*) dev=$v ;;
+  esac
+  [ -n "$dev" ] && echo "$dev"
+}
+
 # Root partition -> disk + number. Echoes "SRC DISK PARTNUM", or nothing.
 root_device() {
   local src part disk
   src=$(findmnt -n -o SOURCE / 2>/dev/null)
-  case "$src" in /dev/*) ;; *) return 1 ;; esac
+  is_part "$src" || src=$(resolve_root_from_cmdline)
+  is_part "$src" || return 1
   part=$(printf '%s' "$src" | sed -E 's/.*[^0-9]([0-9]+)$/\1/')
   disk=${src%"$part"}
   case "$disk" in *[0-9]p) disk=${disk%p} ;; esac
@@ -49,15 +64,15 @@ root_device() {
 
 grow_root() {
   local dev src disk part rc
-  dev=$(root_device) || { log "grow: no root device found; skipping"; touch "$STATE/grown"; return 0; }
+  dev=$(root_device) || { log "grow: cannot resolve the root device (not a /dev/<disk><part> path); skipping"; touch "$STATE/grown"; return 0; }
   read -r src disk part <<< "$dev"
   if [ ! -e "$STATE/grown" ]; then
     growpart "$disk" "$part"; rc=$?
     case "$rc" in
       0) log "grow: partition grown; rebooting to re-read the table"
          touch "$STATE/grown"       # before reboot: no boot loop, no second grow
-         reboot
-         exit 0 ;;
+         if reboot; then exit 0; fi
+         log "grow: reboot failed; growing the filesystem online" ;;
       1) log "grow: partition already fills the card" ;;
       *) log "grow: growpart failed (rc=$rc); continuing without it" ;;
     esac
@@ -73,28 +88,43 @@ stage_identity() {
   ssh-keygen -A || { log "identity: ssh-keygen failed"; return 1; }
   suf=$(host_suffix) || { log "identity: no serial and no machine-id"; return 1; }
   host="pilnk-$suf"
-  hostnamectl set-hostname "$host" || { log "identity: hostnamectl failed"; return 1; }
-  if grep -q '^127\.0\.1\.1' "$R/etc/hosts" 2>/dev/null; then
-    sed -i "s/^127\.0\.1\.1.*/127.0.1.1\t$host/" "$R/etc/hosts"
-  else
-    printf '127.0.1.1\t%s\n' "$host" >> "$R/etc/hosts"
+  if ! hostnamectl set-hostname "$host"; then
+    log "identity: hostnamectl failed; writing /etc/hostname directly"
+    printf '%s\n' "$host" > "$R/etc/hostname" || { log "identity: cannot write /etc/hostname"; return 1; }
+    if command -v hostname >/dev/null 2>&1; then hostname "$host" || log "identity: hostname command failed"; fi
   fi
+  if grep -q '^127\.0\.1\.1' "$R/etc/hosts" 2>/dev/null; then
+    sed -i "s/^127\.0\.1\.1.*/127.0.1.1\t$host/" "$R/etc/hosts" || { log "identity: editing /etc/hosts failed"; return 1; }
+  else
+    printf '127.0.1.1\t%s\n' "$host" >> "$R/etc/hosts" || { log "identity: appending to /etc/hosts failed"; return 1; }
+  fi
+  # avahi read the old name when it started; make it advertise the new one
+  systemctl --no-block try-restart avahi-daemon || log "identity: avahi restart failed"
   log "identity: hostname $host"
 }
+
+online() { nm-online -q -t "$1" && [ -n "$(ip -4 route show default 2>/dev/null)" ]; }
 
 # First boot never starts the hotspot: pilnk-wifi-setup.service does, at every
 # boot, once there is still no connection after 90 s. We just wait for online.
 stage_network() {
-  if ! nm-online -q -t "$NET_WAIT"; then
+  # online = NetworkManager says connected AND there is an IPv4 default route
+  # (the setup hotspot is "connected" to nm-online but has no route out)
+  if ! online "$NET_WAIT"; then
     log "network: not online after ${NET_WAIT}s; waiting for pilnk-wifi-setup"
-    until nm-online -q -t 5; do sleep "$POLL"; done
+    until online 5; do sleep "$POLL"; done
   fi
   log "network: online"
 }
 
 stage_update() {
   local branch i
-  branch=$(git -C "$PILNK_DIR" rev-parse --abbrev-ref HEAD 2>/dev/null)
+  # as the repo owner: root hits git's "dubious ownership" refusal
+  branch=$(runuser -u pilnk -- git -C "$PILNK_DIR" rev-parse --abbrev-ref HEAD 2>/dev/null)
+  if [ -z "$branch" ] && [ -e "$PILNK_DIR/.git" ]; then
+    log "test build: update skipped (branch unknown)"
+    return 0
+  fi
   if [ -n "$branch" ] && [ "$branch" != main ]; then
     log "test build: update skipped (branch $branch)"
     return 0
@@ -115,8 +145,9 @@ stage_receiver() {
   case "$rc" in
     0) rm -f "$PILNK_DIR/.no_receiver"
        # the image ships readsb disabled: an unpinned readsb would grab a dongle
-       systemctl enable readsb || log "receiver: enable readsb failed"
-       PILNK_DIR="$PILNK_DIR" bash "$PILNK_DIR/bootstrap-selfheal.sh" || log "receiver: self-heal failed"
+       systemctl enable readsb || { log "receiver: enable readsb failed; will retry at next boot"; return 1; }
+       # NO_BLOCK: self-heal must not start units that are After=pilnk.service
+       PILNK_DIR="$PILNK_DIR" PILNK_SELFHEAL_NO_BLOCK=1 PILNK_SELFHEAL_LOG="$LOG" bash "$PILNK_DIR/bootstrap-selfheal.sh" || log "receiver: self-heal failed"
        log "receiver: bound" ;;
     2) touch "$PILNK_DIR/.no_receiver"
        log "receiver: none found; will retry at next boot"; return 1 ;;
@@ -125,8 +156,11 @@ stage_receiver() {
 }
 
 stage_started() {
-  systemctl enable --now pilnk || { log "start: enabling pilnk failed"; return 1; }
-  log "start: pilnk enabled and started"
+  # never a blocking start: this unit is Before=pilnk.service, so a synchronous
+  # start would wait on ourselves. pilnk starts as soon as we exit.
+  systemctl enable pilnk || { log "start: enabling pilnk failed"; return 1; }
+  systemctl --no-block start pilnk || { log "start: queueing pilnk start failed"; return 1; }
+  log "start: pilnk enabled; start queued"
 }
 
 [ -e "$STATE/identity" ] || { stage_identity && touch "$STATE/identity"; }

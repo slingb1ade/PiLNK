@@ -45,6 +45,18 @@ priv() {
   if [ "$(id -u)" -eq 0 ]; then "$@"; else sudo -n "$@"; fi
 }
 
+# enable + start a unit. PILNK_SELFHEAL_NO_BLOCK=1 (set by pilnk-firstboot) turns
+# `enable --now X` into `enable X` + `--no-block start X`: first boot runs
+# Before=pilnk.service, and units that are After=pilnk.service (the dashboard
+# watchdog) would otherwise block on a job that waits for first boot to exit.
+svc_enable_start() {
+  if [ "${PILNK_SELFHEAL_NO_BLOCK:-0}" = 1 ]; then
+    priv systemctl enable "$1" && priv systemctl --no-block start "$1"
+  else
+    priv systemctl enable --now "$1"
+  fi
+}
+
 # Confirm we can actually use privilege before trying anything destructive.
 if [ "$(id -u)" -ne 0 ] && ! sudo -n true 2>/dev/null; then
   log "no passwordless sudo available — skipping self-heal wiring (will retry next OTA)"
@@ -251,7 +263,7 @@ systemctl is-active --quiet pilnk-sdr-recover.timer 2>/dev/null && TIMER_ACTIVE=
 
 if [ "$CHANGED" -eq 1 ] || [ "$TIMER_ACTIVE" -eq 0 ]; then
   priv systemctl daemon-reload 2>/dev/null || true
-  if priv systemctl enable --now pilnk-sdr-recover.timer 2>/dev/null; then
+  if svc_enable_start pilnk-sdr-recover.timer 2>/dev/null; then
     log "enabled + started pilnk-sdr-recover.timer"
   else
     log "could not enable timer (will retry next OTA)"
@@ -268,7 +280,7 @@ WATCHDOG_ACTIVE=0
 systemctl is-active --quiet pilnk-dashboard-watchdog.service 2>/dev/null && WATCHDOG_ACTIVE=1
 if [ -f "$DST_WATCHDOG_SVC" ] && { [ "$CHANGED" -eq 1 ] || [ "$WATCHDOG_ACTIVE" -eq 0 ]; }; then
   priv systemctl daemon-reload 2>/dev/null || true
-  if priv systemctl enable --now pilnk-dashboard-watchdog.service 2>/dev/null; then
+  if svc_enable_start pilnk-dashboard-watchdog.service 2>/dev/null; then
     log "enabled + started pilnk-dashboard-watchdog.service"
   else
     log "could not enable dashboard watchdog (will retry next OTA)"
