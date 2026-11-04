@@ -5,7 +5,8 @@
 #             keys, hostname pilnk-XXXX, /etc/hosts
 #   network   wait for a connection (pilnk-wifi-setup.service owns the hotspot)
 #   update    bring the code current once (no restart, no self-heal)
-#   receiver  pilnk-hw-setup.sh --apply, then readsb + self-heal
+#   receiver  pilnk-hw-setup.sh --apply (Airspy: then airspy-conf), then
+#             readsb + self-heal
 #   started   enable and start pilnk.service
 #
 # Env: PILNK_ROOT (test root, default ""), PILNK_DIR (default /home/pilnk/pilnk),
@@ -18,6 +19,7 @@ PILNK_DIR="${PILNK_DIR:-/home/pilnk/pilnk}"
 NET_WAIT="${PILNK_NET_WAIT:-90}"
 POLL="${PILNK_POLL_SLEEP:-5}"
 STATE="$R/var/lib/pilnk-firstboot"
+AIRSPY_CONF_URL="https://raw.githubusercontent.com/wiedehopf/airspy-conf/master/install.sh"
 LOG="$R/var/log/pilnk-firstboot.log"
 
 mkdir -p "$STATE" "$(dirname "$LOG")"
@@ -139,11 +141,54 @@ stage_update() {
   return 0
 }
 
+# readsb holds a dongle but names none: no --device pin and not --net-only
+readsb_unpinned() {
+  local f="$R/etc/default/readsb"
+  ! grep -qE -- '--device[ =][0-9A-Za-z]+' "$f" 2>/dev/null && ! grep -q -- '--net-only' "$f" 2>/dev/null
+}
+
+# The Airspy branch of install.sh: wiedehopf's airspy-conf installs airspy_adsb
+# and turns readsb into a --net-only consumer of it. Needs the network, which
+# is why it runs here and not at build time.
+airspy_setup() {
+  local tmp rc
+  tmp=$(mktemp /tmp/pilnk-airspy-conf.XXXXXX) || { log "receiver: mktemp failed"; return 1; }
+  if ! curl -fsSL --retry 3 --retry-delay 2 --max-time 60 "$AIRSPY_CONF_URL" -o "$tmp" || [ ! -s "$tmp" ]; then
+    rm -f "$tmp"
+    log "receiver: could not download airspy-conf; will retry at next boot"
+    return 1
+  fi
+  bash "$tmp"; rc=$?
+  rm -f "$tmp"
+  if [ "$rc" -ne 0 ]; then
+    log "receiver: airspy-conf failed (rc=$rc); will retry at next boot"
+    return 1
+  fi
+  log "receiver: airspy_adsb installed (readsb is now net-only)"
+}
+
 stage_receiver() {
-  local rc
-  PILNK_ROOT="$R" PILNK_HW_NONINTERACTIVE=1 bash "$PILNK_DIR/pilnk-hw-setup.sh" --apply; rc=$?
+  local rc out home
+  # After a first boot with no receiver, pilnk is enabled and its Wants= starts
+  # readsb unpinned at every boot: it grabs whichever dongle enumerates first.
+  # Stop it so hw-setup sees every dongle free and pins (readsb is not ordered
+  # after us, so a plain stop cannot deadlock).
+  if systemctl is-active --quiet readsb && readsb_unpinned; then
+    log "receiver: readsb is running unpinned; stopping it before hw-setup"
+    systemctl stop readsb || log "receiver: stopping readsb failed"
+  fi
+  # The unit has no User=, so systemd sets no HOME; pilnkradio-install.sh (run
+  # by hw-setup for the VHF dongle) needs it, and reads \$HOME/pilnk.
+  home=$(dirname "$PILNK_DIR")
+  # shellcheck disable=SC2097,SC2098  # PILNK_DIR value is identical; the prefix exports it to the child
+  out=$(HOME="$home" PILNKRADIO_STATE_FILE="$PILNK_DIR/audio_build_state.json" PILNK_DIR="$PILNK_DIR" \
+        PILNK_ROOT="$R" PILNK_HW_NONINTERACTIVE=1 bash "$PILNK_DIR/pilnk-hw-setup.sh" --apply); rc=$?
+  printf '%s\n' "$out"
   case "$rc" in
-    0) rm -f "$PILNK_DIR/.no_receiver"
+    0) if printf '%s\n' "$out" | grep -qx 'DECODER_MODE=airspy'; then
+         airspy_setup || return 1
+       fi
+       rm -f "$PILNK_DIR/.no_receiver"
        # the image ships readsb disabled: an unpinned readsb would grab a dongle
        systemctl enable readsb || { log "receiver: enable readsb failed; will retry at next boot"; return 1; }
        # NO_BLOCK: self-heal must not start units that are After=pilnk.service

@@ -237,3 +237,74 @@ ok "unit: WantedBy"               'grep -qx "WantedBy=multi-user.target" "$UNIT"
 ok "unit: TimeoutStartSec=infinity" 'grep -qx "TimeoutStartSec=infinity" "$UNIT"'
 ok "unit: ExecStart installed path" 'grep -qx "ExecStart=/usr/local/sbin/pilnk-firstboot" "$UNIT"'
 ok "script: bash -n"              'bash -n "$FB"'
+
+# ======== final review fixes ========
+# I1: the unit has no User=, so systemd gives first boot no $HOME; hw-setup's
+# radio config (pilnkradio-install.sh, set -u) needs HOME and its state file
+setup; fakescript "$PD/pilnk-hw-setup.sh" 'echo "hw-home HOME=${HOME:-UNSET} STATE=${PILNKRADIO_STATE_FILE:-UNSET}" >> "$CALLS"; exit 0'
+: > "$CALLS"; env -u HOME PILNK_ROOT="$ROOT" PILNK_DIR="$PD" PILNK_NET_WAIT=1 PILNK_POLL_SLEEP=0 bash "$FB"; RC=$?
+ok "I1: HOME unset -> hw-setup gets HOME = the clone's parent (/home/pilnk)" 'called "hw-home HOME=$ROOT/home/pilnk "'
+ok "I1: hw-setup gets PILNKRADIO_STATE_FILE in the clone" 'called "STATE=$PD/audio_build_state.json"'
+
+# the real hw-setup + a radio installer that, like pilnkradio-install.sh, dies on an unset HOME
+real_hw() {
+  cp "$REPO/pilnk-hw-setup.sh" "$PD/pilnk-hw-setup.sh"
+  printf '#!/bin/bash\nset -u\necho "radio HOME=$HOME STATE=$PILNKRADIO_STATE_FILE SERIAL=$PILNKRADIO_SERIAL" >> "$CALLS"\n' > "$PD/pilnkradio-install.sh"
+  # systemctl: is-active reads $ROOT/.active; stop removes the unit from it
+  fakebin systemctl 'case "$1" in is-active) grep -qx "${@: -1}" "$ROOT/.active" 2>/dev/null;;
+    stop) sed -i "/^${2%.service}\$/d" "$ROOT/.active";; *) true;; esac'
+  mkdir -p "$S"; touch "$S/identity" "$S/network" "$S/update"
+}
+setup; real_hw; rtl 00000002 00001090
+echo 'RECEIVER_OPTIONS="--device-type rtlsdr --gain auto --ppm 0"' > "$ROOT/etc/default/readsb"
+: > "$CALLS"; env -u HOME PILNK_ROOT="$ROOT" PILNK_DIR="$PD" PILNK_NET_WAIT=1 PILNK_POLL_SLEEP=0 bash "$FB"; RC=$?
+ok "I1: real hw-setup, HOME unset -> radio config runs with HOME=/home/pilnk and the VHF serial" \
+   'called "radio HOME=$ROOT/home/pilnk STATE=$PD/audio_build_state.json SERIAL=00000002"'
+ok "I1: receiver bound" '[ -e "$S/receiver" ]'
+
+# I2: no receiver at first boot -> pilnk enabled; dongles plugged in; at the next
+# boot pilnk's Wants= has started an unpinned readsb that already writes aircraft.json
+setup; real_hw
+echo 'RECEIVER_OPTIONS="--device-type rtlsdr --gain auto --ppm 0"' > "$ROOT/etc/default/readsb"
+run                                            # boot 1: no dongle
+ok "I2 boot 1: no receiver -> .no_receiver, pilnk started" '[ -e "$PD/.no_receiver" ] && [ -e "$S/started" ] && [ ! -e "$S/receiver" ]'
+rtl 00000003 00001090; active readsb; aircraft readsb   # boot 2: dongles in, readsb up unpinned
+run
+ok "I2 boot 2: unpinned running readsb is stopped before hw-setup" 'before "systemctl stop readsb" "systemctl enable readsb"'
+ok "I2 boot 2: ADS-B pinned to the 1090 dongle (not consumed)" \
+   'grep -q -- "--device 00001090 --device-type rtlsdr" "$ROOT/etc/default/readsb" && [ "$(grep -oE -- "--device[ =]" "$ROOT/etc/default/readsb" | wc -l)" -eq 1 ]'
+ok "I2 boot 2: VHF is the other dongle, never the ADS-B one" \
+   'python3 -c "import json,sys; d=json.load(open(sys.argv[1])); assert d[\"vhf_serial\"]==\"00000003\"" "$PD/config.json" && called "SERIAL=00000003"'
+ok "I2 boot 2: receiver marker, flag removed" '[ -e "$S/receiver" ] && [ ! -e "$PD/.no_receiver" ]'
+# a readsb that is already pinned (or net-only) is left alone
+setup; real_hw; rtl 00001090; active readsb; aircraft readsb
+echo 'RECEIVER_OPTIONS="--device 00001090 --gain auto"' > "$ROOT/etc/default/readsb"; run
+ok "I2: a pinned running readsb is not stopped" '! called "systemctl stop readsb"'
+setup; real_hw; airspy; active readsb; aircraft readsb
+echo 'RECEIVER_OPTIONS="--net-only"' > "$ROOT/etc/default/readsb"
+fakebin curl 'for a; do o=$a; done; printf "#!/bin/bash\nexit 0\n" > "$o"'; run
+ok "I2: a net-only readsb (holds no dongle) is not stopped" '! called "systemctl stop readsb"'
+
+# I3: Airspy -> airspy-conf runs in the receiver stage (after the network stage)
+airspy_case() { # curl-body airspy-conf-rc
+  setup; real_hw; airspy
+  echo 'RECEIVER_OPTIONS="--device-type rtlsdr --gain auto --ppm 0"' > "$ROOT/etc/default/readsb"
+  fakebin curl "for a; do o=\$a; done; $1"
+  AIRSPY_RC=$2
+  printf '#!/bin/bash\necho "airspy-conf ran" >> "$CALLS"\nexit %s\n' "$AIRSPY_RC" > "$ROOT/.airspy-conf"
+  run
+}
+airspy_case 'cp "$ROOT/.airspy-conf" "$o"' 0
+ok "I3: Airspy -> airspy-conf downloaded (curl --retry) and run, then readsb enabled" \
+   'called "airspy-conf ran" && grep -qE "^curl .*--retry .*airspy-conf" "$CALLS" && before "airspy-conf ran" "systemctl enable readsb"'
+ok "I3: Airspy bound -> receiver marker, no banner" '[ -e "$S/receiver" ] && [ ! -e "$PD/.no_receiver" ]'
+airspy_case 'cp "$ROOT/.airspy-conf" "$o"' 1
+ok "I3: airspy-conf fails -> no receiver marker, readsb not enabled, logged, retried next boot" \
+   '[ ! -e "$S/receiver" ] && ! called "systemctl enable readsb" && grep -q "airspy-conf failed" "$LOG" && [ -e "$S/started" ]'
+airspy_case 'exit 22' 0
+ok "I3: airspy-conf download fails -> nothing run, no marker, logged" \
+   '! called "airspy-conf ran" && [ ! -e "$S/receiver" ] && grep -q "could not download airspy-conf" "$LOG"'
+airspy_case ': > "$o"' 0
+ok "I3: empty download -> nothing run, no marker" '! called "airspy-conf ran" && [ ! -e "$S/receiver" ]'
+setup; real_hw; rtl 00001090; echo 'RECEIVER_OPTIONS=""' > "$ROOT/etc/default/readsb"; fakebin curl 'exit 1'; run
+ok "I3: RTL only -> airspy-conf never fetched" '! grep -q "^curl " "$CALLS" && [ -e "$S/receiver" ]'
