@@ -251,7 +251,10 @@ real_hw() {
   cp "$REPO/pilnk-hw-setup.sh" "$PD/pilnk-hw-setup.sh"
   printf '#!/bin/bash\nset -u\necho "radio HOME=$HOME STATE=$PILNKRADIO_STATE_FILE SERIAL=$PILNKRADIO_SERIAL" >> "$CALLS"\n' > "$PD/pilnkradio-install.sh"
   # systemctl: is-active reads $ROOT/.active; stop removes the unit from it
-  fakebin systemctl 'case "$1" in is-active) grep -qx "${@: -1}" "$ROOT/.active" 2>/dev/null;;
+  # is-enabled reads $ROOT/.enabled, which enable appends to (the image ships readsb disabled)
+  fakebin systemctl 'case "$1" in is-active) if grep -qx "${@: -1}" "$ROOT/.active" 2>/dev/null; then echo active; else echo inactive; exit 3; fi;;
+    is-enabled) grep -qx "${@: -1}" "$ROOT/.enabled" 2>/dev/null;;
+    enable) echo "${@: -1}" >> "$ROOT/.enabled";;
     stop) sed -i "/^${2%.service}\$/d" "$ROOT/.active";; *) true;; esac'
   mkdir -p "$S"; touch "$S/identity" "$S/network" "$S/update"
 }
@@ -291,16 +294,22 @@ airspy_case() { # curl-body airspy-conf-rc
   echo 'RECEIVER_OPTIONS="--device-type rtlsdr --gain auto --ppm 0"' > "$ROOT/etc/default/readsb"
   fakebin curl "for a; do o=\$a; done; $1"
   AIRSPY_RC=$2
-  printf '#!/bin/bash\necho "airspy-conf ran" >> "$CALLS"\nexit %s\n' "$AIRSPY_RC" > "$ROOT/.airspy-conf"
+  # like wiedehopf's: readsb is only made --net-only when it is enabled
+  printf '#!/bin/bash\necho "airspy-conf ran" >> "$CALLS"\nif systemctl is-enabled readsb; then echo %s > "$PILNK_ROOT/etc/default/readsb"; fi\nexit %s\n' "'RECEIVER_OPTIONS=\"--net-only\"'" "$AIRSPY_RC" > "$ROOT/.airspy-conf"
   run
 }
 airspy_case 'cp "$ROOT/.airspy-conf" "$o"' 0
 ok "I3: Airspy -> airspy-conf downloaded (curl --retry) and run, then readsb enabled" \
-   'called "airspy-conf ran" && grep -qE "^curl .*--retry .*airspy-conf" "$CALLS" && before "airspy-conf ran" "systemctl enable readsb"'
+   'called "airspy-conf ran" && grep -qE "^curl .*--retry .*airspy-conf" "$CALLS" && before "systemctl enable readsb" "airspy-conf ran"'
+ok "N2: airspy-conf made readsb net-only; logged only after the check" 'grep -q -- "--net-only" "$ROOT/etc/default/readsb" && grep -q "readsb is now net-only" "$LOG"'
 ok "I3: Airspy bound -> receiver marker, no banner" '[ -e "$S/receiver" ] && [ ! -e "$PD/.no_receiver" ]'
 airspy_case 'cp "$ROOT/.airspy-conf" "$o"' 1
-ok "I3: airspy-conf fails -> no receiver marker, readsb not enabled, logged, retried next boot" \
-   '[ ! -e "$S/receiver" ] && ! called "systemctl enable readsb" && grep -q "airspy-conf failed" "$LOG" && [ -e "$S/started" ]'
+ok "I3: airspy-conf fails -> no receiver marker, logged, retried next boot" \
+   '[ ! -e "$S/receiver" ] && grep -q "airspy-conf failed" "$LOG" && [ -e "$S/started" ]'
+# N2: airspy-conf exits 0 but readsb is still not net-only -> logged, retried next boot
+airspy_case 'printf "#!/bin/bash\nexit 0\n" > "$o"' 0
+ok "N2: readsb not net-only after airspy-conf -> no marker, logged, no false claim" \
+   '[ ! -e "$S/receiver" ] && grep -q "not net-only" "$LOG" && ! grep -q "readsb is now net-only" "$LOG" && [ -e "$S/started" ]'
 airspy_case 'exit 22' 0
 ok "I3: airspy-conf download fails -> nothing run, no marker, logged" \
    '! called "airspy-conf ran" && [ ! -e "$S/receiver" ] && grep -q "could not download airspy-conf" "$LOG"'
@@ -308,3 +317,15 @@ airspy_case ': > "$o"' 0
 ok "I3: empty download -> nothing run, no marker" '! called "airspy-conf ran" && [ ! -e "$S/receiver" ]'
 setup; real_hw; rtl 00001090; echo 'RECEIVER_OPTIONS=""' > "$ROOT/etc/default/readsb"; fakebin curl 'exit 1'; run
 ok "I3: RTL only -> airspy-conf never fetched" '! grep -q "^curl " "$CALLS" && [ -e "$S/receiver" ]'
+
+# N3: an unpinned readsb waiting for its auto-restart (activating) is stopped too
+setup; real_hw; rtl 00000004 00001090
+echo 'RECEIVER_OPTIONS="--device-type rtlsdr --gain auto --ppm 0"' > "$ROOT/etc/default/readsb"
+fakebin systemctl 'case "$1" in is-active) if [ "${2:-}" = "--quiet" ]; then exit 3; else echo activating; exit 3; fi;; is-enabled) exit 1;; *) true;; esac'
+run
+ok "N3: unpinned readsb in 'activating' is stopped before hw-setup" 'before "systemctl stop readsb" "systemctl enable readsb"'
+setup; real_hw; rtl 00001090
+echo 'RECEIVER_OPTIONS="--device 00001090 --gain auto"' > "$ROOT/etc/default/readsb"
+fakebin systemctl 'case "$1" in is-active) echo activating; exit 3;; *) true;; esac'
+run
+ok "N3: a pinned readsb in 'activating' is not stopped" '! called "systemctl stop readsb"'

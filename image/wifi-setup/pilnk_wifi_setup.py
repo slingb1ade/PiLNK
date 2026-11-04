@@ -11,6 +11,7 @@ can rejoin a saved Wi-Fi network (a router that came back after a power cut).
 Rules: nmcli/raspi-config get argv lists (never a shell); the Wi-Fi password is
 never logged, printed or put in an error message; saved connections are never read.
 """
+import errno
 import html, http.server, os, re, shutil, signal, subprocess, sys, threading, time
 import urllib.parse
 
@@ -18,6 +19,7 @@ HOST, PORT = "10.42.0.1", 80
 HOTSPOT_CON = "PiLNK-Hotspot"
 IDLE_RESTART = 1800          # seconds with no POST before trying saved Wi-Fi, then the hotspot again
 AUTOCONNECT_WAIT = 45        # seconds for NetworkManager to bring up a saved Wi-Fi network
+HOTSPOT_RETRIES = 3   # times to bring the hotspot up again when the bind says the address is not there
 BIND_BACKOFF = (2, 4, 8, 15, 30, 60)   # seconds between tries when port 80 is busy
 JOIN_WAIT = 30               # seconds to wait for a join
 BOOT_WAIT = 90               # seconds to wait for a network at boot
@@ -408,10 +410,24 @@ def main(run=subprocess.run, sleep=time.sleep, now=time.monotonic,
         start_hotspot(state, run)
         lighttpd_stopped = free_port80(run)
         tries = 0
+        hotspot_tries = 0
         while server is None:
             try:
                 server = make_server(state, host, port)
             except OSError as e:
+                if e.errno != errno.EADDRINUSE:
+                    # e.g. EADDRNOTAVAIL: the AP (10.42.0.1) never came up. Waiting
+                    # cannot fix that: raise the hotspot again, a few times, then
+                    # re-raise so Restart=on-failure starts over.
+                    hotspot_tries += 1
+                    if hotspot_tries > HOTSPOT_RETRIES:
+                        raise
+                    wait = BIND_BACKOFF[min(hotspot_tries - 1, len(BIND_BACKOFF) - 1)]
+                    _log("cannot serve the setup page on %s:%s (%s); bringing the hotspot up again in %ss"
+                         % (host, port, e.strerror or e, wait))
+                    sleep(wait)
+                    start_hotspot(state, run)
+                    continue
                 # loud, and the hotspot stays up: no tear-down / restart loop
                 wait = BIND_BACKOFF[min(tries, len(BIND_BACKOFF) - 1)]
                 _log("cannot serve the setup page on %s:%s (%s); retrying in %ss"

@@ -164,6 +164,11 @@ airspy_setup() {
     log "receiver: airspy-conf failed (rc=$rc); will retry at next boot"
     return 1
   fi
+  # airspy-conf only reconfigures readsb when it is enabled; trust the file, not the rc
+  if ! grep -q -- '--net-only' "$R/etc/default/readsb" 2>/dev/null; then
+    log "receiver: airspy-conf ran but readsb is not net-only; will retry at next boot"
+    return 1
+  fi
   log "receiver: airspy_adsb installed (readsb is now net-only)"
 }
 
@@ -173,7 +178,8 @@ stage_receiver() {
   # readsb unpinned at every boot: it grabs whichever dongle enumerates first.
   # Stop it so hw-setup sees every dongle free and pins (readsb is not ordered
   # after us, so a plain stop cannot deadlock).
-  if systemctl is-active --quiet readsb && readsb_unpinned; then
+  # (also while it waits out its auto-restart: that state is "activating")
+  if readsb_unpinned && case "$(systemctl is-active readsb 2>/dev/null)" in active|activating|reloading) true;; *) false;; esac; then
     log "receiver: readsb is running unpinned; stopping it before hw-setup"
     systemctl stop readsb || log "receiver: stopping readsb failed"
   fi
@@ -185,12 +191,13 @@ stage_receiver() {
         PILNK_ROOT="$R" PILNK_HW_NONINTERACTIVE=1 bash "$PILNK_DIR/pilnk-hw-setup.sh" --apply); rc=$?
   printf '%s\n' "$out"
   case "$rc" in
-    0) if printf '%s\n' "$out" | grep -qx 'DECODER_MODE=airspy'; then
+    0) # the image ships readsb disabled: an unpinned readsb would grab a dongle.
+       # Enable first: airspy-conf only makes readsb --net-only when it is enabled.
+       systemctl enable readsb || { log "receiver: enable readsb failed; will retry at next boot"; return 1; }
+       if printf '%s\n' "$out" | grep -qx 'DECODER_MODE=airspy'; then
          airspy_setup || return 1
        fi
        rm -f "$PILNK_DIR/.no_receiver"
-       # the image ships readsb disabled: an unpinned readsb would grab a dongle
-       systemctl enable readsb || { log "receiver: enable readsb failed; will retry at next boot"; return 1; }
        # NO_BLOCK: self-heal must not start units that are After=pilnk.service
        # shellcheck disable=SC2097,SC2098  # value is identical; the prefix exports it to the child
        PILNK_DIR="$PILNK_DIR" PILNK_SELFHEAL_NO_BLOCK=1 PILNK_SELFHEAL_LOG="$LOG" bash "$PILNK_DIR/bootstrap-selfheal.sh" || log "receiver: self-heal failed"

@@ -508,6 +508,41 @@ ok("C2: retried with backoff (growing waits) until it binds, then exit 0",
 ok("C2: the hotspot is not torn down while retrying the bind (one add, one up)",
    len([c for c in f.calls if c[:3] == ["nmcli", "connection", "add"]]) == 1 and st["up"] == 1)
 
+# N1: a bind that fails for any reason but "port busy" (EADDRNOTAVAIL: the AP never came up)
+# is not waited out; the hotspot is brought up again, bounded, then the error is re-raised
+import errno as _errno
+def notavail_flow(fail_times):
+    e = Env(); st = {"up": 0, "served": False, "sleeps": [], "binds": 0}
+    def rules(a):
+        if a[:3] == ["nmcli", "connection", "up"]: st["up"] += 1
+        if a[0] == "nmcli" and "list" in a: return cp(a, 0, b"")
+        if a[0] == "nm-online": return cp(a, 0 if st["served"] else 1)
+        if a[0] == "ip": return cp(a, 0, b"default via 1.1.1.1 dev eth0\n" if st["served"] else b"")
+    f = Fake(rules)
+    real = W.make_server
+    def flaky(state, host=W.HOST, port=W.PORT):
+        st["binds"] += 1
+        if st["binds"] <= fail_times:
+            raise OSError(_errno.EADDRNOTAVAIL, "Cannot assign requested address")
+        return real(state, host, port)
+    def on_ready(srv, state): st["served"] = True
+    def sleep(x):
+        st["sleeps"].append(x); assert len(st["sleeps"]) < 200
+    W.make_server = flaky
+    old_err = sys.stderr; sys.stderr = io.StringIO()
+    try:
+        try: rc = W.main(**e.kw(f, port=0, on_ready=on_ready, sleep=sleep))
+        except OSError as ex: rc = ex
+    finally:
+        sys.stderr = old_err; W.make_server = real
+    return rc, st
+rc, st = notavail_flow(1)
+ok("N1: EADDRNOTAVAIL -> start_hotspot is attempted again (second 'connection up'), then serves, exit 0",
+   rc == 0 and st["up"] == 2 and st["served"])
+rc, st = notavail_flow(99)
+ok("N1: EADDRNOTAVAIL that never clears -> bounded retries, then the error is re-raised (Restart=on-failure)",
+   isinstance(rc, OSError) and rc.errno == _errno.EADDRNOTAVAIL and 2 <= st["up"] <= 5 and st["binds"] == st["up"])
+
 # I4: every idle cycle (30 min, no POST) tries the saved Wi-Fi before raising the hotspot again
 def idle_flow(connect_ok):
     e = Env(); clock = {"t": 0.0}; st = {"adds": 0, "joined": False}
