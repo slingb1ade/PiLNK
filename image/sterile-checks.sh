@@ -110,6 +110,7 @@ sterile_check() {
   _sc_dir_empty logs "$R/var/lib/wtmpdb"
   _sc_absent tailscale-state "$R/var/lib/tailscale"
   _sc_absent zero-file "$R/.pilnk-zero" "$B/.pilnk-zero"
+  _sc_absent sterilise-failed "$B/pilnk-sterilise-failed.txt"
   for home in "$R"/home/* "$R/root"; do
     [ -d "$home" ] || continue
     for h in .bash_history .zsh_history .sh_history .python_history .lesshst .viminfo .node_repl_history; do
@@ -127,6 +128,7 @@ sterile_check() {
     _sc_fail config-json "$D/config.json"
   fi
   _sc_absent secret-key "$D/.secret_key"
+  _sc_absent git-reflog "$D/.git/logs"
   _sc_absent update-log "$D/update.log"
   _sc_absent ota-state "$D/ota_state.json"
   _sc_absent no-receiver "$D/.no_receiver"

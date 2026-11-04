@@ -16,9 +16,12 @@
 # Raw search: ONE pass over the whole image (deleted data in free space, the
 # ext4 journal and directory slack included). Only secret-SHAPED data counts:
 #   privkey    an OpenSSH key body, or a PEM private-key header followed by a
-#              base64 body (a bare header, as in the ssh binaries, is not a hit)
-#   psk        a NetworkManager / wpa_supplicant psk= line holding an actual
-#              passphrase or 64-hex key (not psk=%s, psk=$VAR, ...)
+#              base64 body, also after Proc-Type/DEK-Info headers (an encrypted
+#              key); a bare header, as in the ssh binaries, is not a hit
+#   psk        a NetworkManager / wpa_supplicant psk= line (at a line start)
+#              whose value, quotes aside, is 8-63 printable characters (spaces,
+#              $, %, " included) or a 64-hex key -- but not a format string
+#              (psk=%s, psk=%.*s ...) or a shell variable (psk=$VAR, ${VAR})
 #   tailscale  a Tailscale auth/client/API key
 #   deny#N     line N (counting non-blank, non-# lines) of the denylist,
 #              case-insensitive
@@ -32,8 +35,14 @@
 # A denylist hit inside a git-tracked file of the PiLNK clone
 # (/home/pilnk/pilnk) that is unchanged from HEAD is code already public on
 # GitHub: it prints "SKIP deny#N in <path> (public PiLNK file)" and does not
-# fail. Every other hit fails. A path that itself contains a denylist word is
-# printed as "<path withheld: contains deny#N>".
+# fail. Only a regular file counts (not a directory: its blocks hold file
+# names, deleted ones included), and only a hit inside the file's size (not in
+# the slack after it). "Unchanged" means the blob in HEAD equals
+# git hash-object --no-filters of the file; git never runs with the image's
+# hooks, filters or system/global config. Every other hit fails. A path that
+# itself contains a denylist word is printed as "<path withheld: contains
+# deny#N>", and a path under the NetworkManager system-connections, netplan or
+# wpa_supplicant directories as just that directory (file names can be SSIDs).
 #
 # Output NEVER holds the matched bytes, the bytes around them, or a denylist
 # entry: the search prints "<id> <offset>" pairs only, and its patterns are
@@ -93,7 +102,7 @@ trap 'exit 130' INT TERM
 
 # -- denylist (copied into a mode-600 file, never echoed) ---------------------
 [ -z "$DENY" ] && [ -r "${PILNK_DENYLIST:-$HOME/.config/pilnk/denylist}" ] && DENY="${PILNK_DENYLIST:-$HOME/.config/pilnk/denylist}"
-NDENY=0; DENYW=()
+NDENY=0; DENYW=(); DENYLEN=()
 : > "$TMPD/deny"
 if [ -n "$DENY" ]; then
   [ -r "$DENY" ] || { echo "ERROR: denylist file not readable" >&2; exit 2; }
@@ -103,6 +112,7 @@ if [ -n "$DENY" ]; then
     NDENY=$((NDENY + 1))
     printf '%s\n' "$line" >> "$TMPD/deny"
     DENYW+=("$(LC_ALL=C; printf '%s' "${line,,}")")
+    DENYLEN+=("$(printf '%s' "$line" | wc -c)")
   done < "$DENY"
 fi
 
@@ -146,7 +156,8 @@ BEGIN {
   B64RE = "^[A-Za-z0-9+/]+=*$"
   B64RUN = "^[A-Za-z0-9+/]+"
   HDRRE = "^[A-Za-z][A-Za-z-]*: "
-  VARRE = "^\"[$][{]?[A-Za-z_][A-Za-z0-9_]*[}]?\"$"
+  VARRE = "^[$]([{][^}]*[}]|[A-Za-z_][A-Za-z0-9_]*)$"
+  FMTRE = "[%][-+ #0]*([0-9]+|[*])?([.]([0-9]+|[*])?)?(hh|h|ll|l|j|z|t|L)?[sdiuxX]"
   nd = 0
   if (denyfile != "") {
     while ((getline w < denyfile) > 0) { nd++; deny[nd] = tolower(w) }
@@ -183,7 +194,7 @@ function hit(id, o) {
     rs = RSTART; rl = RLENGTH; o = base + rs - 1
     after = substr(rest, rs + rl)
     t = after; sub(/[ \t]+$/, "", t)
-    if (t == "") { pemoff = o; pemleft = 3; pemhdr = 0 }
+    if (t == "") { pemoff = o; pemleft = 4; pemhdr = 0 }
     else if (substr(t, 1, 2) == "\\n" && match(substr(t, 3), B64RUN) && RLENGTH >= 40) hit("privkey", o)
     base += rs + rl - 1; rest = after
   }
@@ -197,10 +208,9 @@ function hit(id, o) {
     if (a < base) a = base
     if (substr(rest, a - base + 1, o - a) ~ /^[ \t]*$/) {
       v = substr(rest, i + 4); sub(/[ \t]+$/, "", v); n = length(v)
-      if (substr(v, 1, 1) == "\"") {
-        if (n >= 10 && n <= 65 && substr(v, n, 1) == "\"" && v ~ /^"[ -~]*"$/ && v !~ VARRE && v != "\"%s\"") hit("psk", o)
-      } else if (n == 64 && v ~ /^[0-9a-fA-F]+$/) hit("psk", o)
-      else if (n >= 8 && n <= 63 && v !~ /[ \t"%$]/) hit("psk", o)
+      if (n >= 2 && v ~ /^".*"$/) { v = substr(v, 2, n - 2); n -= 2 }   # wpa_supplicant quotes it
+      if (n == 64 && v ~ /^[0-9a-fA-F]+$/) hit("psk", o)
+      else if (n >= 8 && n <= 63 && v ~ /^[ -~]+$/ && v !~ VARRE && v !~ FMTRE) hit("psk", o)
     }
     base += i; rest = substr(rest, i + 1)
   }
@@ -256,7 +266,29 @@ if [ -n "$FS_DEV" ] && [ -s "$TMPD/hits" ]; then
   fi
 fi
 
-declare -A INO_OF PATH_OF USED
+declare -A INO_OF PATH_OF USED ITYPE ISIZE IEXT
+# debugfs "stat" -> "<inode> <type> <size> <logical>,<phys-first>,<phys-last> ..."
+# Only plain "(L[-L]):P[-P]" extents are kept: index blocks (IND, ETB...) and
+# uninitialised extents are not file data, so a hit there never maps into it.
+# shellcheck disable=SC2016 # awk program, not shell
+STAT_AWK='
+function flush() { if (ino != "") print ino, type, (size == "" ? "x" : size), ext; ino = "" }
+/^Inode: [0-9]+ +Type: / { flush(); ino = $2; type = $4; size = ""; ext = ""; inext = 0; next }
+ino == "" { next }
+/^User: / { if (match($0, /Size: [0-9]+/)) size = substr($0, RSTART + 6, RLENGTH - 6); next }
+/^(EXTENTS|BLOCKS):/ { inext = 1; next }
+inext && /^(TOTAL:|debugfs:)/ { inext = 0; next }
+inext {
+  line = $0
+  while (match(line, /\([0-9]+(-[0-9]+)?\):[0-9]+(-[0-9]+)?/)) {
+    tok = substr(line, RSTART + 1, RLENGTH - 1); line = substr(line, RSTART + RLENGTH)
+    sub(/[)]/, "", tok); split(tok, h, ":"); split(h[1], l, "-"); np = split(h[2], q, "-")
+    if (np == 1) q[2] = q[1]
+    ext = ext " " l[1] "," q[1] "," q[2]
+  }
+}
+END { flush() }
+'
 dbg_batch() { # verb file-of-args -> debugfs output (read-only)
   awk -v v="$1" '{ a = a " " $0 } NR % 200 == 0 { print v a; a = "" } END { if (a != "") print v a }' "$2" > "$TMPD/cmd"
   debugfs -f "$TMPD/cmd" "$FS_DEV" 2>/dev/null
@@ -276,6 +308,14 @@ if [ -n "$FS_DEV" ]; then
         [ -n "${PATH_OF[$i]:-}" ] || PATH_OF[$i]="/${p#"${p%%[!/]*}"}"
       done < <(dbg_batch ncheck "$TMPD/inodes")
     fi
+    # type, size and logical->physical block map of the clone's inodes (for SKIP)
+    for i in "${!PATH_OF[@]}"; do [[ "${PATH_OF[$i]}" == "$CLONE/"* ]] && echo "stat <$i>"; done > "$TMPD/cmd"
+    if [ -s "$TMPD/cmd" ]; then
+      while read -r i t z ext; do
+        [[ "$i" =~ ^[0-9]+$ && "$z" =~ ^[0-9]+$ ]] || continue
+        ITYPE[$i]=$t; ISIZE[$i]=$z; IEXT[$i]=$ext
+      done < <(DEBUGFS_PAGER=__none__ PAGER=__none__ debugfs -f "$TMPD/cmd" "$FS_DEV" 2>/dev/null | awk "$STAT_AWK")
+    fi
     for b in "${!INO_OF[@]}"; do [ "${INO_OF[$b]}" = 0 ] && echo "$b"; done > "$TMPD/free"
     while IFS= read -r ln; do
       if [[ "$ln" =~ ^Block\ ([0-9]+)\ marked\ in\ use ]]; then USED[${BASH_REMATCH[1]}]=1
@@ -285,15 +325,15 @@ if [ -n "$FS_DEV" ]; then
   fi
 fi
 
-# where OFFSET lies: sets LOC_PATH (a file or directory) or LOC_KIND
+# where OFFSET lies: sets LOC_PATH (a file or directory) + LOC_INO, or LOC_KIND
 locate() {
   local off="$1" b i
-  LOC_PATH=""; LOC_KIND=""
+  LOC_PATH=""; LOC_KIND=""; LOC_INO=""
   if [ -n "$FS_DEV" ] && [ "$off" -ge "$FS_START" ] && [ "$off" -lt "$FS_END" ]; then
     b=$(((off - FS_START) / BS)); i="${INO_OF[$b]:-}"
     if [ -z "$i" ]; then LOC_KIND="fs metadata"
     elif [ "$i" -ge 11 ]; then
-      if [ -n "${PATH_OF[$i]:-}" ]; then LOC_PATH="${PATH_OF[$i]}"; else LOC_KIND="unlinked file"; fi
+      if [ -n "${PATH_OF[$i]:-}" ]; then LOC_PATH="${PATH_OF[$i]}"; LOC_INO=$i; else LOC_KIND="unlinked file"; fi
     elif [ "$i" -gt 0 ]; then LOC_KIND="fs metadata"            # journal, resize inode...
     elif [ "${USED[$b]:-1}" = 0 ]; then LOC_KIND="free space"
     else LOC_KIND="fs metadata"; fi                             # bitmaps, inode tables, superblocks
@@ -302,9 +342,14 @@ locate() {
   fi
 }
 
-# a path is printed only if it holds no denylist word (names can be SSIDs)
+# a path is printed only if it holds no denylist word (names can be SSIDs);
+# in the saved-network directories only the directory is named
+NETDIRS=(/etc/NetworkManager/system-connections /run/NetworkManager/system-connections /etc/netplan /etc/wpa_supplicant)
 show_path() {
-  local p="${1//[[:cntrl:]]/?}" low k
+  local p="${1//[[:cntrl:]]/?}" low k d
+  for d in "${NETDIRS[@]}"; do
+    if [[ "$p" == "$d/"* ]]; then p="$d"; break; fi
+  done
   low="$(LC_ALL=C; printf '%s' "${p,,}")"
   for k in "${!DENYW[@]}"; do
     if [[ "$low" == *"${DENYW[$k]}"* ]]; then printf '<path withheld: contains deny#%d>' "$((k + 1))"; return; fi
@@ -312,22 +357,48 @@ show_path() {
   printf '%s' "$p"
 }
 
-# git-tracked in the PiLNK clone and unchanged from HEAD (git run read-only)
+# the LEN bytes at OFFSET lie inside the data of inode INO (below its i_size)
+in_file() { # offset inode len
+  local b w e l1 p1 p2 fo
+  b=$((($1 - FS_START) / BS)); w=$((($1 - FS_START) % BS))
+  for e in ${IEXT[$2]:-}; do
+    IFS=, read -r l1 p1 p2 <<< "$e"
+    if [ "$b" -ge "$p1" ] && [ "$b" -le "$p2" ]; then
+      fo=$(((l1 + b - p1) * BS + w))
+      [ $((fo + $3)) -le "${ISIZE[$2]:-0}" ]; return
+    fi
+  done
+  return 1
+}
+
+# the file at PATH is in HEAD of the PiLNK clone, byte for byte. git reads the
+# image's repo but never runs its hooks, filters, fsmonitor or diff drivers,
+# and never reads the system or global (laptop) config.
 declare -A PUBLIC
-is_public() {
-  local p="$1" rel repo="$ROOTDIR$CLONE"
-  [[ "$p" == "$CLONE/"* ]] || return 1
+same_as_head() { # path
+  local p="$1" rel repo="$ROOTDIR$CLONE" head blob
   [ -n "${PUBLIC[$p]:-}" ] && { [ "${PUBLIC[$p]}" = 1 ]; return; }
   rel="${p#"$CLONE/"}"; PUBLIC[$p]=0
-  if [ -e "$repo/.git" ] && command -v git >/dev/null 2>&1; then
-    local g=(env GIT_OPTIONAL_LOCKS=0 git --no-optional-locks --literal-pathspecs -c 'safe.directory=*'
-             -c core.fsmonitor= -c core.hooksPath=/dev/null -C "$repo")
-    if "${g[@]}" ls-files --error-unmatch -- "$rel" >/dev/null 2>&1 \
-       && "${g[@]}" diff --quiet --no-ext-diff --no-textconv HEAD -- "$rel" >/dev/null 2>&1; then
-      PUBLIC[$p]=1
-    fi
+  if [ -d "$repo/.git" ] && [ ! -L "$repo/.git" ] && command -v git >/dev/null 2>&1; then
+    local g=(env -u GIT_WORK_TREE -u GIT_INDEX_FILE -u GIT_OBJECT_DIRECTORY -u GIT_ALTERNATE_OBJECT_DIRECTORIES
+             GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null GIT_OPTIONAL_LOCKS=0
+             git --git-dir="$repo/.git" -c 'safe.directory=*' -c core.hooksPath=/dev/null -c core.fsmonitor=)
+    head=$("${g[@]}" rev-parse --verify -q "HEAD:$rel" 2>/dev/null) || head=""
+    blob=$("${g[@]}" hash-object --no-filters -- "$ROOTDIR$p" 2>/dev/null) || blob=""
+    if [ -n "$head" ] && [ "$head" = "$blob" ]; then PUBLIC[$p]=1; fi
   fi
   [ "${PUBLIC[$p]}" = 1 ]
+}
+
+# a denylist hit of LEN bytes at OFFSET is public PiLNK code: inside a regular
+# file (not a directory or symlink) of the clone, within its size, and that
+# file is unchanged from HEAD
+is_public() { # path inode offset len
+  local p="$1" f="$ROOTDIR$1"
+  [[ "$p" == "$CLONE/"* ]] && [ -n "$2" ] || return 1
+  [ -f "$f" ] && [ ! -L "$f" ] && [ "${ITYPE[$2]:-}" = regular ] || return 1
+  in_file "$3" "$2" "$4" || return 1
+  same_as_head "$p"
 }
 
 declare -A NHIT SEEN
@@ -337,7 +408,7 @@ while read -r id off; do
   fi
   locate "$off"
   if [ -n "$LOC_PATH" ]; then
-    if [[ "$id" == deny#* ]] && is_public "$LOC_PATH"; then
+    if [[ "$id" == deny#* ]] && is_public "$LOC_PATH" "$LOC_INO" "$off" "${DENYLEN[${id#deny#} - 1]:-0}"; then
       line="SKIP $id in $(show_path "$LOC_PATH") (public PiLNK file)"
       [ -n "${SEEN[$line]:-}" ] || { SEEN[$line]=1; echo "$line"; }
       continue

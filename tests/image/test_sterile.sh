@@ -103,6 +103,8 @@ netplan-cloud-init|mkdir -p "$R/etc/netplan"; : > "$R/etc/netplan/50-cloud-init.
 readsb-enabled|mkdir -p "$R/etc/systemd/system/default.target.wants"; ln -sfn /lib/systemd/system/readsb.service "$R/etc/systemd/system/default.target.wants/readsb.service"
 pilnk-enabled|mkdir -p "$R/etc/systemd/system/graphical.target.wants"; ln -sfn /etc/systemd/system/pilnk.service "$R/etc/systemd/system/graphical.target.wants/pilnk.service"
 ssh-enabled|mkdir -p "$R/etc/systemd/system/default.target.wants"; ln -sfn /lib/systemd/system/ssh.service "$R/etc/systemd/system/default.target.wants/ssh.service"
+sterilise-failed|echo 'FAIL x: /y' > "$B/pilnk-sterilise-failed.txt"
+git-reflog|mkdir -p "$D/.git/logs"; echo x > "$D/.git/logs/HEAD"
 EOF
 )
 
@@ -168,15 +170,30 @@ GR="$ROOT/gitroot"; make_clean "$GR"; GD="$GR/home/pilnk/pilnk"
   && printf 'junk.cache\nconfig.json\n__ignored_dir/\n' > .gitignore && echo code > app.py \
   && git add .gitignore app.py && git commit -qm init \
   && echo x > junk.cache && mkdir -p __ignored_dir && echo x > __ignored_dir/f ) >/dev/null 2>&1
-PILNK_ROOT="$GR" PILNK_BOOT="$GR/boot/firmware" bash "$STER" --no-poweroff --no-zero >/dev/null 2>&1
+ok "fixture: the clone has a reflog before sterilise" "[ -s '$GD/.git/logs/HEAD' ]"
+PILNK_ROOT="$GR" PILNK_BOOT="$GR/boot/firmware" bash "$STER" --no-poweroff --no-zero >/dev/null 2>&1; RCG=$?
 ok "git clean removes ignored runtime files, keeps tracked ones" \
    "[ ! -e '$GD/junk.cache' ] && [ ! -e '$GD/__ignored_dir' ] && [ -f '$GD/app.py' ] && cmp -s '$GD/config.json' '$TEMPLATE'"
+ok "reflog: expired and .git/logs removed; the clone still works; check passes" \
+   "[ '$RCG' = 0 ] && [ ! -e '$GD/.git/logs' ] && git -C '$GD' rev-parse -q --verify HEAD >/dev/null && [ -z \"\$(git -C '$GD' reflog 2>/dev/null)\" ]"
 
-# poweroff only on a clean self-check
+# a fake root never powers off, even without --no-poweroff
 P1="$ROOT/p1"; make_clean "$P1"; apply_trace "$P1" 'echo x > "$R/home/pilnk/.bash_history"'
 : > "$CALLS"
-PILNK_ROOT="$P1" PILNK_BOOT="$P1/boot/firmware" bash "$STER" --no-zero >/dev/null 2>&1; RCP=$?
-ok "clean self-check -> exit 0 and exactly one poweroff" "[ '$RCP' = 0 ] && [ \"\$(grep -c '^poweroff' '$CALLS')\" = 1 ]"
+OUTP1=$(PILNK_ROOT="$P1" PILNK_BOOT="$P1/boot/firmware" bash "$STER" --no-zero 2>&1); RCP=$?
+ok "fake root: clean self-check -> exit 0, no poweroff without --no-poweroff, says why" \
+   "[ '$RCP' = 0 ] && ! grep -q '^poweroff' '$CALLS' && grep -qi 'fake root' <<< \"\$OUTP1\""
+
+# the real-root ending, run sourced against a fake tree: poweroff only on a clean check
+: > "$CALLS"
+( source "$STER"; R="$P1"; B="$P1/boot/firmware"; REAL=1; POWEROFF=1; STAGE2=1; ERRORS=0; final_check ) >/dev/null 2>&1; RCF=$?
+ok "real root, clean final check -> exit 0 and exactly one poweroff" "[ '$RCF' = 0 ] && [ \"\$(grep -c '^poweroff' '$CALLS')\" = 1 ]"
+P1F="$ROOT/p1f"; make_clean "$P1F"; : > "$P1F/etc/ssh/ssh_host_ed25519_key"
+: > "$CALLS"
+( source "$STER"; R="$P1F"; B="$P1F/boot/firmware"; REAL=1; POWEROFF=1; STAGE2=0; ERRORS=0; final_check ) >/dev/null 2>&1; RCF=$?
+ok "real root, failed final check -> exit 1, no poweroff" "[ '$RCF' = 1 ] && ! grep -q '^poweroff' '$CALLS'"
+( source "$STER"; R="$P1"; B="$P1/boot/firmware"; REAL=1; POWEROFF=1; STAGE2=0; ERRORS=1; final_check ) >/dev/null 2>&1; RCF=$?
+ok "real root, clean check but a counted error -> exit 1, no poweroff" "[ '$RCF' = 1 ] && ! grep -q '^poweroff' '$CALLS'"
 
 if [ "$(id -u)" != 0 ]; then
   P2="$ROOT/p2"; make_clean "$P2"
@@ -193,7 +210,22 @@ fi
 Z="$ROOT/z"; make_clean "$Z"
 OUTZ=$(PILNK_ZERO_LIMIT_MB=2 PILNK_ROOT="$Z" PILNK_BOOT="$Z/boot/firmware" bash "$STER" --no-poweroff 2>&1); RCZ=$?
 ok "zero-fill: exits 0, reports it, leaves no fill file" \
-   "[ '$RCZ' = 0 ] && grep -qi 'zero' <<< \"\$OUTZ\" && [ -z \"\$(find '$Z' -name '.pilnk-zero*')\" ]"
+   "[ '$RCZ' = 0 ] && grep -qi 'zero-filled' <<< \"\$OUTZ\" && [ -z \"\$(find '$Z' -name '.pilnk-zero*')\" ]"
+# on a fake root, zero-fill without PILNK_ZERO_LIMIT_MB would fill the host disk
+ZN="$ROOT/zn"; make_clean "$ZN"; ZNB="$ROOT/znbin"; mkdir -p "$ZNB"
+printf '#!/bin/bash\necho "dd $*" >> "$CALLS"\nexit 1\n' > "$ZNB/dd"; chmod +x "$ZNB/dd"
+: > "$CALLS"
+OUTZN=$(PATH="$ZNB:$PATH" PILNK_ROOT="$ZN" bash "$STER" --no-poweroff 2>&1); RCZN=$?
+ok "fake root, no PILNK_ZERO_LIMIT_MB -> zero-fill skipped with a note, dd never runs" \
+   "[ '$RCZN' = 0 ] && ! grep -q '^dd ' '$CALLS' && grep -q 'PILNK_ZERO_LIMIT_MB' <<< \"\$OUTZN\" && ! grep -q 'zero-filled' <<< \"\$OUTZN\""
+
+# PILNK_ROOT spellings of "/" are the live system (unit test of the normaliser)
+for r in / // /. //. /./ /tmp/.. /tmp/../.; do
+  got=$( source "$STER"; norm_root "$r" 2>/dev/null ); rcn=$?
+  ok "norm_root '$r' -> '' (the live system)" "[ '$rcn' = 0 ] && [ -z '$got' ]"
+done
+got=$( source "$STER"; norm_root "$ZN/./" 2>/dev/null )
+ok "norm_root keeps a real fake root (trailing /. and / dropped)" "[ '$got' = '$ZN' ]"
 
 # ---- 3. re-add each trace alone -------------------------------------------
 
@@ -260,17 +292,42 @@ key_mgmt()   { printf 'key_mgmt=WPA-PSK\0wpa-%s\0WPA%s-PSK\0' 'psk' '2'; }
 pem_header() { printf '%s OPENSSH %s\0%s RSA %s\0\0usage: %%s\0' "$BEG" "$PKEY" "$BEG" "$PKEY"; }
 ts_word()    { printf 'Tail%s\0/var/lib/tail%s/tail%sd.state\0' scale scale scale; }
 psk_var()    { printf '%s=$PSK\n%s=short\n  %s="${1}"\n' "$PK" "$PK" "$PK"; }
+# N3: an encrypted traditional PEM key (two header lines and a blank line before the body)
+pem_enc() {
+  printf '%s RSA %s\nProc-Type: 4,ENCRYPTED\nDEK-Info: AES-128-CBC,%s\n\n' "$BEG" "$PKEY" \
+    "$(head -c 16 /dev/urandom | od -An -tx1 | tr -d ' \n' | tr a-f A-F)"
+  head -c 600 /dev/urandom | base64 -w 64; printf '%s RSA %s\n' "$FIN" "$PKEY"
+}
+pem_enc_gen() { # the same, made by openssl
+  openssl genrsa -aes128 -traditional -passout pass:testpass 1024 2>/dev/null
+}
+# N4: NetworkManager keyfile values are written unquoted, any printable character
+nm_space()   { printf '[wifi-security]\n%s=%s\n' "$PK" 'my home wifi 2024'; }
+nm_dollar()  { printf '[wifi-security]\n%s=%s\n' "$PK" 'pa$$word1234'; }
+nm_percent() { printf '[wifi-security]\n%s=%s\n' "$PK" '50%offwifi!'; }
+nm_quote()   { printf '[wifi-security]\n%s=%s\n' "$PK" 'abc"defghij'; }
+# ...but long format strings and shell variables are not passphrases
+psk_fmt_long() { printf '%s=%s\0%s=%s\0%s=%s\n' "$PK" '%s key_mgmt=%s' "$PK" '%.*s (len %d)' "$PK" '"%s" proto=%s'; }
+psk_var_long() { printf '%s=%s\n%s=%s\n%s=%s\n%s=%s\n' "$PK" '${WIFI_PASSWORD}' "$PK" '$WIFI_PASSWORD' \
+                   "$PK" '"${WIFI_PASSWORD}"' "$PK" '"$WIFI_PASSWORD"'; }
 
 SHAPES="privkey|ossh_key
 privkey|pem_rsa
 privkey|pem_json
+privkey|pem_enc
 psk|nm_keyfile
 psk|wpa_block
 psk|hex_psk
+psk|nm_space
+psk|nm_dollar
+psk|nm_percent
+psk|nm_quote
 tailscale|ts_key"
 command -v ssh-keygen >/dev/null 2>&1 && SHAPES="privkey|ossh_gen
 $SHAPES"
-LEGIT="fmt_psk key_mgmt pem_header ts_word psk_var"
+pem_enc_gen | grep -q '^DEK-Info' && SHAPES="privkey|pem_enc_gen
+$SHAPES"
+LEGIT="fmt_psk key_mgmt pem_header ts_word psk_var psk_fmt_long psk_var_long"
 
 # one fake bin dir per awk, so both mawk (Pi OS, Debian default) and gawk run
 AWKS=""
@@ -286,7 +343,7 @@ for A in $AWKS; do
     f="$ROOT/shape.raw"; { head -c 100 /dev/zero; "$gen"; head -c 100 /dev/zero; } > "$f"
     out=$(PATH="$AP" bash "$VER" --root "$V" --boot "$V/boot/firmware" --raw "$f" 2>&1); rc=$?
     ok "raw ($A): $gen is caught as $id with an offset, exit 1" "[ '$rc' = 1 ] && grep -qE '^HIT $id at offset [0-9]+\$' <<< \"\$out\""
-    ok "raw ($A): $gen output holds no secret bytes" "! grep -qiE 'hunter2|BEGIN|$TSK|kQ7x|b3Bl|MII' <<< \"\$out\""
+    ok "raw ($A): $gen output holds no secret bytes" "! grep -qiE 'hunter2|BEGIN|$TSK|kQ7x|b3Bl|MII|Proc-Type|DEK-Info|home wifi|word1234|offwifi|defghij' <<< \"\$out\""
   done <<< "$SHAPES"
   for gen in $LEGIT; do
     f="$ROOT/legit.raw"; { head -c 100 /dev/zero; "$gen"; head -c 100 /dev/zero; } > "$f"
@@ -337,16 +394,31 @@ if command -v mkfs.ext4 >/dev/null && command -v debugfs >/dev/null; then
   printf '%s=hunter2hunter2\n' "$PK" > "$T/srv/live.conf"
   printf '%s=hunter2hunter2\n' "$PK" > "$T/srv/$WORD-notes.conf"
   GD="$T/home/pilnk/pilnk"
+  FMARK="$ROOT/filter-ran"
   ( cd "$GD" && git init -q . && git config user.email t@t && git config user.name t \
     && printf 'by %s\n' "$WORD" > public.txt && echo clean > changed.txt \
-    && git add public.txt changed.txt && git commit -qm init \
-    && printf 'now %s\n' "$WORD" > changed.txt && printf 'mine %s\n' "$WORD" > extra.txt ) >/dev/null 2>&1
+    && mkdir -p static lib && echo app > static/app.js && echo lib > lib/a.py && echo hello > tail.txt \
+    && git add public.txt changed.txt static/app.js lib/a.py tail.txt && git commit -qm init \
+    && printf 'now %s\n' "$WORD" > changed.txt && printf 'mine %s\n' "$WORD" > extra.txt \
+    && echo plain > "static/$WORD-notes.txt" \
+    && git config filter.x.clean "touch '$FMARK'; cat" && echo '* filter=x' > .git/info/attributes \
+    && touch -d '2001-01-01' public.txt && rm -rf .git/logs ) >/dev/null 2>&1
   IDX0=$(sha1sum < "$GD/.git/index")
   IMG2="$ROOT/map.img"; truncate -s 64M "$IMG2"
   mkfs.ext4 -q -F -L "$WORD" -d "$T" "$IMG2" >/dev/null 2>&1
+  # N1: a deleted file whose name holds a denylist word, in a tracked directory
+  echo plain > "$ROOT/plain.txt"
+  printf 'cd /home/pilnk/pilnk/lib\nwrite %s %s-old.txt\nrm %s-old.txt\n' "$ROOT/plain.txt" "$WORD" "$WORD" > "$ROOT/rm.cmd"
+  debugfs -w -f "$ROOT/rm.cmd" "$IMG2" >/dev/null 2>&1
   printf '%s="hunter2hunter2"\n' "$PK" > "$ROOT/gone.txt"
   debugfs -w -R "write $ROOT/gone.txt gone.txt" "$IMG2" >/dev/null 2>&1
   debugfs -w -R "rm gone.txt" "$IMG2" >/dev/null 2>&1
+  ok "fixture: the deleted name is gone from lib/ but its bytes are still there" \
+     "! debugfs -R 'ls /home/pilnk/pilnk/lib' '$IMG2' 2>/dev/null | grep -q '$WORD' && grep -qa '$WORD-old' '$IMG2'"
+  # N1: a denylist word in the tail slack (past i_size) of a public tracked file
+  BSZ=$(debugfs -R stats "$IMG2" 2>/dev/null | awk -F: '/^Block size:/ { gsub(/[ \t]/, "", $2); print $2 }')
+  TBLK=$(debugfs -R 'bmap /home/pilnk/pilnk/tail.txt 0' "$IMG2" 2>/dev/null)
+  printf '%s' "$WORD" | dd of="$IMG2" bs=1 seek=$((TBLK * BSZ + 100)) conv=notrunc status=none
   OUTM=$(bash "$VER" --root "$T" --boot "$T/boot/firmware" --raw "$IMG2" --ext4 --denylist "$DENY" 2>&1); RCM=$?
   ok "map: exit 1" "[ '$RCM' = 1 ]"
   ok "map: live file -> HIT psk at its path" "grep -qx 'HIT psk at /srv/live.conf' <<< \"\$OUTM\""
@@ -358,6 +430,13 @@ if command -v mkfs.ext4 >/dev/null && command -v debugfs >/dev/null; then
      "grep -qx 'SKIP deny#1 in /home/pilnk/pilnk/public.txt (public PiLNK file)' <<< \"\$OUTM\" && ! grep -q '^HIT deny#1 at /home/pilnk/pilnk/public.txt' <<< \"\$OUTM\""
   ok "map: tracked file modified since HEAD -> HIT" "grep -qx 'HIT deny#1 at /home/pilnk/pilnk/changed.txt' <<< \"\$OUTM\""
   ok "map: untracked file in the clone -> HIT" "grep -qx 'HIT deny#1 at /home/pilnk/pilnk/extra.txt' <<< \"\$OUTM\""
+  ok "N1: untracked file with a denylisted name in a tracked dir -> HIT at the dir, not SKIP" \
+     "grep -qx 'HIT deny#1 at /home/pilnk/pilnk/static' <<< \"\$OUTM\" && ! grep -q '^SKIP deny#1 in /home/pilnk/pilnk/static' <<< \"\$OUTM\""
+  ok "N1: a denylisted name deleted from a tracked dir (dir slack) -> HIT at the dir, not SKIP" \
+     "grep -qx 'HIT deny#1 at /home/pilnk/pilnk/lib' <<< \"\$OUTM\" && ! grep -q '^SKIP deny#1 in /home/pilnk/pilnk/lib' <<< \"\$OUTM\""
+  ok "N1: a denylist word in a public file's tail slack (past i_size) -> HIT, not SKIP" \
+     "grep -qx 'HIT deny#1 at /home/pilnk/pilnk/tail.txt' <<< \"\$OUTM\" && ! grep -q '^SKIP deny#1 in /home/pilnk/pilnk/tail.txt' <<< \"\$OUTM\""
+  ok "N5: the image repo's clean filter never runs" "[ ! -e '$FMARK' ]"
   ok "map: output never contains the password or a denylist word" "! grep -qiE 'hunter2|$WORD|second-name' <<< \"\$OUTM\""
   ok "map: every line has a known shape" \
      "! grep -vE '^(HIT [a-z#0-9-]+ at (/[^ ]*|offset [0-9]+ \\((free space|fs metadata|unlinked file)\\)|<path withheld: contains deny#[0-9]+>)|SKIP deny#[0-9]+ in /.* \\(public PiLNK file\\)|NOT CLEAN: .*)\$' <<< \"\$OUTM\""
@@ -366,11 +445,23 @@ if command -v mkfs.ext4 >/dev/null && command -v debugfs >/dev/null; then
   # only SKIPs left -> clean
   T2="$ROOT/ext4tree2"; make_clean "$T2"; GD2="$T2/home/pilnk/pilnk"
   ( cd "$GD2" && git init -q . && git config user.email t@t && git config user.name t \
-    && printf 'by %s\n' "$WORD" > public.txt && git add public.txt && git commit -qm init ) >/dev/null 2>&1
+    && printf 'by %s\n' "$WORD" > public.txt && git add public.txt && git commit -qm init && rm -rf .git/logs ) >/dev/null 2>&1
   IMG3="$ROOT/map3.img"; truncate -s 64M "$IMG3"; mkfs.ext4 -q -F -d "$T2" "$IMG3" >/dev/null 2>&1
   OUTS3=$(bash "$VER" --root "$T2" --boot "$T2/boot/firmware" --raw "$IMG3" --ext4 --denylist "$DENY" 2>&1); RCS3=$?
   ok "map: an image whose only denylist hits are public PiLNK files is clean" \
      "[ '$RCS3' = 0 ] && grep -q '^SKIP deny#1 in /home/pilnk/pilnk/public.txt' <<< \"\$OUTS3\" && grep -q '^CLEAN' <<< \"\$OUTS3\""
+
+  # N6: a hit in a saved-network file names its directory, never the file
+  T4="$ROOT/ext4tree4"; make_clean "$T4"; mkdir -p "$T4/etc/wpa_supplicant"
+  printf '%s=hunter2hunter2\n' "$PK" > "$T4/etc/NetworkManager/system-connections/HomeNetAlpha.nmconnection"
+  printf '%s=hunter2hunter2\n' "$PK" > "$T4/etc/netplan/90-NM-HomeNetBeta.yaml"
+  printf '%s=hunter2hunter2\n' "$PK" > "$T4/etc/wpa_supplicant/HomeNetGamma.conf"
+  IMG4="$ROOT/map4.img"; truncate -s 64M "$IMG4"; mkfs.ext4 -q -F -d "$T4" "$IMG4" >/dev/null 2>&1
+  OUT4=$(bash "$VER" --root "$T4" --boot "$T4/boot/firmware" --raw "$IMG4" --ext4 2>&1)
+  ok "N6: NM / netplan / wpa_supplicant hits name the directory only" \
+     "grep -qx 'HIT psk at /etc/NetworkManager/system-connections' <<< \"\$OUT4\" && grep -qx 'HIT psk at /etc/netplan' <<< \"\$OUT4\" && grep -qx 'HIT psk at /etc/wpa_supplicant' <<< \"\$OUT4\""
+  ok "N6: no HIT line names a file in those directories" \
+     "! grep -E '^HIT .*(HomeNet|at /etc/(NetworkManager/system-connections|netplan|wpa_supplicant)/)' <<< \"\$OUT4\" | grep -q ."
 else
   echo "FAIL: ext4 tools (mkfs.ext4, debugfs) missing; raw-image tests cannot run"
 fi
@@ -405,7 +496,7 @@ ok "I2: a fake-root run never names the host's /boot/firmware" \
 # M2: an interrupted zero-fill removes its fill file; the check catches a leftover
 ZI="$ROOT/zi"; make_clean "$ZI"; DDB="$ROOT/ddbin"; mkdir -p "$DDB"
 printf '#!/bin/bash\nfor a; do case $a in of=*) : > "${a#of=}";; esac; done\nkill -TERM $PPID\nsleep 1\n' > "$DDB/dd"; chmod +x "$DDB/dd"
-PATH="$DDB:$PATH" PILNK_ROOT="$ZI" bash "$STER" --no-poweroff >/dev/null 2>&1; RCZI=$?
+PATH="$DDB:$PATH" PILNK_ZERO_LIMIT_MB=1 PILNK_ROOT="$ZI" bash "$STER" --no-poweroff >/dev/null 2>&1; RCZI=$?
 ok "M2: zero-fill killed by TERM -> non-zero exit, no fill file left" \
    "[ '$RCZI' != 0 ] && [ -z \"\$(find '$ZI' -name '.pilnk-zero*')\" ]"
 
@@ -474,10 +565,51 @@ rm -f "$BIN/sleep"
 first() { grep -n "$1" "$CALLS" | head -1 | cut -d: -f1; }
 ok "I3: stage 2 -> exit 0, histories and login records written at logout are gone" \
    "[ '$RC2' = 0 ] && [ ! -e '$S2R/home/pilnk/.bash_history' ] && [ -z \"\$(ls -A '$S2R/var/lib/wtmpdb' 2>/dev/null)\" ]"
-ok "I3: stage 2 calls terminate-user pilnk before powering off" \
-   "[ -n \"\$(first '^loginctl terminate-user pilnk')\" ] && [ \"\$(first '^loginctl terminate-user pilnk')\" -lt \"\$(first '^poweroff')\" ]"
+lineno() { grep -n -- "$2" <<< "$1" | head -1 | cut -d: -f1; }
+ok "I3: stage 2 calls terminate-user pilnk, and never powers off a fake root" \
+   "grep -q '^loginctl terminate-user pilnk' '$CALLS' && ! grep -q '^poweroff' '$CALLS'"
+ok "N2: stage 2 order: pre-check, then close sessions, then the final self-check" \
+   "a=\$(lineno \"\$OUT2\" '^== pre-check'); b=\$(lineno \"\$OUT2\" '^closed: login sessions'); c=\$(lineno \"\$OUT2\" '^== self-check'); [ -n \"\$a\" ] && [ -n \"\$b\" ] && [ -n \"\$c\" ] && [ \"\$a\" -lt \"\$b\" ] && [ \"\$b\" -lt \"\$c\" ]"
 ok "I3: stage 2 waits until loginctl reports no sessions" "[ \"\$(grep -c '^loginctl show-user pilnk' '$CALLS')\" -ge 3 ]"
 ok "I3: stage 2 never re-launches itself" "! grep -q '^systemd-run' '$CALLS'"
 : > "$CALLS"
 PILNK_ROOT="$S2R" bash "$STER" --no-poweroff --no-zero >/dev/null 2>&1
 ok "I3: a plain fake-root run stays in-process (no systemd-run, no loginctl)" "! grep -qE '^(systemd-run|loginctl) ' '$CALLS'"
+
+# N2a: the pre-check fails -> exit non-zero, sessions NOT ended, says where the log is
+fakebin loginctl 'true'
+S2A="$ROOT/s2a"; make_clean "$S2A"; printf '[Unit]\n' > "$S2A/etc/systemd/system/sshd.service"
+: > "$CALLS"
+OUT2A=$(PILNK_CONSOLE="$ROOT/console-a" PILNK_ROOT="$S2A" bash "$STER" --no-zero --stage2 2>&1); RC2A=$?
+ok "N2a: failed pre-check -> exit 1, no terminate-user, no poweroff" \
+   "[ '$RC2A' = 1 ] && ! grep -q '^loginctl terminate-user' '$CALLS' && ! grep -q '^poweroff' '$CALLS'"
+ok "N2a: says what failed and where the log is" \
+   "grep -q '^FAIL ssh-enabled: /etc/systemd/system/sshd.service' <<< \"\$OUT2A\" && grep -qF '/run/pilnk-sterilise.log' <<< \"\$OUT2A\""
+ok "N2a: no failure report written (the session is still open)" \
+   "[ ! -e '$S2A/boot/firmware/pilnk-sterilise-failed.txt' ] && [ ! -e '$ROOT/console-a' ]"
+
+# N2b: the final check fails after the sessions ended -> console + boot-partition report
+fakebin loginctl 'case "$1" in terminate-user) mkdir -p "$FAKE_R/etc/ssh"; echo hunter2 > "$FAKE_R/etc/ssh/ssh_host_ed25519_key" ;; esac; true'
+S2B="$ROOT/s2b"; make_clean "$S2B"
+: > "$CALLS"
+OUT2B=$(FAKE_R="$S2B" PILNK_CONSOLE="$ROOT/console-b" PILNK_ROOT="$S2B" bash "$STER" --no-zero --stage2 2>&1); RC2B=$?
+FAILF="$S2B/boot/firmware/pilnk-sterilise-failed.txt"
+ok "N2b: failed final check -> exit 1, sessions were ended, no poweroff" \
+   "[ '$RC2B' = 1 ] && grep -q '^loginctl terminate-user pilnk' '$CALLS' && ! grep -q '^poweroff' '$CALLS'"
+ok "N2b: the result lines go to the console" "grep -qx 'FAIL ssh-hostkeys: /etc/ssh/ssh_host_ed25519_key' '$ROOT/console-b' 2>/dev/null"
+ok "N2b: ... and to \$B/pilnk-sterilise-failed.txt" "grep -qx 'FAIL ssh-hostkeys: /etc/ssh/ssh_host_ed25519_key' '$FAILF' 2>/dev/null"
+ok "N2b: neither holds file contents" "[ -f '$FAILF' ] && [ -f '$ROOT/console-b' ] && ! grep -q hunter2 '$ROOT/console-b' '$FAILF'"
+run_check "$S2B"
+ok "N2c: the failure report itself fails the check (sterilise-failed)" \
+   "grep -qx 'FAIL sterilise-failed: /boot/firmware/pilnk-sterilise-failed.txt' <<< \"\$OUT\""
+rm -f "$S2B/etc/ssh/ssh_host_ed25519_key"; fakebin loginctl 'true'
+PILNK_ROOT="$S2B" bash "$STER" --no-zero --stage2 >/dev/null 2>&1; RC2C=$?
+ok "N2c: the next run removes an old failure report and passes" "[ '$RC2C' = 0 ] && [ ! -e '$FAILF' ]"
+
+# PILNK_ROOT=/. is the live system: stage 1 (every mutating command a fake, id says 0)
+if [ "$(id -u)" != 0 ]; then
+  : > "$CALLS"
+  OUTDOT=$(PILNK_ROOT=/. PATH="$S1B:$PATH" bash "$STER" --no-zero 2>&1); RCDOT=$?
+  ok "PILNK_ROOT=/. -> the live system: only systemd-run (stage 1)" \
+     "[ '$RCDOT' = 0 ] && grep -q '^systemd-run .*--stage2\$' '$CALLS' && [ \"\$(grep -vc '^systemd-run ' '$CALLS')\" = 0 ]"
+fi

@@ -11,18 +11,27 @@
 #
 # On the real system it does not run inside your login session: it re-starts
 # itself as the transient unit pilnk-sterilise.service (systemd-run) and returns
-# at once. The unit does the work, then closes every login session of pilnk
-# (your SSH session ends here), removes the shell histories those shells save
-# as they exit, runs the check and powers off. Its output goes to
-# /run/pilnk-sterilise.log (RAM only, gone at power-off).
+# at once. The unit does the work and runs the check once. If that finds a
+# problem it stops there: your SSH session stays open (SSH is only disabled for
+# new logins), nothing is powered off, and /run/pilnk-sterilise.log says what
+# failed. Otherwise it closes every login session of pilnk (your SSH session
+# ends here), removes the shell histories those shells save as they exit, runs
+# the check again and powers off. If that last check fails nobody can log in
+# any more, so the result (check ids and paths only) also goes to the screen
+# (/dev/console) and to pilnk-sterilise-failed.txt on the boot partition; the
+# Pi stays on. Its output goes to /run/pilnk-sterilise.log (RAM only).
 #
-# Env: PILNK_ROOT  test root (default "": the live system, needs root)
+# Env: PILNK_ROOT  test root (default "": the live system, needs root). "/",
+#                  "/." and other spellings of "/" mean the live system.
 #      PILNK_BOOT  boot partition (default $PILNK_ROOT/boot/firmware, or
 #                  /boot/firmware on the live system)
 #      PILNK_DIR   PiLNK checkout (default $PILNK_ROOT/home/pilnk/pilnk)
 #      PILNK_ZERO_LIMIT_MB  cap the zero file (tests only)
-# A test root never re-starts itself and never calls systemctl, loginctl,
-# passwd, cloud-init or journalctl. (--stage2 is internal: the detached run.)
+#      PILNK_CONSOLE  where a failed final check is shown (default /dev/console)
+# A test root never re-starts itself, never powers off (as --no-poweroff),
+# zero-fills only with PILNK_ZERO_LIMIT_MB set (unlimited it would fill the
+# host's disk), and never calls systemctl, loginctl, passwd, cloud-init or
+# journalctl. (--stage2 is internal: the detached run.)
 #
 # Saved Wi-Fi is deleted, never read: NetworkManager / netplan / wpa_supplicant
 # files are removed with find -delete and nothing opens them. This script prints
@@ -35,6 +44,22 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 . "$HERE/sterile-checks.sh"
 
 say() { printf '%s\n' "$*"; }
+
+LOG=/run/pilnk-sterilise.log
+FAILED_REPORT=pilnk-sterilise-failed.txt
+ERR_LINES=()      # "FAIL <id>: ..." lines counted in ERRORS, for the reports
+
+# PILNK_ROOT -> "" for the live system (any spelling of "/": "//", "/.",
+# "/tmp/..", a symlink to /), else the absolute, resolved fake root.
+norm_root() { # path
+  local r="$1"
+  if [ -n "$r" ]; then
+    r="$(realpath -m -- "$r" 2>/dev/null)" || return 1
+    [ -n "$r" ] || return 1
+    [ "$r" = / ] && r=""
+  fi
+  printf '%s' "$r"
+}
 
 # Delete everything inside DIR (keep DIR); nothing is read.
 wipe_dir() { [ -d "$1" ] && find "$1" -mindepth 1 -delete 2>/dev/null; return 0; }
@@ -110,7 +135,8 @@ remove_login_records() {
 cloud_init_step() {
   if [ "$REAL" = 1 ] && command -v cloud-init >/dev/null 2>&1; then
     if ! cloud-init clean --logs --seed >/dev/null 2>&1; then
-      say "FAIL cloud-init-clean: cloud-init clean --logs --seed failed"
+      ERR_LINES+=("FAIL cloud-init-clean: cloud-init clean --logs --seed failed")
+      say "${ERR_LINES[-1]}"
       ERRORS=$((ERRORS + 1))
     fi
   fi
@@ -159,6 +185,60 @@ zero_fill() { # dir
 }
 remove_zero_file() { if [ -n "$ZERO_FILE" ]; then rm -f "$ZERO_FILE"; fi; }
 
+# The rule checks plus the errors counted on the way: sets CHECK_OUT (the
+# check's FAIL lines) and CHECK_N, and prints the lines.
+collect_check() {
+  local n
+  CHECK_OUT=$(sterile_check "$R" "$B"); n=$?
+  CHECK_N=$((n + ${ERRORS:-0}))
+  if [ -n "$CHECK_OUT" ]; then say "$CHECK_OUT"; fi
+}
+
+# Detached run, before the login sessions are closed: on a problem stop here,
+# so AJ's SSH session (SSH is disabled for new logins only) can read the log.
+pre_check() {
+  say "== pre-check (before closing the login sessions)"
+  collect_check
+  if [ "$CHECK_N" -ne 0 ]; then
+    say "NOT STERILE: $CHECK_N problem(s) above. Login sessions left open, nothing powered off. Fix them and run pilnk-sterilise again. Log: $LOG"
+    exit 1
+  fi
+}
+
+# After the sessions are closed nobody can log in, so a failed final check is
+# also put where it can be read without one: the console, and a file on the
+# boot partition (read it on the laptop; the check id sterilise-failed stops
+# the card shipping with it). Check ids and paths only, as printed above.
+report_failure() {
+  local con="${PILNK_CONSOLE:-/dev/console}" f="$B/$FAILED_REPORT" text
+  text="pilnk-sterilise: NOT STERILE. The Pi stays on. Do not image this card or boot it again."
+  if [ "${#ERR_LINES[@]}" -gt 0 ]; then text+=$'\n'"$(printf '%s\n' "${ERR_LINES[@]}")"; fi
+  if [ -n "$CHECK_OUT" ]; then text+=$'\n'"$CHECK_OUT"; fi
+  text+=$'\n'"NOT STERILE: $CHECK_N problem(s). Full log: $LOG (RAM only)"
+  { printf '%s\n' "$text" > "$con"; } 2>/dev/null || say "WARNING: could not write to $con"
+  if { printf '%s\n' "$text" > "$f"; } 2>/dev/null; then sync; say "wrote: $f"
+  else say "WARNING: could not write $f"; fi
+}
+
+# Last step: the check, then power off only when it finds nothing.
+final_check() {
+  say "== self-check"
+  collect_check
+  if [ "$CHECK_N" -ne 0 ]; then
+    say "NOT STERILE: $CHECK_N problem(s) above. Not powering off."
+    if [ "$STAGE2" = 1 ]; then report_failure; fi
+    exit 1
+  fi
+  say "STERILE: 0 problems."
+  if [ "$POWEROFF" = 1 ]; then
+    say "powering off. Do not boot this card again before it is imaged."
+    poweroff
+  else
+    say "not powering off (--no-poweroff, or a fake root): leaving the system up."
+  fi
+  exit 0
+}
+
 # Real root, stage 1: start the detached unit and return.
 relaunch_detached() { # args...
   local self env=() v
@@ -167,15 +247,15 @@ relaunch_detached() { # args...
     if [ -n "${!v:-}" ]; then env+=("--setenv=$v=${!v}"); fi
   done
   if ! systemd-run --unit=pilnk-sterilise --collect --quiet \
-         --property=StandardOutput=truncate:/run/pilnk-sterilise.log --property=StandardError=inherit \
+         --property=StandardOutput=truncate:"$LOG" --property=StandardError=inherit \
          "${env[@]}" /bin/bash "$self" "$@" --stage2 >/dev/null 2>&1; then
     echo "pilnk-sterilise: could not start pilnk-sterilise.service (systemd-run failed); nothing was changed" >&2
     return 1
   fi
   if [ "$POWEROFF" = 1 ]; then
-    say "pilnk-sterilise: now running as pilnk-sterilise.service; your session will close in a minute or two and the Pi will power off when it is done (if the check finds a problem it stays on; log: /run/pilnk-sterilise.log)"
+    say "pilnk-sterilise: now running as pilnk-sterilise.service; your session will close in a minute or two and the Pi will power off when it is done (if your session is still open after a few minutes the check found a problem: read $LOG)"
   else
-    say "pilnk-sterilise: now running as pilnk-sterilise.service; your session will close in a minute or two and the Pi stays up (--no-poweroff; log: /run/pilnk-sterilise.log)"
+    say "pilnk-sterilise: now running as pilnk-sterilise.service; your session will close in a minute or two and the Pi stays up (--no-poweroff; if your session is still open after a few minutes the check found a problem: read $LOG)"
   fi
   return 0
 }
@@ -196,13 +276,17 @@ for a in "$@"; do
   esac
 done
 
-R="${PILNK_ROOT:-}"
-while [ "${R%/}" != "$R" ]; do R="${R%/}"; done      # "/" or "//" -> "" (the live system)
+if ! R="$(norm_root "${PILNK_ROOT:-}")"; then
+  echo "pilnk-sterilise: cannot resolve PILNK_ROOT" >&2
+  exit 2
+fi
 if [ -n "$R" ]; then B="${PILNK_BOOT:-$R/boot/firmware}"; else B="${PILNK_BOOT:-/boot/firmware}"; fi
 B="${B%/}"
 D="${PILNK_DIR:-$R/home/pilnk/pilnk}"
 REAL=0; [ -z "$R" ] && REAL=1
 ERRORS=0
+FAKE_NOPOWER=0
+if [ "$REAL" = 0 ] && [ "$POWEROFF" = 1 ]; then POWEROFF=0; FAKE_NOPOWER=1; fi
 
 if [ "$REAL" = 1 ] && [ "$(id -u)" != 0 ]; then
   echo "pilnk-sterilise: run as root (sudo)" >&2
@@ -220,7 +304,9 @@ trap 'exit 143' TERM
 [ "$STAGE2" = 1 ] && trap '' PIPE
 
 say "== sterilising ${R:-/} (boot $B)"
+[ "$FAKE_NOPOWER" = 1 ] && say "fake root: never powers off (as --no-poweroff)"
 remove_paths "leftover zero-fill files" "$R/.pilnk-zero" "$B/.pilnk-zero"
+remove_paths "previous failure report" "$B/$FAILED_REPORT"
 
 # -- Logins --------------------------------------------------------------
 remove_matching "SSH host keys" "$R/etc/ssh" -maxdepth 1 -name 'ssh_host_*'
@@ -272,10 +358,14 @@ wipe_counted "/tmp" "$R/tmp"
 wipe_counted "/var/tmp" "$R/var/tmp"
 
 # -- PiLNK ---------------------------------------------------------------
+# (the ceiling stops git from using a parent repo if $D/.git is broken)
 if [ -e "$D/.git" ] && command -v git >/dev/null 2>&1; then
-  git -c "safe.directory=$D" -C "$D" clean -ffdXq >/dev/null 2>&1 \
+  GIT_CEILING_DIRECTORIES="$(dirname "$D")" git -c "safe.directory=$D" -C "$D" clean -ffdXq >/dev/null 2>&1 \
     && say "removed: git-ignored runtime files (git clean -ffdX)"
+  # reflogs name who did what to the clone, and when
+  GIT_CEILING_DIRECTORIES="$(dirname "$D")" git -c "safe.directory=$D" -C "$D" reflog expire --expire=now --all >/dev/null 2>&1 || true
 fi
+remove_paths "git reflogs (.git/logs)" "$D/.git/logs"
 remove_paths "PiLNK secrets and runtime state" \
   "$D/.secret_key" "$D/update.log" "$D/ota_state.json" "$D/.no_receiver" "$D/config.json.installer"
 remove_matching "history day store" "$D" -maxdepth 1 -name 'history_day.json*'
@@ -317,8 +407,9 @@ fi
 wipe_logs
 remove_login_records
 
-# -- Detached run: close the login sessions, then remove what they wrote ---
+# -- Detached run: check, close the login sessions, remove what they wrote -
 if [ "$STAGE2" = 1 ]; then
+  pre_check
   end_sessions
   if [ "$REAL" = 1 ]; then
     # their stop actions write the shutdown record now, not after the check
@@ -331,27 +422,15 @@ if [ "$STAGE2" = 1 ]; then
 fi
 
 # -- Wipe free space -----------------------------------------------------
-if [ "$ZERO" = 1 ]; then
+if [ "$ZERO" = 0 ]; then
+  say "skipped: zero-fill (--no-zero)"
+elif [ "$REAL" = 0 ] && [ -z "${PILNK_ZERO_LIMIT_MB:-}" ]; then
+  say "skipped: zero-fill (a fake root needs PILNK_ZERO_LIMIT_MB; unlimited it would fill the host's disk)"
+else
   [ -d "$B" ] && zero_fill "$B"
   zero_fill "$R/"
-else
-  say "skipped: zero-fill (--no-zero)"
 fi
 sync
 
-# -- Self-check ----------------------------------------------------------
-say "== self-check"
-sterile_check "$R" "$B"
-N=$(( $? + ERRORS ))
-if [ "$N" -ne 0 ]; then
-  say "NOT STERILE: $N problem(s) above. Not powering off."
-  exit 1
-fi
-say "STERILE: 0 problems."
-if [ "$POWEROFF" = 1 ]; then
-  say "powering off. Do not boot this card again before it is imaged."
-  poweroff
-else
-  say "--no-poweroff: leaving the system up."
-fi
-exit 0
+# -- Self-check, then power off -------------------------------------------
+final_check
