@@ -132,9 +132,11 @@ printf "  After install, this node shows a short ${BOLD}pairing code${RESET}.\n"
 printf "  You'll claim it on pilnk.io (Profile) to link it to your account,\n"
 printf "  then set its location on the map there. Nothing to type here.\n"
 echo ""
-printf "  Ready to install? [Y/n] " > /dev/tty
-read -r yn < /dev/tty
-[[ "$yn" =~ ^[Nn]$ ]] && echo "Cancelled." && exit 0
+if [ "${PILNK_IMAGE:-}" != 1 ]; then   # image build: unattended, never asks
+  printf "  Ready to install? [Y/n] " > /dev/tty
+  read -r yn < /dev/tty
+  [[ "$yn" =~ ^[Nn]$ ]] && echo "Cancelled." && exit 0
+fi
 echo ""
 
 # ── System update ──────────────────────────────────────────
@@ -182,6 +184,16 @@ ok "DVB driver stack blacklisted (prevents dongle conflicts, incl. dual-dongle n
 # interactive installer and the unattended first-boot image share ONE copy of
 # the rules. Sourced here, it only defines hw_* functions; prompts stay
 # interactive (PILNK_HW_NONINTERACTIVE is forced off).
+if [ "${PILNK_IMAGE:-}" = 1 ]; then
+  # Image build (PILNK_IMAGE=1): no hardware stage. The build Pi has no dongles
+  # and PiLNK must never bind or run here; first boot binds the user's hardware.
+  # Install readsb (unpinned) and take the dashboard port from the template.
+  DECODER_MODE=rtlsdr
+  ADSB_SERIAL=""; VHF_SERIAL=""; SVC_AFTER="readsb.service"
+  IMAGE_TEMPLATE_REL="image/config.template.json"
+  AIRCRAFT_JSON_PATH="/run/readsb/aircraft.json"
+  info "Image mode: hardware stage skipped (first boot binds the receivers)"
+else
 PILNK_HW_NONINTERACTIVE=""
 HW_SETUP=""
 for _c in "${BASH_SOURCE[0]:+$(dirname "${BASH_SOURCE[0]}")/pilnk-hw-setup.sh}" "$HOME/pilnk/pilnk-hw-setup.sh"; do
@@ -198,6 +210,7 @@ fi
 # shellcheck source=pilnk-hw-setup.sh
 . "$HW_SETUP"
 hw_decide
+fi  # PILNK_IMAGE
 
 # ── Install readsb (wiedehopf) — ONLY when WE provide the decoder ──
 if [ "$DECODER_MODE" = "airspy" ] || [ "$DECODER_MODE" = "rtlsdr" ]; then
@@ -212,6 +225,12 @@ if [ "$DECODER_MODE" = "airspy" ] || [ "$DECODER_MODE" = "rtlsdr" ]; then
       exit 1
     }
     ok "readsb installed"
+  fi
+  if [ "${PILNK_IMAGE:-}" = 1 ]; then
+    # Ships disabled: an enabled, unpinned readsb would grab a dongle at first
+    # boot before first boot has bound the hardware.
+    sudo systemctl disable --now readsb 2>/dev/null || true
+    ok "readsb installed disabled (first boot binds the dongle)"
   fi
 fi
 
@@ -238,8 +257,10 @@ if [ "$DECODER_MODE" = "airspy" ]; then
   fi
 
 elif [ "$DECODER_MODE" = "rtlsdr" ]; then
-  step "PIN RTL-SDR DONGLE"
-  hw_pin_readsb
+  if [ "${PILNK_IMAGE:-}" != 1 ]; then
+    step "PIN RTL-SDR DONGLE"
+    hw_pin_readsb
+  fi
 
 elif [ "$DECODER_MODE" = "consume" ]; then
   step "CONSUME MODE"
@@ -248,7 +269,7 @@ elif [ "$DECODER_MODE" = "consume" ]; then
 fi
 
 # Decoder health (skip when nothing to check)
-if [ "$DECODER_MODE" = "airspy" ] || [ "$DECODER_MODE" = "rtlsdr" ]; then
+if { [ "$DECODER_MODE" = "airspy" ] || [ "$DECODER_MODE" = "rtlsdr" ]; } && [ "${PILNK_IMAGE:-}" != 1 ]; then
   if systemctl is-active --quiet readsb 2>/dev/null; then
     ok "readsb service is running"
   else
@@ -338,10 +359,17 @@ if ! grep -q "aircraft_json_path" "$APP_PY"; then
   warn "The node may read the dump1090-fa path instead of the configured one. Update PiLNK."
 fi
 # ── Dashboard port (claim-safe) — probe + rationale live in pilnk-hw-setup.sh ──
+if [ "${PILNK_IMAGE:-}" = 1 ]; then
+  # Image: config.json is the clean template, byte for byte.
+  [ -f "$PILNK_DIR/$IMAGE_TEMPLATE_REL" ] || { err "$IMAGE_TEMPLATE_REL missing from the clone"; exit 1; }
+  cp "$PILNK_DIR/$IMAGE_TEMPLATE_REL" "$CONFIG_JSON"
+  DASHBOARD_PORT="$(python3 -c 'import json,sys; print(int(json.load(open(sys.argv[1]))["dashboard_port"]))' "$CONFIG_JSON")"
+else
 hw_dashboard_port
 
 printf '{\n  "auto_update": true,\n  "aircraft_json_path": "%s",\n  "vhf_serial": "%s",\n  "dashboard_port": %s\n}\n' "$AIRCRAFT_JSON_PATH" "$VHF_SERIAL" "$DASHBOARD_PORT" \
   > "$CONFIG_JSON"
+fi  # PILNK_IMAGE
 ok "config.json written — pairing code will show on first boot (aircraft_json_path → ${AIRCRAFT_JSON_PATH}; vhf_serial → ${VHF_SERIAL:-none}; dashboard_port → ${DASHBOARD_PORT}; auto_update ON)"
 
 # Keep config.json + secret out of git (survives any future pull)
@@ -411,7 +439,9 @@ WantedBy=multi-user.target
 SVCEOF
 
 sudo systemctl daemon-reload
-sudo systemctl enable pilnk -q
+if [ "${PILNK_IMAGE:-}" != 1 ]; then   # image: unit stays disabled; first boot arms it
+  sudo systemctl enable pilnk -q
+fi
 
 # ── Passwordless restart for unattended OTA ───────────────
 # update.sh restarts the service with `sudo -n systemctl restart pilnk` after
@@ -442,6 +472,9 @@ rm -f "$SUDOERS_TMP"
 # does nothing and a perfectly correct fix still looks broken. That cost a real
 # node an extra debugging round: 606 restarts, then reset-failed was the only
 # thing standing between it and working. Harmless when there's nothing to reset.
+if [ "${PILNK_IMAGE:-}" = 1 ]; then
+  ok "Image mode: pilnk.service installed, NOT enabled or started"
+else
 sudo systemctl reset-failed pilnk 2>/dev/null || true
 sudo systemctl restart pilnk 2>/dev/null || sudo systemctl start pilnk 2>/dev/null || true
 sleep 3
@@ -452,6 +485,7 @@ else
   warn "Service may still be starting — check: sudo systemctl status pilnk"
   warn "If it fails: sudo journalctl -u pilnk -n 20"
 fi
+fi  # PILNK_IMAGE
 
 # ── Self-heal wiring ──────────────────────────────────────
 # bootstrap-selfheal.sh wires the node's self-repair into /etc: the SDR
@@ -463,7 +497,7 @@ fi
 # service is up (the watchdog judges a running dashboard, after a 60 s grace).
 # The operator's sudo is still warm, so the bootstrap's `sudo -n` works.
 # Idempotent, logs to update.log, and never fatal to the install.
-if [ -f "$PILNK_DIR/bootstrap-selfheal.sh" ]; then
+if [ "${PILNK_IMAGE:-}" != 1 ] && [ -f "$PILNK_DIR/bootstrap-selfheal.sh" ]; then
   PILNK_DIR="$PILNK_DIR" bash "$PILNK_DIR/bootstrap-selfheal.sh" 2>/dev/null || true
   if systemctl is-enabled --quiet pilnk-sdr-recover.timer 2>/dev/null; then
     ok "Self-heal wired (receiver unplug/replug recovery, 3-min safety check, dashboard watchdog)"
@@ -548,7 +582,9 @@ elif [ -f "$PILNK_DIR/pilnkradio-install.sh" ]; then
   info "Building the live ATC audio engine (~3-5 min). PiLNK itself is already"
   info "installed and running — nothing below can affect your ADS-B feed."
   echo ""
+  # Image: build the engine and denoise only; first boot writes the config.
   PILNKRADIO_NONINTERACTIVE=1 PILNKRADIO_SERIAL="$VHF_SERIAL" \
+    PILNKRADIO_SKIP_CONFIG="$([ "${PILNK_IMAGE:-}" = 1 ] && echo 1)" \
     bash "$PILNK_DIR/pilnkradio-install.sh" \
     || warn "ATC audio engine did not finish — PiLNK is unaffected. Re-run later: bash ~/pilnk/pilnkradio-install.sh"
   echo ""

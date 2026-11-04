@@ -401,7 +401,11 @@ fi
 # ── [7/8] per-node config ──────────────────────────────────
 step "7/8 config"
 CFG=/etc/pilnkradio/config.json
-if [ -f "$CFG" ]; then
+# PILNKRADIO_SKIP_CONFIG=1 (sterile image build): the engine and denoise are
+# built but no per-node config is written; first boot writes it (CONFIG_ONLY).
+if [ -n "${PILNKRADIO_SKIP_CONFIG:-}" ]; then
+    info "image build: config step skipped (first boot writes $CFG)"
+elif [ -f "$CFG" ]; then
     ok "existing $CFG kept (delete it and re-run to regenerate)"
 else
     FREQ=""
@@ -477,6 +481,17 @@ sudo cp "$SRC/pilnkradio/pilnkradio.service" /etc/systemd/system/
 sudo cp "$SRC/pilnkradio/99-pilnk-v4.rules" /etc/udev/rules.d/
 sudo udevadm control --reload
 sudo systemctl daemon-reload
+# Image build: the engine has no config yet, so do not enable or start it (it
+# would only crash-loop, and the :5656 check below would fail the build). Install
+# the denoise files (denoise-install.sh restarts the engine only if enabled)
+# and stop; first boot writes the config and enables the unit.
+if [ -n "${PILNKRADIO_SKIP_CONFIG:-}" ]; then
+    if [ -f "$SRC/denoise-install.sh" ]; then
+        sudo bash "$SRC/denoise-install.sh" || warn "denoise files not installed (radio unaffected)"
+    fi
+    printf "\n${BOLD}${GREEN}════════ ENGINE BUILT (not enabled, no config) ════════${RESET}\n"
+    exit 0
+fi
 # enable, THEN restart — not `enable --now`. On a unit that is already active,
 # --now's start is a no-op, so a reinstall would leave the OLD binary running
 # and report success. Restart is the only verb that swaps the process. (Found

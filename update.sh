@@ -60,6 +60,12 @@ log "Updated to version: $NEW_VERSION"
 # every restart re-detects the same "available update" and
 # tries again. Abort BEFORE the restart and let app.py's 1-hour
 # cooldown kick in. The loop dies on first iteration.
+if [ "$OLD_VERSION" = "$NEW_VERSION" ] && [ "${PILNK_UPDATE_NO_RESTART:-}" = 1 ]; then
+    # First boot (image): nothing to restart, so an unchanged VERSION is a clean no-op.
+    log "VERSION unchanged ($OLD_VERSION) — no-restart mode, nothing to do."
+    log "=== OTA UPDATE COMPLETE (no restart) ==="
+    exit 0
+fi
 if [ "$OLD_VERSION" = "$NEW_VERSION" ]; then
     log "ABORT: git pull succeeded but VERSION unchanged (still $OLD_VERSION)."
     log "This usually means api/version.php reports a newer version than"
@@ -75,6 +81,16 @@ fi
 if grep -q "^from whisper_atc" app.py 2>/dev/null; then
     sed -i 's/^from whisper_atc/# from whisper_atc/' app.py
     log "Whisper import commented out (safety)"
+fi
+
+# PILNK_UPDATE_NO_RESTART=1 (sterile image first boot): the code is updated and
+# the whisper guard has run; everything after is the live-node machinery
+# (self-heal wiring, audio build trigger, service restart) which first boot
+# does itself once it has bound the hardware.
+if [ "${PILNK_UPDATE_NO_RESTART:-}" = 1 ]; then
+    log "No-restart mode: skipping self-heal, audio build and service restart."
+    log "=== OTA UPDATE COMPLETE (no restart) — v$NEW_VERSION ==="
+    exit 0
 fi
 
 # Step 3.5: Wire in (or update) the SDR self-heal machinery. Idempotent — does
