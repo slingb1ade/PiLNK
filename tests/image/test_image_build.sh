@@ -25,6 +25,7 @@ good_machine() {
   fakebin id 'case "$1" in -un) echo pilnk;; *) echo 1000;; esac'
   fakebin dpkg 'echo arm64'
   fakebin growpart 'true'
+  fakebin dpkg-query 'case "$*" in *dnsmasq-base*) printf "install ok installed";; *) exit 1;; esac'
   fakebin sudo 'exec "$@"'
   : > "$ROOT/.rtl_out"; : > "$ROOT/.lsusb"
 }
@@ -59,6 +60,11 @@ for t in bash dirname grep timeout cat env find; do ln -sf "$(PATH="$ORIG_PATH" 
 SAVED_PATH="$PATH"; PATH="$BIN:$TOOLS"
 run; refused "growpart missing" "growpart is missing — run: sudo apt install cloud-guest-utils"
 PATH="$SAVED_PATH"
+# M11: NetworkManager's shared mode (the hotspot) needs dnsmasq-base
+good_machine; fakebin dpkg-query 'exit 1'
+run; refused "dnsmasq-base missing" "dnsmasq-base is missing — run: sudo apt install dnsmasq-base"
+good_machine; fakebin dpkg-query 'printf "deinstall ok config-files"'
+run; refused "dnsmasq-base removed (config files only)" "dnsmasq-base is missing"
 
 # ---- happy path ------------------------------------------------------------
 good_machine

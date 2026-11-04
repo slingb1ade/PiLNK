@@ -12,13 +12,17 @@ run_install() {
   export HOME="$ROOT/home" USER=pilnk TERM=dumb
   mkdir -p "$HOME" "$ROOT/inst" "$ROOT/tee"
   cp "$REPO/install.sh" "$ROOT/inst/install.sh"
-  cat > "$ROOT/inst/pilnk-hw-setup.sh" <<'STUB'
+  cat > "$ROOT/hw-stub.sh" <<'STUB'
 hw_decide() { echo "pilnk-hw-setup.sh hw_decide" >> "$CALLS"
   DECODER_MODE=rtlsdr; ADSB_SERIAL=00000001; VHF_SERIAL=""; AIRCRAFT_JSON_PATH=/run/readsb/aircraft.json; SVC_AFTER=readsb.service; }
 hw_pin_readsb() { echo "pilnk-hw-setup.sh hw_pin_readsb" >> "$CALLS"; }
 hw_dashboard_port() { echo "pilnk-hw-setup.sh hw_dashboard_port" >> "$CALLS"; DASHBOARD_PORT=5000; }
 STUB
-  fakebin clear ''; fakebin curl ''; fakebin wget ''; fakebin apt-get ''; fakebin pip3 ''; fakebin pip ''
+  # INST_NO_HELPER=1: nothing beside install.sh (curl | bash), so it fetches the
+  # helper with curl; the fake curl writes the stub to the -o file
+  [ -n "${INST_NO_HELPER:-}" ] || cp "$ROOT/hw-stub.sh" "$ROOT/inst/pilnk-hw-setup.sh"
+  fakebin clear ''; fakebin wget ''; fakebin apt-get ''; fakebin pip3 ''; fakebin pip ''
+  fakebin curl 'o=""; p=""; for a; do [ "$p" = -o ] && o=$a; p=$a; done; [ -n "$o" ] && cp "$ROOT/hw-stub.sh" "$o"; true'
   fakebin hostname 'echo 192.0.2.7'
   fakebin sudo 'case "$1" in tee) mkdir -p "$ROOT/tee"; cat > "$ROOT/tee/$(basename "${@: -1}")";; esac'
   fakebin git 'case "$1" in clone) d="${@: -1}"; mkdir -p "$d"
@@ -56,6 +60,13 @@ ok "normal: bootstrap-selfheal.sh runs"    'calls | grep -q "^bootstrap-selfheal
 ok "normal: pilnkradio-install.sh without SKIP_CONFIG" 'calls | grep -q "^pilnkradio-install.sh SKIP_CONFIG= NONINTERACTIVE=1"'
 ok "normal: readsb is not disabled"        '! calls | grep -q "systemctl disable"'
 ok "normal: Ready-to-install prompt shown" 'printf "%s" "$TTYOUT" | grep -q "Ready to install"'
+
+# ---------- M10: curl | bash fetches the helper with retries ----------
+INST_NO_HELPER=1 run_install PILNK_NORMAL=1
+ok "M10: no helper beside install.sh -> fetched from GitHub, install exit 0" '[ $RC -eq 0 ] && calls | grep -q "^curl .*pilnk-hw-setup.sh"'
+ok "M10: the helper fetch retries (--retry 3 --retry-delay 2), flags otherwise unchanged" \
+   'calls | grep -qx "curl -fsSL --retry 3 --retry-delay 2 --max-time 20 https://raw.githubusercontent.com/slingb1ade/PiLNK/main/pilnk-hw-setup.sh -o .*"'
+ok "M10: the stub helper was sourced (hw_decide ran)" 'calls | grep -q "^pilnk-hw-setup.sh hw_decide$"'
 
 # ---------- update.sh ----------
 # run_update VERSION_BEFORE VERSION_AFTER [env...]; sets RC.

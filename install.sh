@@ -202,7 +202,7 @@ done
 if [ -z "$HW_SETUP" ]; then
   # curl | bash: nothing alongside us yet — fetch the helper (the repo isn't cloned until later).
   HW_SETUP="$(mktemp /tmp/pilnk-hw-setup.XXXXXX)"
-  curl -fsSL --max-time 20 https://raw.githubusercontent.com/slingb1ade/PiLNK/main/pilnk-hw-setup.sh -o "$HW_SETUP" || {
+  curl -fsSL --retry 3 --retry-delay 2 --max-time 20 https://raw.githubusercontent.com/slingb1ade/PiLNK/main/pilnk-hw-setup.sh -o "$HW_SETUP" || {
     err "Could not fetch pilnk-hw-setup.sh from GitHub."
     exit 1
   }

@@ -11,9 +11,11 @@ Nothing here holds a password or key. Use a spare card for the build, never the 
 - Hostname `pilnk-build`.
 - User `pilnk` with a temporary password (you will never reuse it).
 - SSH on (password login).
-- Network: plug in Ethernet if you can. Wi-Fi set here is fine, because sterilise removes it.
+- Network: **Ethernet only. Do not set Wi-Fi in Imager** (leave the Wi-Fi fields empty).
+  The build card must never join your Wi-Fi: NetworkManager would record your access point
+  (`seen-bssids`), and sterilise can only delete what it knows to look for.
 
-Put the card in the Pi4 and power on.
+Put the card in the Pi4, plug in the network cable, and power on.
 
 Expect: `ssh pilnk@pilnk-build.local` asks for the temporary password and logs in.
 
@@ -32,10 +34,18 @@ scp -r ~/sterile-patches pilnk@pilnk-build.local:/home/pilnk/
 
 Expect: one line per patch, no errors. The patches are now in `/home/pilnk/sterile-patches/` on the Pi.
 
+**Pi4 (build card)**: bring Pi OS up to date first, then reboot (a new kernel needs it):
+
+```
+sudo apt update && sudo apt full-upgrade -y
+sudo reboot
+```
+
+Expect: the SSH session drops. Wait a minute, then `ssh pilnk@pilnk-build.local` again.
+
 **Pi4 (build card)**:
 
 ```
-sudo apt update
 sudo apt install -y git
 git clone https://github.com/slingb1ade/PiLNK.git ~/pilnk
 git -C ~/pilnk switch -c sterile-image
@@ -62,12 +72,13 @@ Two things matter here:
 **Pi4 (build card)**: unplug every SDR dongle (RTL-SDR and Airspy) first. Then:
 
 ```
-sudo apt install -y cloud-guest-utils
+sudo apt install -y cloud-guest-utils dnsmasq-base
 bash ~/pilnk/image/pilnk-image-build.sh
 ```
 
 It refuses, and says why, if: the user is not `pilnk`, the OS is not Trixie, it is not 64-bit,
-a dongle is plugged in, `growpart` is missing, or it is not run from `~/pilnk`.
+a dongle is plugged in, `growpart` or `dnsmasq-base` (the Wi-Fi setup hotspot needs it) is missing,
+or it is not run from `~/pilnk`.
 It installs PiLNK without starting it, and installs the first-boot and Wi-Fi setup units **disabled**.
 
 Expect: ends with "Build done" and "Next step:  sudo bash image/pilnk-sterilise.sh". PiLNK is not running.
@@ -100,22 +111,41 @@ Pi OS gives the first user passwordless sudo, so no password prompt. What happen
 
 - It runs a pre-check first. If that fails, your **session stays open** and it prints where the log is
   (`/run/pilnk-sterilise.log`). Read it, fix, run again.
-- If the pre-check passes, it moves itself out of your session. Your SSH session **closes**, then it
-  wipes the traces, arms first boot, runs the check again, and **powers the Pi off** within a few minutes.
+- If the pre-check passes, it moves itself out of your session. Your SSH session **closes** within a
+  minute or two. Then it stops the network, wipes the traces, and **zero-fills the free space**
+  (it writes zeros until the card is full, then deletes them). That is the slow part. Then it runs the
+  check again and **powers the Pi off**.
 
-Expect: the session drops and the Pi's green light stops.
+How long the zero-fill takes depends on the card size and speed (about 10–20 MB/s on a Pi4):
 
-**If the Pi has not powered off after 10 minutes:** pull the power and put the card in the laptop.
-**Never boot it again.** On the laptop, read `pilnk-sterilise-failed.txt` on the boot partition (ids and paths only),
-and run the verifier (section 7) on the card.
+| Card  | Zero-fill, roughly |
+|-------|--------------------|
+| 16 GB | 10–20 minutes      |
+| 32 GB | 25–45 minutes      |
+| 64 GB | 60–100 minutes     |
+
+Use a 16 or 32 GB card for the build if you can; Inkpot shrinks the image anyway.
+
+How to tell it is still working: the Pi's **green activity LED flickers** (or stays mostly on) the whole
+time it writes. When it is done, the Pi powers off: the green LED goes dark and stays dark (the red power
+LED may stay on).
+
+Expect: the session drops, the green LED flickers for a while, then the Pi is off.
+
+**If the Pi is still on after 2 hours** and the green LED has stopped flickering for 10 minutes or more,
+the final check failed (nobody can log in any more, so it never powers off). If a screen is plugged into
+the Pi's HDMI port, the console shows the failed check ids. Pull the power and put the card in the laptop.
+**Never boot it again.** On the laptop, read `pilnk-sterilise-failed.txt` on the boot partition (ids and
+paths only), and run the verifier (section 7) on the card. Do not pull the power while the LED is still
+flickering: that stops the zero-fill half way and the card has to be built again.
 
 Expect: either the Pi is off, or you have `pilnk-sterilise-failed.txt` telling you which check failed.
 
 ## 6. Save the image
 
 **Laptop**: put the card in the laptop, open Inkpot v0.6, choose "Save to image", pick the card,
-leave Shrink and Compress on, save it as `~/pilnk-images/pilnk-sterile.img.xz` (make the folder first: `mkdir -p ~/pilnk-images`;
-the disk needs room for the full card size).
+leave Shrink and Compress on, save it as `~/pilnk-images/pilnk-sterile.img` (make the folder first: `mkdir -p ~/pilnk-images`;
+the disk needs room for the full card size). Type the name ending in `.img`: with Compress on, Inkpot adds `.xz` itself.
 
 Expect: "Saved ... card -> pilnk-sterile.img.xz (...), sha256 saved". A `.sha256` file sits next to it.
 
@@ -181,10 +211,15 @@ What the lines mean:
 
 Write the image to two test cards with Inkpot. Tick each box on **both a Pi 4 and a Pi 5** where it applies.
 
+The first boot of any card bigger than the image **reboots once** by itself, a minute or so in: it grows
+the root partition to fill the card, then restarts. That is expected; the second boot carries on.
+
 **Pi4 / Pi5 (test card)**:
 
 - [ ] Pi4, no cable, dongle in: the `PiLNK-Setup-XXXX` hotspot appears (open, no password).
-- [ ] Phone joins it and the setup page opens (or browse to `http://10.42.0.1`).
+- [ ] Phone joins it and the setup page opens (or browse to `http://10.42.0.1`). tar1090's web server
+  (lighttpd) is stopped while the hotspot is up and started again after: once the Pi is on your Wi-Fi,
+  `http://pilnk-XXXX.local/tar1090` works again.
 - [ ] A wrong Wi-Fi password: the hotspot comes back with its error message.
 - [ ] The right password: the Pi joins your Wi-Fi.
 - [ ] The pairing code shows.
@@ -192,7 +227,9 @@ Write the image to two test cards with Inkpot. Tick each box on **both a Pi 4 an
 - [ ] Pi5 on a cable: no hotspot, and the pairing code shows.
 - [ ] Two cards, two nodes: different hostnames, machine IDs and SSH host keys, and two separate pending nodes on pilnk.io.
 - [ ] Power cut mid first boot: pull the power, plug in again, the next boot finishes cleanly.
-- [ ] A bigger card than the image: the root partition grew to fill it.
+- [ ] A bigger card than the image: the first boot rebooted once, and the root partition grew to fill it.
+- [ ] Wi-Fi node, whole-house power cut (Pi and router off, router back slower than the Pi): within about
+  half an hour of the router coming back the Pi rejoins your Wi-Fi by itself and `PiLNK-Setup` goes away.
 
 Expect: every box ticked on Pi4 and Pi5, or a note of what failed.
 

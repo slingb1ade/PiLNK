@@ -5,8 +5,8 @@
 #   2. first-boot script, Wi-Fi setup script + dnsmasq drop-in, both units
 #      (installed DISABLED; pilnk-sterilise.sh arms them)
 # Then prints the next step. Refuses (exit 1, saying why) unless: user pilnk,
-# Trixie, arm64, no RTL-SDR / Airspy plugged in, growpart present, and this
-# script lives in $HOME/pilnk (the clone install.sh uses).
+# Trixie, arm64, no RTL-SDR / Airspy plugged in, growpart and dnsmasq-base
+# present, and this script lives in $HOME/pilnk (the clone install.sh uses).
 #
 # Test hooks: PILNK_ROOT (prefix for installed files), PILNK_OS_RELEASE.
 set -u
@@ -35,6 +35,10 @@ if command -v lsusb >/dev/null 2>&1 && lsusb 2>/dev/null | grep -qi airspy; then
 fi
 
 command -v growpart >/dev/null 2>&1 || die "growpart is missing — run: sudo apt install cloud-guest-utils (first boot can't grow the card without it)"
+# the Wi-Fi setup hotspot is NetworkManager shared mode, which runs dnsmasq
+# (/usr/sbin, not on pilnk's PATH, so ask dpkg)
+dpkg-query -W -f='${Status}' dnsmasq-base 2>/dev/null | grep -q 'install ok installed' \
+  || die "dnsmasq-base is missing — run: sudo apt install dnsmasq-base (the Wi-Fi setup hotspot needs it)"
 
 want="$(cd -P "$HOME/pilnk" 2>/dev/null && pwd)" || want=""
 [ -n "$want" ] && [ "$CLONE" = "$want" ] || die "run this from the clone at \$HOME/pilnk (this one is $CLONE): bash ~/pilnk/image/pilnk-image-build.sh"
