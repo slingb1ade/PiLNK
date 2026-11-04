@@ -105,6 +105,7 @@ pilnk-enabled|mkdir -p "$R/etc/systemd/system/graphical.target.wants"; ln -sfn /
 ssh-enabled|mkdir -p "$R/etc/systemd/system/default.target.wants"; ln -sfn /lib/systemd/system/ssh.service "$R/etc/systemd/system/default.target.wants/ssh.service"
 sterilise-failed|echo 'FAIL x: /y' > "$B/pilnk-sterilise-failed.txt"
 git-reflog|mkdir -p "$D/.git/logs"; echo x > "$D/.git/logs/HEAD"
+wpa-examples|mkdir -p "$R/usr/share/doc/wpasupplicant/examples"; printf 'network={\n\t%s="examplepassphrase"\n}\n' "$PK" > "$R/usr/share/doc/wpasupplicant/examples/wpa_supplicant.conf"
 EOF
 )
 
@@ -159,6 +160,17 @@ ok "cloud-init disabled marker written" "[ -e '$DIRTY/etc/cloud/cloud-init.disab
 ok "readsb default file kept, --device gone, other options kept" \
    "grep -q -- '--gain auto' '$DIRTY/etc/default/readsb' && ! grep -q -- '--device' '$DIRTY/etc/default/readsb'"
 ok "pilnk shadow entry is locked" "grep -q '^pilnk:!' '$DIRTY/etc/shadow' && grep -q '^root:' '$DIRTY/etc/shadow'"
+
+# Debian's wpasupplicant example configs hold example passphrases: removed, and checked alone
+WX="$ROOT/wpax"; make_clean "$WX"
+apply_trace "$WX" "$(grep '^wpa-examples|' <<< "$TRACES" | cut -d'|' -f2-)"
+ok "fixture: wpasupplicant examples dir seeded" "[ -f '$WX/usr/share/doc/wpasupplicant/examples/wpa_supplicant.conf' ]"
+run_check "$WX"
+ok "wpa-examples alone: sterile_check names wpa-examples" "[ '$N' = 1 ] && grep -q '^FAIL wpa-examples: ' <<< \"\$OUT\""
+PILNK_ROOT="$WX" PILNK_BOOT="$WX/boot/firmware" bash "$STER" --no-poweroff --no-zero >/dev/null 2>&1; RCW=$?
+ok "sterilise removes the wpasupplicant examples dir; exit 0" "[ '$RCW' = 0 ] && [ ! -e '$WX/usr/share/doc/wpasupplicant/examples' ]"
+run_check "$WX"
+ok "after sterilise the wpa-examples check passes" "[ '$N' = 0 ]"
 
 # sterilising an already-sterile root is a no-op that still passes
 OUTS2=$(PILNK_ROOT="$DIRTY" PILNK_BOOT="$DIRTY/boot/firmware" bash "$STER" --no-poweroff --no-zero 2>&1); RCS2=$?

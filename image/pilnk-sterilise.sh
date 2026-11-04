@@ -83,6 +83,18 @@ remove_matching() { # label dir find-args...
   return 0
 }
 
+# rm -rf of the wpasupplicant example docs; refuses anything that is not a real directory
+remove_wpa_examples() {
+  local d="$R/usr/share/doc/wpasupplicant/examples"
+  if [ -d "$d" ] && [ ! -L "$d" ]; then
+    rm -rf --one-file-system -- "$d" 2>/dev/null
+    say "removed: wpasupplicant example configs"
+  elif [ -L "$d" ]; then
+    rm -f -- "$d"; say "removed: wpasupplicant example configs"
+  fi
+  return 0
+}
+
 wipe_counted() { # label dir
   local n
   [ -d "$2" ] || return 0
@@ -332,6 +344,9 @@ wipe_counted "runtime network connections" "$R/run/NetworkManager/system-connect
 remove_matching "NetworkManager netplan files" "$R/etc/netplan" -maxdepth 1 -name '90-NM-*.yaml'
 remove_matching "wpa_supplicant files" "$R/etc/wpa_supplicant" -maxdepth 1 -name '*.conf'
 remove_paths "boot wpa_supplicant.conf" "$B/wpa_supplicant.conf"
+# Debian ships example configs with example passphrases (harmless docs, but the
+# image verifier's raw psk= rule flags them)
+remove_wpa_examples
 for d in "$R/var/lib/NetworkManager" "$R/var/lib/dhcp" "$R/var/lib/dhcpcd"; do
   remove_matching "DHCP leases" "$d" -maxdepth 2 -name '*.lease*'
 done

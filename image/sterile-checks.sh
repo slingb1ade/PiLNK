@@ -93,6 +93,8 @@ sterile_check() {
   _sc_none_matching netplan-nm "$R/etc/netplan" -maxdepth 1 -name '90-NM-*.yaml'
   _sc_none_matching wpa-supplicant "$R/etc/wpa_supplicant" -maxdepth 1 -name '*.conf'
   _sc_absent wpa-supplicant "$B/wpa_supplicant.conf"
+  # Debian's example configs hold example passphrases (raw psk= false positives)
+  _sc_absent wpa-examples "$R/usr/share/doc/wpasupplicant/examples"
   for f in "$R/var/lib/NetworkManager" "$R/var/lib/dhcp" "$R/var/lib/dhcpcd"; do
     _sc_none_matching dhcp-lease "$f" -maxdepth 2 -name '*.lease*'
   done
