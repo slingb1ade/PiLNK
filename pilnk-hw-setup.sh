@@ -332,7 +332,13 @@ hw_assign_vhf() {
       info "Unnamed dongle claims present — VHF audio left off to stay safe."
       info "(Set 'vhf_serial' in ~/pilnk/config.json yourself if you have a spare.)"
     else
-      VHF_CAND=$(echo "$FREE_SNS" | grep . | grep -v "^${ADSB_SERIAL}$" | head -n1)
+      # Unattended consume-readsb: readsb's own dongle (its --device pin) is not
+      # free for VHF, or a re-run after a successful bind would hand it over.
+      PINNED_SN=""
+      if [ -n "$HW_NONINTERACTIVE" ] && [ "$DECODER_MODE" = "consume" ] && [ "$READSB_HEALTHY" -eq 1 ]; then
+        PINNED_SN=$(grep -oE -- '--device[ =][0-9A-Za-z]+' "$_R/etc/default/readsb" 2>/dev/null | head -n1 | sed -E 's/^--device[ =]//')
+      fi
+      VHF_CAND=$(echo "$FREE_SNS" | grep . | grep -v "^${ADSB_SERIAL}$" | { [ -n "$PINNED_SN" ] && grep -v "^${PINNED_SN}$" || cat; } | head -n1)
     fi
     if [ -n "$VHF_CAND" ]; then
       VHF_SERIAL="$VHF_CAND"
@@ -443,7 +449,8 @@ hw_write_config() {
   keep=$(python3 - "$cfg" <<'PYEOF' 2>/dev/null
 import json, sys
 try:
-    print(json.load(open(sys.argv[1])).get("dashboard_port", ""))
+    v = json.load(open(sys.argv[1])).get("dashboard_port", "")
+    print(v if type(v) is int else "")
 except Exception:
     pass
 PYEOF
@@ -473,6 +480,12 @@ with os.fdopen(fd, "w") as f:
     f.write("\n")
 if os.path.exists(path):
     shutil.copymode(path, tmp)
+    st = os.stat(path)
+else:
+    os.chmod(tmp, 0o644)
+    st = os.stat(os.path.dirname(path) or ".")
+if os.geteuid() == 0:
+    os.chown(tmp, st.st_uid, st.st_gid)
 os.replace(tmp, path)
 PYEOF
   if [ "$rc" -ne 0 ]; then err "could not write $cfg"; return 1; fi
@@ -507,13 +520,19 @@ hw_main() {
     echo "usage: pilnk-hw-setup.sh [--plan] [--apply]" >&2; return 1
   fi
   PILNK_DIR="${PILNK_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)}"
-  hw_decide
+  hw_decide >&2                    # claim reports go to the terminal, never into the plan
   hw_print_plan
   if [ -z "$DECODER_MODE" ]; then
     return 2                       # nothing found/free: nothing written
   fi
   if [ "$do_apply" -eq 1 ]; then
-    [ "$DECODER_MODE" = "rtlsdr" ] && hw_pin_readsb
+    if [ "$DECODER_MODE" = "rtlsdr" ]; then
+      hw_pin_readsb
+      if ! grep -q -- "--device $ADSB_SERIAL" "$_R/etc/default/readsb" 2>/dev/null; then
+        err "readsb was not pinned to SN $ADSB_SERIAL (no RECEIVER_OPTIONS line in $_R/etc/default/readsb?)"
+        return 1
+      fi
+    fi
     hw_write_config || return 1
     hw_run_radio_config
   fi

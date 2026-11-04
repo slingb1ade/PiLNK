@@ -19,6 +19,14 @@ ok "readsb: exit 0"         '[ $RC -eq 0 ]'
 ok "plan: exactly 5 lines in order" '[ "$(printf "%s\n" "$OUT" | cut -d= -f1 | paste -sd, -)" = "DECODER_MODE,ADSB_SERIAL,VHF_SERIAL,AIRCRAFT_JSON_PATH,SVC_AFTER" ]'
 ok "plan changes nothing"   '[ "$before" = "$after" ]'
 
+# --- re-run: readsb healthy and pinned to the ADS-B dongle must not hand it to VHF ---
+mkroot; active readsb; aircraft readsb; rtl 00000003 00000007
+echo 'RECEIVER_OPTIONS="--device 00000003 --gain auto"' > "$ROOT/etc/default/readsb"; plan
+ok "re-run consume: vhf is the other dongle" '[ "$(f DECODER_MODE)" = consume ] && [ "$(f VHF_SERIAL)" = 00000007 ]'
+mkroot; active readsb; aircraft readsb; rtl 00000003
+echo 'RECEIVER_OPTIONS="--device 00000003"' > "$ROOT/etc/default/readsb"; plan
+ok "re-run consume, only readsb's dongle: vhf empty" 'printf "%s\n" "$OUT" | grep -qx "VHF_SERIAL="'
+
 # --- healthy dump1090-fa ---
 mkroot; active dump1090-fa; aircraft dump1090-fa; plan
 ok "dump1090-fa: consume"   '[ "$(f DECODER_MODE)" = consume ]'
@@ -50,6 +58,11 @@ mkroot; active dump1090-fa; echo 'RECEIVER_SERIAL=00000003' > "$ROOT/etc/default
 ok "claimed 3, free 7: rtlsdr"      '[ "$(f DECODER_MODE)" = rtlsdr ]'
 ok "claimed 3, free 7: adsb 7"      '[ "$(f ADSB_SERIAL)" = 00000007 ]'
 ok "claimed 3, free 7: vhf empty"   '[ -z "$(f VHF_SERIAL)" ]'
+ok "claimed 3, free 7: stdout is exactly the 5 lines" '[ "$(printf "%s\n" "$OUT" | cut -d= -f1 | paste -sd, -)" = "DECODER_MODE,ADSB_SERIAL,VHF_SERIAL,AIRCRAFT_JSON_PATH,SVC_AFTER" ]'
+# a claimed dongle whose serial contains 1090 is never poached by the 1090 preference
+mkroot; active dump1090-fa; echo 'RECEIVER_SERIAL=00001090' > "$ROOT/etc/default/dump1090-fa"; rtl 00001090 00000002; plan
+ok "claimed 1090, free 2: adsb 2"   '[ "$(f ADSB_SERIAL)" = 00000002 ]'
+ok "claimed 1090, free 2: vhf empty" 'printf "%s\n" "$OUT" | grep -qx "VHF_SERIAL="'
 mkroot; active dump1090-fa; echo 'RECEIVER_SERIAL=00000003' > "$ROOT/etc/default/dump1090-fa"; rtl 00000003; plan
 ok "all claimed: none, exit 2"      '[ "$(f DECODER_MODE)" = none ] && [ $RC -eq 2 ]'
 
@@ -57,6 +70,7 @@ ok "all claimed: none, exit 2"      '[ "$(f DECODER_MODE)" = none ] && [ $RC -eq
 mkroot; active fr24feed; echo 'receiver="dvbt"' > "$ROOT/etc/fr24feed.ini"; rtl 00000002 00001090; plan
 ok "fr24 direct: adsb from free set rule" '[ "$(f ADSB_SERIAL)" = 00001090 ]'
 ok "fr24 direct: vhf empty"               '[ -z "$(f VHF_SERIAL)" ] && [ "$(f DECODER_MODE)" = rtlsdr ]'
+ok "fr24 direct: stdout is exactly the 5 lines" '[ "$(printf "%s\n" "$OUT" | cut -d= -f1 | paste -sd, -)" = "DECODER_MODE,ADSB_SERIAL,VHF_SERIAL,AIRCRAFT_JSON_PATH,SVC_AFTER" ]'
 
 # --- fr24feed network mode holds nothing ---
 mkroot; active fr24feed; echo 'receiver="beast-tcp"' > "$ROOT/etc/fr24feed.ini"; rtl 00000002 00001090; plan
@@ -123,6 +137,31 @@ ok "apply nothing: no config.json"   '[ ! -e "$ROOT/pilnk/config.json" ]'
 mkroot; mkdir_pilnk; rtl 00001090; echo 'RECEIVER_OPTIONS=""' > "$ROOT/etc/default/readsb"; echo 'not json' > "$ROOT/pilnk/config.json"
 apply
 ok "apply: corrupt config -> exit 1, file kept" '[ $RC -eq 1 ] && [ "$(cat "$ROOT/pilnk/config.json")" = "not json" ]'
+
+# fresh config.json is world-readable (0644) so the pilnk service can read it
+mkroot; mkdir_pilnk; rtl 00001090; echo 'RECEIVER_OPTIONS=""' > "$ROOT/etc/default/readsb"
+(umask 077; apply)
+ok "apply: fresh config.json mode 0644" '[ "$(stat -c %a "$ROOT/pilnk/config.json")" = 644 ]'
+# existing mode is kept
+mkroot; mkdir_pilnk; rtl 00001090; echo 'RECEIVER_OPTIONS=""' > "$ROOT/etc/default/readsb"
+echo '{}' > "$ROOT/pilnk/config.json"; chmod 664 "$ROOT/pilnk/config.json"; apply
+ok "apply: existing config.json mode kept" '[ "$(stat -c %a "$ROOT/pilnk/config.json")" = 664 ]'
+
+# a stored non-int dashboard_port is not kept
+mkroot; mkdir_pilnk; rtl 00001090; echo 'RECEIVER_OPTIONS=""' > "$ROOT/etc/default/readsb"
+echo '{"dashboard_port": null}' > "$ROOT/pilnk/config.json"; apply
+ok "apply: null dashboard_port -> falls back to a real port" '[ $RC -eq 0 ] && python3 -c "import json,sys; d=json.load(open(sys.argv[1])); assert isinstance(d[\"dashboard_port\"],int)" "$ROOT/pilnk/config.json"'
+mkroot; mkdir_pilnk; rtl 00001090; echo 'RECEIVER_OPTIONS=""' > "$ROOT/etc/default/readsb"
+echo '{"dashboard_port": 5077}' > "$ROOT/pilnk/config.json"; apply
+ok "apply: int dashboard_port kept" 'python3 -c "import json,sys; assert json.load(open(sys.argv[1]))[\"dashboard_port\"]==5077" "$ROOT/pilnk/config.json"'
+
+# pin that did not take (no RECEIVER_OPTIONS line) is an error, not a silent success
+mkroot; mkdir_pilnk; rtl 00001090; echo 'FOO=bar' > "$ROOT/etc/default/readsb"; apply
+ok "apply: pin not applied -> exit 1 + stderr" '[ $RC -eq 1 ] && grep -q "00001090" "$ROOT/.stderr"'
+
+# mkroot temp roots are removed when the test shell exits
+GONE=$(bash -c '. "$1"; mkroot; echo "$ROOT"' _ "$REPO/tests/image/lib.sh")
+ok "lib: mkroot root removed on exit" '[ -n "$GONE" ] && [ ! -e "$GONE" ]'
 
 # no args / bad args
 mkroot

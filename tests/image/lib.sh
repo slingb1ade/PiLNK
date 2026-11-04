@@ -10,8 +10,13 @@
 #                     tests/image/run.sh counts these lines
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 
+_ROOTS=()
+_rm_roots() { [ "${#_ROOTS[@]}" -gt 0 ] && rm -rf "${_ROOTS[@]}"; return 0; }
+trap _rm_roots EXIT
+
 mkroot() {
   ROOT="$(mktemp -d /tmp/pilnk-test.XXXXXX)"
+  _ROOTS+=("$ROOT")
   BIN="$ROOT/.bin"; CALLS="$ROOT/.calls"
   mkdir -p "$BIN" "$ROOT/etc/default" "$ROOT/run" "$ROOT/dev"
   : > "$CALLS"
