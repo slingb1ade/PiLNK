@@ -35,6 +35,8 @@ class Fake:
     def __call__(self, argv, **kw):
         self.calls.append(list(argv)); self.kw.append(kw)
         r = self.rules(list(argv)) if self.rules else None
+        if r is None and list(argv[:2]) == ["systemctl", "is-active"]:
+            return cp(argv, 3)      # the default fake machine runs no lighttpd
         return r if r is not None else cp(argv)
     def has(self, *prefix): return any(c[:len(prefix)] == list(prefix) for c in self.calls)
     def idx(self, *prefix):
@@ -433,6 +435,110 @@ ok("M-2: declared Content-Length longer than the body is dropped quickly (no han
 ok("M-2: nothing queued from the short body", st.take_pending() is None)
 stop(srv, t)
 ok("M-2: handler class sets a socket timeout", re.search(r"^\s+timeout = ", src, re.M) is not None)
+
+# ---------------- final review fixes ----------------
+# M7: UK is accepted as GB
+g, e = W.validate({"country": "uk", "ssid": "Home", "psk": "password1"})
+ok("M7: country UK (any case) is accepted and becomes GB", g is not None and g["country"] == "GB" and not e)
+
+# M6: a country already set on the card is kept; NZ only when none is set
+def country_fake(raspi_out=b"", iw_out=b"", base=None):
+    def rules(a):
+        if a[:3] == ["raspi-config", "nonint", "get_wifi_country"]: return cp(a, 0 if raspi_out else 1, raspi_out)
+        if a[:3] == ["iw", "reg", "get"]: return cp(a, 0, iw_out)
+        return base(a) if base else None
+    return Fake(rules)
+f = country_fake(b"AU\n"); c = W.prepare_radio(f)
+ok("M6: saved country from raspi-config (AU) is kept, not reset to NZ",
+   c == "AU" and f.has("raspi-config", "nonint", "do_wifi_country", "AU") and not f.has("raspi-config", "nonint", "do_wifi_country", "NZ"))
+IW = b"global\ncountry DE: DFS-ETSI\n\t(2400 - 2483 @ 40), (N/A, 20), (N/A)\n\nphy#0\ncountry 99: DFS-UNSET\n"
+f = country_fake(b"", IW); c = W.prepare_radio(f)
+ok("M6: no raspi-config country -> the iw reg get global country (DE)", c == "DE" and f.has("raspi-config", "nonint", "do_wifi_country", "DE"))
+f = country_fake(b"", b"global\ncountry 00: DFS-UNSET\n"); c = W.prepare_radio(f)
+ok("M6: none set (00 / empty) -> NZ", c == "NZ" and f.has("raspi-config", "nonint", "do_wifi_country", "NZ"))
+f = country_fake(b"zz\n", b""); c = W.prepare_radio(f)
+ok("M6: an unknown saved code is not used -> NZ", c == "NZ")
+ok("M6: the page's country box defaults to the saved country",
+   'name="country" value="AU"' in W.render_page([], "7f3a", None, country="AU").decode())
+st6 = W.State("7f3a"); st6.country = "AU"
+ok("M6: State carries the country for the page", getattr(st6, "country", None) == "AU")
+
+# C2: tar1090's lighttpd holds :80. Stop it while the hotspot is up, start it
+# again on exit; a port that stays busy is retried with backoff, loudly, and the
+# hotspot is not torn down.
+import socket as _s
+def held_port():
+    k = _s.socket(_s.AF_INET, _s.SOCK_STREAM); k.bind(("0.0.0.0", 0)); k.listen(1)
+    return k, k.getsockname()[1]
+def lighttpd_flow(active, frees_port, release_after=None):
+    e = Env(); holder, port = held_port(); st = {"up": 0, "served": False, "polls": 0, "sleeps": []}
+    def rules(a):
+        if a[:4] == ["systemctl", "is-active", "--quiet", "lighttpd"]: return cp(a, 0 if active else 3)
+        if a[:3] == ["systemctl", "stop", "lighttpd"] and frees_port: holder.close()
+        if a[:3] == ["nmcli", "connection", "up"]: st["up"] += 1
+        if a[0] == "nmcli" and "list" in a: return cp(a, 0, b"")
+        if a[0] == "nm-online": return cp(a, 0 if st["served"] else 1)
+        if a[0] == "ip": return cp(a, 0, b"default via 1.1.1.1 dev eth0\n" if st["served"] else b"")
+    f = Fake(rules)
+    def on_ready(srv, state): st["served"] = True
+    def sleep(x):
+        st["sleeps"].append(x)
+        if release_after is not None and len(st["sleeps"]) == release_after: holder.close()
+        assert len(st["sleeps"]) < 200
+    old_err = sys.stderr; sys.stderr = err = io.StringIO()
+    try:
+        rc = W.main(**e.kw(f, port=port, on_ready=on_ready, sleep=sleep))
+    finally:
+        sys.stderr = old_err
+        try: holder.close()
+        except OSError: pass
+    return rc, f, st, err.getvalue()
+rc, f, st, err = lighttpd_flow(active=True, frees_port=True)
+ok("C2: lighttpd active -> stopped before the page is served, server binds, exit 0",
+   rc == 0 and st["served"] and 0 <= f.idx("systemctl", "stop", "lighttpd") < f.idx("nmcli", "connection", "up", W.HOTSPOT_CON) + 99
+   and f.idx("systemctl", "stop", "lighttpd") >= 0)
+ok("C2: lighttpd started again on exit (after the hotspot is deleted)",
+   f.has("systemctl", "--no-block", "start", "lighttpd")
+   and f.idx("systemctl", "--no-block", "start", "lighttpd") > f.idx("systemctl", "stop", "lighttpd"))
+rc, f, st, err = lighttpd_flow(active=False, frees_port=False, release_after=4)
+ok("C2: port busy, lighttpd not active -> not stopped, not started", not f.has("systemctl", "stop", "lighttpd") and not f.has("systemctl", "--no-block", "start", "lighttpd"))
+ok("C2: a busy port is logged clearly (address + reason)", "cannot serve the setup page on" in err and "in use" in err.lower())
+ok("C2: retried with backoff (growing waits) until it binds, then exit 0",
+   rc == 0 and st["served"] and st["sleeps"][:4] == sorted(st["sleeps"][:4]) and st["sleeps"][0] < st["sleeps"][3])
+ok("C2: the hotspot is not torn down while retrying the bind (one add, one up)",
+   len([c for c in f.calls if c[:3] == ["nmcli", "connection", "add"]]) == 1 and st["up"] == 1)
+
+# I4: every idle cycle (30 min, no POST) tries the saved Wi-Fi before raising the hotspot again
+def idle_flow(connect_ok):
+    e = Env(); clock = {"t": 0.0}; st = {"adds": 0, "joined": False}
+    def rules(a):
+        if a[:3] == ["nmcli", "connection", "add"]: st["adds"] += 1
+        if a[0] == "nmcli" and "list" in a: return cp(a, 0, b"")
+        if a[:2] == ["nmcli", "-w"] and a[2:5] == ["45", "device", "connect"]:
+            st["joined"] = connect_ok; return cp(a, 0 if connect_ok else 10)
+        if a[0] == "nm-online":
+            return cp(a, 0 if st["joined"] or st["adds"] >= 2 else 1)
+        if a[0] == "ip": return cp(a, 0, b"default via 1.1.1.1 dev wlan0\n" if st["joined"] or st["adds"] >= 2 else b"")
+    f = Fake(rules)
+    def sleep(x):
+        clock["t"] += 600.0
+        assert clock["t"] < 100000
+    rc = W.main(**e.kw(f, now=lambda: clock["t"], sleep=sleep))
+    return rc, f, st
+rc, f, st = idle_flow(True)
+i_del = min(i for i, c in enumerate(f.calls) if c[:5] == ["nmcli", "connection", "delete", "id", W.HOTSPOT_CON] and i > f.idx("nmcli", "connection", "up", W.HOTSPOT_CON))
+i_con = f.idx("nmcli", "-w", "45", "device", "connect", "wlan0")
+ok("I4: idle -> hotspot removed, rescan, nmcli device connect wlan0 (saved Wi-Fi), then the online check",
+   0 < i_del < f.idx("nmcli", "device", "wifi", "rescan") < i_con
+   and any(c[:2] == ["nm-online", "-q"] for c in f.calls[i_con:]))
+ok("I4: saved Wi-Fi back -> online -> exit 0, no second hotspot", rc == 0 and st["adds"] == 1)
+ok("I4: the saved networks are never read (no connection show / list of profiles)",
+   not any(c[:3] == ["nmcli", "connection", "show"] or (c[0] == "nmcli" and "NAME" in " ".join(c)) for c in f.calls))
+rc, f, st = idle_flow(False)
+ok("I4: saved Wi-Fi not there -> the hotspot is raised again (second add), exit 0 once online", rc == 0 and st["adds"] == 2)
+i_con = f.idx("nmcli", "-w", "45", "device", "connect", "wlan0")
+ok("I4: a failed connect does not sit in a long wait (nm-online -t 1, not 30/45)",
+   i_con > 0 and next(c for c in f.calls[i_con:] if c[0] == "nm-online")[:4] == ["nm-online", "-q", "-t", "1"])
 
 # ---------------- unit + conf files ----------------
 unit = rd(os.path.join(WS, "pilnk-wifi-setup.service"))

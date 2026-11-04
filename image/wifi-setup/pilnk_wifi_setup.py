@@ -4,6 +4,9 @@
 Run at every boot. If the Pi is online (nm-online AND a default route) it exits 0.
 Otherwise: scan, open the hotspot PiLNK-Setup-XXXX, serve a one-page form on
 10.42.0.1:80, and join the network the user picks. Exits 0 once online.
+tar1090's lighttpd holds *:80, so it is stopped while the page runs and started
+again on exit. Every 30 idle minutes the hotspot steps aside so NetworkManager
+can rejoin a saved Wi-Fi network (a router that came back after a power cut).
 
 Rules: nmcli/raspi-config get argv lists (never a shell); the Wi-Fi password is
 never logged, printed or put in an error message; saved connections are never read.
@@ -13,7 +16,9 @@ import urllib.parse
 
 HOST, PORT = "10.42.0.1", 80
 HOTSPOT_CON = "PiLNK-Hotspot"
-IDLE_RESTART = 1800          # seconds with no POST before the hotspot restarts
+IDLE_RESTART = 1800          # seconds with no POST before trying saved Wi-Fi, then the hotspot again
+AUTOCONNECT_WAIT = 45        # seconds for NetworkManager to bring up a saved Wi-Fi network
+BIND_BACKOFF = (2, 4, 8, 15, 30, 60)   # seconds between tries when port 80 is busy
 JOIN_WAIT = 30               # seconds to wait for a join
 BOOT_WAIT = 90               # seconds to wait for a network at boot
 MAX_BODY = 4096
@@ -116,6 +121,8 @@ def scan(run=subprocess.run):
 def validate(form):
     errors = []
     country = (form.get("country") or DEFAULT_COUNTRY).strip().upper()
+    if country == "UK":              # the common name; ISO 3166 says GB
+        country = "GB"
     ssid = form.get("ssid") or ""
     psk = form.get("psk") or ""
     if country not in COUNTRIES:
@@ -155,7 +162,7 @@ def _switch_text(suffix):
             "from your home Wi-Fi to get your pairing code." % html.escape(suffix, quote=True))
 
 
-def render_page(networks, suffix, error):
+def render_page(networks, suffix, error, country=DEFAULT_COUNTRY):
     opts = []
     for n in networks:
         raw = n if isinstance(n, bytes) else _b(n)
@@ -166,7 +173,8 @@ def render_page(networks, suffix, error):
         "<h1>Connect your PiLNK to Wi-Fi</h1>" + err +
         '<form method="post" action="/join">'
         '<label for="country">Country (two-letter code)</label>'
-        '<input id="country" name="country" value="NZ" maxlength="2" autocapitalize="characters" required>'
+        '<input id="country" name="country" value="%s" maxlength="2" autocapitalize="characters" required>'
+        % html.escape(country, quote=True) +
         '<label for="network">Wi-Fi network</label>'
         '<select id="network" name="network"><option value="">Choose a network</option>' + "".join(opts) + "</select>"
         '<label for="ssid_manual">Or type a network name (hidden network)</label>'
@@ -212,6 +220,7 @@ class State:
     def __init__(self, suffix, networks=(), now=time.monotonic):
         self.suffix, self.networks, self.now = suffix, list(networks), now
         self.error = None
+        self.country = DEFAULT_COUNTRY
         self.last_post = now()
         self._pending = None
         self._lock = threading.Lock()
@@ -256,7 +265,7 @@ def make_handler(state):
 
         def do_GET(self):
             if self.path.split("?", 1)[0] == "/":
-                self._send(200, render_page(state.networks, state.suffix, state.error))
+                self._send(200, render_page(state.networks, state.suffix, state.error, state.country))
             else:
                 self._home()
 
@@ -283,7 +292,7 @@ def make_handler(state):
                     ssid, errs = "", ["Choose a Wi-Fi network, or type its name."]
             clean, verrs = validate({"country": form.get("country"), "ssid": ssid, "psk": form.get("psk", "")})
             if clean is None or errs:
-                return self._send(200, render_page(state.networks, state.suffix, " ".join(errs or verrs)))
+                return self._send(200, render_page(state.networks, state.suffix, " ".join(errs or verrs), state.country))
             state.error = None
             state.submit(clean["country"], clean["ssid"], clean["psk"], hidden)
             self._send(200, render_done(state.suffix))
@@ -304,10 +313,31 @@ def _quiet(run, argv):
         return None
 
 
+def saved_country(run):
+    """The Wi-Fi country already set on this card (raspi-config, else the global
+    regulatory domain from `iw reg get`), or None when none is set ("00")."""
+    r = _quiet(run, ["raspi-config", "nonint", "get_wifi_country"])
+    if r is not None and r.returncode == 0:
+        c = (r.stdout or b"").decode("ascii", "replace").strip().upper()
+        if c in COUNTRIES:
+            return c
+    r = _quiet(run, ["iw", "reg", "get"])
+    if r is not None and r.returncode == 0:
+        for line in (r.stdout or b"").decode("ascii", "replace").splitlines():
+            m = re.match(r"^country ([A-Z0-9]{2}):", line)
+            if m:                       # the first one is the global domain
+                return m.group(1) if m.group(1) in COUNTRIES else None
+    return None
+
+
 def prepare_radio(run):
-    """A fresh card has wlan0 rfkill-blocked until a country is set. Failures are ignored."""
+    """A fresh card has wlan0 rfkill-blocked until a country is set. Keeps the
+    country already set on the card; NZ only when there is none. Failures are
+    ignored. Returns the country used."""
+    country = saved_country(run) or DEFAULT_COUNTRY
     _quiet(run, ["rfkill", "unblock", "wifi"])
-    _quiet(run, ["raspi-config", "nonint", "do_wifi_country", DEFAULT_COUNTRY])
+    _quiet(run, ["raspi-config", "nonint", "do_wifi_country", country])
+    return country
 
 
 def start_hotspot(state, run):
@@ -320,6 +350,34 @@ def start_hotspot(state, run):
                  "802-11-wireless.mode", "ap", "802-11-wireless.band", "bg", "ipv4.method", "shared"])
     _quiet(run, ["nmcli", "connection", "up", HOTSPOT_CON])
     state.last_post = state.now()
+
+
+def _service_active(run, unit):
+    r = _quiet(run, ["systemctl", "is-active", "--quiet", unit])
+    return r is not None and r.returncode == 0
+
+
+def free_port80(run):
+    """tar1090's lighttpd listens on *:80, and a wildcard listener makes our bind
+    to 10.42.0.1:80 fail. Stop it while the page runs. True if it was stopped."""
+    if _service_active(run, "lighttpd"):
+        _log("stopping lighttpd (tar1090) while the setup page needs port 80")
+        _quiet(run, ["systemctl", "stop", "lighttpd"])
+        return True
+    return False
+
+
+def try_saved_wifi(run, settle):
+    """Idle cycle: remove the hotspot so wlan0 is free, rescan, and ask
+    NetworkManager to bring up the best saved network for wlan0 itself (saved
+    connections are never read here). True once online."""
+    _quiet(run, ["nmcli", "connection", "delete", "id", HOTSPOT_CON])
+    _quiet(run, ["nmcli", "device", "wifi", "rescan"])
+    settle(SETTLE)
+    r = _quiet(run, ["nmcli", "-w", str(AUTOCONNECT_WAIT), "device", "connect", "wlan0"])
+    if r is not None and r.returncode == 0:
+        return is_online(run, JOIN_WAIT)
+    return is_online(run, 1)        # nothing saved or in range; maybe a cable came up
 
 
 def _cleanup(run, dropin):
@@ -338,15 +396,31 @@ def main(run=subprocess.run, sleep=time.sleep, now=time.monotonic,
     if is_online(run, BOOT_WAIT):
         _cleanup(run, dropin)        # a power cut can leave a stale drop-in / profile behind
         return 0
-    prepare_radio(run)
+    country = prepare_radio(run)
     suffix = host_suffix(cpuinfo, machine_id)
     state = State(suffix, now=now)
+    state.country = country
     server = thread = None
+    lighttpd_stopped = False
     try:
         os.makedirs(dnsmasq_dir, exist_ok=True)
         shutil.copyfile(dnsmasq_src, dropin)
         start_hotspot(state, run)
-        server = make_server(state, host, port)
+        lighttpd_stopped = free_port80(run)
+        tries = 0
+        while server is None:
+            try:
+                server = make_server(state, host, port)
+            except OSError as e:
+                # loud, and the hotspot stays up: no tear-down / restart loop
+                wait = BIND_BACKOFF[min(tries, len(BIND_BACKOFF) - 1)]
+                _log("cannot serve the setup page on %s:%s (%s); retrying in %ss"
+                     % (host, port, e.strerror or e, wait))
+                tries += 1
+                sleep(wait)
+                if is_online(run, 1):
+                    return 0
+                lighttpd_stopped = free_port80(run) or lighttpd_stopped
         thread = threading.Thread(target=server.serve_forever, daemon=True)
         thread.start()
         if on_ready:
@@ -369,6 +443,8 @@ def main(run=subprocess.run, sleep=time.sleep, now=time.monotonic,
             elif is_online(run, 1):
                 return 0
             elif now() - state.last_post >= IDLE_RESTART:
+                if try_saved_wifi(run, settle):
+                    return 0
                 start_hotspot(state, run)
     finally:
         if server:
@@ -376,6 +452,8 @@ def main(run=subprocess.run, sleep=time.sleep, now=time.monotonic,
             server.server_close()
             thread.join(5)
         _cleanup(run, dropin)
+        if lighttpd_stopped:
+            _quiet(run, ["systemctl", "--no-block", "start", "lighttpd"])
 
 
 if __name__ == "__main__":
