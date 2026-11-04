@@ -18,6 +18,8 @@ JOIN_WAIT = 30               # seconds to wait for a join
 BOOT_WAIT = 90               # seconds to wait for a network at boot
 MAX_BODY = 4096
 POLL = 3
+SETTLE = 3                   # seconds for the radio to leave AP mode and rescan before a join
+REQ_TIMEOUT = 10             # per-connection socket timeout so a short body can't hang a thread
 DEFAULT_COUNTRY = "NZ"
 DNSMASQ_DIR = "/etc/NetworkManager/dnsmasq-shared.d"
 DNSMASQ_NAME = "pilnk-captive.conf"
@@ -84,15 +86,18 @@ def is_online(run=subprocess.run, timeout=1):
 
 
 def parse_scan(raw):
-    """Parse `nmcli -t -f SSID device wifi list` output (bytes or str).
-    Terse mode escapes ':' and '\\' with a backslash. Returns unique non-empty
-    SSIDs as str (surrogateescape keeps invalid bytes exact)."""
-    if isinstance(raw, str):
-        raw = _b(raw)
+    """Parse `nmcli -t -f SSID-HEX device wifi list` output (bytes or str): one hex
+    string per line (no escaping to undo). Returns unique SSIDs of 1-32 bytes as str
+    (surrogateescape keeps invalid bytes exact); hidden (empty) SSIDs are skipped."""
+    if isinstance(raw, bytes):
+        raw = raw.decode("ascii", "replace")
     out, seen = [], set()
-    for line in raw.split(b"\n"):
-        ssid = re.sub(rb"\\(.)", rb"\1", line.rstrip(b"\r"))
-        if not ssid or ssid == b"--" or ssid in seen or len(ssid) > 32:
+    for line in raw.splitlines():
+        line = line.strip()
+        if not line or not re.fullmatch(r"(?:[0-9a-fA-F]{2})+", line):
+            continue
+        ssid = bytes.fromhex(line)
+        if len(ssid) > 32 or ssid in seen:
             continue
         seen.add(ssid)
         out.append(ssid.decode("utf-8", "surrogateescape"))
@@ -101,7 +106,7 @@ def parse_scan(raw):
 
 def scan(run=subprocess.run):
     try:
-        r = run(["nmcli", "-t", "-f", "SSID", "device", "wifi", "list", "--rescan", "yes"], capture_output=True)
+        r = run(["nmcli", "-t", "-f", "SSID-HEX", "device", "wifi", "list", "--rescan", "yes"], capture_output=True)
     except (OSError, subprocess.SubprocessError):
         return []
     return parse_scan(r.stdout or b"") if r.returncode == 0 else []
@@ -231,6 +236,7 @@ def _parse_form(body):
 def make_handler(state):
     class Handler(http.server.BaseHTTPRequestHandler):
         server_version = "pilnk-wifi"
+        timeout = REQ_TIMEOUT
 
         def log_message(self, *a):
             return
@@ -298,27 +304,43 @@ def _quiet(run, argv):
         return None
 
 
+def prepare_radio(run):
+    """A fresh card has wlan0 rfkill-blocked until a country is set. Failures are ignored."""
+    _quiet(run, ["rfkill", "unblock", "wifi"])
+    _quiet(run, ["raspi-config", "nonint", "do_wifi_country", DEFAULT_COUNTRY])
+
+
 def start_hotspot(state, run):
-    """Delete any old hotspot, scan while the radio is free, then bring the hotspot up."""
+    """Delete any old hotspot, scan while the radio is free, then bring up an open AP."""
     _quiet(run, ["nmcli", "connection", "delete", "id", HOTSPOT_CON])
     state.networks = scan(run)
-    _quiet(run, ["nmcli", "device", "wifi", "hotspot", "ifname", "wlan0", "con-name", HOTSPOT_CON,
-                 "ssid", "PiLNK-Setup-" + state.suffix])
-    # `hotspot` without a password makes up a WPA key; the setup network must be open.
-    _quiet(run, ["nmcli", "connection", "modify", HOTSPOT_CON, "remove", "802-11-wireless-security"])
+    # Created directly as an open AP (no wifi-sec setting), so there is never a WPA key.
+    _quiet(run, ["nmcli", "connection", "add", "type", "wifi", "ifname", "wlan0", "con-name", HOTSPOT_CON,
+                 "autoconnect", "no", "ssid", "PiLNK-Setup-" + state.suffix,
+                 "802-11-wireless.mode", "ap", "802-11-wireless.band", "bg", "ipv4.method", "shared"])
     _quiet(run, ["nmcli", "connection", "up", HOTSPOT_CON])
     state.last_post = state.now()
+
+
+def _cleanup(run, dropin):
+    try:
+        os.remove(dropin)
+    except OSError:
+        pass
+    _quiet(run, ["nmcli", "connection", "delete", "id", HOTSPOT_CON])
 
 
 def main(run=subprocess.run, sleep=time.sleep, now=time.monotonic,
          cpuinfo="/proc/cpuinfo", machine_id="/etc/machine-id",
          dnsmasq_dir=DNSMASQ_DIR, dnsmasq_src=DNSMASQ_SRC,
-         host=HOST, port=PORT, on_ready=None):
+         host=HOST, port=PORT, on_ready=None, settle=time.sleep):
+    dropin = os.path.join(dnsmasq_dir, DNSMASQ_NAME)
     if is_online(run, BOOT_WAIT):
+        _cleanup(run, dropin)        # a power cut can leave a stale drop-in / profile behind
         return 0
+    prepare_radio(run)
     suffix = host_suffix(cpuinfo, machine_id)
     state = State(suffix, now=now)
-    dropin = os.path.join(dnsmasq_dir, DNSMASQ_NAME)
     server = thread = None
     try:
         os.makedirs(dnsmasq_dir, exist_ok=True)
@@ -334,6 +356,10 @@ def main(run=subprocess.run, sleep=time.sleep, now=time.monotonic,
             req = state.take_pending()
             if req:
                 country, ssid, psk, hidden = req
+                # wlan0 can't scan or join while it is the AP: drop it, rescan, then join.
+                _quiet(run, ["nmcli", "connection", "down", HOTSPOT_CON])
+                _quiet(run, ["nmcli", "device", "wifi", "rescan"])
+                settle(SETTLE)
                 ok_, msg = join(country, ssid, psk, run=run, hidden=hidden)
                 del psk, req
                 if ok_ and is_online(run, JOIN_WAIT):
@@ -349,11 +375,7 @@ def main(run=subprocess.run, sleep=time.sleep, now=time.monotonic,
             server.shutdown()
             server.server_close()
             thread.join(5)
-        try:
-            os.remove(dropin)
-        except OSError:
-            pass
-        _quiet(run, ["nmcli", "connection", "delete", "id", HOTSPOT_CON])
+        _cleanup(run, dropin)
 
 
 if __name__ == "__main__":

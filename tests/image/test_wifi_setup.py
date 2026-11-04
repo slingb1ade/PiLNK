@@ -110,15 +110,17 @@ done = W.render_done("7f3a").decode()
 ok("render_done has the exact before-switch copy",
    "PiLNK-Setup will disappear. In a minute, open http://pilnk-7f3a.local:5000 from your home Wi-Fi to get your pairing code." in done)
 
-# ---------------- scan parsing (nmcli -t escapes) ----------------
-raw = b"Home\nwe\\:ird\\\\name\n\n<script>x\nHome\n\xff\xfe\nA\\:B\\:C\n--\n"
+# ---------------- scan parsing (nmcli -t -f SSID-HEX) ----------------
+def hx(*items): return b"\n".join(x.hex().encode() if x else b"" for x in items) + b"\n"
+raw = hx(b"Home", b"we:ird\\name", b"", b"<script>x", b"Home", b"\xff\xfe", b"A:B:C", b"a\nb", b"x" * 33)
 nets = W.parse_scan(raw)
-ok("parse_scan unescapes \\: and \\\\", "we:ird\\name" in nets and "A:B:C" in nets)
-ok("parse_scan drops empty/duplicate, keeps invalid bytes",
-   nets.count("Home") == 1 and "" not in nets and b"\xff\xfe".decode("utf-8", "surrogateescape") in nets)
+ok("parse_scan decodes hex to exact bytes", "we:ird\\name" in nets and "A:B:C" in nets and "a\nb" in nets)
+ok("parse_scan drops empty/duplicate/over-32-byte, keeps invalid bytes",
+   nets.count("Home") == 1 and "" not in nets and "x" * 33 not in nets
+   and b"\xff\xfe".decode("utf-8", "surrogateescape") in nets)
 f = Fake(lambda a: cp(a, 0, raw) if a[:2] == ["nmcli", "-t"] else None)
-ok("scan runs nmcli -t -f SSID device wifi list as argv",
-   W.scan(run=f) == nets and f.calls[0][:6] == ["nmcli", "-t", "-f", "SSID", "device", "wifi"] and f.kw[0].get("shell") is not True)
+ok("scan runs nmcli -t -f SSID-HEX device wifi list as argv",
+   W.scan(run=f) == nets and f.calls[0][:7] == ["nmcli", "-t", "-f", "SSID-HEX", "device", "wifi", "list"] and f.kw[0].get("shell") is not True)
 ok("scan tolerates a failing nmcli", W.scan(run=Fake(lambda a: cp(a, 1))) == [])
 
 # ---------------- join ----------------
@@ -252,7 +254,8 @@ class Env:
     def kw(self, run, **extra):
         k = dict(run=run, sleep=lambda s: None, now=extra.pop("now", None) or (lambda: 0.0),
                  cpuinfo=self.cpu, machine_id=self.mid, dnsmasq_dir=self.dns_dir,
-                 dnsmasq_src=os.path.join(WS, "dnsmasq-captive.conf"), host="127.0.0.1", port=0)
+                 dnsmasq_src=os.path.join(WS, "dnsmasq-captive.conf"), host="127.0.0.1", port=0,
+                 settle=lambda s: None)
         k.update(extra); return k
 
 e = Env()
@@ -267,19 +270,18 @@ ok("main online at boot: no dnsmasq drop-in", os.listdir(e.dns_dir) == [])
 e = Env()
 state = {"polls": 0, "hotspot": False}
 def rules(a):
-    if a[:4] == ["nmcli", "device", "wifi", "hotspot"]: state["hotspot"] = True; e.dns_snapshots.append(os.listdir(e.dns_dir))
-    if a[0] == "nmcli" and "list" in a: return cp(a, 0, b"Home\nCafe\n")
+    if a[:3] == ["nmcli", "connection", "add"]: e.dns_snapshots.append(os.listdir(e.dns_dir))
+    if a[:3] == ["nmcli", "connection", "up"]: state["hotspot"] = True
+    if a[0] == "nmcli" and "list" in a: return cp(a, 0, hx(b"Home", b"Cafe"))
     if a[0] == "nm-online":
         if not state["hotspot"]: return cp(a, 1)
         state["polls"] += 1; return cp(a, 0 if state["polls"] > 3 else 1)
     if a[0] == "ip": return cp(a, 0, b"default via 1.2.3.4 dev eth0\n" if state["polls"] > 3 else b"")
 f = Fake(rules)
 rc = W.main(**e.kw(f))
-hs = [c for c in f.calls if c[:4] == ["nmcli", "device", "wifi", "hotspot"]]
-ok("main offline: nmcli device wifi hotspot is called", len(hs) == 1)
-ok("main offline: hotspot is wlan0, SSID PiLNK-Setup-7f3a, no password",
-   "ifname" in hs[0] and "wlan0" in hs[0] and "PiLNK-Setup-7f3a" in hs[0] and "password" not in hs[0])
-ok("main offline: scan happens before the hotspot", f.idx("nmcli", "-t") < f.idx("nmcli", "device", "wifi", "hotspot") and f.idx("nmcli", "-t") >= 0)
+hs = [c for c in f.calls if c[:3] == ["nmcli", "connection", "add"]]
+ok("main offline: nmcli connection add is called once", len(hs) == 1)
+ok("main offline: scan happens before the hotspot", f.idx("nmcli", "-t") < f.idx("nmcli", "connection", "add") and f.idx("nmcli", "-t") >= 0)
 ok("main offline: dnsmasq drop-in present when hotspot started", e.dns_snapshots and e.dns_snapshots[0] == ["pilnk-captive.conf"])
 ok("main offline: drop-in removed on exit", os.listdir(e.dns_dir) == [])
 ok("main offline: exits 0 once online", rc == 0)
@@ -299,15 +301,15 @@ def rules2(a):
 f = Fake(rules2)
 rc = W.main(**e.kw(f))
 ok("nm-online ok but no default route is treated as offline (hotspot started)",
-   f.has("nmcli", "device", "wifi", "hotspot") and rc == 0)
+   f.has("nmcli", "connection", "add") and rc == 0)
 
 # join success path through main: POST -> join -> online -> exit 0
 def run_flow(join_ok, idle_cycles=0):
     e = Env(); st = {"joined": False, "hotspots": 0}
     holder = {}
     def rules(a):
-        if a[:4] == ["nmcli", "device", "wifi", "hotspot"]: st["hotspots"] += 1
-        if a[0] == "nmcli" and "list" in a: return cp(a, 0, b"Home\n")
+        if a[:3] == ["nmcli", "connection", "up"]: st["hotspots"] += 1
+        if a[0] == "nmcli" and "list" in a: return cp(a, 0, hx(b"Home"))
         if a[0] == "nmcli" and "connect" in a: 
             st["joined"] = join_ok; return cp(a, 0 if join_ok else 4)
         if a[0] == "nm-online": return cp(a, 0 if st["joined"] else 1)
@@ -321,6 +323,7 @@ def drive(join_ok):
     def on_ready(srv, state): box["srv"] = srv; box["state"] = state; server_ready.set()
     out = {}
     th = threading.Thread(target=lambda: out.setdefault("rc", W.main(**e.kw(f, on_ready=on_ready,
+                          settle=lambda s: f.calls.append(["SETTLE", str(s)]),
                           sleep=lambda s: __import__("time").sleep(0.01)))), daemon=True)
     th.start(); assert server_ready.wait(5)
     body = urllib.parse.urlencode({"country": "NZ", "network": b"Home".hex(), "psk": secret})
@@ -340,6 +343,10 @@ e, f, st, out, th, s, b = drive(True)
 ok("main join success: POST returned the before-switch page", s == 200 and b"will disappear" in b)
 ok("main join success: raspi-config country then nmcli connect with the PSK as argv only",
    f.has("raspi-config", "nonint", "do_wifi_country", "NZ") and any(c[0] == "nmcli" and "connect" in c and c[-1] == secret for c in f.calls))
+def conn_idx(f): return next(i for i, c in enumerate(f.calls) if c[:4] == ["nmcli", "-w", "30", "device"] and "connect" in c)
+i_down, i_resc = f.idx("nmcli", "connection", "down", W.HOTSPOT_CON), f.idx("nmcli", "device", "wifi", "rescan")
+i_set, i_conn = f.idx("SETTLE"), conn_idx(f)
+ok("I-1: join order is hotspot down -> rescan -> settle -> connect", 0 < i_down < i_resc < i_set < i_conn)
 ok("main join success: exits 0", out.get("rc") == 0 and not th.is_alive())
 ok("main join success: drop-in removed", os.listdir(e.dns_dir) == [])
 ok("main join success: PSK appears only in the nmcli connect argv",
@@ -348,12 +355,16 @@ e, f, st, out, th, s, b = drive(False)
 ok("main join failure: hotspot is brought back", st["hotspots"] >= 2)
 ok("main join failure: connection deleted, error copy shown on the page",
    f.has("nmcli", "connection", "delete", "id", "Home") and "Couldn".encode() in out.get("page", b"") and secret.encode() not in out.get("page", b""))
+i_conn = conn_idx(f)
+ok("I-1: failed join brings the hotspot back up after the connect (and went down before it)",
+   0 < f.idx("nmcli", "connection", "down", W.HOTSPOT_CON) < i_conn
+   and any(c[:4] == ["nmcli", "connection", "up", W.HOTSPOT_CON] for c in f.calls[i_conn:]))
 ok("main join failure: still serving, not exited", th.is_alive() or out.get("rc") is not None)
 
 # idle restart after 30 minutes without a POST
 e = Env(); clock = {"t": 0.0}; hs_count = {"n": 0}; polls = {"n": 0}
 def rules3(a):
-    if a[:4] == ["nmcli", "device", "wifi", "hotspot"]: hs_count["n"] += 1
+    if a[:3] == ["nmcli", "connection", "add"]: hs_count["n"] += 1
     if a[0] == "nmcli" and "list" in a: return cp(a, 0, b"")
     if a[0] == "nm-online":
         if hs_count["n"] >= 2: return cp(a, 0)
@@ -367,6 +378,61 @@ rc = W.main(**e.kw(f, now=lambda: clock["t"], sleep=sleep3))
 ok("idle for 30 min restarts the hotspot (second hotspot start, rescan first)",
    hs_count["n"] == 2 and rc == 0 and len([c for c in f.calls if c[:2] == ["nmcli", "-t"]]) == 2)
 ok("idle restart is not earlier than 30 min", W.IDLE_RESTART == 1800)
+
+# ---------------- review fixes, round 1 ----------------
+HS_ADD = ["nmcli", "connection", "add", "type", "wifi", "ifname", "wlan0", "con-name", "PiLNK-Hotspot",
+          "autoconnect", "no", "ssid", "PiLNK-Setup-7f3a", "802-11-wireless.mode", "ap",
+          "802-11-wireless.band", "bg", "ipv4.method", "shared"]
+def online_after_up(e):
+    st = {"up": False, "polls": 0}
+    def rules(a):
+        if a[:3] == ["nmcli", "connection", "up"]: st["up"] = True
+        if a[0] == "nmcli" and "list" in a: return cp(a, 0, hx(b"Home"))
+        if a[0] == "nm-online":
+            if not st["up"]: return cp(a, 1)
+            st["polls"] += 1; return cp(a, 0 if st["polls"] > 2 else 1)
+        if a[0] == "ip": return cp(a, 0, b"default via 1.2.3.4 dev eth0\n" if st["polls"] > 2 else b"")
+    return Fake(rules)
+e = Env(); f = online_after_up(e); rc = W.main(**e.kw(f))
+ok("hotspot: open AP profile created with the exact argv", rc == 0 and f.calls.count(HS_ADD) == 1)
+ok("hotspot: order delete old -> scan -> add -> up",
+   0 <= f.idx("nmcli", "connection", "delete", "id", W.HOTSPOT_CON) < f.idx("nmcli", "-t")
+   < f.idx(*HS_ADD) < f.idx("nmcli", "connection", "up", W.HOTSPOT_CON))
+ok("hotspot: no hotspot subcommand, no modify, no wifi-sec/password/psk args",
+   not f.has("nmcli", "device", "wifi", "hotspot") and not any("modify" in c for c in f.calls)
+   and not any(x == "password" or "wifi-sec" in x or "psk" in x.lower() or "802-11-wireless-security" in x
+               for c in f.calls if c[:3] == ["nmcli", "connection", "add"] for x in c))
+ok("I-2: rfkill unblock and country NZ happen before the first scan and the hotspot",
+   0 <= f.idx("rfkill", "unblock", "wifi") < f.idx("nmcli", "-t")
+   and 0 <= f.idx("raspi-config", "nonint", "do_wifi_country", "NZ") < f.idx("nmcli", "-t")
+   and f.idx("raspi-config", "nonint", "do_wifi_country", "NZ") < f.idx(*HS_ADD))
+ok("I-2: unblock/country failures do not stop the hotspot",
+   (lambda f2: W.main(**Env().kw(f2)) == 0 and f2.has("nmcli", "connection", "add"))(
+       (lambda e2: (lambda inner: Fake(lambda a: cp(a, 1) if a[0] in ("rfkill", "raspi-config") else inner(a)))(online_after_up(e2).rules))(Env())))
+
+# M-3: online early exit still cleans up
+e = Env(); wr(os.path.join(e.dns_dir, "pilnk-captive.conf"), "address=/#/10.42.0.1\n")
+f = net(0, True); rc = W.main(**e.kw(f))
+ok("M-3: online at boot exits 0 and removes a stale dnsmasq drop-in", rc == 0 and os.listdir(e.dns_dir) == [])
+ok("M-3: online at boot deletes a stale PiLNK-Hotspot profile",
+   f.has("nmcli", "connection", "delete", "id", W.HOTSPOT_CON) and f.calls[0] == ["nm-online", "-q", "-t", "90"]
+   and not f.has("rfkill") and not f.has("raspi-config"))
+
+# M-2: a short body must not hang a handler thread
+import socket, time
+W.REQ_TIMEOUT = 0.5
+st, srv, t = start_server()
+t0 = time.monotonic(); sk = socket.create_connection(("127.0.0.1", srv.server_address[1]), timeout=3)
+sk.sendall(b"POST /join HTTP/1.0\r\nContent-Length: 100\r\nContent-Type: application/x-www-form-urlencoded\r\n\r\nabc")
+try:
+    got = sk.recv(4096); hung = False
+except socket.timeout:
+    got, hung = b"", True
+sk.close(); dt = time.monotonic() - t0
+ok("M-2: declared Content-Length longer than the body is dropped quickly (no hang)", not hung and got == b"" and dt < 2.5)
+ok("M-2: nothing queued from the short body", st.take_pending() is None)
+stop(srv, t)
+ok("M-2: handler class sets a socket timeout", re.search(r"^\s+timeout = ", src, re.M) is not None)
 
 # ---------------- unit + conf files ----------------
 unit = rd(os.path.join(WS, "pilnk-wifi-setup.service"))
