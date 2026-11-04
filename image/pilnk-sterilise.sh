@@ -132,6 +132,7 @@ remove_histories() {
   while IFS= read -r h; do
     remove_paths "history/cache files in $h" \
       "$h/.bash_history" "$h/.zsh_history" "$h/.sh_history" "$h/.python_history" "$h/.lesshst" \
+      "$h/.local/state/lesshst" "$h/.local/share/nano" \
       "$h/.viminfo" "$h/.node_repl_history" "$h/.cache" "$h/.ssh" "$h/.gitconfig" "$h/.wget-hsts"
   done < <(homes)
 }
@@ -157,6 +158,34 @@ cloud_init_step() {
   remove_paths "cloud-init state" "$R/var/lib/cloud" "$R/etc/netplan/50-cloud-init.yaml"
   mkdir -p "$R/etc/cloud" && : > "$R/etc/cloud/cloud-init.disabled"
   say "disabled: cloud-init"
+}
+
+# Saved networks, leases and NetworkManager's state files (seen-bssids,
+# timestamps, NetworkManager.state, secret_key ...): deleted, never read.
+remove_network() {
+  local d
+  wipe_counted "saved network connections" "$R/etc/NetworkManager/system-connections"
+  wipe_counted "runtime network connections" "$R/run/NetworkManager/system-connections"
+  remove_matching "NetworkManager netplan files" "$R/etc/netplan" -maxdepth 1 -name '90-NM-*.yaml'
+  remove_matching "wpa_supplicant files" "$R/etc/wpa_supplicant" -maxdepth 1 -name '*.conf'
+  remove_paths "boot wpa_supplicant.conf" "$B/wpa_supplicant.conf"
+  for d in "$R/var/lib/NetworkManager" "$R/var/lib/dhcp" "$R/var/lib/dhcpcd"; do
+    remove_matching "DHCP leases" "$d" -maxdepth 2 -name '*.lease*'
+  done
+  remove_matching "NetworkManager state" "$R/var/lib/NetworkManager" -mindepth 1 -maxdepth 1 ! -type d
+}
+
+# Detached run, after the sessions are closed: stop NetworkManager and
+# wpa_supplicant (a lease renewal or their state flush would otherwise write
+# to the card through the zero-fill and the final check), then remove
+# everything network again, since they write their state files on the way down.
+stop_network() {
+  if [ "$REAL" = 1 ]; then
+    systemctl stop NetworkManager.service wpa_supplicant.service >/dev/null 2>&1 \
+      || say "WARNING: could not stop NetworkManager / wpa_supplicant"
+  fi
+  say "stopped: NetworkManager, wpa_supplicant (no more network writes)"
+  remove_network
 }
 
 # Close every login session of pilnk. Their shells save history on the way
@@ -339,18 +368,10 @@ say "locked: pilnk password"
 cloud_init_step
 
 # -- Network (deleted, never read) --------------------------------------
-wipe_counted "saved network connections" "$R/etc/NetworkManager/system-connections"
-wipe_counted "runtime network connections" "$R/run/NetworkManager/system-connections"
-remove_matching "NetworkManager netplan files" "$R/etc/netplan" -maxdepth 1 -name '90-NM-*.yaml'
-remove_matching "wpa_supplicant files" "$R/etc/wpa_supplicant" -maxdepth 1 -name '*.conf'
-remove_paths "boot wpa_supplicant.conf" "$B/wpa_supplicant.conf"
+remove_network
 # Debian ships example configs with example passphrases (harmless docs, but the
 # image verifier's raw psk= rule flags them)
 remove_wpa_examples
-for d in "$R/var/lib/NetworkManager" "$R/var/lib/dhcp" "$R/var/lib/dhcpcd"; do
-  remove_matching "DHCP leases" "$d" -maxdepth 2 -name '*.lease*'
-done
-remove_matching "NetworkManager state" "$R/var/lib/NetworkManager" -maxdepth 1 -type f
 remove_paths "Tailscale state" "$R/var/lib/tailscale"
 
 # -- Identity ------------------------------------------------------------
@@ -431,6 +452,9 @@ remove_login_records
 
 # -- Detached run: check, close the login sessions, remove what they wrote -
 if [ "$STAGE2" = 1 ]; then
+  # NetworkManager rewrites its state files now and then: clear them right
+  # before the pre-check so it does not trip on a write from the last seconds
+  remove_matching "NetworkManager state" "$R/var/lib/NetworkManager" -mindepth 1 -maxdepth 1 ! -type d ! -name '*.lease*'
   pre_check
   end_sessions
   if [ "$REAL" = 1 ]; then
@@ -439,6 +463,7 @@ if [ "$STAGE2" = 1 ]; then
       systemctl stop "$u" >/dev/null 2>&1 || true
     done
   fi
+  stop_network
   remove_histories
   remove_login_records
 fi

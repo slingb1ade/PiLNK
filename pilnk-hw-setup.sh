@@ -528,8 +528,11 @@ hw_main() {
   if [ "$do_apply" -eq 1 ]; then
     if [ "$DECODER_MODE" = "rtlsdr" ]; then
       hw_pin_readsb
-      if ! grep -q -- "--device $ADSB_SERIAL" "$_R/etc/default/readsb" 2>/dev/null; then
-        err "readsb was not pinned to SN $ADSB_SERIAL (no RECEIVER_OPTIONS line in $_R/etc/default/readsb?)"
+      # pinned = exactly one --device[ =] option, and it is ours (whole serial;
+      # wiedehopf's --device-type is not a pin)
+      if ! grep -qE -- "--device[ =]${ADSB_SERIAL}([ \"]|\$)" "$_R/etc/default/readsb" 2>/dev/null \
+         || [ "$(grep -oE -- '--device[ =]' "$_R/etc/default/readsb" 2>/dev/null | wc -l)" -ne 1 ]; then
+        err "readsb was not pinned to SN $ADSB_SERIAL alone (no RECEIVER_OPTIONS line, or another --device option, in $_R/etc/default/readsb?)"
         return 1
       fi
     fi

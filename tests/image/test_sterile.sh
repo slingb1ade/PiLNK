@@ -38,6 +38,9 @@ make_clean() {
   cp "$TEMPLATE" "$D/config.json"
   ln -s /etc/systemd/system/pilnk-firstboot.service "$W/pilnk-firstboot.service"
   ln -s /etc/systemd/system/pilnk-wifi-setup.service "$W/pilnk-wifi-setup.service"
+  # the unit files the enable links point at (pilnk-image-build.sh installs them)
+  printf '[Unit]\n' > "$R/etc/systemd/system/pilnk-firstboot.service"
+  printf '[Unit]\n' > "$R/etc/systemd/system/pilnk-wifi-setup.service"
 }
 
 # Fixtures never spell a pattern the raw search hunts for, so the repo's own
@@ -107,6 +110,14 @@ sterilise-failed|echo 'FAIL x: /y' > "$B/pilnk-sterilise-failed.txt"
 git-reflog|mkdir -p "$D/.git/logs"; echo x > "$D/.git/logs/HEAD"
 git-identity|mkdir -p "$D/.git"; printf '[core]\n\tbare = false\n[user]\n\tname = Someone\n\temail = someone@example.invalid\n' > "$D/.git/config"
 wpa-examples|mkdir -p "$R/usr/share/doc/wpasupplicant/examples"; printf 'network={\n\t%s="examplepassphrase"\n}\n' "$PK" > "$R/usr/share/doc/wpasupplicant/examples/wpa_supplicant.conf"
+nm-state|mkdir -p "$R/var/lib/NetworkManager"; echo x > "$R/var/lib/NetworkManager/seen-bssids"
+nm-state|mkdir -p "$R/var/lib/NetworkManager"; echo x > "$R/var/lib/NetworkManager/timestamps"
+nm-state|mkdir -p "$R/var/lib/NetworkManager"; echo x > "$R/var/lib/NetworkManager/NetworkManager.state"
+nm-state|mkdir -p "$R/var/lib/NetworkManager"; echo x > "$R/var/lib/NetworkManager/secret_key"
+history|mkdir -p "$R/home/pilnk/.local/state"; echo x > "$R/home/pilnk/.local/state/lesshst"
+history|mkdir -p "$R/root/.local/state"; echo x > "$R/root/.local/state/lesshst"
+history|mkdir -p "$R/home/pilnk/.local/share/nano"; echo x > "$R/home/pilnk/.local/share/nano/search_history"
+history|mkdir -p "$R/root/.local/share/nano"; echo x > "$R/root/.local/share/nano/filepos_history"
 EOF
 )
 
@@ -713,3 +724,90 @@ if [ "$(id -u)" != 0 ]; then
   ok "PILNK_ROOT=/. -> the live system: only systemd-run (stage 1)" \
      "[ '$RCDOT' = 0 ] && grep -q '^systemd-run .*--stage2\$' '$CALLS' && [ \"\$(grep -vc '^systemd-run ' '$CALLS')\" = 0 ]"
 fi
+
+# ---- 9. final review fixes -------------------------------------------------
+
+# C1: wiedehopf's stock /etc/default/readsb carries --device-type, which is not a pin
+WIEDEHOPF='RECEIVER_OPTIONS="--device 0 --device-type rtlsdr --gain auto --ppm 0"'
+C1="$ROOT/c1"; make_clean "$C1"; printf '%s\n' "$WIEDEHOPF" > "$C1/etc/default/readsb"
+PILNK_ROOT="$C1" bash "$STER" --no-poweroff --no-zero >/dev/null 2>&1; RCC1=$?
+run_check "$C1"
+ok "C1: sterilised wiedehopf default passes the check (exit 0, no readsb-device)" \
+   "[ '$RCC1' = 0 ] && [ '$N' = 0 ] && ! grep -q '^FAIL readsb-device' <<< \"\$OUT\""
+ok "C1: sterilise keeps --device-type rtlsdr and drops --device 0" \
+   "grep -q -- '--device-type rtlsdr' '$C1/etc/default/readsb' && ! grep -qE -- '--device[ =]' '$C1/etc/default/readsb'"
+for left in '--device 0 ' '--device=0 ' '--device 00000003 '; do
+  printf 'RECEIVER_OPTIONS="%s--device-type rtlsdr --gain auto --ppm 0"\n' "$left" > "$C1/etc/default/readsb"
+  run_check "$C1"
+  ok "C1: a leftover '${left% }' next to --device-type fails readsb-device" \
+     "[ '$N' = 1 ] && grep -q '^FAIL readsb-device: /etc/default/readsb' <<< \"\$OUT\""
+done
+printf 'RECEIVER_OPTIONS="--device-type rtlsdr --gain auto --ppm 0"\n' > "$C1/etc/default/readsb"
+OUTVC1=$(bash "$VER" --root "$C1" --boot "$C1/boot/firmware" --raw "$EMPTYRAW" 2>&1); RCVC1=$?
+ok "C1: the laptop verifier passes a --device-type-only readsb default" "[ '$RCVC1' = 0 ] && ! grep -q readsb-device <<< \"\$OUTVC1\""
+
+# M8: an enable link whose unit file is missing (build step 2/2 skipped) fails
+for u in pilnk-firstboot.service pilnk-wifi-setup.service; do
+  M8R="$ROOT/m8-$u"; make_clean "$M8R"; rm -f "$M8R/etc/systemd/system/$u"
+  run_check "$M8R"
+  ok "M8: $u enabled but its unit file is missing -> FAIL unit-file-missing" \
+     "[ '$N' = 1 ] && grep -qx 'FAIL unit-file-missing: /etc/systemd/system/$u' <<< \"\$OUT\""
+done
+M8R="$ROOT/m8-rel"; make_clean "$M8R"; W8="$M8R/etc/systemd/system/multi-user.target.wants"
+ln -sfn ../pilnk-firstboot.service "$W8/pilnk-firstboot.service"
+run_check "$M8R"
+ok "M8: a relative enable link to an existing unit file passes" "[ '$N' = 0 ]"
+rm -f "$M8R/etc/systemd/system/pilnk-firstboot.service"; run_check "$M8R"
+ok "M8: a relative enable link to a missing unit file fails" "grep -q '^FAIL unit-file-missing: ' <<< \"\$OUT\""
+
+# M3: less (XDG) and nano history, for root and every /home user
+M3R="$ROOT/m3x"; make_clean "$M3R"; mkdir -p "$M3R/home/other"
+for h in "$M3R/root" "$M3R/home/pilnk" "$M3R/home/other"; do
+  mkdir -p "$h/.local/state" "$h/.local/share/nano"; echo x > "$h/.local/state/lesshst"
+  echo x > "$h/.local/share/nano/search_history"; echo x > "$h/.lesshst"
+done
+PILNK_ROOT="$M3R" bash "$STER" --no-poweroff --no-zero >/dev/null 2>&1; RCM3=$?
+ok "M3: sterilise removes .lesshst, .local/state/lesshst and .local/share/nano for every home; check passes" \
+   "[ '$RCM3' = 0 ] && [ -z \"\$(find '$M3R' \\( -name lesshst -o -name .lesshst -o -path '*/.local/share/nano' \\) -print -quit)\" ]"
+
+# I5: NetworkManager state that can hold BSSIDs/SSIDs is removed (never read) and checked
+NM5="$ROOT/i5"; make_clean "$NM5"; NMD="$NM5/var/lib/NetworkManager"; mkdir -p "$NMD"
+for f in NetworkManager.state timestamps seen-bssids secret_key NetworkManager-intern.conf; do echo "HomeNetAlpha" > "$NMD/$f"; done
+echo x > "$NMD/internal-abc-eth0.lease"
+run_check "$NM5"
+ok "I5: each NM state file fails nm-state (leases stay dhcp-lease)" \
+   "[ \"\$(grep -c '^FAIL nm-state: /var/lib/NetworkManager/' <<< \"\$OUT\")\" = 5 ] && grep -q '^FAIL dhcp-lease: ' <<< \"\$OUT\" && ! grep -q 'nm-state: .*lease' <<< \"\$OUT\""
+ok "I5: the check never prints NM state contents" "! grep -q HomeNetAlpha <<< \"\$OUT\""
+OUTI5=$(PILNK_ROOT="$NM5" bash "$STER" --no-poweroff --no-zero 2>&1); RCI5=$?
+run_check "$NM5"
+ok "I5: sterilise removes them; check passes; contents never printed" \
+   "[ '$RCI5' = 0 ] && [ '$N' = 0 ] && [ -z \"\$(ls -A '$NMD')\" ] && ! grep -q HomeNetAlpha <<< \"\$OUTI5\""
+
+# I5 stage 2: NetworkManager and wpa_supplicant are stopped after the sessions
+# close, and every network removal runs again after the stop (NM writes its
+# state files and a renewed lease on the way down)
+NMW='mkdir -p "$FAKE_R/var/lib/NetworkManager" "$FAKE_R/etc/NetworkManager/system-connections"
+  for f in timestamps seen-bssids NetworkManager.state internal-x-wlan0.lease; do echo HomeNetAlpha > "$FAKE_R/var/lib/NetworkManager/$f"; done
+  echo x > "$FAKE_R/etc/NetworkManager/system-connections/home.nmconnection"'
+S5="$ROOT/i5s2"; make_clean "$S5"
+fakebin systemctl "case \"\$*\" in 'stop NetworkManager.service wpa_supplicant.service') $NMW ;; esac; true"
+: > "$CALLS"
+OUTS5=$( source "$STER"; R="$S5"; B="$S5/boot/firmware"; D="$S5/home/pilnk/pilnk"; REAL=1; stop_network; echo "rc=$?" ) 2>&1
+fakebin systemctl 'case "$1" in is-active) grep -qx "${@: -1}" "$ROOT/.active" 2>/dev/null;; esac'
+run_check "$S5"
+ok "I5: stop_network (real root) stops NetworkManager + wpa_supplicant" \
+   "grep -qx 'systemctl stop NetworkManager.service wpa_supplicant.service' '$CALLS' && grep -qx 'rc=0' <<< \"\$OUTS5\""
+ok "I5: files NM writes while stopping are removed afterwards; check passes" "[ '$N' = 0 ]"
+ok "I5: stop_network prints no NM contents" "! grep -q HomeNetAlpha <<< \"\$OUTS5\""
+# the detached run (fake root): a lease + NM state written while the sessions
+# close are gone by the final check
+S6="$ROOT/i5s2b"; make_clean "$S6"
+fakebin loginctl "case \"\$1\" in terminate-user) $NMW ;; esac; true"
+: > "$CALLS"
+OUTS6=$(FAKE_R="$S6" PILNK_ROOT="$S6" bash "$STER" --no-zero --stage2 2>&1); RCS6=$?
+fakebin loginctl 'true'
+ok "I5: stage 2 removes NM state/leases/connections written after the pre-check; exit 0" \
+   "[ '$RCS6' = 0 ] && [ -z \"\$(ls -A '$S6/var/lib/NetworkManager')\" ] && [ -z \"\$(ls -A '$S6/etc/NetworkManager/system-connections')\" ]"
+ok "I5: stage 2 on a fake root never calls systemctl" "! grep -q '^systemctl ' '$CALLS'"
+ok "I5: stage 2 order: sessions closed -> network stopped/removed -> self-check" \
+   "a=\$(lineno \"\$OUTS6\" '^closed: login sessions'); b=\$(lineno \"\$OUTS6\" '^stopped: NetworkManager'); c=\$(lineno \"\$OUTS6\" '^== self-check'); [ -n \"\$a\" ] && [ -n \"\$b\" ] && [ -n \"\$c\" ] && [ \"\$a\" -lt \"\$b\" ] && [ \"\$b\" -lt \"\$c\" ]"

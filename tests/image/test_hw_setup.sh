@@ -187,3 +187,19 @@ SRCOUT=$(env PILNK_ROOT="$ROOT" bash -c 'set -e; . "$1"; echo SOURCED_QUIET; hw_
    echo "$DECODER_MODE $ADSB_SERIAL $VHF_SERIAL $DASHBOARD_PORT"' _ "$HW" 2>&1)
 ok "sourced: no output / no action on source"   '[ "$(printf "%s\n" "$SRCOUT" | head -1)" = SOURCED_QUIET ]'
 ok "sourced: interactive decision + pin + port" 'printf "%s\n" "$SRCOUT" | tail -1 | grep -qE "^rtlsdr 00000007 00000003 50[0-9][0-9]$" && grep -q -- "--device 00000007" "$ROOT/etc/default/readsb"'
+
+# --- final review C1: the pin check matches --device[ =]SERIAL exactly, once ---
+# wiedehopf's stock default: --device 0 --device-type rtlsdr
+mkroot; mkdir_pilnk; rtl 00001090
+echo 'RECEIVER_OPTIONS="--device 0 --device-type rtlsdr --gain auto --ppm 0"' > "$ROOT/etc/default/readsb"; apply
+ok "C1 apply: stock wiedehopf default -> pinned once, --device-type kept, exit 0" \
+   '[ $RC -eq 0 ] && grep -q -- "--device 00001090 --device-type rtlsdr" "$ROOT/etc/default/readsb" && [ "$(grep -oE -- "--device[ =]" "$ROOT/etc/default/readsb" | wc -l)" -eq 1 ]'
+# a --device=N leftover would be a second pin next to ours: not "pinned"
+mkroot; mkdir_pilnk; rtl 00001090
+echo 'RECEIVER_OPTIONS="--device=0 --device-type rtlsdr --gain auto"' > "$ROOT/etc/default/readsb"; apply
+ok "C1 apply: a leftover --device=0 beside our pin -> exit 1 (not pinned)" '[ $RC -eq 1 ] && grep -q "00001090" "$ROOT/.stderr"'
+# the serial must match whole: --device 000010901 is not --device 00001090
+mkroot; mkdir_pilnk; rtl 00001090; echo 'RECEIVER_OPTIONS=""' > "$ROOT/etc/default/readsb"
+fakebin sed 'if [ "$1" = -i ]; then printf "RECEIVER_OPTIONS=\"--device 000010901 --gain auto\"\n" > "${@: -1}"; else exec /bin/sed "$@"; fi'
+apply; rm -f "$BIN/sed"
+ok "C1 apply: a longer serial that starts with ours is not our pin -> exit 1" '[ $RC -eq 1 ]'

@@ -59,6 +59,18 @@ _sc_wants() { # root unit -> prints the links
 }
 _sc_enabled() { [ -n "$(_sc_wants "$1" "$2")" ]; }
 
+# fail for each enable link of UNIT whose target unit file is missing (a link
+# made without the unit installed: systemd would skip it at boot). Absolute
+# targets are read inside ROOT, relative ones from the link's directory.
+_sc_unit_files() { # root unit
+  local f t
+  while IFS= read -r f; do
+    t=$(readlink "$f" 2>/dev/null) || continue
+    case "$t" in /*) t="$1$t" ;; *) t="$(dirname "$f")/$t" ;; esac
+    [ -f "$t" ] || _sc_fail unit-file-missing "$t"
+  done < <(_sc_wants "$1" "$2")
+}
+
 sterile_check() {
   local R="${1%/}" B="${2%/}" D home h f u st
   _SC_N=0; _SC_R="$R"
@@ -98,6 +110,10 @@ sterile_check() {
   for f in "$R/var/lib/NetworkManager" "$R/var/lib/dhcp" "$R/var/lib/dhcpcd"; do
     _sc_none_matching dhcp-lease "$f" -maxdepth 2 -name '*.lease*'
   done
+  # NetworkManager's own state (seen-bssids, timestamps, NetworkManager.state,
+  # secret_key, ...) can name networks and access points; any file there fails
+  # (leases are dhcp-lease above). Names only, never opened.
+  _sc_none_matching nm-state "$R/var/lib/NetworkManager" -mindepth 1 -maxdepth 1 ! -type d ! -name '*.lease*'
 
   # -- identity
   [ ! -s "$R/etc/machine-id" ] || _sc_fail machine-id "$R/etc/machine-id"
@@ -115,7 +131,8 @@ sterile_check() {
   _sc_absent sterilise-failed "$B/pilnk-sterilise-failed.txt"
   for home in "$R"/home/* "$R/root"; do
     [ -d "$home" ] || continue
-    for h in .bash_history .zsh_history .sh_history .python_history .lesshst .viminfo .node_repl_history; do
+    for h in .bash_history .zsh_history .sh_history .python_history .lesshst .local/state/lesshst \
+             .local/share/nano .viminfo .node_repl_history; do
       _sc_absent history "$home/$h"
     done
     for h in .cache .ssh .gitconfig .wget-hsts; do
@@ -147,7 +164,8 @@ sterile_check() {
   _sc_absent firstboot-log "$R/var/log/pilnk-firstboot.log"
 
   # -- receiver
-  if [ -f "$R/etc/default/readsb" ] && grep -qE -- '--device' "$R/etc/default/readsb" 2>/dev/null; then
+  # a pin is --device N / --device=N; wiedehopf's stock --device-type is not one
+  if [ -f "$R/etc/default/readsb" ] && grep -qE -- '--device[ =]' "$R/etc/default/readsb" 2>/dev/null; then
     _sc_fail readsb-device "$R/etc/default/readsb"
   fi
   _sc_absent pilnkradio-config "$R/etc/pilnkradio/config.json"
@@ -162,6 +180,8 @@ sterile_check() {
   local W="$R/etc/systemd/system/multi-user.target.wants"
   _sc_enabled "$R" pilnk-firstboot.service || _sc_fail firstboot-enabled "$W/pilnk-firstboot.service"
   _sc_enabled "$R" pilnk-wifi-setup.service || _sc_fail wifi-setup-enabled "$W/pilnk-wifi-setup.service"
+  _sc_unit_files "$R" pilnk-firstboot.service
+  _sc_unit_files "$R" pilnk-wifi-setup.service
   while IFS= read -r f; do _sc_fail pilnk-enabled "$f"; done < <(_sc_wants "$R" pilnk.service)
   while IFS= read -r f; do _sc_fail readsb-enabled "$f"; done < <(_sc_wants "$R" readsb.service)
 
