@@ -50,13 +50,19 @@ _sc_none_matching() { # check dir find-args...
   done < <(find "$dir" "$@" -print0 2>/dev/null)
 }
 
-_sc_enabled() { [ -e "$1" ] || [ -L "$1" ]; }
+# every enable link for UNIT, under any *.wants dir of etc/systemd/system
+_sc_wants() { # root unit -> prints the links
+  local f
+  for f in "$1"/etc/systemd/system/*.wants/"$2"; do
+    if [ -e "$f" ] || [ -L "$f" ]; then printf '%s\n' "$f"; fi
+  done
+}
+_sc_enabled() { [ -n "$(_sc_wants "$1" "$2")" ]; }
 
 sterile_check() {
-  local R="${1%/}" B="${2%/}" D W home h f st
+  local R="${1%/}" B="${2%/}" D home h f u st
   _SC_N=0; _SC_R="$R"
   D="${PILNK_DIR:-$R/home/pilnk/pilnk}"
-  W="$R/etc/systemd/system/multi-user.target.wants"
 
   # -- logins
   _sc_none_matching ssh-hostkeys "$R/etc/ssh" -maxdepth 1 -name 'ssh_host_*'
@@ -64,9 +70,10 @@ sterile_check() {
     [ -d "$home" ] || continue
     _sc_none_matching authorized-keys "$home" -maxdepth 3 -name authorized_keys
   done
-  _sc_absent ssh-enabled "$W/ssh.service" "$W/sshd.service" \
-    "$R/etc/systemd/system/sockets.target.wants/ssh.socket" \
-    "$R/etc/systemd/system/sshd.service" "$B/ssh" "$B/ssh.txt"
+  for u in ssh.service sshd.service ssh.socket; do
+    while IFS= read -r f; do _sc_fail ssh-enabled "$f"; done < <(_sc_wants "$R" "$u")
+  done
+  _sc_absent ssh-enabled "$R/etc/systemd/system/sshd.service" "$B/ssh" "$B/ssh.txt"
   if [ -f "$R/etc/shadow" ]; then
     st=$(awk -F: '$1=="pilnk"{print "E" substr($2,1,1)}' "$R/etc/shadow" 2>/dev/null)
     [ "$st" = "E!" ] || _sc_fail shadow-locked "$R/etc/shadow"
@@ -77,6 +84,8 @@ sterile_check() {
   # -- cloud-init
   _sc_absent cloud-init-seed "$B/user-data" "$B/network-config" "$B/meta-data"
   [ -e "$R/etc/cloud/cloud-init.disabled" ] || _sc_fail cloud-init-enabled "$R/etc/cloud/cloud-init.disabled"
+  _sc_absent cloud-init-state "$R/var/lib/cloud"
+  _sc_absent netplan-cloud-init "$R/etc/netplan/50-cloud-init.yaml"
 
   # -- network
   _sc_dir_empty nm-connections "$R/etc/NetworkManager/system-connections"
@@ -98,6 +107,9 @@ sterile_check() {
     [ ! -s "$R/var/log/$f" ] || _sc_fail logs "$R/var/log/$f"
   done
   _sc_dir_empty logs "$R/var/lib/lastlog"
+  _sc_dir_empty logs "$R/var/lib/wtmpdb"
+  _sc_absent tailscale-state "$R/var/lib/tailscale"
+  _sc_absent zero-file "$R/.pilnk-zero" "$B/.pilnk-zero"
   for home in "$R"/home/* "$R/root"; do
     [ -d "$home" ] || continue
     for h in .bash_history .zsh_history .sh_history .python_history .lesshst .viminfo .node_repl_history; do
@@ -138,10 +150,11 @@ sterile_check() {
   fi
 
   # -- armed for first boot
-  _sc_enabled "$W/pilnk-firstboot.service" || _sc_fail firstboot-enabled "$W/pilnk-firstboot.service"
-  _sc_enabled "$W/pilnk-wifi-setup.service" || _sc_fail wifi-setup-enabled "$W/pilnk-wifi-setup.service"
-  ! _sc_enabled "$W/pilnk.service" || _sc_fail pilnk-enabled "$W/pilnk.service"
-  ! _sc_enabled "$W/readsb.service" || _sc_fail readsb-enabled "$W/readsb.service"
+  local W="$R/etc/systemd/system/multi-user.target.wants"
+  _sc_enabled "$R" pilnk-firstboot.service || _sc_fail firstboot-enabled "$W/pilnk-firstboot.service"
+  _sc_enabled "$R" pilnk-wifi-setup.service || _sc_fail wifi-setup-enabled "$W/pilnk-wifi-setup.service"
+  while IFS= read -r f; do _sc_fail pilnk-enabled "$f"; done < <(_sc_wants "$R" pilnk.service)
+  while IFS= read -r f; do _sc_fail readsb-enabled "$f"; done < <(_sc_wants "$R" readsb.service)
 
   local n=$_SC_N
   [ "$n" -gt 255 ] && n=255

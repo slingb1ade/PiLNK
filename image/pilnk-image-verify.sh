@@ -1,6 +1,6 @@
 #!/bin/bash
 # pilnk-image-verify.sh IMAGE [--denylist FILE]
-# pilnk-image-verify.sh --root DIR --boot DIR --raw FILE [--denylist FILE]
+# pilnk-image-verify.sh --root DIR --boot DIR --raw FILE [--ext4] [--denylist FILE]
 #
 # Read-only check of a saved PiLNK card image before it goes to new users
 # (spec section 4). Run on the laptop.
@@ -10,21 +10,35 @@
 #      the shared rule checks (sterile-checks.sh), then searches the raw image.
 #      Everything is detached on exit, whatever happens.
 #   2. Test mode: --root/--boot are an already-extracted tree, --raw the file to
-#      search. No mount, no root.
+#      search. --ext4 says the raw file is itself an ext4 filesystem, so hits are
+#      mapped to paths as in image mode. No mount, no root.
 #
-# Raw search (the whole image, so deleted data in free space is included):
-#   privkey   private-key headers
-#   psk       "psk="
-#   wpa-psk   the wpa-psk key-management string
-#   tailscale
-#   deny#N    line N (counting non-blank, non-# lines) of the denylist
+# Raw search: ONE pass over the whole image (deleted data in free space, the
+# ext4 journal and directory slack included). Only secret-SHAPED data counts:
+#   privkey    an OpenSSH key body, or a PEM private-key header followed by a
+#              base64 body (a bare header, as in the ssh binaries, is not a hit)
+#   psk        a NetworkManager / wpa_supplicant psk= line holding an actual
+#              passphrase or 64-hex key (not psk=%s, psk=$VAR, ...)
+#   tailscale  a Tailscale auth/client/API key
+#   deny#N     line N (counting non-blank, non-# lines) of the denylist,
+#              case-insensitive
 # The denylist is a local file of names, emails, hostnames, node codes and SSIDs;
 # default $PILNK_DENYLIST or ~/.config/pilnk/denylist. It is never committed.
 #
-# Output: "FAIL <check>: <path>" for rule checks, "HIT <pattern-id> at <byte
-# offset>" for the raw search. NEVER the matched text, the bytes around it, or a
-# denylist entry: each pattern is searched on its own from a mode-600 temp file,
-# and grep's output is cut down to the offset before it reaches the screen.
+# Each hit is mapped to where it lies: offset -> partition -> filesystem block
+# -> owning inode -> path (debugfs icheck/ncheck on the read-only partition).
+#   HIT <id> at <path>
+#   HIT <id> at offset <n> (free space | fs metadata | boot partition | ...)
+# A denylist hit inside a git-tracked file of the PiLNK clone
+# (/home/pilnk/pilnk) that is unchanged from HEAD is code already public on
+# GitHub: it prints "SKIP deny#N in <path> (public PiLNK file)" and does not
+# fail. Every other hit fails. A path that itself contains a denylist word is
+# printed as "<path withheld: contains deny#N>".
+#
+# Output NEVER holds the matched bytes, the bytes around them, or a denylist
+# entry: the search prints "<id> <offset>" pairs only, and its patterns are
+# built from pieces at run time, so this script and its tests (which ship in
+# the image) never match themselves.
 #
 # Exit: 0 clean, 1 findings, 2 usage/setup error.
 
@@ -34,17 +48,20 @@ unset PILNK_DIR
 # shellcheck source=sterile-checks.sh
 . "$HERE/sterile-checks.sh"
 
-MAXHITS=50     # offsets printed per pattern; the rest are counted
+MAXHITS=50     # HIT lines printed per pattern id; the rest are counted
+SCANCAP=5000   # hits per id the search hands over; beyond that they all fail
+CLONE=/home/pilnk/pilnk
 
 usage() { echo "usage: pilnk-image-verify.sh IMAGE [--denylist FILE]" >&2
-          echo "       pilnk-image-verify.sh --root DIR --boot DIR --raw FILE [--denylist FILE]" >&2; exit 2; }
+          echo "       pilnk-image-verify.sh --root DIR --boot DIR --raw FILE [--ext4] [--denylist FILE]" >&2; exit 2; }
 
-IMAGE=""; ROOTDIR=""; BOOTDIR=""; RAW=""; DENY=""
+IMAGE=""; ROOTDIR=""; BOOTDIR=""; RAW=""; DENY=""; EXT4=0
 while [ $# -gt 0 ]; do
   case "$1" in
     --root) [ $# -ge 2 ] || usage; ROOTDIR="$2"; shift 2 ;;
     --boot) [ $# -ge 2 ] || usage; BOOTDIR="$2"; shift 2 ;;
     --raw) [ $# -ge 2 ] || usage; RAW="$2"; shift 2 ;;
+    --ext4) EXT4=1; shift ;;
     --denylist) [ $# -ge 2 ] || usage; DENY="$2"; shift 2 ;;
     -h|--help) usage ;;
     -*) usage ;;
@@ -52,7 +69,7 @@ while [ $# -gt 0 ]; do
   esac
 done
 if [ -n "$IMAGE" ]; then
-  [ -z "$ROOTDIR$BOOTDIR$RAW" ] || usage
+  [ -z "$ROOTDIR$BOOTDIR$RAW" ] && [ "$EXT4" = 0 ] || usage
   [ -f "$IMAGE" ] || { echo "ERROR: image not found" >&2; exit 2; }
 else
   [ -n "$ROOTDIR" ] && [ -n "$BOOTDIR" ] && [ -n "$RAW" ] || usage
@@ -63,24 +80,29 @@ TMPD="$(mktemp -d /tmp/pilnk-verify.XXXXXX)" || { echo "ERROR: cannot create tem
 chmod 700 "$TMPD"
 LOOP=""; MNT_BOOT=""; MNT_ROOT=""
 cleanup() {
-  [ -n "$MNT_ROOT" ] && umount "$MNT_ROOT" 2>/dev/null
-  [ -n "$MNT_BOOT" ] && umount "$MNT_BOOT" 2>/dev/null
-  [ -n "$LOOP" ] && losetup -d "$LOOP" 2>/dev/null
-  rm -rf "$TMPD"
+  local m
+  for m in "$MNT_ROOT" "$MNT_BOOT"; do
+    [ -n "$m" ] || continue
+    umount "$m" 2>/dev/null || umount -l "$m" 2>/dev/null || echo "WARNING: could not unmount $m" >&2
+  done
+  if [ -n "$LOOP" ]; then losetup -d "$LOOP" 2>/dev/null || echo "WARNING: could not detach $LOOP" >&2; fi
+  rm -rf --one-file-system "$TMPD" 2>/dev/null
 }
 trap cleanup EXIT
 trap 'exit 130' INT TERM
 
-# -- denylist (read only into mode-600 files, never echoed) ---------------
+# -- denylist (copied into a mode-600 file, never echoed) ---------------------
 [ -z "$DENY" ] && [ -r "${PILNK_DENYLIST:-$HOME/.config/pilnk/denylist}" ] && DENY="${PILNK_DENYLIST:-$HOME/.config/pilnk/denylist}"
-NDENY=0
+NDENY=0; DENYW=()
+: > "$TMPD/deny"
 if [ -n "$DENY" ]; then
   [ -r "$DENY" ] || { echo "ERROR: denylist file not readable" >&2; exit 2; }
   while IFS= read -r line || [ -n "$line" ]; do
     line="${line%$'\r'}"
     case "$line" in ''|'#'*) continue ;; esac
     NDENY=$((NDENY + 1))
-    printf '%s\n' "$line" > "$TMPD/deny.$NDENY"
+    printf '%s\n' "$line" >> "$TMPD/deny"
+    DENYW+=("$(LC_ALL=C; printf '%s' "${line,,}")")
   done < "$DENY"
 fi
 
@@ -105,44 +127,232 @@ sterile_check "$ROOTDIR" "$BOOTDIR"
 NF=$?
 [ "$NF" -gt 0 ] && FOUND=1
 
-# -- whole-image search ------------------------------------------------------
-# One grep per pattern so the id is known without printing the pattern. The image
-# goes through tr first, turning NUL into newline one byte for one byte: offsets
-# stay exact, and zeroed free space becomes tiny lines instead of one multi-GB
-# line grep would have to hold in memory. (grep -z reports wrong -b offsets on
-# sparse files, so it is not used.) grep's "offset:match" lines go through
-# cut so only the offset survives.
-raw_hits() { # id patternfile [-i]
-  local id="$1" pf="$2" icase="$3" n=0 off
-  while IFS= read -r off; do
-    n=$((n + 1))
-    [ "$n" -le "$MAXHITS" ] && printf 'HIT %s at %s\n' "$id" "$off"
-  done < <(tr '\0' '\n' < "$RAW" 2>/dev/null | grep -o -b -a -F ${icase:+"$icase"} -f "$pf" 2>/dev/null | cut -d: -f1)
-  if [ "$n" -gt "$MAXHITS" ]; then printf 'HIT %s: %d more offsets not listed\n' "$id" "$((n - MAXHITS))"; fi
-  [ "$n" -gt 0 ] && FOUND=1
-  return 0
+# -- whole-image search: one pass -------------------------------------------
+# tr turns NUL into newline byte for byte, so offsets stay exact and zeroed
+# space becomes empty lines. grep -F keeps only lines holding a candidate (plus
+# 4 lines after, for PEM bodies) with their byte offsets; awk applies the exact
+# rules and prints "<id> <offset>". The lines themselves never leave the pipe.
+{ printf '%s\n' "ps""k=" "b3BlbnNzaC1""rZXktdjE" "-----BEG""IN" "ts""key-"; cat "$TMPD/deny"; } > "$TMPD/cand"
+
+# shellcheck disable=SC2016 # awk program, not shell
+SCAN_AWK='
+BEGIN {
+  FS = "\n"
+  OSSH = "b3BlbnNzaC1" "rZXktdjE"
+  PEMRE = "-----BEG" "IN [A-Z0-9 ]*PRIV" "ATE KEY-----"
+  PSK = "ps" "k="
+  TSK = "ts" "key-"
+  TSKRE = "^(auth|client|api)-[A-Za-z0-9_-]+"
+  B64RE = "^[A-Za-z0-9+/]+=*$"
+  B64RUN = "^[A-Za-z0-9+/]+"
+  HDRRE = "^[A-Za-z][A-Za-z-]*: "
+  VARRE = "^\"[$][{]?[A-Za-z_][A-Za-z0-9_]*[}]?\"$"
+  nd = 0
+  if (denyfile != "") {
+    while ((getline w < denyfile) > 0) { nd++; deny[nd] = tolower(w) }
+    close(denyfile)
+  }
+  prevend = -1; pemoff = -1; pemleft = 0; pemhdr = 0
+}
+function hit(id, o) {
+  if (++cnt[id] <= cap) printf "%s %.0f\n", id, o
+}
+{
+  if (!match($0, /^[0-9]+[:-]/)) { pemoff = -1; prevend = -1; next }
+  lo = substr($0, 1, RLENGTH - 1) + 0
+  line = substr($0, RLENGTH + 1)
+  if (lo != prevend) pemoff = -1
+  prevend = lo + length(line) + 1
+  s = line; sub(/\r$/, "", s)
+
+  # privkey: the OpenSSH key body (base64 of "openssh-key-v1")
+  rest = line; base = lo
+  while ((i = index(rest, OSSH)) > 0) { hit("privkey", base + i - 1); base += i; rest = substr(rest, i + 1) }
+
+  # privkey: a PEM header seen on an earlier line, now its body
+  if (pemoff >= 0) {
+    t = s; sub(/[ \t]+$/, "", t)
+    if (length(t) >= 40 && t ~ B64RE) { hit("privkey", pemoff); pemoff = -1 }
+    else if (t ~ HDRRE) { pemhdr = 1; if (--pemleft <= 0) pemoff = -1 }
+    else if (t == "" && pemhdr) { if (--pemleft <= 0) pemoff = -1 }
+    else pemoff = -1
+  }
+  # privkey: a PEM header ending the line, or followed by an escaped \n + body
+  rest = s; base = lo
+  while (match(rest, PEMRE)) {
+    rs = RSTART; rl = RLENGTH; o = base + rs - 1
+    after = substr(rest, rs + rl)
+    t = after; sub(/[ \t]+$/, "", t)
+    if (t == "") { pemoff = o; pemleft = 3; pemhdr = 0 }
+    else if (substr(t, 1, 2) == "\\n" && match(substr(t, 3), B64RUN) && RLENGTH >= 40) hit("privkey", o)
+    base += rs + rl - 1; rest = after
+  }
+
+  # psk: a whole psk= line holding a real passphrase or a 64-hex key. The line
+  # starts at a NUL/newline, or at a 512-byte sector boundary: a file begins on
+  # a block boundary, glued to whatever bytes end the block before it.
+  rest = s; base = lo
+  while ((i = index(rest, PSK)) > 0) {
+    o = base + i - 1; a = o - (o % 512)
+    if (a < base) a = base
+    if (substr(rest, a - base + 1, o - a) ~ /^[ \t]*$/) {
+      v = substr(rest, i + 4); sub(/[ \t]+$/, "", v); n = length(v)
+      if (substr(v, 1, 1) == "\"") {
+        if (n >= 10 && n <= 65 && substr(v, n, 1) == "\"" && v ~ /^"[ -~]*"$/ && v !~ VARRE && v != "\"%s\"") hit("psk", o)
+      } else if (n == 64 && v ~ /^[0-9a-fA-F]+$/) hit("psk", o)
+      else if (n >= 8 && n <= 63 && v !~ /[ \t"%$]/) hit("psk", o)
+    }
+    base += i; rest = substr(rest, i + 1)
+  }
+
+  # tailscale: TSK then auth-, client- or api- and 8+ key characters
+  rest = line; base = lo
+  while ((i = index(rest, TSK)) > 0) {
+    t = substr(rest, i + length(TSK))
+    if (match(t, TSKRE) && RLENGTH - index(t, "-") >= 8) hit("tailscale", base + i - 1)
+    base += i; rest = substr(rest, i + 1)
+  }
+
+  # denylist, case-insensitive
+  if (nd) {
+    low = tolower(line)
+    for (k = 1; k <= nd; k++) {
+      rest = low; base = lo
+      while ((i = index(rest, deny[k])) > 0) { hit("deny#" k, base + i - 1); base += i; rest = substr(rest, i + 1) }
+    }
+  }
+}
+END { for (id in cnt) if (cnt[id] > cap) printf "%s +%.0f\n", id, cnt[id] - cap }
+'
+LC_ALL=C tr '\000' '\n' < "$RAW" 2>/dev/null \
+  | LC_ALL=C grep -a -b -i -F -A 4 -f "$TMPD/cand" 2>/dev/null \
+  | LC_ALL=C awk -v denyfile="$TMPD/deny" -v cap="$SCANCAP" "$SCAN_AWK" > "$TMPD/hits"
+PS_=("${PIPESTATUS[@]}")
+if [ "${PS_[0]}" != 0 ] || [ "${PS_[1]}" -gt 1 ] || [ "${PS_[2]}" != 0 ]; then
+  echo "ERROR: the raw search failed (tr/grep/awk exit ${PS_[*]}); the image was NOT searched" >&2
+  exit 2
+fi
+
+# -- where each hit lies ----------------------------------------------------
+FS_DEV=""; FS_START=0; FS_END=0; BOOT_START=-1; BOOT_END=-1; BS=0
+part_range() { # /dev/loopNpK -> "start end" in bytes (from sysfs)
+  local n s z
+  n="$(basename "$1")"
+  s=$(cat "/sys/class/block/$n/start" 2>/dev/null) && z=$(cat "/sys/class/block/$n/size" 2>/dev/null) || return 1
+  [[ "$s" =~ ^[0-9]+$ && "$z" =~ ^[0-9]+$ ]] || return 1
+  echo "$((s * 512)) $(((s + z) * 512))"
+}
+if [ -n "$IMAGE" ]; then
+  if r=$(part_range "${LOOP}p2"); then read -r FS_START FS_END <<< "$r"; FS_DEV="${LOOP}p2"; fi
+  if r=$(part_range "${LOOP}p1"); then read -r BOOT_START BOOT_END <<< "$r"; fi
+elif [ "$EXT4" = 1 ]; then
+  FS_DEV="$RAW"; FS_START=0; FS_END=$(stat -c %s "$RAW")
+fi
+if [ -n "$FS_DEV" ] && [ -s "$TMPD/hits" ]; then
+  BS=$(debugfs -R stats "$FS_DEV" 2>/dev/null | awk -F: '/^Block size:/ { gsub(/[ \t]/, "", $2); print $2; exit }')
+  if ! [[ "$BS" =~ ^[0-9]+$ ]] || [ "$BS" -eq 0 ]; then
+    echo "NOTE: could not read the root filesystem with debugfs; hits are shown as offsets"
+    FS_DEV=""
+  fi
+fi
+
+declare -A INO_OF PATH_OF USED
+dbg_batch() { # verb file-of-args -> debugfs output (read-only)
+  awk -v v="$1" '{ a = a " " $0 } NR % 200 == 0 { print v a; a = "" } END { if (a != "") print v a }' "$2" > "$TMPD/cmd"
+  debugfs -f "$TMPD/cmd" "$FS_DEV" 2>/dev/null
+}
+if [ -n "$FS_DEV" ]; then
+  awk -v s="$FS_START" -v e="$FS_END" -v bs="$BS" '$2 !~ /^\+/ && $2 >= s && $2 < e { printf "%.0f\n", int(($2 - s) / bs) }' \
+    "$TMPD/hits" | sort -un > "$TMPD/blocks"
+  if [ -s "$TMPD/blocks" ]; then
+    while IFS=$'\t' read -r b i; do
+      [[ "$b" =~ ^[0-9]+$ ]] || continue
+      if [[ "$i" =~ ^[0-9]+$ ]]; then INO_OF[$b]=$i; else INO_OF[$b]=0; fi
+    done < <(dbg_batch icheck "$TMPD/blocks")
+    for b in "${!INO_OF[@]}"; do [ "${INO_OF[$b]}" -ge 11 ] && echo "${INO_OF[$b]}"; done | sort -un > "$TMPD/inodes"
+    if [ -s "$TMPD/inodes" ]; then
+      while IFS=$'\t' read -r i p; do
+        [[ "$i" =~ ^[0-9]+$ ]] || continue
+        [ -n "${PATH_OF[$i]:-}" ] || PATH_OF[$i]="/${p#"${p%%[!/]*}"}"
+      done < <(dbg_batch ncheck "$TMPD/inodes")
+    fi
+    for b in "${!INO_OF[@]}"; do [ "${INO_OF[$b]}" = 0 ] && echo "$b"; done > "$TMPD/free"
+    while IFS= read -r ln; do
+      if [[ "$ln" =~ ^Block\ ([0-9]+)\ marked\ in\ use ]]; then USED[${BASH_REMATCH[1]}]=1
+      elif [[ "$ln" =~ ^Block\ ([0-9]+)\ not\ in\ use ]]; then USED[${BASH_REMATCH[1]}]=0; fi
+    done < <(while IFS= read -r b; do echo "testb $b"; done < "$TMPD/free" > "$TMPD/cmd"; \
+             [ -s "$TMPD/cmd" ] && debugfs -f "$TMPD/cmd" "$FS_DEV" 2>/dev/null)
+  fi
+fi
+
+# where OFFSET lies: sets LOC_PATH (a file or directory) or LOC_KIND
+locate() {
+  local off="$1" b i
+  LOC_PATH=""; LOC_KIND=""
+  if [ -n "$FS_DEV" ] && [ "$off" -ge "$FS_START" ] && [ "$off" -lt "$FS_END" ]; then
+    b=$(((off - FS_START) / BS)); i="${INO_OF[$b]:-}"
+    if [ -z "$i" ]; then LOC_KIND="fs metadata"
+    elif [ "$i" -ge 11 ]; then
+      if [ -n "${PATH_OF[$i]:-}" ]; then LOC_PATH="${PATH_OF[$i]}"; else LOC_KIND="unlinked file"; fi
+    elif [ "$i" -gt 0 ]; then LOC_KIND="fs metadata"            # journal, resize inode...
+    elif [ "${USED[$b]:-1}" = 0 ]; then LOC_KIND="free space"
+    else LOC_KIND="fs metadata"; fi                             # bitmaps, inode tables, superblocks
+  elif [ -n "$IMAGE" ] && [ "$off" -ge "$BOOT_START" ] && [ "$off" -lt "$BOOT_END" ]; then LOC_KIND="boot partition"
+  elif [ -n "$IMAGE" ] && [ -n "$FS_DEV" ]; then LOC_KIND="outside partitions"
+  fi
 }
 
-# Built from pieces so this script's own text does not contain the strings it
-# searches for (the repo, and so this file, ships inside the image).
-mkpat() { printf '%s\n' "$2" > "$TMPD/pat.$1"; }
-mkpat privkey "-----BEGIN ""PRIVATE KEY"
-mkpat privkey2 "-----BEGIN ""RSA PRIVATE KEY"
-mkpat privkey3 "-----BEGIN ""OPENSSH PRIVATE KEY"
-mkpat privkey4 "-----BEGIN ""EC PRIVATE KEY"
-mkpat psk "ps""k="
-mkpat wpa-psk "wpa""-psk"
-mkpat tailscale "tail""scale"
-cat "$TMPD/pat.privkey" "$TMPD/pat.privkey2" "$TMPD/pat.privkey3" "$TMPD/pat.privkey4" > "$TMPD/pat.privkey.all"
+# a path is printed only if it holds no denylist word (names can be SSIDs)
+show_path() {
+  local p="${1//[[:cntrl:]]/?}" low k
+  low="$(LC_ALL=C; printf '%s' "${p,,}")"
+  for k in "${!DENYW[@]}"; do
+    if [[ "$low" == *"${DENYW[$k]}"* ]]; then printf '<path withheld: contains deny#%d>' "$((k + 1))"; return; fi
+  done
+  printf '%s' "$p"
+}
 
-raw_hits privkey "$TMPD/pat.privkey.all" ""
-raw_hits psk "$TMPD/pat.psk" -i
-raw_hits wpa-psk "$TMPD/pat.wpa-psk" -i
-raw_hits tailscale "$TMPD/pat.tailscale" -i
-i=1
-while [ "$i" -le "$NDENY" ]; do
-  raw_hits "deny#$i" "$TMPD/deny.$i" -i
-  i=$((i + 1))
+# git-tracked in the PiLNK clone and unchanged from HEAD (git run read-only)
+declare -A PUBLIC
+is_public() {
+  local p="$1" rel repo="$ROOTDIR$CLONE"
+  [[ "$p" == "$CLONE/"* ]] || return 1
+  [ -n "${PUBLIC[$p]:-}" ] && { [ "${PUBLIC[$p]}" = 1 ]; return; }
+  rel="${p#"$CLONE/"}"; PUBLIC[$p]=0
+  if [ -e "$repo/.git" ] && command -v git >/dev/null 2>&1; then
+    local g=(env GIT_OPTIONAL_LOCKS=0 git --no-optional-locks --literal-pathspecs -c 'safe.directory=*'
+             -c core.fsmonitor= -c core.hooksPath=/dev/null -C "$repo")
+    if "${g[@]}" ls-files --error-unmatch -- "$rel" >/dev/null 2>&1 \
+       && "${g[@]}" diff --quiet --no-ext-diff --no-textconv HEAD -- "$rel" >/dev/null 2>&1; then
+      PUBLIC[$p]=1
+    fi
+  fi
+  [ "${PUBLIC[$p]}" = 1 ]
+}
+
+declare -A NHIT SEEN
+while read -r id off; do
+  if [[ "$off" == +* ]]; then
+    printf 'HIT %s: %s more offsets not examined\n' "$id" "${off#+}"; FOUND=1; continue
+  fi
+  locate "$off"
+  if [ -n "$LOC_PATH" ]; then
+    if [[ "$id" == deny#* ]] && is_public "$LOC_PATH"; then
+      line="SKIP $id in $(show_path "$LOC_PATH") (public PiLNK file)"
+      [ -n "${SEEN[$line]:-}" ] || { SEEN[$line]=1; echo "$line"; }
+      continue
+    fi
+    line="HIT $id at $(show_path "$LOC_PATH")"
+  elif [ -n "$LOC_KIND" ]; then line="HIT $id at offset $off ($LOC_KIND)"
+  else line="HIT $id at offset $off"; fi
+  FOUND=1
+  [ -n "${SEEN[$line]:-}" ] && continue
+  SEEN[$line]=1
+  NHIT[$id]=$(( ${NHIT[$id]:-0} + 1 ))
+  [ "${NHIT[$id]}" -le "$MAXHITS" ] && echo "$line"
+done < "$TMPD/hits"
+for id in "${!NHIT[@]}"; do
+  if [ "${NHIT[$id]}" -gt "$MAXHITS" ]; then printf 'HIT %s: %d more not listed\n' "$id" "$((NHIT[$id] - MAXHITS))"; fi
 done
 
 if [ -z "$DENY" ]; then
