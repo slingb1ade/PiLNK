@@ -4174,6 +4174,17 @@ current_squelch   = 50
 def index():
     return render_template('index.html')
 
+# First boot (pilnk-firstboot) leaves PILNK_DIR/.no_receiver while it has found
+# no dongle; the dashboard shows a "plug in a receiver" banner until it is gone.
+def _no_receiver():
+    return os.path.exists(os.path.join(PILNK_DIR, '.no_receiver'))
+
+@app.route('/api/status', methods=['GET'])
+def api_status():
+    return jsonify({
+        'no_receiver': _no_receiver(),
+    })
+
 @app.route('/api/health')
 def api_health():
     """Liveness for the node watchdog (pilnk-dashboard-watchdog.sh). Deliberately

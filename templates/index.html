@@ -1260,6 +1260,15 @@
   #otaBanner.restart #otaRestartCmd { display:block !important; }
   #otaBanner.restart #otaCopyBtn { display:inline-block !important; }
 </style>
+<!-- No-receiver banner: first boot found no dongle (/api/status no_receiver).
+     Same look as the OTA banner; hidden unless the flag is set. -->
+<div id="noReceiverBanner" role="status" aria-live="polite" style="
+  display:none;position:fixed;top:0;left:0;right:0;z-index:9998;
+  background:linear-gradient(90deg,#1e293b,#0f172a);
+  border-bottom:1px solid rgba(245,158,11,0.6);
+  box-shadow:0 4px 20px rgba(0,0,0,0.4);
+  font-family:'Share Tech Mono',monospace;
+  color:#fbbf24;padding:10px 16px;font-size:0.78rem;line-height:1.4;">No receiver found — plug in an RTL-SDR or Airspy and restart the Pi.</div>
 <!-- # powerfloor v1 - supply power banner + aircraft-only ATC note (spec power-and-hwfloor-spec.md).
      Polls /api/power every 60 s. Shown only while power is low or was_low; the since-boot
      flag resets on a restart, so a good supply clears it by itself. Hidden by default. -->
@@ -9952,6 +9961,19 @@ var ota = (function () {
     dismissedThisSession = true;
     hide();
   }
+
+  // First boot found no dongle: show the no-receiver banner while the node says so.
+  function pollNoReceiver() {
+    fetch('/api/status', {cache: 'no-store'})
+      .then(function (r) { return r.json(); })
+      .then(function (s) {
+        var nb = el('noReceiverBanner');
+        if (nb) nb.style.display = s.no_receiver ? 'block' : 'none';
+      })
+      .catch(function () { /* blip — try again next tick */ });
+  }
+  setTimeout(pollNoReceiver, 4000);
+  setInterval(pollNoReceiver, 60000);
 
   // Initial poll after a beat, then every 60s
   setTimeout(poll, 4000);

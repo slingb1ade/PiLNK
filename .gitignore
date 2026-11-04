@@ -61,3 +61,4 @@ assist_actions.log
 # Aircraft photo cache — locally fetched Planespotters images, pruned at
 # 200 MB. Per-node runtime data: never the same twice, never worth committing.
 cache/
+.no_receiver
