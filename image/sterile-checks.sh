@@ -128,6 +128,9 @@ sterile_check() {
   _sc_dir_empty logs "$R/var/lib/wtmpdb"
   _sc_absent tailscale-state "$R/var/lib/tailscale"
   _sc_absent zero-file "$R/.pilnk-zero" "$B/.pilnk-zero"
+  # swap holds whatever RAM was paged out while the card was built (keys
+  # included) and the zero-fill can't reach it; rpi-swap makes a fresh one at boot
+  _sc_absent swap-file "$R/var/swap" "$R/swapfile"
   _sc_absent sterilise-failed "$B/pilnk-sterilise-failed.txt"
   for home in "$R"/home/* "$R/root"; do
     [ -d "$home" ] || continue

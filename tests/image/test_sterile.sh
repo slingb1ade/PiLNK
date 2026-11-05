@@ -20,7 +20,7 @@ type sterile_check >/dev/null 2>&1 || sterile_check() { echo "FAIL missing: ster
 
 # fakes for every command the scripts may only use on a real root
 for c in passwd journalctl cloud-init apt-get hostnamectl mount umount losetup udevadm nmcli poweroff \
-         systemd-run loginctl; do
+         systemd-run loginctl swapoff; do
   fakebin "$c" 'true'
 done
 
@@ -99,6 +99,8 @@ firstboot-markers|mkdir -p "$R/var/lib/pilnk-firstboot"; : > "$R/var/lib/pilnk-f
 firstboot-log|echo x > "$R/var/log/pilnk-firstboot.log"
 logs|mkdir -p "$R/var/lib/wtmpdb"; echo x > "$R/var/lib/wtmpdb/wtmp.db"
 zero-file|: > "$R/.pilnk-zero"
+swap-file|mkdir -p "$R/var"; printf 'paged-out-build-ram\n' > "$R/var/swap"
+swap-file|printf 'paged-out-build-ram\n' > "$R/swapfile"
 zero-file|: > "$B/.pilnk-zero"
 tailscale-state|mkdir -p "$R/var/lib/tailscale"; echo x > "$R/var/lib/tailscale/tailscaled.state"
 cloud-init-state|mkdir -p "$R/var/lib/cloud/instance"; echo x > "$R/var/lib/cloud/instance/user-data.txt"
@@ -162,7 +164,7 @@ ok "sterilise never prints a saved Wi-Fi password" "! grep -q hunter2 <<< \"\$OU
 ok "sterilise says what it removed" "grep -qi 'removed' <<< \"\$OUTS\""
 ok "sterilise with --no-poweroff does not power off" "! grep -q '^poweroff' '$CALLS'"
 ok "sterilise on a fake root touches no host command" \
-   "! grep -qE '^(systemctl|passwd|journalctl|cloud-init|apt-get|hostnamectl|mount|losetup|udevadm|nmcli|systemd-run|loginctl) ' '$CALLS'"
+   "! grep -qE '^(systemctl|passwd|journalctl|cloud-init|apt-get|hostnamectl|mount|losetup|udevadm|nmcli|systemd-run|loginctl|swapoff) ' '$CALLS'"
 W="$DIRTY/etc/systemd/system/multi-user.target.wants"
 ok "arm: firstboot + wifi-setup enabled, pilnk + readsb not" \
    "[ -L '$W/pilnk-firstboot.service' ] && [ -L '$W/pilnk-wifi-setup.service' ] && [ ! -e '$W/pilnk.service' ] && [ ! -L '$W/pilnk.service' ] && [ ! -L '$W/readsb.service' ]"
@@ -183,6 +185,22 @@ PILNK_ROOT="$WX" PILNK_BOOT="$WX/boot/firmware" bash "$STER" --no-poweroff --no-
 ok "sterilise removes the wpasupplicant examples dir; exit 0" "[ '$RCW' = 0 ] && [ ! -e '$WX/usr/share/doc/wpasupplicant/examples' ]"
 run_check "$WX"
 ok "after sterilise the wpa-examples check passes" "[ '$N' = 0 ]"
+
+# Swap (5 Nov hardware find: HIT privkey at /var/swap). The swap file is an
+# allocated file, so the zero-fill never reaches it; it holds build-time RAM.
+SW="$ROOT/swapx"; make_clean "$SW"; mkdir -p "$SW/var"
+head -c 3000000 /dev/zero | tr '\0' 'K' > "$SW/var/swap"
+ln "$SW/var/swap" "$SW/swap-witness"   # a second name for the same blocks: shows what was written over them
+run_check "$SW"
+ok "swap file alone: sterile_check names swap-file" "[ '$N' = 1 ] && grep -q '^FAIL swap-file: /var/swap$' <<< \"\$OUT\""
+OUTSW=$(PILNK_ROOT="$SW" PILNK_BOOT="$SW/boot/firmware" bash "$STER" --no-poweroff --no-zero 2>&1); RCSW=$?
+ok "sterilise removes /var/swap (even with --no-zero); exit 0" "[ '$RCSW' = 0 ] && [ ! -e '$SW/var/swap' ]"
+ok "sterilise zeroes the swap file's blocks before deleting it" \
+   "[ -s '$SW/swap-witness' ] && ! tr -d '\\0' < '$SW/swap-witness' | grep -q ."
+ok "sterilise says the swap file went and that boot makes a new one" "grep -q 'removed: swap file /var/swap' <<< \"\$OUTSW\""
+rm -f "$SW/swap-witness"
+run_check "$SW"
+ok "after sterilise the swap-file check passes" "[ '$N' = 0 ]"
 
 # sterilising an already-sterile root is a no-op that still passes
 OUTS2=$(PILNK_ROOT="$DIRTY" PILNK_BOOT="$DIRTY/boot/firmware" bash "$STER" --no-poweroff --no-zero 2>&1); RCS2=$?

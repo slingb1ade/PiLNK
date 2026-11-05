@@ -213,6 +213,37 @@ wipe_logs() {
   return 0
 }
 
+# Swap (found on the first hardware run, 5 Nov: a private key in /var/swap).
+# The swap file is an allocated file, so the zero-fill never reaches it, and it
+# holds whatever RAM was paged out during the build. Turn swap off (zram too:
+# rpi-swap's zram writes back into /var/swap through a loop device), write zeros
+# over the file where it lies, then delete it. At the next boot
+# rpi-resize-swap-file.service (rpi-swap) creates a new, empty one.
+remove_swap() {
+  local f sz mb dev
+  if [ "$REAL" = 1 ]; then
+    swapoff -a >/dev/null 2>&1 || say "WARNING: swapoff -a failed"
+    systemctl stop rpi-zram-writeback.service 'systemd-zram-setup@*.service' >/dev/null 2>&1 || true
+  fi
+  for f in "$R/var/swap" "$R/swapfile"; do
+    [ -f "$f" ] || continue
+    if [ "$REAL" = 1 ]; then
+      while IFS=: read -r dev _; do
+        [ -n "$dev" ] && losetup -d "$dev" >/dev/null 2>&1
+      done < <(losetup -j "$f" 2>/dev/null)
+    fi
+    sz=$(stat -c %s "$f" 2>/dev/null || echo 0)
+    mb=$(( (sz + 1048575) / 1048576 ))
+    if ! dd if=/dev/zero of="$f" bs=1M count="$mb" conv=notrunc,fsync status=none 2>/dev/null; then
+      say "WARNING: could not overwrite ${f#"$R"} (still in use?)"
+      ERR_LINES+=("FAIL swap-zero: ${f#"$R"}"); ERRORS=$((ERRORS + 1))
+    fi
+    rm -f "$f"
+    say "removed: swap file ${f#"$R"} (zeroed first; rpi-swap makes a new one at boot)"
+  done
+  return 0
+}
+
 ZERO_FILE=""
 zero_fill() { # dir
   local cnt=()
@@ -449,6 +480,9 @@ if [ "$REAL" = 1 ]; then
 fi
 wipe_logs
 remove_login_records
+
+# -- Swap: before the pre-check, which fails on a swap file ----------------
+remove_swap
 
 # -- Detached run: check, close the login sessions, remove what they wrote -
 if [ "$STAGE2" = 1 ]; then

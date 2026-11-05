@@ -146,6 +146,8 @@ Expect: either the Pi is off, or you have `pilnk-sterilise-failed.txt` telling y
 **Laptop**: put the card in the laptop, open Inkpot v0.6, choose "Save to image", pick the card,
 leave Shrink and Compress on, save it as `~/pilnk-images/pilnk-sterile.img` (make the folder first: `mkdir -p ~/pilnk-images`;
 the disk needs room for the full card size). Type the name ending in `.img`: with Compress on, Inkpot adds `.xz` itself.
+In the save dialog, click through to the `pilnk-images` folder and type only the file name: Inkpot runs as root, so a typed `~/`
+may not mean your home folder. Don't keep Inkpot's default name either: it is the same as any other card saved today.
 
 Expect: "Saved ... card -> pilnk-sterile.img.xz (...), sha256 saved". A `.sha256` file sits next to it.
 
@@ -240,6 +242,8 @@ Expect: every box ticked on Pi4 and Pi5, or a note of what failed.
 - [ ] Does Android / iOS open the setup page by itself? If not, `http://10.42.0.1` still works (note which).
 - [ ] Does `pilnk-XXXX.local` resolve on first boot (avahi)? Try it from the laptop.
 - [ ] Did `growpart` grow `/dev/root`? `lsblk` and `df -h /` after first boot.
+- [ ] Swap came back: sterilise deletes `/var/swap` (it held build-time memory), and rpi-swap makes a new one at boot.
+  `swapon --show` lists `/dev/zram0`, and `ls -l /var/swap` shows a file again.
 - [ ] After sterilise, are there any shell history or login records on the card? (The verifier covers this, but also look at `wtmpdb` and `last` on a booted test card.)
 - [ ] Read the stage-2 log: `sudo cat /var/log/pilnk-firstboot.log` after first boot. Every stage should say done.
 - [ ] Any `HIT` inside package files on a stock image (a Debian file with a key-shaped string)? Note the path so it can be added as a known stock file.
