@@ -123,6 +123,15 @@ if [ ! -x "$PILNKRADIO_BIN" ]; then
 elif [ -f "$PILNKRADIO_SRC" ] && [ "$PILNKRADIO_SRC" -nt "$PILNKRADIO_BIN" ]; then
     RADIO_BUILD_WHY="engine source is newer than the installed binary"
 fi
+# powerfloor v1 — aircraft-only boards (Pi 3, under 1.5 GiB) never build the engine. An engine
+# that is already there is left alone: not stopped, not deleted, just never rebuilt. Step 3.7
+# below still needs the binary, so such a node keeps getting denoise file updates.
+# No hwtier.sh (or any odd answer) means "full": the build behaves exactly as before.
+if [ -n "$RADIO_BUILD_WHY" ] && [ -f "$PILNK_DIR/hwtier.sh" ] \
+        && [ "$(bash "$PILNK_DIR/hwtier.sh" 2>/dev/null)" = "adsb_only" ]; then
+    log "ATC audio: aircraft-only board — engine build skipped"
+    RADIO_BUILD_WHY=""
+fi
 if [ -n "$RADIO_BUILD_WHY" ] && [ -f "$PILNK_DIR/pilnkradio-install.sh" ]; then
     if systemctl list-unit-files pilnk-audio-build.service >/dev/null 2>&1; then
         # `systemctl start` on a Type=oneshot unit BLOCKS until it finishes, which

@@ -79,6 +79,20 @@ if [ -n "${PILNKRADIO_NONINTERACTIVE:-}" ] && [ -f "$AUDIO_TASK_FILE" ] \
     rm -f "$AUDIO_TASK_FILE"
     exec bash "$(dirname "$0")/denoise-install.sh"
 fi
+# powerfloor v1 — aircraft-only boards never build the engine. Gated HERE as well as in update.sh
+# because the OTA that delivers this gate runs the OLD update.sh, whose step 3.6 starts
+# pilnk-audio-build — and that unit runs this file from the NEW tree. After the denoise-only
+# branch (a Pi 3 that already has an engine keeps its denoise updates) and before the EXIT trap
+# (the build state is left exactly as it was). No hwtier.sh beside us (curl | bash) = old behaviour.
+if [ -f "$(dirname "$0")/hwtier.sh" ]; then
+    PF_RC=0
+    PF_LINE="$(bash "$(dirname "$0")/hwtier.sh" --audio-ok 2>/dev/null)" || PF_RC=$?
+    if [ "$PF_RC" -eq 3 ]; then
+        warn "$PF_LINE"
+        info "Skipped: no ATC audio engine is built on this board."
+        exit 0
+    fi
+fi
 trap _on_exit EXIT
 
 # prompts must survive `curl | bash` (stdin is the pipe) — read from the terminal

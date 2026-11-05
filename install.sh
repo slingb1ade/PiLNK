@@ -545,6 +545,21 @@ CONFIG_JSON="$PILNK_DIR/config.json"
 #
 # update.sh never runs pip, so this affects new installs only and can never
 # downgrade a node that is already working.
+# powerfloor v1 — hardware tier (spec power-and-hwfloor-spec.md). One line and carry on: no
+# prompt, images install headless. A Pi 3 / under-1.5 GiB board gets aircraft-only mode, and the
+# ATC audio engine block below skips its build. Exit 3 is caught here: this script runs set -e.
+PF_AIRCRAFT_ONLY=0
+if [ -f "$PILNK_DIR/hwtier.sh" ]; then
+  PF_RC=0
+  PF_HW_LINE="$(bash "$PILNK_DIR/hwtier.sh" --audio-ok 2>/dev/null)" || PF_RC=$?
+  if [ "$PF_RC" -eq 3 ]; then
+    PF_AIRCRAFT_ONLY=1
+    echo ""
+    warn "$PF_HW_LINE"
+    echo ""
+  fi
+fi
+
 step "PYTHON PACKAGES"
 info "Installing Python packages..."
 PY_PKGS="flask>=2,<4 flask-socketio>=5,<6 flask-cors>=4,<7 requests>=2,<3 numpy>=1.24,<3 python-dotenv>=1,<2 pyModeS>=2.13,<4"
@@ -820,7 +835,11 @@ echo ""
 # Runs in the FOREGROUND here (unlike the OTA path, which detaches): the
 # operator is watching a terminal, the compile output is informative, and the
 # node is already installed and running by this point. Non-fatal either way.
-if [ -f "$PILNK_DIR/pilnkradio-install.sh" ]; then
+if [ "${PF_AIRCRAFT_ONLY:-0}" = 1 ]; then
+  step "ATC AUDIO ENGINE"
+  info "Skipped: aircraft-only board (see the note near the start). PiLNK runs normally."
+  echo ""
+elif [ -f "$PILNK_DIR/pilnkradio-install.sh" ]; then
   step "ATC AUDIO ENGINE"
   info "Building the live ATC audio engine (~3-5 min). PiLNK itself is already"
   info "installed and running — nothing below can affect your ADS-B feed."

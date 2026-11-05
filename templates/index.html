@@ -1254,6 +1254,73 @@
   #otaBanner.restart #otaRestartCmd { display:block !important; }
   #otaBanner.restart #otaCopyBtn { display:inline-block !important; }
 </style>
+<!-- # powerfloor v1 - supply power banner + aircraft-only ATC note (spec power-and-hwfloor-spec.md).
+     Polls /api/power every 60 s. Shown only while power is low or was_low; the since-boot
+     flag resets on a restart, so a good supply clears it by itself. Hidden by default. -->
+<div id="powerBanner" role="alert" style="
+  display:none;position:fixed;top:0;left:0;right:0;z-index:9998;
+  background:linear-gradient(90deg,#1e293b,#0f172a);
+  border-bottom:1px solid rgba(245,158,11,0.6);
+  box-shadow:0 4px 20px rgba(0,0,0,0.4);
+  font-family:'Share Tech Mono',monospace;
+  color:#fbbf24;padding:10px 16px;align-items:center;gap:14px;">
+  <div id="powerBannerText" style="flex:1;min-width:0;font-size:0.78rem;line-height:1.4;">⚡ Power supply too weak. This Pi has dropped below 4.6 V since it last started — that can make the radio dongle drop out. Use a 5 V / 3 A supply (Pi 4) or 5 V / 5 A (Pi 5) and a short, thick cable.</div>
+  <button id="powerBannerClose" type="button" onclick="pfDismiss()" aria-label="Hide until the page is reloaded" title="Hide until the page is reloaded" style="
+    background:transparent;border:1px solid rgba(148,163,184,0.4);border-radius:6px;color:#94a3b8;
+    font-family:inherit;font-size:0.8rem;padding:4px 10px;cursor:pointer;flex-shrink:0;">&times;</button>
+</div>
+<script>
+(function(){
+  // powerfloor: every failure here means "say nothing" - an older app.py has no
+  // /api/power, and a power check must never be the thing that breaks the page.
+  var dismissed = false, hwBusy = false, hwDone = false;
+  function getPower(){
+    return fetch('/api/power', {cache:'no-store'})
+      .then(function(r){ return r.ok ? r.json() : null; })
+      .then(function(d){ return (d && typeof d === 'object') ? d : null; })
+      .catch(function(){ return null; });
+  }
+  function show(on, d){
+    var b = document.getElementById('powerBanner');
+    if (!b) return;
+    if (!on || dismissed) { b.style.display = 'none'; return; }
+    var o = document.getElementById('otaBanner');
+    b.style.top = (o && getComputedStyle(o).display !== 'none') ? (o.offsetHeight + 'px') : '0px';
+    b.title = (d && typeof d.volts === 'number') ? ('Supply now: ' + d.volts.toFixed(2) + ' V') : '';
+    b.style.display = 'flex';
+  }
+  window.pfCheckPower = function(){
+    return getPower().then(function(d){
+      show(!!d && (d.power === 'low' || d.power === 'was_low'), d);
+      return d;
+    });
+  };
+  window.pfDismiss = function(){ dismissed = true; show(false); };
+  // Called by probeEngine() when the radio engine does not answer. On an
+  // aircraft-only board the SDR Audio tab says why instead of staying hidden.
+  window.pfHwNote = function(btn){
+    if (hwBusy || hwDone) return;
+    hwBusy = true;
+    getPower().then(function(d){
+      hwBusy = false;
+      if (!d) return;                       // try again on the next engine probe
+      hwDone = true;
+      if (d.hw_tier !== 'adsb_only') return;
+      var tab = document.getElementById('tab-sdr-audio');
+      if (!tab || document.getElementById('sdrHwNote')) return;
+      for (var i = 0; i < tab.children.length; i++) tab.children[i].style.display = 'none';
+      var n = document.createElement('div');
+      n.id = 'sdrHwNote';
+      n.style.cssText = 'padding:28px 16px;text-align:center;color:var(--text-dim,#94a3b8);font-size:0.8rem;line-height:1.5;';
+      n.textContent = 'ATC audio needs a Pi 4 (2 GB+) or Pi 5';
+      tab.insertBefore(n, tab.firstChild);
+      if (btn) btn.style.display = '';
+    });
+  };
+  pfCheckPower();
+  setInterval(pfCheckPower, 60000);
+})();
+</script>
 <div id="pilnk-splash" role="status" aria-label="PiLNK loading">
   <div class="ps-3d" aria-hidden="true"></div>
   <div class="ps-grid"></div>
@@ -10682,8 +10749,8 @@ setInterval(raPoll, 5000);
     var ctl=('AbortController' in window)?new AbortController():null;
     var t=ctl&&setTimeout(function(){ ctl.abort(); },3000);
     fetch(base()+'/sdr/status', ctl?{signal:ctl.signal}:{})
-      .then(function(r){ if(t)clearTimeout(t); if(r.ok){ btn.style.display=''; if(qbtn) qbtn.style.display=''; } },
-            function(){ if(t)clearTimeout(t); });
+      .then(function(r){ if(t)clearTimeout(t); if(r.ok){ btn.style.display=''; if(qbtn) qbtn.style.display=''; } else if(window.pfHwNote){ pfHwNote(btn); } },
+            function(){ if(t)clearTimeout(t); if(window.pfHwNote){ pfHwNote(btn); } });
   }
   probeEngine();
   setInterval(probeEngine, 300000);

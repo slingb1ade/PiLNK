@@ -562,6 +562,16 @@ PY
 }
 
 main() {
+    # powerfloor v1 — datalink needs a Pi 4 (2 GB+) or Pi 5. On an aircraft-only board say so
+    # and stop cleanly (exit 0: nothing failed). Exit 3 is caught here: this script runs set -e.
+    local pf_line="" pf_rc=0
+    if [ -f "$HERE/hwtier.sh" ]; then
+        pf_line="$(bash "$HERE/hwtier.sh" --audio-ok 2>/dev/null)" || pf_rc=$?
+    fi
+    if [ "$pf_rc" -eq 3 ]; then
+        warn "$pf_line"
+        return 0
+    fi
     trap _on_exit EXIT
     trap 'exit 130' INT TERM
     step_checks

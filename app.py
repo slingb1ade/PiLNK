@@ -104,6 +104,29 @@ import urllib.request
 import urllib.parse
 import socket
 import shlex
+# powerfloor v1 — supply power + hardware tier (spec power-and-hwfloor-spec.md).
+# A missing module must never stop the dashboard: power reads 'unknown' and the
+# tier falls back to 'full', which is exactly how a node behaved before this.
+try:
+    import power as _power
+except Exception as _pf_err:
+    print('[PILNK] power module unavailable: %s' % _pf_err)
+
+    class _power:
+        @staticmethod
+        def read_power():
+            return {'power': 'unknown', 'throttled': False}
+
+        @staticmethod
+        def ping_features():
+            return {'power': 'unknown', 'throttled': False}
+try:
+    from hwtier import tier as _hw_tier
+except Exception as _pf_err:
+    print('[PILNK] hwtier module unavailable: %s' % _pf_err)
+
+    def _hw_tier(): return 'full'
+
 
 logging.basicConfig(
     level=logging.INFO,
@@ -341,6 +364,7 @@ def _describe_environment():
     return env
 
 NODE_ENV = _describe_environment()
+HW_TIER = _hw_tier()   # 'full' | 'adsb_only' — Pi 3 and under-1.5 GiB boards run aircraft-only
 print('[PILNK] env: arch=%s python=%s pyModeS=%s eventlet=%s enc=%s port=%s' % (
     NODE_ENV.get('arch'), NODE_ENV.get('python'), NODE_ENV.get('pymodes'),
     NODE_ENV.get('eventlet'), NODE_ENV.get('stdout_encoding'), NODE_ENV.get('dashboard_port')))
@@ -398,7 +422,10 @@ def _run_capability_probe():
     except Exception as e:
         STT_BENCH = {'score': None, 'note': 'probe failed: %s' % e}
 
-threading.Thread(target=_run_capability_probe, daemon=True).start()
+if HW_TIER != 'adsb_only':
+    threading.Thread(target=_run_capability_probe, daemon=True).start()
+else:
+    STT_BENCH = {'score': None, 'note': 'skipped (aircraft-only board)'}
 
 def read_receiver_location():
     # 1. config.json (authoritative, written by installer)
@@ -1704,6 +1731,10 @@ def ping_server():
                     # operator wake a node that reports True here; the node
                     # still re-checks its own config before every action.
                     'remote_maintenance': _remote_maintenance_enabled(),
+                    # Supply power (Pi firmware flags) and hardware tier. A weak
+                    # supply drops the radio dongle and looks like "no aircraft".
+                    'hw_tier': HW_TIER,
+                    **_power.ping_features(),
                 }, **_ota_ping_features()),
             }
             if emergency_aircraft:
@@ -5640,6 +5671,11 @@ def get_coverage():
             'min_elev': coverage['min_elev'],
             'elev_min_nm': COVERAGE_ELEV_MIN_NM
         })
+
+@app.route('/api/power')
+def api_power():
+    """Supply power for the dashboard banner. read_power() never raises."""
+    return jsonify(dict(_power.read_power(), hw_tier=HW_TIER))
 
 # ── OTA Update API ─────────────────────────────────────────
 @app.route('/api/ota/status')
