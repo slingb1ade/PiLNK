@@ -134,6 +134,11 @@ remove_histories() {
       "$h/.bash_history" "$h/.zsh_history" "$h/.sh_history" "$h/.python_history" "$h/.lesshst" \
       "$h/.local/state/lesshst" "$h/.local/share/nano" \
       "$h/.viminfo" "$h/.node_repl_history" "$h/.cache" "$h/.ssh" "$h/.gitconfig" "$h/.wget-hsts"
+    # what the build itself leaves: the RUNBOOK's patch folder, a saved build log,
+    # and sudo's first-use marker (~/rtl-sdr-blog stays: public driver source the
+    # radio installer reuses)
+    remove_paths "build leftovers in $h" \
+      "$h/sterile-patches" "$h/build.log" "$h/.sudo_as_admin_successful"
   done < <(homes)
 }
 

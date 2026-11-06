@@ -141,6 +141,9 @@ sterile_check() {
     for h in .cache .ssh .gitconfig .wget-hsts; do
       _sc_absent home-traces "$home/$h"
     done
+    for h in sterile-patches build.log .sudo_as_admin_successful; do
+      _sc_absent build-leftovers "$home/$h"
+    done
   done
 
   # -- PiLNK

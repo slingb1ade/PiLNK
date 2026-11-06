@@ -7,7 +7,7 @@ RB="$REPO/image/RUNBOOK.md"
 sec() { awk -v n="$1" '/^## /{p = ($2 == n".")} p' "$RB"; }   # section N's text
 has() { grep -qiE -- "$2" <<< "$1"; }
 
-S1=$(sec 1); S2=$(sec 2); S3=$(sec 3); S5=$(sec 5); S6=$(sec 6); S8=$(sec 8)
+S1=$(sec 1); S2=$(sec 2); S3=$(sec 3); S5=$(sec 5); S6=$(sec 6); S7=$(sec 7); S8=$(sec 8)
 ok "I5: section 1 is Ethernet only, no Wi-Fi in Imager" \
    'has "$S1" "ethernet" && has "$S1" "no wi-fi|do not set wi-fi|leave wi-fi" && ! grep -qi "Wi-Fi set here is fine" "$RB"'
 ok "M1: full-upgrade then reboot before the build" \
@@ -23,3 +23,9 @@ ok "M12: first boot reboots once to grow the card" 'grep -qiE "first boot.*reboo
 ok "Inkpot M-2: save name ends .img (Inkpot adds .xz)" \
    'has "$S6" "save it as \`~/pilnk-images/pilnk-sterile\.img\`" && ! has "$S6" "save it as \`[^\`]*\.img\.xz\`" && has "$S6" "pilnk-sterile\.img\.xz"'
 ok "C2: test matrix checks the setup page with tar1090 installed" 'has "$S8" "lighttpd|tar1090"'
+ok "run 2: section 2 removes ~/sterile-patches on the Pi once the patches are applied" \
+   'a=$(grep -n "am ~/sterile-patches" "$RB" | head -1 | cut -d: -f1); b=$(grep -n "^rm -rf ~/sterile-patches\$" "$RB" | head -1 | cut -d: -f1); [ -n "$a" ] && [ -n "$b" ] && [ "$a" -lt "$b" ]'
+ok "run 2: section 1 has the write-build-userdata.sh fallback when Imager leaves the stock template" \
+   'has "$S1" "write-build-userdata\.sh" && has "$S1" "user-data"'
+ok "run 2: section 7 says denylist words and .pyc files can SKIP as stock Debian files" \
+   'has "$S7" "unmodified Debian package file" && has "$S7" "denylist" && has "$S7" "\.pyc"'

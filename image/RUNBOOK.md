@@ -15,6 +15,22 @@ Nothing here holds a password or key. Use a spare card for the build, never the 
   The build card must never join your Wi-Fi: NetworkManager would record your access point
   (`seen-bssids`), and sterilise can only delete what it knows to look for.
 
+**If Imager did not apply the settings** (seen with Imager 1.9.6 on Trixie: the card boots as
+`raspberrypi`/`pilnk-xxxx` with no SSH), set them by hand before the first boot. Leave the card in the
+laptop, open its `bootfs` partition in the file manager (that mounts it), then:
+
+```
+bash ~/Downloads/PiLNK/sterile-image/write-build-userdata.sh /media/$USER/bootfs
+```
+
+(once the branch is on `main` the same script is `image/write-build-userdata.sh` in a clone).
+It types nothing secret on screen: it asks for the temporary password twice and writes only its hash
+into `user-data`. It refuses, and changes nothing, if `user-data` already holds real settings or
+`network-config` has Wi-Fi in it. Sterilise deletes `user-data` and the cloud-init state later.
+
+Expect: `OK: now unmount, put the card in the Pi4, ...` and `passwd line present: 1`.
+Eject the card.
+
 Put the card in the Pi4, plug in the network cable, and power on.
 
 Expect: `ssh pilnk@pilnk-build.local` asks for the temporary password and logs in.
@@ -55,6 +71,14 @@ git -C ~/pilnk log --oneline | head -5
 
 Expect: `git am` prints "Applying: ..." for each patch with no conflict. The newest commit is the last patch.
 `git -C ~/pilnk branch --show-current` prints `sterile-image`.
+
+**Pi4 (build card)**: the patches are in the clone now, so remove the copied folder (it must not end up on the image):
+
+```
+rm -rf ~/sterile-patches
+```
+
+Expect: no output. (Sterilise removes it too, and its check fails if it is still there, as a second guard.)
 
 Two things matter here:
 
@@ -206,7 +230,10 @@ What the lines mean:
   It prints where, never the secret itself. `deny#N` is line N of your denylist. Fix it on the build card
   (or note it) and rebuild.
 - `SKIP ... (public PiLNK file)`: a denylist string sits inside an unchanged PiLNK file that is already public. Not a failure.
-- `SKIP ... (unmodified Debian package file)`: a key-shaped string inside a stock Debian file. Not a failure.
+- `SKIP ... (unmodified Debian package file)`: a key-shaped string or a denylist word inside a stock Debian file,
+  byte for byte as the package shipped it (its md5 matches the package's list). Python's compiled `.pyc` files count
+  too when their `.py` is such a file and the `.pyc` was built from it as it is now. Not a failure: it is public text,
+  not something the build wrote.
 - The last line `NOT CLEAN` means at least one HIT.
 
 ## 8. Test matrix
