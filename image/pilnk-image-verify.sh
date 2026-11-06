@@ -40,12 +40,17 @@
 # the slack after it). "Unchanged" means the blob in HEAD equals
 # git hash-object --no-filters of the file; git never runs with the image's
 # hooks, filters or system/global config (and never fetches).
-# A privkey, psk or tailscale hit (never deny#N) inside a regular file that the
+# Any hit (privkey, psk, tailscale or deny#N) inside a regular file that the
 # image's own /var/lib/dpkg/info/*.md5sums lists with the md5 the file has now
-# is a stock Debian file (libgnutls embeds its FIPS self-test keys): it prints
+# is a stock Debian file (libgnutls embeds its FIPS self-test keys; a denylist
+# word can be an ordinary word in stock text): it prints
 # "SKIP <id> in <path> (unmodified Debian package file)" and does not fail.
-# Same limits: a regular file only, and only inside its size. Unlisted, a
-# different md5, or no readable md5sums -> HIT. With --raw and no --ext4 there
+# Python bytecode compiled at install (py3compile) is not listed, so a
+# __pycache__/<name>.cpython-3NN[.opt-N].pyc counts too when ../<name>.py is
+# such a file and the pyc's timestamp header (flags 0) holds that .py's size
+# and mtime. Same limits: a regular file only, and only inside its size.
+# Unlisted, a different md5, a hash-based or mismatched pyc, or no readable
+# md5sums -> HIT. With --raw and no --ext4 there
 # are no paths, so every hit stays a HIT.
 # Every other hit fails. A path that
 # itself contains a denylist word is printed as "<path withheld: contains
@@ -436,16 +441,34 @@ pkg_unmodified() { # path
   PKGOK[$p]=1
 }
 
-# a secret-shaped hit (id privkey, psk or tailscale; never deny#N) of at least
-# LEN bytes at OFFSET lies in the data of a regular file (not a directory or
-# symlink, not the slack past its size) that is an unmodified package file.
-# libgnutls, for one, embeds its FIPS self-test private keys.
+# PATH is __pycache__/<name>.cpython-3NN[.opt-N].pyc beside an unmodified
+# package <name>.py, compiled from it as it is now: a timestamp pyc (flags 0 at
+# bytes 4-7) whose mtime (8-11) and source size (12-15) equal the .py's, low 32
+# bits, little-endian. A hash-based pyc (flags 1 or 3) is never trusted.
+pyc_from_stock() { # path
+  local p="$1" dir name src f hdr flags mt sz
+  [[ "$p" =~ ^(.*)/__pycache__/([^/]+)\.cpython-3[0-9]+(\.opt-[12])?\.pyc$ ]] || return 1
+  dir="${BASH_REMATCH[1]}"; name="${BASH_REMATCH[2]}"; src="$dir/$name.py"; f="$ROOTDIR$src"
+  [ -f "$f" ] && [ ! -L "$f" ] && [ ! -L "$ROOTDIR$dir/__pycache__" ] || return 1
+  pkg_unmodified "$src" || return 1
+  hdr=$(od -An -tu4 --endian=little -j4 -N12 "$ROOTDIR$p" 2>/dev/null) || return 1
+  read -r flags mt sz <<< "$hdr"
+  [ "${flags:-x}" = 0 ] && [ -n "${sz:-}" ] || return 1
+  [ "$mt" = $(( $(stat -c %Y "$f") & 0xFFFFFFFF )) ] && [ "$sz" = $(( $(stat -c %s "$f") & 0xFFFFFFFF )) ]
+}
+
+# a hit of LEN bytes at OFFSET lies in the data of a regular file (not a
+# directory or symlink, not the slack past its size) that is an unmodified
+# package file, or the stock bytecode of one. libgnutls, for one, embeds its
+# FIPS self-test private keys; pycryptodome's self-tests carry keys in .py
+# and .pyc.
 declare -A SECLEN=([privkey]=19 [psk]=12 [tailscale]=19)  # shortest match per id
 is_pkgfile() { # path inode offset len
   local f="$ROOTDIR$1"
   [ -n "$2" ] && [ -f "$f" ] && [ ! -L "$f" ] && [ "${ITYPE[$2]:-}" = regular ] || return 1
+  [ "${4:-0}" -gt 0 ] || return 1
   in_file "$3" "$2" "$4" || return 1
-  pkg_unmodified "$1"
+  pkg_unmodified "$1" || pyc_from_stock "$1"
 }
 
 declare -A NHIT SEEN
@@ -460,7 +483,8 @@ while read -r id off; do
       [ -n "${SEEN[$line]:-}" ] || { SEEN[$line]=1; echo "$line"; }
       continue
     fi
-    if [ -n "${SECLEN[$id]:-}" ] && is_pkgfile "$LOC_PATH" "$LOC_INO" "$off" "${SECLEN[$id]}"; then
+    if [[ "$id" == deny#* ]]; then len="${DENYLEN[${id#deny#} - 1]:-0}"; else len="${SECLEN[$id]:-0}"; fi
+    if is_pkgfile "$LOC_PATH" "$LOC_INO" "$off" "$len"; then
       line="SKIP $id in $(show_path "$LOC_PATH") (unmodified Debian package file)"
       [ -n "${SEEN[$line]:-}" ] || { SEEN[$line]=1; echo "$line"; }
       continue

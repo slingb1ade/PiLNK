@@ -78,6 +78,9 @@ history|echo x > "$R/root/.lesshst" 2>/dev/null || { mkdir -p "$R/root"; echo x 
 home-traces|mkdir -p "$R/home/pilnk/.cache"; echo x > "$R/home/pilnk/.cache/f"
 home-traces|echo x > "$R/home/pilnk/.gitconfig"
 home-traces|echo x > "$R/home/pilnk/.wget-hsts"
+build-leftovers|mkdir -p "$R/home/pilnk/sterile-patches"; echo x > "$R/home/pilnk/sterile-patches/0001-x.patch"
+build-leftovers|echo x > "$R/home/pilnk/build.log"
+build-leftovers|: > "$R/home/pilnk/.sudo_as_admin_successful"
 secret-key|echo k > "$D/.secret_key"
 update-log|echo x > "$D/update.log"
 ota-state|echo '{}' > "$D/ota_state.json"
@@ -547,6 +550,7 @@ if command -v mkfs.ext4 >/dev/null && command -v debugfs >/dev/null; then
   { printf 'ELF\0\0'; pem_rsa; } > "$L8/libedited.so.1"
   { printf 'ELF\0\0'; pem_rsa; } > "$L8/libloose.so.1"
   printf 'ELF\0by %s\0' "$WORD" > "$L8/libdeny.so.1"
+  printf 'ELF\0by %s\0' "$WORD" > "$L8/libdenyed.so.1"
   echo x > "$L8/libtail.so.1"
   { printf '%s  usr/lib/aarch64-linux-gnu/libfake.so.1\n' "$(md5of "$L8/libfake.so.1")"
     printf '%s  usr/share/doc/libfake1/example.conf\n' "$(md5of "$T8/usr/share/doc/libfake1/example.conf")"
@@ -554,7 +558,29 @@ if command -v mkfs.ext4 >/dev/null && command -v debugfs >/dev/null; then
   } > "$I8/libfake1:arm64.md5sums"
   { printf '%s  usr/lib/aarch64-linux-gnu/libedited.so.1\n' 0123456789abcdef0123456789abcdef
     printf '%s  usr/lib/aarch64-linux-gnu/libdeny.so.1\n' "$(md5of "$L8/libdeny.so.1")"
+    printf '%s  usr/lib/aarch64-linux-gnu/libdenyed.so.1\n' 0123456789abcdef0123456789abcdef
   } > "$I8/libother2.md5sums"
+  # Python bytecode compiled at install (py3compile) is not in md5sums. A .pyc is
+  # stock when its source .py is an unmodified package file and the pyc's
+  # timestamp header (flags 0) records that .py's size and mtime.
+  PY8="$T8/usr/lib/python3/dist-packages/Cryptodome/SelfTest"; mkdir -p "$PY8"
+  pyc8() { env -u SOURCE_DATE_EPOCH python3 -c 'import py_compile,sys; py_compile.compile(sys.argv[1], doraise=True, invalidation_mode=py_compile.PycInvalidationMode[sys.argv[2]])' "$1" "${2:-TIMESTAMP}"; }
+  pysrc8() { printf 'K = """%s"""\n' "$(pem_rsa)" > "$PY8/$1.py"; }
+  for n in stock edited loose resized retimed orphan hashed; do pysrc8 "$n"; done
+  printf 'NAME = "by %s"\n' "$WORD" > "$PY8/denied.py"
+  for n in stock edited loose retimed orphan denied; do pyc8 "$PY8/$n.py"; done
+  # flags 1 (hash-based) on a header that otherwise matches: only the flags say no
+  pyc8 "$PY8/hashed.py"; HP8=$(ls "$PY8"/__pycache__/hashed.*.pyc)
+  printf '\001' | dd of="$HP8" bs=1 seek=4 conv=notrunc status=none
+  printf '# a longer first draft\n' >> "$PY8/resized.py"; pyc8 "$PY8/resized.py"
+  RT8=$(stat -c %Y "$PY8/resized.py"); sed -i '$d' "$PY8/resized.py"; touch -d "@$RT8" "$PY8/resized.py"
+  touch -d '@1600000000' "$PY8/retimed.py"
+  rm -f "$PY8/orphan.py"
+  { for n in stock resized retimed hashed denied; do
+      printf '%s  usr/lib/python3/dist-packages/Cryptodome/SelfTest/%s.py\n' "$(md5of "$PY8/$n.py")" "$n"
+    done
+    printf '%s  usr/lib/python3/dist-packages/Cryptodome/SelfTest/edited.py\n' 0123456789abcdef0123456789abcdef
+  } > "$I8/python3-pycryptodome.md5sums"
   IMG8="$ROOT/map8.img"; truncate -s 64M "$IMG8"; mkfs.ext4 -q -F -d "$T8" "$IMG8" >/dev/null 2>&1
   # a key in the slack after a listed, unmodified file (past i_size)
   BSZ8=$(debugfs -R stats "$IMG8" 2>/dev/null | awk -F: '/^Block size:/ { gsub(/[ \t]/, "", $2); print $2 }')
@@ -568,14 +594,24 @@ if command -v mkfs.ext4 >/dev/null && command -v debugfs >/dev/null; then
      "grep -qx 'SKIP psk in /usr/share/doc/libfake1/example.conf (unmodified Debian package file)' <<< \"\$OUT8\" && grep -qx 'SKIP tailscale in /usr/share/doc/libfake1/example.conf (unmodified Debian package file)' <<< \"\$OUT8\""
   ok "dpkg: listed file whose md5 differs -> HIT" "grep -qx 'HIT privkey at /usr/lib/aarch64-linux-gnu/libedited.so.1' <<< \"\$OUT8\""
   ok "dpkg: file not listed in any md5sums -> HIT" "grep -qx 'HIT privkey at /usr/lib/aarch64-linux-gnu/libloose.so.1' <<< \"\$OUT8\""
-  ok "dpkg: a denylist word in a listed unmodified file -> HIT, never SKIP" \
-     "grep -qx 'HIT deny#1 at /usr/lib/aarch64-linux-gnu/libdeny.so.1' <<< \"\$OUT8\" && ! grep -q '^SKIP deny#1 in /usr/lib' <<< \"\$OUT8\""
+  ok "dpkg: a denylist word in a listed unmodified file -> SKIP (stock Debian text), not a HIT" \
+     "grep -qx 'SKIP deny#1 in /usr/lib/aarch64-linux-gnu/libdeny.so.1 (unmodified Debian package file)' <<< \"\$OUT8\" && ! grep -q '^HIT deny#1 at /usr/lib/aarch64-linux-gnu/libdeny\.so\.1' <<< \"\$OUT8\""
+  ok "dpkg: a denylist word in a listed file whose md5 differs -> HIT" \
+     "grep -qx 'HIT deny#1 at /usr/lib/aarch64-linux-gnu/libdenyed.so.1' <<< \"\$OUT8\""
+  PC8='/usr/lib/python3/dist-packages/Cryptodome/SelfTest/__pycache__'
+  ok "pyc: key in the .pyc of an unmodified package .py (size + mtime match) -> SKIP" \
+     "grep -qE '^SKIP privkey in $PC8/stock\.cpython-3[0-9]+\.pyc \(unmodified Debian package file\)\$' <<< \"\$OUT8\" && ! grep -q '^HIT privkey at $PC8/stock' <<< \"\$OUT8\""
+  ok "pyc: denylist word in the .pyc of an unmodified package .py -> SKIP" \
+     "grep -qE '^SKIP deny#1 in $PC8/denied\.cpython-3[0-9]+\.pyc \(unmodified Debian package file\)\$' <<< \"\$OUT8\""
+  for n in edited loose resized retimed orphan hashed; do
+    ok "pyc: $n source -> the .pyc stays a HIT" "grep -qE '^HIT privkey at $PC8/$n\.cpython-3[0-9]+\.pyc\$' <<< \"\$OUT8\""
+  done
   ok "dpkg: a key in the slack after a listed file (past i_size) -> HIT" \
      "grep -qx 'HIT privkey at /usr/lib/aarch64-linux-gnu/libtail.so.1' <<< \"\$OUT8\" && ! grep -q '^SKIP privkey in /usr/lib/aarch64-linux-gnu/libtail' <<< \"\$OUT8\""
   ok "dpkg: exit 1, output holds no key, psk, tailscale or denylist bytes" \
      "[ '$RC8' = 1 ] && ! grep -qiE 'hunter2|BEGIN|$TSK|kQ7x|MII|$WORD' <<< \"\$OUT8\""
   ok "dpkg: every line has a known shape" \
-     "! grep -vE '^(HIT [a-z#0-9-]+ at (/[^ ]*|offset [0-9]+ \\((free space|fs metadata|unlinked file)\\))|SKIP (privkey|psk|tailscale) in /[^ ]* \\(unmodified Debian package file\\)|NOT CLEAN: .*)\$' <<< \"\$OUT8\""
+     "! grep -vE '^(HIT [a-z#0-9-]+ at (/[^ ]*|offset [0-9]+ \\((free space|fs metadata|unlinked file)\\))|SKIP (privkey|psk|tailscale|deny#[0-9]+) in /[^ ]* \\(unmodified Debian package file\\)|NOT CLEAN: .*)\$' <<< \"\$OUT8\""
   OUT8R=$(bash "$VER" --root "$T8" --boot "$T8/boot/firmware" --raw "$IMG8" 2>&1); RC8R=$?
   ok "dpkg: --raw without path mapping -> the same keys are HITs at offsets, no SKIP" \
      "[ '$RC8R' = 1 ] && grep -qE '^HIT privkey at offset [0-9]+\$' <<< \"\$OUT8R\" && ! grep -q '^SKIP' <<< \"\$OUT8R\""
