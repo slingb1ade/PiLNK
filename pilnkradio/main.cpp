@@ -55,11 +55,12 @@
 #include <unistd.h>
 #include <dlfcn.h>        // v2.1.0: optional DeepFilterNet (loaded at runtime, never linked)
 #include <sys/wait.h>
+#include <fcntl.h>        // v2.1.5: fsync the config and its directory
 #include <memory>
 
 using nlohmann::json;
 
-#define PILNKRADIO_VERSION "2.1.4"
+#define PILNKRADIO_VERSION "2.2.0"
 #define PILNK_FFT_SIZE     1024
 #define PILNK_FFT_RATE     25.0
 
@@ -147,6 +148,32 @@ static const char* modeToString(int m) {
     switch (m) { case PILNK_MODE_AM: return "AM"; default: return ""; }
 }
 
+// ======================= limits (v2.1.5) =======================
+// Shared by the control API and the config loader. Frequency: the R820T/R828D tuner range
+// (24-1766 MHz). Bandwidth: the channel filter clamps its cutoff to 1.5-20 kHz, so 1-50 kHz
+// covers every useful setting. Squelch: dBFS, 0 at most. Gain: an index into the tuner's steps.
+static constexpr double VFO_MIN_HZ = 24e6, VFO_MAX_HZ = 1766e6;
+static constexpr double BW_MIN_HZ = 1000.0, BW_MAX_HZ = 50000.0;
+static constexpr double SQ_MIN_DB = -100.0, SQ_MAX_DB = 0.0;
+// v2.2.0 auto squelch (spec 4): the margin, in dB, above the learned noise floor.
+static constexpr double SQ_MARGIN_MIN = 3.0, SQ_MARGIN_MAX = 20.0, SQ_MARGIN_DEF = 6.0;
+// v2.2.0 floor tracker (spec 3.2): one reading per 100 ms of channel audio, 30 s window,
+// valid from 5 s, floor = 15th percentile.
+static constexpr size_t SQ_READ_SAMPLES = 4800;
+static constexpr size_t SQ_WIN = 300;
+static constexpr size_t SQ_MIN_READINGS = 50;
+static constexpr double SQ_PCT = 0.15;
+// v2.2.0 auto gate (spec 3.3): close 3 dB under the opening level, hold 0.5 s after the signal
+// drops under that, and feed the floor again once the gate has been open 60 s without a break.
+static constexpr float SQ_HYST_DB = 3.0f;
+static constexpr long long SQ_HANG_SAMPLES = 24000;
+static constexpr unsigned long long SQ_STUCK_SAMPLES = 2880000;
+// The auto gate's opening level: floor + margin once the floor is valid, the fixed level during
+// warm-up, clamped to the squelch range. Shared by the DSP and the status, so they always agree.
+static float autoOpenDb(bool floorValid, float floorDb, float margin, float level) {
+    return std::clamp(floorValid ? floorDb + margin : level, (float)SQ_MIN_DB, (float)SQ_MAX_DB);
+}
+
 // ======================= config =======================
 // Explicit read/modify/write — no autosave-on-shutdown (that pattern gave us
 // the sdrpp squelch-zombie). Saved atomically (tmp + rename) on every
@@ -163,6 +190,8 @@ struct Config {
     bool        agc      = false;
     bool        squelchEnabled = false;
     double      squelchLevel   = -50.0;
+    bool        squelchAuto    = false;                 // v2.2.0: opt-in automatic squelch
+    double      squelchMarginDb = SQ_MARGIN_DEF;
     bool        playing  = false;      // consent: off by default, persisted
     int         port     = 5656;
     std::vector<std::string> allowedOrigins; // M3 enforcement lands in milestone 5
@@ -177,33 +206,86 @@ struct Config {
             logE("config: %s is not valid JSON — refusing to start (fix or delete it)", p.c_str());
             exit(1);
         }
-        serial      = j.value("serial", serial);
-        ppm         = j.value("ppm", ppm);
-        vfoHz       = j.value("vfoHz", vfoHz);
-        mode        = j.value("mode", mode);
-        bandwidthHz = j.value("bandwidthHz", bandwidthHz);
-        gainIndex   = j.value("gainIndex", gainIndex);
-        agc         = j.value("agc", agc);
-        squelchEnabled = j.value("squelchEnabled", squelchEnabled);
-        squelchLevel   = j.value("squelchLevel", squelchLevel);
-        playing     = j.value("playing", playing);
-        port        = j.value("port", port);
-        token       = j.value("token", token);
-        if (j.contains("allowedOrigins")) allowedOrigins = j["allowedOrigins"].get<std::vector<std::string>>();
+        // v2.1.5 (review of the audit fix): a value of the wrong type used to throw out of
+        // j.value() and abort the engine on every start - a crash loop from one hand edit. Each
+        // field is now read on its own; a wrong type or an out-of-range value falls back to the
+        // default with a warning, so a bad config degrades to a working radio, never to a dead one.
+        if (!j.is_object()) {
+            logE("config: %s is not a JSON object — refusing to start (fix or delete it)", p.c_str());
+            exit(1);
+        }
+        pick(j, "serial", serial); pick(j, "ppm", ppm); pick(j, "vfoHz", vfoHz); pick(j, "mode", mode);
+        pick(j, "bandwidthHz", bandwidthHz); pick(j, "gainIndex", gainIndex); pick(j, "agc", agc);
+        pick(j, "squelchEnabled", squelchEnabled); pick(j, "squelchLevel", squelchLevel);
+        pick(j, "squelchAuto", squelchAuto); pick(j, "squelchMarginDb", squelchMarginDb);
+        pick(j, "playing", playing); pick(j, "port", port); pick(j, "token", token);
+        pick(j, "allowedOrigins", allowedOrigins);
+        const Config d;   // the defaults
+        if (!(std::isfinite(vfoHz) && vfoHz >= VFO_MIN_HZ && vfoHz <= VFO_MAX_HZ)) {
+            logW("config: vfoHz %g out of range — using %.0f", vfoHz, d.vfoHz); vfoHz = d.vfoHz; }
+        if (!(std::isfinite(bandwidthHz) && bandwidthHz >= BW_MIN_HZ && bandwidthHz <= BW_MAX_HZ)) {
+            logW("config: bandwidthHz %g out of range — using %.0f", bandwidthHz, d.bandwidthHz); bandwidthHz = d.bandwidthHz; }
+        if (!(std::isfinite(squelchLevel) && squelchLevel >= SQ_MIN_DB && squelchLevel <= SQ_MAX_DB)) {
+            logW("config: squelchLevel %g out of range — using %.0f", squelchLevel, d.squelchLevel); squelchLevel = d.squelchLevel; }
+        if (!(std::isfinite(squelchMarginDb) && squelchMarginDb >= SQ_MARGIN_MIN && squelchMarginDb <= SQ_MARGIN_MAX)) {
+            logW("config: squelchMarginDb %g out of range — using %.0f", squelchMarginDb, d.squelchMarginDb); squelchMarginDb = d.squelchMarginDb; }
+        if (gainIndex < 0 || gainIndex > 63) {
+            logW("config: gainIndex %d out of range — using %d", gainIndex, d.gainIndex); gainIndex = d.gainIndex; }
+        if (ppm < -500 || ppm > 500) { logW("config: ppm %d out of range — using 0", ppm); ppm = 0; }
+        if (port < 1 || port > 65535) { logW("config: port %d out of range — using %d", port, d.port); port = d.port; }
         return true;
     }
 
-    void save() {
+    // one field: keep the default (and say so) when the stored value is the wrong type
+    template <class T> static void pick(const json& j, const char* k, T& out) {
+        if (!j.contains(k)) return;
+        try { out = j.at(k).get<T>(); }
+        catch (const std::exception&) { logW("config: %s has the wrong type — keeping the default", k); }
+    }
+
+    // v2.1.5 (STT audit item 5): the old save never checked the write. On a full disk the
+    // .tmp came out short or empty, rename() put it over the good config anyway, and the next
+    // start refused the broken JSON - a crash loop that only a human could end. Now: write,
+    // flush, fsync and check every step; only a complete .tmp is renamed into place; then fsync
+    // the directory so the rename itself survives a power cut. A failed save leaves the old
+    // file exactly as it was and says so in the journal.
+    bool save() {
         json j;
         j["serial"] = serial; j["ppm"] = ppm; j["vfoHz"] = vfoHz;
         j["mode"] = mode; j["bandwidthHz"] = bandwidthHz;
         j["gainIndex"] = gainIndex; j["agc"] = agc;
         j["squelchEnabled"] = squelchEnabled; j["squelchLevel"] = squelchLevel;
+        j["squelchAuto"] = squelchAuto; j["squelchMarginDb"] = squelchMarginDb;
         j["playing"] = playing; j["port"] = port;
         j["allowedOrigins"] = allowedOrigins; j["token"] = token;
-        std::string tmp = path + ".tmp";
-        { std::ofstream f(tmp); f << j.dump(4) << "\n"; }
-        if (rename(tmp.c_str(), path.c_str()) != 0) logE("config: rename to %s failed: %s", path.c_str(), strerror(errno));
+        const std::string text = j.dump(4) + "\n", tmp = path + ".tmp";
+        int fd = ::open(tmp.c_str(), O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0644);
+        if (fd < 0) { logE("config: save failed, cannot open %s: %s", tmp.c_str(), strerror(errno)); return false; }
+        size_t off = 0;
+        while (off < text.size()) {
+            ssize_t n = ::write(fd, text.data() + off, text.size() - off);
+            if (n < 0 && errno == EINTR) continue;
+            if (n <= 0) {
+                logE("config: save failed writing %s: %s - %s left as it was", tmp.c_str(), n < 0 ? strerror(errno) : "short write", path.c_str());
+                ::close(fd); ::unlink(tmp.c_str()); return false;
+            }
+            off += (size_t)n;
+        }
+        const int syncErr = ::fsync(fd) != 0 ? errno : 0;     // both always run: no fd leak when fsync fails
+        const int closeErr = ::close(fd) != 0 ? errno : 0;
+        if (syncErr || closeErr) {
+            logE("config: save failed syncing %s: %s - %s left as it was", tmp.c_str(), strerror(syncErr ? syncErr : closeErr), path.c_str());
+            ::unlink(tmp.c_str()); return false;
+        }
+        if (rename(tmp.c_str(), path.c_str()) != 0) {
+            logE("config: save failed, rename to %s: %s", path.c_str(), strerror(errno));
+            ::unlink(tmp.c_str()); return false;
+        }
+        const size_t slash = path.find_last_of('/');
+        const std::string dir = slash == std::string::npos ? "." : slash == 0 ? "/" : path.substr(0, slash);
+        int dfd = ::open(dir.c_str(), O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+        if (dfd >= 0) { ::fsync(dfd); ::close(dfd); }
+        return true;
     }
 };
 
@@ -607,11 +689,13 @@ private:
 
     double hwCenterHz() const { return cfg.vfoHz - VFO_OFFSET; }
 
-    void applyTuning() {
+    bool applyTuning() {
         double c = hwCenterHz();
-        if (!rtl.setCenterHz(c)) logW("rtl: set_center_freq(%.0f) failed", c);
+        bool ok = rtl.setCenterHz(c);
+        if (!ok) logW("rtl: set_center_freq(%.0f) failed", c);
         curCenterHz.store(c);
         curSpanHz.store((double)SAMPLE_RATE);
+        return ok;
     }
 
     // -------- FFT producer (ported from pilnk_bridge, adapted to u8 IQ) --------
@@ -721,6 +805,9 @@ private:
     std::mutex chanMtx;                       // guards chanFir rebuild vs DSP use
     std::atomic<bool> sqEnabled{false};
     std::atomic<float> sqLevel{-50.0f};
+    std::atomic<bool> sqAuto{false};          // v2.2.0: written by the control thread
+    std::atomic<float> sqMargin{(float)SQ_MARGIN_DEF};
+    std::atomic<bool> sqOpenNow{true};        // v2.2.0: the gate state on the last block
     float sqPowSmooth = 0.0f;                 // DSP thread only
     // Smoothed post-channel-filter power, published so the gain helper (and a
     // human tuning by hand) can see what the radio is actually hearing.
@@ -729,6 +816,44 @@ private:
     // same number, so statusJson emits null rather than a floor value.
     std::atomic<bool>  chanPowValid{false};
     std::atomic<float> chanPowDb{0.0f};
+    // v2.2.0 noise-floor tracker. sqWin and sqReadAcc belong to the DSP thread; the control
+    // thread only raises sqFloorReset (and drops sqFloorValid when the radio stops).
+    std::deque<float> sqWin;
+    size_t sqReadAcc = 0;
+    std::atomic<bool>  sqFloorValid{false};
+    std::atomic<float> sqFloorDb{0.0f};
+    std::atomic<bool>  sqFloorReset{false};
+    // v2.2.0 auto gate state, DSP thread only. In off and fixed mode they follow the real gate
+    // every block, so a switch into Auto starts from the gate that is in force.
+    bool sqGateOpen = false;                  // closed until a block reaches T_open (off/fixed overwrite it every block)
+    long long sqHangLeft = SQ_HANG_SAMPLES;
+    unsigned long long sqOpenRun = 0;         // samples open without a break (includes the hang)
+    // Same rank rule as the STT's _tune_floor: sort, take index floor(PCT * (n-1)).
+    static float floorPercentile(const std::deque<float>& w) {
+        std::vector<float> v(w.begin(), w.end());
+        std::sort(v.begin(), v.end());
+        return v[(size_t)(SQ_PCT * (double)(v.size() - 1))];
+    }
+    // Once per non-empty block, after chanDb is known. n = channel samples in the block.
+    void floorStep(size_t n, float chanDb, bool feedOk) {
+        if (sqFloorReset.exchange(false)) {
+            sqWin.clear();
+            sqReadAcc = 0;
+            sqFloorValid.store(false, std::memory_order_relaxed);
+        }
+        sqReadAcc += n;
+        for (; sqReadAcc >= SQ_READ_SAMPLES; sqReadAcc -= SQ_READ_SAMPLES) {
+            if (!feedOk) continue;
+            sqWin.push_back(chanDb);
+            if (sqWin.size() > SQ_WIN) sqWin.pop_front();
+        }
+        if (sqWin.size() >= SQ_MIN_READINGS) {
+            sqFloorDb.store(floorPercentile(sqWin), std::memory_order_relaxed);
+            sqFloorValid.store(true, std::memory_order_relaxed);
+        } else {
+            sqFloorValid.store(false, std::memory_order_relaxed);
+        }
+    }
     float dcState = 0.0f, dcPrev = 0.0f;      // DC blocker (one-pole HPF)
     float agcGain = 20.0f;                    // DSP thread only
     std::vector<float> audioAcc;              // pending output samples
@@ -790,6 +915,8 @@ private:
         rebuildChannelFilter(cfg.bandwidthHz);
         sqEnabled.store(cfg.squelchEnabled);
         sqLevel.store((float)cfg.squelchLevel);
+        sqAuto.store(cfg.squelchAuto);
+        sqMargin.store((float)cfg.squelchMarginDb);
     }
 
     void rebuildChannelFilter(double bwHz) {
@@ -833,13 +960,44 @@ private:
         // squelch happened to be enabled and thrown away otherwise — the one
         // number a gain helper needs, calculated every block and discarded.
         const float chanDb = 10.0f * log10f(sqPowSmooth + 1e-12f);
+        const bool sqOn = sqEnabled.load(std::memory_order_relaxed);
+        const bool sqAutoOn = sqOn && sqAuto.load(std::memory_order_relaxed);
+        bool muted = false;
+        if (sqAutoOn) {   // spec 3.3: hysteresis + hang around a level learned from the floor
+            const float T_open = autoOpenDb(sqFloorValid.load(std::memory_order_relaxed),
+                                            sqFloorDb.load(std::memory_order_relaxed),
+                                            sqMargin.load(std::memory_order_relaxed),
+                                            sqLevel.load(std::memory_order_relaxed));
+            const float T_close = T_open - SQ_HYST_DB;
+            if (n3) {
+                if (!sqGateOpen) {
+                    if (chanDb >= T_open) { sqGateOpen = true; sqHangLeft = SQ_HANG_SAMPLES; sqOpenRun = 0; }
+                } else if (chanDb >= T_close) {
+                    sqHangLeft = SQ_HANG_SAMPLES;
+                } else if ((sqHangLeft -= (long long)n3) <= 0) {
+                    sqGateOpen = false;
+                }
+                if (sqGateOpen) sqOpenRun += n3; else sqOpenRun = 0;
+            }
+            muted = !sqGateOpen;
+        } else {          // off and fixed: exactly 2.1.5
+            if (sqOn)
+                muted = chanDb < sqLevel.load(std::memory_order_relaxed);
+            sqGateOpen = !muted;
+            sqHangLeft = SQ_HANG_SAMPLES;
+            sqOpenRun = 0;    // so re-enabling, or switching into Auto, starts a fresh open run
+        }
         if (n3) {   // an empty block is not a measurement of silence
             chanPowDb.store(chanDb, std::memory_order_relaxed);
             chanPowValid.store(true, std::memory_order_relaxed);
+            // spec 3.2: an open auto gate (a transmission) never feeds the floor, unless it has
+            // been open 60 s without a break (the stuck-open release), or the floor is not valid
+            // yet (warm-up: a stored level under the noise opens on hiss, and an unfed window would
+            // keep it open for the whole 60 s).
+            floorStep(n3, chanDb, !sqAutoOn || !sqGateOpen || sqOpenRun >= SQ_STUCK_SAMPLES
+                                  || !sqFloorValid.load(std::memory_order_relaxed));
         }
-        bool muted = false;
-        if (sqEnabled.load(std::memory_order_relaxed))
-            muted = chanDb < sqLevel.load(std::memory_order_relaxed);
+        sqOpenNow.store(!muted, std::memory_order_relaxed);
         if (n3 && muted == rawOpenNow) {          // the gate flips at this block's first sample
             rawOpenNow = !muted;
             rawEdges.emplace_back(rawPushed + rawAcc.size(), rawOpenNow);
@@ -1027,7 +1185,7 @@ private:
     // Same queue shape as the bridge; the drain no longer needs a GUI thread —
     // that constraint (and the whole Xvfb requirement) dies with SDR++.
     struct Command {
-        enum Type { FREQ, MODE, BANDWIDTH, PLAYING, SQUELCH_MODE, SQUELCH_LEVEL, GAIN_INDEX, AGC } type;
+        enum Type { FREQ, MODE, BANDWIDTH, PLAYING, SQUELCH_MODE, SQUELCH_LEVEL, GAIN_INDEX, AGC, SQUELCH_AUTO, SQUELCH_MARGIN } type;
         double dval = 0; int ival = 0; bool bval = false;
     };
     std::mutex cmdMtx;
@@ -1040,6 +1198,10 @@ private:
         int audioSampleRate = 48000;
         bool squelchEnabled = false;
         float squelchLevel = -50.0f;
+        bool  squelchAuto = false;       // v2.2.0
+        float squelchMarginDb = (float)SQ_MARGIN_DEF;
+        float squelchThresholdDb = -50.0f;
+        bool  squelchOpen = true;
         std::vector<float> rfGainSteps;  // empty until a device is open (M2) —
                                          // deliberately keeps the "no device"
                                          // tell the tab/watchdog key on
@@ -1049,6 +1211,8 @@ private:
         int audioSps = 0;
         bool  channelPowerValid = false; // false => statusJson emits null
         float channelPowerDb = 0.0f;     // post-channel-filter power, dBFS
+        bool  noiseFloorValid = false;   // false => statusJson emits null
+        float noiseFloorDb = 0.0f;       // learned noise floor, dBFS
     };
     std::mutex statusMtx;
     StatusSnapshot status;
@@ -1057,12 +1221,21 @@ private:
         std::lock_guard<std::mutex> lk(cmdMtx);
         cmdQueue.push_back(c);
     }
+    void enqueueAll(const std::vector<Command>& cs) {   // one request = one batch, applied in one cycle
+        std::lock_guard<std::mutex> lk(cmdMtx);
+        for (auto& c : cs) cmdQueue.push_back(c);
+    }
 
     // -------- control thread: drain commands, refresh status, sample flow --------
     std::thread controlThread;
     std::thread acquireThread;   // #114: background wait-for-dongle when none is present at startup
 
     void controlLoop() {
+        // v2.1.5 (review I1): the deaf clock starts when the radio does. Without this the first
+        // window ran from object construction, so a dongle that turned up late (#114's background
+        // wait) looked like >10 s of silence and the engine killed itself the moment it appeared.
+        flowSampleTime = std::chrono::steady_clock::now();
+        zeroFlowSecs = 0.0;
         while (!stopping) {
             processCommands();
             refreshStatus();
@@ -1079,29 +1252,42 @@ private:
                 case Command::PLAYING:
                     cfg.playing = c.bval;
                     if (c.bval && !rtl.isStreaming()) rawStreamStarting();
+                    if (c.bval && !rtl.isStreaming()) sqFloorReset.store(true);   // not on a redundant LISTEN
                     if (c.bval) rtl.startStream(); else rtl.stopStream();
                     if (c.bval && !rtl.isStreaming()) dropRawSubs("radio did not start", false);
                     // demodBlock only runs while the stream does, so a stopped
                     // radio would otherwise keep publishing its last reading
                     // as though it were current. Go back to "not measured".
                     if (!c.bval) chanPowValid.store(false, std::memory_order_relaxed);
+                    if (!c.bval) sqFloorValid.store(false, std::memory_order_relaxed);
                     if (!c.bval) {                    // DSP thread is joined: its state is ours now
                         dropRawSubs("radio stopped", false);
                         rawAcc.clear(); rawEdges.clear(); rawOpenEmit = rawOpenNow;
+                        sqGateOpen = false; sqOpenRun = 0; sqHangLeft = SQ_HANG_SAMPLES;   // a start begins closed
                     }
                     logI("control: playing -> %s", c.bval ? "true" : "false");
                     break;
-                case Command::FREQ:
+                case Command::FREQ: {
+                    // v2.1.5 (audit item 3): if the tuner refuses, put the old frequency back -
+                    // in the hardware, in status and on disk - instead of saving one we are not on.
+                    const double was = cfg.vfoHz;
+                    sqFloorReset.store(true);
                     cfg.vfoHz = c.dval;
-                    applyTuning();
-                    // milestone 3: retune the NCO with the hardware
-                    logI("control: vfo -> %.0f Hz", c.dval);
+                    if (applyTuning()) {
+                        logI("control: vfo -> %.0f Hz", c.dval);
+                    } else {
+                        cfg.vfoHz = was;
+                        applyTuning();
+                        logW("control: vfo %.0f Hz refused by the tuner - staying on %.0f Hz", c.dval, was);
+                    }
                     break;
+                }
                 case Command::MODE:
                     cfg.mode = modeToString(c.ival);
                     break;
                 case Command::BANDWIDTH:
                     cfg.bandwidthHz = c.dval;
+                    sqFloorReset.store(true);
                     rebuildChannelFilter(c.dval);
                     break;
                 case Command::SQUELCH_MODE:
@@ -1112,12 +1298,22 @@ private:
                     cfg.squelchLevel = std::clamp(c.dval, -100.0, 0.0);
                     sqLevel.store((float)cfg.squelchLevel);
                     break;
+                case Command::SQUELCH_AUTO:
+                    cfg.squelchAuto = c.bval;
+                    sqAuto.store(c.bval);
+                    break;
+                case Command::SQUELCH_MARGIN:
+                    cfg.squelchMarginDb = std::clamp(c.dval, SQ_MARGIN_MIN, SQ_MARGIN_MAX);
+                    sqMargin.store((float)cfg.squelchMarginDb);
+                    break;
                 case Command::GAIN_INDEX:
                     cfg.gainIndex = std::clamp(c.ival, 0, std::max(0, (int)rtl.gains().size() - 1));
+                    sqFloorReset.store(true);
                     rtl.setGainIndex(cfg.gainIndex);
                     break;
                 case Command::AGC:
                     cfg.agc = c.bval;
+                    sqFloorReset.store(true);
                     rtl.setAgc(c.bval);
                     break;
             }
@@ -1134,12 +1330,26 @@ private:
         s.playing = cfg.playing;
         s.squelchEnabled = cfg.squelchEnabled;
         s.squelchLevel = (float)cfg.squelchLevel;
+        s.squelchAuto = cfg.squelchAuto;
+        s.squelchMarginDb = (float)cfg.squelchMarginDb;
+        // The floor is read once, so noiseFloorDb and an auto threshold in the same status agree.
+        const bool  floorValid = sqFloorValid.load(std::memory_order_relaxed);
+        const float floorDb    = sqFloorDb.load(std::memory_order_relaxed);
+        // Fixed mode: the configured level. Auto mode: the DSP's formula (autoOpenDb) worked out
+        // here, so it is defined and current even while stopped (no DSP block runs then).
+        // Disabled: statusJson reports null.
+        s.squelchThresholdDb = !cfg.squelchAuto
+            ? (float)cfg.squelchLevel
+            : autoOpenDb(floorValid, floorDb, (float)cfg.squelchMarginDb, (float)cfg.squelchLevel);
+        s.squelchOpen = !cfg.squelchEnabled || sqOpenNow.load(std::memory_order_relaxed);
         s.rfGainIndex = cfg.gainIndex;
         s.rfAgc = cfg.agc;
         s.rfGainSteps = rtl.gains(); // empty list = no device: the tell the
                                      // tab/watchdog key on stays truthful
         s.channelPowerValid = chanPowValid.load(std::memory_order_relaxed);
         s.channelPowerDb    = chanPowDb.load(std::memory_order_relaxed);
+        s.noiseFloorValid   = floorValid;
+        s.noiseFloorDb      = floorDb;
         sampleFlow(s);
         { std::lock_guard<std::mutex> lk(statusMtx); status = s; }
     }
@@ -1156,6 +1366,12 @@ private:
         j["audioSampleRate"] = s.audioSampleRate;
         j["squelchEnabled"] = s.squelchEnabled;
         j["squelchLevel"] = s.squelchLevel;
+        j["squelchAuto"] = s.squelchAuto;
+        j["squelchMarginDb"] = s.squelchMarginDb;
+        // null when squelch is off: there is no threshold to report
+        if (s.squelchEnabled) j["squelchThresholdDb"] = s.squelchThresholdDb;
+        else                  j["squelchThresholdDb"] = nullptr;
+        j["squelchOpen"] = s.squelchOpen;
         j["rfGainSteps"] = s.rfGainSteps;
         j["rfGainIndex"] = s.rfGainIndex;
         j["rfAgc"] = s.rfAgc;
@@ -1164,6 +1380,8 @@ private:
         // null, never a floor value: "quiet" and "not measured" stay distinct
         if (s.channelPowerValid) j["channelPowerDb"] = s.channelPowerDb;
         else                     j["channelPowerDb"] = nullptr;
+        if (s.noiseFloorValid) j["noiseFloorDb"] = s.noiseFloorDb;
+        else                   j["noiseFloorDb"] = nullptr;
         // WHO is answering on this port, and which build. A node can have the
         // current binary installed while a DIFFERENT program holds :5656 —
         // sdrpp did exactly that on LINKLABS for 28 days, serving /sdr/status
@@ -1192,6 +1410,7 @@ private:
     std::atomic<int> audioSpsVal{0};
     std::chrono::steady_clock::time_point flowSampleTime = std::chrono::steady_clock::now();
     double zeroFlowSecs = 0.0;   // control thread only
+    static constexpr double DEAF_EXIT_S = 10.0;   // v2.1.5: playing with no samples this long = exit
     bool flowWarned = false;     // control thread only
 
     void sampleFlow(StatusSnapshot& s) { // called from refreshStatus (control thread)
@@ -1204,10 +1423,20 @@ private:
             audioSpsVal.store((int)llround((double)as / dt), std::memory_order_relaxed);
             flowSampleTime = now;
             if (s.playing && ff == 0 && as == 0) {
-                zeroFlowSecs += dt;
+                zeroFlowSecs += std::min(dt, 2.0);   // one long gap between ticks is not 10 s of evidence
                 if (zeroFlowSecs > 5.0 && !flowWarned) {
                     logW("playing but zero FFT/audio flow for %ds - source stalled (USB dongle dropped?)", (int)zeroFlowSecs);
                     flowWarned = true;
+                }
+                // v2.1.5 (audit item 4): the unit file promises "up but deaf cannot exist", and
+                // until now a hung USB transfer only got the warning above - the engine sat there
+                // answering /sdr/status while nobody heard anything. Give it DEAF_EXIT_S, then
+                // exit nonzero so Restart=always reopens the dongle. Only while playing: a stopped
+                // radio has no samples by design.
+                if (zeroFlowSecs >= DEAF_EXIT_S) {
+                    logE("playing but no samples for %ds - exiting so systemd restarts the radio", (int)zeroFlowSecs);
+                    fflush(stdout);
+                    _exit(3);
                 }
             } else {
                 if (flowWarned && (ff || as)) {
@@ -1554,8 +1783,86 @@ private:
             body.append(buf, n);
         }
 
-        routeHttp(fd, method, path, body);
+        // v2.1.5: belt and braces. Whatever one request throws, it gets a 400 - never std::terminate.
+        try {
+            routeHttp(fd, method, path, body);
+        } catch (const std::exception& ex) {
+            logW("http: %s %s refused: %s", method.c_str(), path.c_str(), ex.what());
+            httpResponse(fd, "400 Bad Request", "application/json", "{\"ok\":false,\"error\":\"bad request\"}");
+        }
         close(fd);
+    }
+
+    // "" = valid, and `out` holds the commands to queue; otherwise the reason, and nothing queued.
+    std::string validateControl(const std::string& path, const json& b, std::vector<Command>& out) {
+        if (!b.is_object()) return "body must be a JSON object";
+        auto num = [&](const char* k, double lo, double hi, double& v) -> std::string {
+            const json& x = b.at(k);
+            if (!x.is_number()) return std::string(k) + " must be a number";
+            v = x.get<double>();
+            if (!std::isfinite(v) || v < lo || v > hi) return std::string(k) + " out of range";
+            return "";
+        };
+        auto flag = [&](const char* k, bool& v) -> std::string {
+            const json& x = b.at(k);
+            if (!x.is_boolean()) return std::string(k) + " must be true or false";
+            v = x.get<bool>(); return "";
+        };
+        Command c; std::string e;
+        if (path == "/sdr/frequency" && b.contains("hz")) {
+            c.type = Command::FREQ;
+            if (!(e = num("hz", VFO_MIN_HZ, VFO_MAX_HZ, c.dval)).empty()) return e;
+            out.push_back(c);
+        } else if (path == "/sdr/mode" && b.contains("mode")) {
+            if (!b["mode"].is_string()) return "mode must be a string";
+            std::string ms = b["mode"].get<std::string>();
+            int m = modeFromString(ms);
+            if (m < 0) return modeKnownButUnsupported(ms) ? "mode not supported (v2 is AM-only)" : "bad request";
+            c.type = Command::MODE; c.ival = m; out.push_back(c);
+        } else if (path == "/sdr/bandwidth" && b.contains("hz")) {
+            c.type = Command::BANDWIDTH;
+            if (!(e = num("hz", BW_MIN_HZ, BW_MAX_HZ, c.dval)).empty()) return e;
+            out.push_back(c);
+        } else if (path == "/sdr/playing" && b.contains("on")) {
+            c.type = Command::PLAYING;
+            if (!(e = flag("on", c.bval)).empty()) return e;
+            out.push_back(c);
+        } else if (path == "/sdr/squelch" && (b.contains("enabled") || b.contains("level") || b.contains("auto") || b.contains("margin"))) {
+            if (b.contains("enabled")) {
+                Command sm; sm.type = Command::SQUELCH_MODE;
+                if (!(e = flag("enabled", sm.bval)).empty()) return e;
+                out.push_back(sm);
+            }
+            if (b.contains("level")) {
+                Command sl; sl.type = Command::SQUELCH_LEVEL;
+                if (!(e = num("level", SQ_MIN_DB, SQ_MAX_DB, sl.dval)).empty()) return e;
+                out.push_back(sl);
+            }
+            if (b.contains("auto")) {
+                Command sa; sa.type = Command::SQUELCH_AUTO;
+                if (!(e = flag("auto", sa.bval)).empty()) return e;
+                out.push_back(sa);
+            }
+            if (b.contains("margin")) {
+                Command smg; smg.type = Command::SQUELCH_MARGIN;
+                if (!(e = num("margin", SQ_MARGIN_MIN, SQ_MARGIN_MAX, smg.dval)).empty()) return e;
+                out.push_back(smg);
+            }
+        } else if (path == "/sdr/gain" && b.contains("index")) {
+            if (!b["index"].is_number_integer()) return "index must be a whole number";
+            long long ix = b["index"].get<long long>();
+            size_t steps; { std::lock_guard<std::mutex> lk(statusMtx); steps = status.rfGainSteps.size(); }
+            long long maxIx = steps ? (long long)steps - 1 : 63;     // no tuner yet: any plausible index
+            if (ix < 0 || ix > maxIx) return "index out of range";
+            c.type = Command::GAIN_INDEX; c.ival = (int)ix; out.push_back(c);
+        } else if (path == "/sdr/agc" && b.contains("on")) {
+            c.type = Command::AGC;
+            if (!(e = flag("on", c.bval)).empty()) return e;
+            out.push_back(c);
+        } else {
+            return "bad request";
+        }
+        return "";
     }
 
     void routeHttp(int fd, const std::string& method, const std::string& path, const std::string& body) {
@@ -1564,41 +1871,21 @@ private:
             return;
         }
         if (method == "POST") {
+            // v2.1.5 (STT audit items 1 + 3). Every field is type- and range-checked BEFORE
+            // anything is queued, so a request is applied whole or not at all. Before this, a
+            // wrong type ({"hz":"x"}, {"on":1}, {"level":null}) reached .get<>() outside any try,
+            // nlohmann threw type_error.302 and the whole engine aborted - no login needed - and
+            // an absurd value ({"hz":1e30}) was accepted, saved and survived restarts.
             json b;
             try { b = json::parse(body); } catch (...) {
                 httpResponse(fd, "400 Bad Request", "application/json", "{\"ok\":false,\"error\":\"bad json\"}");
                 return;
             }
-            Command c;
-            bool ok = true;
-            std::string err = "bad request";
-            if (path == "/sdr/frequency" && b.contains("hz")) {
-                c.type = Command::FREQ; c.dval = b["hz"].get<double>(); enqueue(c);
-            } else if (path == "/sdr/mode" && b.contains("mode")) {
-                std::string ms = b["mode"].get<std::string>();
-                int m = modeFromString(ms);
-                if (m < 0) { ok = false; if (modeKnownButUnsupported(ms)) err = "mode not supported (v2 is AM-only)"; }
-                else { c.type = Command::MODE; c.ival = m; enqueue(c); }
-            } else if (path == "/sdr/bandwidth" && b.contains("hz")) {
-                c.type = Command::BANDWIDTH; c.dval = b["hz"].get<double>(); enqueue(c);
-            } else if (path == "/sdr/playing" && b.contains("on")) {
-                c.type = Command::PLAYING; c.bval = b["on"].get<bool>(); enqueue(c);
-            } else if (path == "/sdr/squelch" && (b.contains("enabled") || b.contains("level"))) {
-                if (b.contains("enabled")) {
-                    Command sm; sm.type = Command::SQUELCH_MODE; sm.bval = b["enabled"].get<bool>(); enqueue(sm);
-                }
-                if (b.contains("level")) {
-                    Command sl; sl.type = Command::SQUELCH_LEVEL; sl.dval = b["level"].get<double>(); enqueue(sl);
-                }
-            } else if (path == "/sdr/gain" && b.contains("index")) {
-                c.type = Command::GAIN_INDEX; c.ival = b["index"].get<int>(); enqueue(c);
-            } else if (path == "/sdr/agc" && b.contains("on")) {
-                c.type = Command::AGC; c.bval = b["on"].get<bool>(); enqueue(c);
-            } else {
-                ok = false;
-            }
-            httpResponse(fd, ok ? "200 OK" : "400 Bad Request", "application/json",
-                         ok ? "{\"ok\":true}" : std::string("{\"ok\":false,\"error\":\"") + err + "\"}");
+            std::vector<Command> cmds;
+            std::string err = validateControl(path, b, cmds);
+            if (err.empty()) enqueueAll(cmds);
+            httpResponse(fd, err.empty() ? "200 OK" : "400 Bad Request", "application/json",
+                         err.empty() ? "{\"ok\":true}" : std::string("{\"ok\":false,\"error\":\"") + err + "\"}");
             return;
         }
         httpResponse(fd, "404 Not Found", "application/json", "{\"ok\":false,\"error\":\"not found\"}");

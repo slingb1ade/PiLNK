@@ -20,7 +20,10 @@ const MODEL_ORIENT={ 'a320_200.glb':{yaw:-90}, 'atr72.glb':{yaw:90}, 'b777_klm.g
   'e7.glb':{yaw:0}, 'c5.glb':{yaw:180}, 'nh90.glb':{yaw:-90},   // NH90: direction from the TAIL ROTOR, as for the AS350
   'sh60.glb':{yaw:180},   // SH-60: cockpit and nose gear at +Z, tail rotor at -Z
   'glider.glb':{yaw:180},   // Glider: canopy and nose wheel at +Z, rudder and tail wheel at -Z, as on the SH-60
-  'as350.glb':{yaw:0}, 'pc24.glb':{yaw:-90}, 'tbm9.glb':{yaw:-90}, 'yak3.glb':{yaw:-90}, 'yak3_zkvvs.glb':{yaw:-90}, 'l39.glb':{yaw:0}, 'spit.glb':{yaw:180} };   /* all measured with the corrected mapping; confirm each on a LIVE aircraft before release. The
+  'as350.glb':{yaw:0}, 'pc24.glb':{yaw:-90}, 'tbm9.glb':{yaw:-90}, 'yak3.glb':{yaw:-90}, 'yak3_zkvvs.glb':{yaw:-90}, 'l39.glb':{yaw:0}, 'spit.glb':{yaw:180},
+  'f16.glb':{yaw:90},    // F-16: nose at +X in the file (canopy and HUD toward +X); yaw 90 puts it NORTH (render.py, 9 Nov)
+  /* Chinook + Black Hawk: cockpit at +Z, the taller aft pylon / the tail rotor at -Z, as on the SH-60 (render.py, 9 Nov) */
+  'ch47.glb':{yaw:180}, 'uh60m.glb':{yaw:180} };   /* all measured with the corrected mapping; confirm each on a LIVE aircraft before release. The
      AS350 is a helicopter: its direction came from the TAIL ROTOR's position, because the fin test reads the highest
      point and on a helicopter that is the main rotor. */
 /* Real wingspan in metres, per model. Every model is normalised to this at load, so a Cessna is drawn
@@ -43,7 +46,12 @@ const MODEL_SPAN={ 'c172.glb':11.0, 'b429.glb':13.0, 'c208.glb':15.9, 'atr72.glb
   'sh60.glb':14.06,  /* SH-60 Seahawk: 16.36 m rotor disc. Its four blades sit diagonally in the file, so the lateral extent
      (1689.6 units) is NOT the disc: the tips are 982.9 units from the hub (all four within 0.4). 14.06 draws the disc at 16.36 m. */
   'glider.glb':15.0,   // 15 m class sailplane (the file reads 14.99 m across)
-  'as350.glb':9.31, 'pc24.glb':17.0, 'tbm9.glb':12.8, 'yak3.glb':9.2, 'yak3_zkvvs.glb':9.2, 'l39.glb':9.46, 'spit.glb':11.23 };    /* NOT the 10.69 m rotor diameter, deliberately. This number is applied to the model's lateral
+  'as350.glb':9.31, 'pc24.glb':17.0, 'tbm9.glb':12.8, 'yak3.glb':9.2, 'yak3_zkvvs.glb':9.2, 'l39.glb':9.46, 'spit.glb':11.23,
+  'f16.glb':9.39,     // F-16: the file is 1:10 true scale (15.09 m long, 9.39 m tip rail to tip rail) - kept as modelled
+  'ch47.glb':16.37,   /* CH-47 Chinook: 18.29 m rotor discs. Three blades at 120 deg never lie straight across, so the lateral
+     extent is 213.4 units while the tips are 119.25 units from each hub (vertex pass, all blades); 16.37 draws the discs at 18.29 m. */
+  /* UH-60M: the file is true scale in metres (rotor tips 8.24 m from the hub = 16.48 m disc, real 16.36); 12.21 = its lateral extent, kept */
+  'uh60m.glb':12.21 };    /* AS350 9.31 (above): NOT the 10.69 m rotor diameter, deliberately. This number is applied to the model's lateral
      extent, and with THREE blades at 120° no blade lies straight across, so the width undersells the disc. Sized at
      10.69 the rotor measured 12.3 m across and the fuselage 12.9 m (real 10.69 / 10.93) — both ~15–18% big. 9.31 puts
      the rotor at its true 10.69 m and the fuselage at 11.2 m (+2.5%). Two-blade rotors and fixed-wing are unaffected. */   // Phenom 300E and CRJ-900 as modelled; TYPE_SPAN resizes each type
@@ -105,9 +113,13 @@ function spanFor(t,key){
    OWN_PAINT: models whose textures ARE the paint - approach.html keeps their colours instead of greying them. */
 const REG_MODEL={ 'C81ECD':'yak3_zkvvs.glb', 'ZK-VVS':'yak3_zkvvs.glb' };
 const OWN_PAINT=new Set(['yak3_zkvvs.glb']);
+/* NZDF block C87F00-C87FFF (RNZAF/RNZN): an H-60 there is the RNZN's MH-60R, so it keeps the SH-60 Seahawk (9 Nov). */
+function nzdfHex(hex){ const h=parseInt(String(hex||'').trim(),16); return /^[0-9a-f]{6}$/i.test(String(hex||'').trim())&&h>=0xC87F00&&h<=0xC87FFF; }
 function modelForAirframe(t,cat,hex,reg){
   const k=REG_MODEL[String(hex||'').trim().toUpperCase()]||REG_MODEL[String(reg||'').trim().toUpperCase()];
-  return k||modelFor(t,cat);
+  if(k) return k;
+  const m=modelFor(t,cat);
+  return (m==='uh60m.glb'&&nzdfHex(hex))?'sh60.glb':m;
 }
 function modelFor(t,cat){ t=(t||'').toUpperCase();
   /* Single-engine turboprops get the Caravan; the twins and the regionals keep the ATR. */
@@ -138,6 +150,10 @@ function modelFor(t,cat){ t=(t||'').toUpperCase();
   if(['B37M','B38M','B39M','B3XM'].includes(t))return'b737_800.glb';
   if(t==='P8')return'p8.glb';            // P-8 Poseidon — RNZAF flies four from Ohakea; exact, no other code is just 'P8'
   if(t==='T38')return't38.glb';          // T-38 Talon, USAF trainer — exact
+  /* F-16 Fighting Falcon - "F-16 Fighting Falcon - Fighter Jet - Free" by bohmerang, CC-BY-NC-SA-4.0. NC by AJ's ruling (9 Nov):
+     PiLNK is not commercial; credited in the changelog and in asset.extras; never in anything sold. SA: our repacked .glb stays
+     CC-BY-NC-SA. Exact code: F15, F18, F35 and F1 are other aircraft. USAF, ANG and a dozen air forces fly them. (main, 9 Nov) */
+  if(t==='F16')return'f16.glb';
   if(t==='HAWK')return'hawk.glb';        // BAe Hawk, RAF/Red Arrows — exact
   /* BAC 167 Strikemaster (42manako, Sketchfab, CC-BY-NC-4.0, added 9 Oct) - STRK72 flies from Ardmore and was drawn as a
      Cessna 172: STRK was in no list, so its A1 light category won. JPRO, the Jet Provost it grew from, looks the same at
@@ -159,7 +175,14 @@ function modelFor(t,cat){ t=(t||'').toUpperCase();
   /* SH-60 Seahawk (Muhamad Mirza Arrafi, CC-BY-4.0, added 5 Oct) - the RNZN's MH-60R, which replaced the Seasprite. H60 is the
      ICAO designator for the whole Black Hawk / Seahawk family (2,845 airframes in adsb_database), S70 the civil/export S-70;
      UH60 is kept for databases that use it. Exact codes. Rotors split into named parts (MainRotor, TailRotor) so findProps turns both. */
-  if(['H60','S70','UH60'].includes(t))return'sh60.glb';
+  /* UH-60M Black Hawk (Yi Tsung Lee, CC-BY-4.0, added 9 Nov) - H60 is the whole family and most of the 2,845 in adsb_database
+     are Army Black Hawks, so the Black Hawk is the default now. The RNZN's MH-60R keeps the SH-60 Seahawk in 3D Approach: see
+     modelForAirframe (by hex). Rotors are named parts (main rotor prop, TAIL ROTOR); material made plain metal/rough and the tail
+     rotor's magenta vertex colour dropped by PiLNK. CH-47 Chinook (Muhamad Mirza Arrafi, CC-BY-4.0, added 9 Nov) - H47 is the ICAO
+     code, CH47 kept for databases that use it; each rotor grouped by PiLNK into RotorFront / RotorRear so findProps turns both.
+     Exact codes, ahead of the HELI lists, which otherwise send them to the 429. */
+  if(['H60','S70','UH60'].includes(t))return'uh60m.glb';
+  if(t==='H47'||t==='CH47')return'ch47.glb';
   /* Gliders (UNDERPOLY Project, Sketchfab, CC-BY-4.0, added 17 Oct). GLID is the database's sailplane type, GLIM a
      motor-glider. ZK-GON, ZK-GFR and ZK-GSR over Maramarua were all drawn as 737s. A 15 m sailplane stands in for the
      lot; at range a Discus, a Ventus and a Mosquito read the same. Exact codes. */

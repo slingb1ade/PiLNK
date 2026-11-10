@@ -12,11 +12,14 @@
      falls back to category silhouettes when it doesn't, so a missing/late file
      is harmless. Served locally so the dashboard needs no network for it. -->
 <script src="/static/aircraft-shapes.js"></script>
+<!-- Traffic tab filter chips: DOM JETS / DOM PROPS / INTL / GA / HELI / MIL (static/traffic-filter.js) -->
+<script src="/static/traffic-filter.js?v=tf1"></script>
 <script src="/static/datalink-card.js?v=dl5"></script>
-<script src="/static/arrival-paths.js?v=ap7"></script>
+<script src="/static/arrival-paths.js?v=ap8"></script>
 <script defer src="/static/datalink-board.js?v=b4"></script>
 <script src="/static/datalink-map.js?v=m2"></script>
 <script src="/static/fixes-nz.js?v=f1"></script>
+<script src="/static/datalink-fixes.js?v=fx1"></script>
 <!-- Airport live streams in the navbar: a red LIVE pill while a stream near this node is live (static/live-pill.js). -->
 <script src="/static/live-pill.js?v=lp1"></script>
 <style>
@@ -193,6 +196,9 @@
   .sort-pill{background:var(--bg-card);border:1px solid var(--border);border-radius:10px;color:var(--text-dim);font-family:'Share Tech Mono',monospace;font-size:0.55rem;padding:2px 8px;cursor:pointer;letter-spacing:0.5px;transition:all 0.15s;}
   .sort-pill:hover{color:var(--text);}
   .sort-pill.active{background:var(--blue-mid);border-color:var(--blue-mid);color:var(--bg-deep);}
+  .tf-row{display:flex;flex-wrap:wrap;gap:4px;margin:0 0 6px;}
+  .tf-pill .tf-n{opacity:0.75;margin-left:2px;}
+  .tf-pill.tf-empty:not(.active){opacity:0.45;}
   .traffic-quick-nav{display:none;gap:6px;margin-bottom:8px;}
   .traffic-quick-nav .qn-btn{flex:1;background:var(--bg-card);border:1px solid var(--border);border-radius:6px;color:var(--text-dim);font-family:'Share Tech Mono',monospace;font-size:0.62rem;letter-spacing:0.5px;padding:6px 10px;cursor:pointer;text-align:center;transition:all 0.15s;}
   .traffic-quick-nav .qn-btn:hover{border-color:var(--blue-mid);color:var(--text);}
@@ -1582,6 +1588,15 @@
               <button class="sort-pill"        id="sortPillPhase" onclick="setSortMode('phase')">PHASE</button>
             </div>
           </div>
+          <div class="tf-row" id="tfRow">
+              <button class="sort-pill tf-pill" id="tf-all" title="Every aircraft" onclick="setTrafficFilter('all')">ALL <span class="tf-n"></span></button>
+              <button class="sort-pill tf-pill" id="tf-domjet" title="Airline jets flying within your country (by route when known, otherwise by airline)" onclick="setTrafficFilter('domjet')">DOM JETS <span class="tf-n"></span></button>
+              <button class="sort-pill tf-pill" id="tf-domprop" title="Airline turboprops flying within your country (ATR, Q300, Beech 1900...)" onclick="setTrafficFilter('domprop')">DOM PROPS <span class="tf-n"></span></button>
+              <button class="sort-pill tf-pill" id="tf-intl" title="Airline flights to or from another country (by route when known, otherwise by airline; an airline's widebodies count as international)" onclick="setTrafficFilter('intl')">INTL <span class="tf-n"></span></button>
+              <button class="sort-pill tf-pill" id="tf-ga" title="Light aircraft, gliders, and anything flying under its registration" onclick="setTrafficFilter('ga')">GA <span class="tf-n"></span></button>
+              <button class="sort-pill tf-pill" id="tf-heli" title="Helicopters" onclick="setTrafficFilter('heli')">HELI <span class="tf-n"></span></button>
+              <button class="sort-pill tf-pill" id="tf-mil" title="Military aircraft" onclick="setTrafficFilter('mil')">MIL <span class="tf-n"></span></button>
+          </div>
           <div id="flightList"><div class="no-flights">Loading aircraft...</div></div>
         </div>
       </div>
@@ -1735,6 +1750,9 @@
                 <span style="font-size:0.6rem;color:var(--text-dim);width:64px;flex:0 0 auto;">Squelch</span>
                 <button class="sdr-tgl" id="sdrSqBtn" role="switch" aria-checked="false" title="squelch on/off" disabled><span class="knob"></span></button>
                 <span class="sdr-tglst" id="sdrSqState">OFF</span>
+                <button class="sdr-tgl" id="sdrSqAuto" role="switch" aria-checked="false" title="auto squelch: follows the noise floor" style="display:none"><span class="knob"></span></button>
+                <span class="sdr-tglst" id="sdrSqAutoState" style="display:none">FIXED</span>
+                <span id="sdrSqAutoRead" style="display:none;flex:1;min-width:80px;font-size:0.55rem;color:var(--text-dim);font-family:'Share Tech Mono',monospace;"></span>
                 <input type="range" min="-90" max="-20" value="-65" id="sdrSqLevel" disabled style="flex:1;min-width:80px;"/>
                 <span id="sdrSqLevelVal" style="font-size:0.55rem;color:var(--text-dim);font-family:'Share Tech Mono',monospace;width:58px;text-align:right;">-65 dBFS</span>
                 <span id="sdrSqDot" class="sdr-sqldot" title="green = audio passing"></span>
@@ -1762,6 +1780,7 @@
                 <div id="sdrTuneLine"></div>
                 <div id="sdrTuneBarWrap"><div id="sdrTuneBar"></div></div>
                 <table id="sdrTuneTable"></table>
+                <div id="sdrTuneAutoNote" style="display:none;margin-top:6px;font-size:0.58rem;color:var(--text-dim);">Auto squelch is on: this level is only used while it measures.</div>
                 <button class="tb pri" id="sdrTuneStart">Start</button><button class="tb" id="sdrTuneCancel">Cancel</button><button class="tb" id="sdrTuneStop">Stop</button><button class="tb pri" id="sdrTuneApply">Apply</button><button class="tb" id="sdrTuneKeep">Keep my settings</button><button class="tb" id="sdrTuneUndo">Undo</button>
               </div>
             </div>
@@ -1903,6 +1922,7 @@
               <div class="av-toggle-row"><span style="display:flex;align-items:center;"><span class="av-dot" style="background:#f472b6;"></span>IFR Fixes</span><label class="toggle-switch" style="transform:scale(0.85);"><input type="checkbox" id="avWaypoints" onchange="toggleWaypoints(this.checked)"/><span class="toggle-slider"></span></label></div>
               <div class="av-toggle-row" id="arrRow" style="display:none;" title="Arrival paths into Auckland, learned from the tracks PiLNK has seen land. Not an official procedure — for watching aircraft only."><span style="display:flex;align-items:center;"><span class="av-dot" style="background:#ff3df2;"></span>Arrival Paths</span><label class="toggle-switch" style="transform:scale(0.85);"><input type="checkbox" id="avArrivals" onchange="toggleArrivalPaths(this.checked)"/><span class="toggle-slider"></span></label></div>
               <div class="av-status" id="arrStatus" style="display:none;padding-left:18px;"></div>
+              <div class="av-toggle-row" id="arrRwyRow" style="display:none;padding-left:18px;justify-content:flex-end;gap:4px;" title="Which runway's arrival paths to draw. Auckland lands on one runway at a time, and which one changes with the wind."></div>
               <div class="av-toggle-row"><span style="display:flex;align-items:center;"><span class="av-dot" style="background:#22d3ee;"></span>Footprint</span><label class="toggle-switch" style="transform:scale(0.85);"><input type="checkbox" id="avFootprint" onchange="toggleFootprint(this.checked)"/><span class="toggle-slider"></span></label></div>
               <div class="av-toggle-row" id="fpViewRow" style="display:none;padding-left:18px;justify-content:flex-end;gap:4px;">
                 <button class="cov-btn active" id="fpBtnRange" onclick="setFootprintMode('range')" style="flex:0 0 auto;padding:2px 10px;">Range</button>
@@ -2231,6 +2251,17 @@
   .dl-ring{width:28px;height:28px;box-sizing:border-box;border:1.5px solid #38bdf8;border-radius:50%;box-shadow:0 0 6px rgba(56,189,248,0.6);}
   .dl-ring-min{position:absolute;left:31px;top:6px;font-family:'Share Tech Mono',monospace;font-size:0.6rem;color:#38bdf8;white-space:nowrap;text-shadow:0 0 3px #000,0 0 3px #000;}
   .dl-dest{pointer-events:none;}
+  /* The selected plane's datalink fixes (static/datalink-fixes.js, 30 Oct): next = pulsing amber, after = violet, passed = grey */
+  .dlfx-wrap{pointer-events:none;}
+  .dlfx-ring{position:absolute;left:0;top:0;width:26px;height:26px;box-sizing:border-box;border-radius:50%;}
+  .dlfx-next{border:2px solid #f59e0b;box-shadow:0 0 8px rgba(245,158,11,0.7);}
+  .dlfx-next::after{content:'';position:absolute;left:-2px;top:-2px;right:-2px;bottom:-2px;border-radius:50%;border:2px solid #f59e0b;animation:dlfxPulse 1.6s ease-out infinite;}
+  @keyframes dlfxPulse{0%{transform:scale(1);opacity:0.9;}100%{transform:scale(2.6);opacity:0;}}
+  .dlfx-then{border:2px solid #a78bfa;box-shadow:0 0 6px rgba(167,139,250,0.6);}
+  .dlfx-passed{width:10px;height:10px;border:1.5px solid #94a3b8;background:rgba(148,163,184,0.35);}
+  .dlfx-lbl{position:absolute;left:30px;top:6px;font-family:'Share Tech Mono',monospace;font-size:0.6rem;white-space:nowrap;text-shadow:0 0 3px #000,0 0 3px #000;}
+  .dlfx-lbl-next{color:#f59e0b;} .dlfx-lbl-then{color:#a78bfa;} .dlfx-lbl-passed{left:13px;top:-2px;color:#94a3b8;}
+  @media (prefers-reduced-motion:reduce){.dlfx-next::after{animation:none;}}
   .dl-dest-dot{position:absolute;left:-4px;top:-4px;width:8px;height:8px;border-radius:50%;background:#38bdf8;}
   .dl-dest-txt{position:absolute;left:7px;top:-7px;font-family:'Share Tech Mono',monospace;font-size:0.6rem;color:#38bdf8;white-space:nowrap;text-shadow:0 0 3px #000,0 0 3px #000;}
   #tab-dlboard{overflow-y:auto;padding:8px 10px;flex-direction:column;}
@@ -4195,7 +4226,9 @@ function lookupRoute(callsign, callback) {
         oLat: o && o.latitude  != null ? o.latitude  : null,
         oLon: o && o.longitude != null ? o.longitude : null,
         dLat: d && d.latitude  != null ? d.latitude  : null,
-        dLon: d && d.longitude != null ? d.longitude : null
+        dLon: d && d.longitude != null ? d.longitude : null,
+        oCC: o ? (o.country_iso_name || (window.TrafficFilter ? TrafficFilter.icaoCountry(o.icao_code) : null)) : null,   // Traffic filters (30 Oct)
+        dCC: d ? (d.country_iso_name || (window.TrafficFilter ? TrafficFilter.icaoCountry(d.icao_code) : null)) : null
       };
       callback(routeCache[cs]);
     })
@@ -5964,7 +5997,7 @@ function updateFlights(){
     skyRefreshBox();   // 3D Traffic box: fresh numbers, or closed when its plane has left the list
     dlMapSync();       // datalink: line to the selected plane's destination + arrival rings (item 4)
     var list=document.getElementById('flightList');
-    if(!ac.length){list.innerHTML='<div class="no-flights">No aircraft found</div>';return;}
+    if(!ac.length){tfPaint(window.TrafficFilter?TrafficFilter.counts([]):null);list.innerHTML='<div class="no-flights">No aircraft found</div>';return;}
     // Sort sidebar by sort mode (distance default, phase optional)
     ac.sort(function(p,q){
       var dp=haversineNm(RX_LAT,RX_LON,p.lat,p.lon);
@@ -5976,7 +6009,13 @@ function updateFlights(){
       }
       return dp-dq;
     });
-    list.innerHTML=ac.map(function(a){
+    // Traffic filters (30 Oct 2026): every aircraft is counted, only the chosen group is listed. The map is untouched.
+    var tfG=ac.map(tfGroup);
+    tfPaint(window.TrafficFilter?TrafficFilter.counts(tfG):null);
+    var shown=window.TrafficFilter?ac.filter(function(a,i){return TrafficFilter.matches(window.trafficFilter,tfG[i]);}):ac;
+    if(window.trafficFilter!=='all') tfQueue(ac);
+    if(!shown.length){list.innerHTML='<div class="no-flights">No aircraft in this filter right now</div>';return;}
+    list.innerHTML=shown.map(function(a){
       var cs=a.flight.trim(), cat=getCat(a.t,a.category), tx=!!transmitting[cs], sel=selectedFlight===cs;
       var ph=getPhase(a,cs), col=ph.color==='#ffffff'?'#dc2626':ph.color;
       var sqInfo=a.squawk&&SQUAWK_CODES[a.squawk];
@@ -6921,6 +6960,9 @@ function dlMapSync() {
   try {
     window.dlMap.sync({ map: map, L: L, aircraft: lastAircraft, selected: sky ? null : selectedFlight,
       station: METAR_STATION, now: now, airports: GLOBAL_AIRPORTS, db: airportDB, loadDb: loadAirportDB });
+    // The selected plane's last / next / following fix from its own position reports (30 Oct 2026, AJ: POKOM then SABAV)
+    if (window.dlFixes) window.dlFixes.sync({ map: map, L: L, aircraft: lastAircraft, selected: sky ? null : selectedFlight,
+      fixes: (typeof IFR_WAYPOINTS !== 'undefined') ? IFR_WAYPOINTS : [] });
     if (!sky) { dlSkyLast = ''; return; }
     var v = window.dlMap.skyView({ aircraft: lastAircraft, selected: selectedFlight, station: METAR_STATION, now: now,
       airports: GLOBAL_AIRPORTS, db: airportDB, loadDb: loadAirportDB });
@@ -6931,6 +6973,7 @@ function dlMapSync() {
 
 function closeCinematicCard() {
   ccVisible = false;
+  ccAutoQuietUntil = Date.now() + CC_AUTO_QUIET_MS;   // no auto card straight after one closes
   ccCurrentCS = null;
   ccCurrentHex = '';
   ccCurrentReg = '';
@@ -7188,12 +7231,29 @@ function stopCCWaveform() {
   if (ccWaveTimer) { cancelAnimationFrame(ccWaveTimer); ccWaveTimer = null; }
 }
 
+// Auto cards ("NOW PASSING") only for aircraft inside the map view you are looking at, and
+// never within CC_AUTO_QUIET_MS of a card closing. Before (5 Nov 2026) closing a card let the
+// next 2 s poll pop the next notable aircraft at once, from anywhere in receiver range, so a
+// click on empty map seemed to open a card for a plane nowhere on screen. An aircraft held
+// back here is not marked shown: it can still get its card once it is in view and quiet.
+var CC_AUTO_QUIET_MS = 120000, ccAutoQuietUntil = 0;
+function ccAutoAllowed(a) {
+  if (Date.now() < ccAutoQuietUntil) return false;
+  if (!a || a.lat == null || a.lon == null) return false;
+  var sky = (typeof isSkyOpen === 'function') && isSkyOpen();   // 3D on: the 2D map is hidden, its view means nothing
+  if (!sky && typeof map !== 'undefined' && map && map.getBounds) {
+    try { if (!map.getBounds().contains([a.lat, a.lon])) return false; } catch (e) {}
+  }
+  return true;
+}
+
 // Check incoming aircraft for auto-trigger
 function checkAutoCard(a) {
   var cs = a.flight ? a.flight.trim() : null;
   if (!cs) return;
   if (ccShownCS[cs]) return;      // already shown this session
   if (ccVisible) return;           // card already open
+  if (!ccAutoAllowed(a)) return;   // out of view, or a card closed moments ago
   if (!isNotable(a)) return;
   // Only trigger if aircraft has a route (confirmed commercial/notable)
   var cached = routeCache[cs];
@@ -7219,7 +7279,7 @@ function isPotentiallyMilHex(hex) {
 function checkMilAutoCard(a) {
   var cs = a.flight ? a.flight.trim() : null;
   if (!cs) return;
-  if (ccShownCS[cs] || ccVisible) return;
+  if (ccShownCS[cs] || ccVisible || !ccAutoAllowed(a)) return;
   if (!isPotentiallyMilHex(a.hex)) return;
 
   fetchMilInfo(a.hex, a.t || '', function(info) {
@@ -7227,7 +7287,7 @@ function checkMilAutoCard(a) {
     var tier = info.catalog.rarity_tier;
     if (tier !== 'legendary' && tier !== 'mythical') return;
     // Re-check guards in case state changed during the round-trip
-    if (ccShownCS[cs] || ccVisible) return;
+    if (ccShownCS[cs] || ccVisible || !ccAutoAllowed(lastAircraft[cs] || a)) return;
     ccShownCS[cs] = true;
     openCinematicCard(cs, true);
   });
@@ -8211,6 +8271,47 @@ function setSortMode(mode){
   if(dp&&pp){dp.classList.toggle('active',mode==='distance');pp.classList.toggle('active',mode==='phase');}
   if(typeof updateFlights==='function')updateFlights();
 }
+// Traffic filters (Caroline, 30 Oct 2026): ALL / DOM JETS / DOM PROPS / INTL / GA / HELI / MIL above the list.
+// The rules live in static/traffic-filter.js. Home country = the country of the node's nearest airport.
+window.trafficFilter=(function(){ var f=null; try{ f=localStorage.getItem('pilnk-traffic-filter'); }catch(e){}
+  return (window.TrafficFilter&&TrafficFilter.FILTERS.some(function(x){return x.id===f;}))?f:'all'; })();
+function tfHome(){ var ap=(typeof nearestAirport!=='undefined')?nearestAirport:null; return ap&&window.TrafficFilter?TrafficFilter.icaoCountry(ap.icao):null; }
+function tfGroup(a){
+  if(!window.TrafficFilter) return 'all';
+  var cs=(a.flight||'').trim(), r=routeCache[cs], route=null;
+  if(r&&r.oCC&&r.dCC&&(typeof routeIsPlausible!=='function'||routeIsPlausible(r,a))) route={o:r.oCC,d:r.dCC};   // a route that doesn't fit the track is ignored
+  return TrafficFilter.classify(a,{home:tfHome(),cat:getCat(a.t,a.category),airlineIso:TrafficFilter.flagIso(getFlag(cs)),route:route}).group;
+}
+function tfPaint(c){
+  if(!c||!window.TrafficFilter) return;
+  TrafficFilter.FILTERS.forEach(function(f){ var b=document.getElementById('tf-'+f.id); if(!b) return;
+    var n=b.querySelector('.tf-n'); if(n) n.textContent=c[f.id];
+    b.classList.toggle('active',window.trafficFilter===f.id); b.classList.toggle('tf-empty',f.id!=='all'&&!c[f.id]); });
+}
+// Routes are looked up only while a filter is on, one every 2 s, airline callsigns only, each at most once per ROUTE_TTL_MS.
+var _tfQ=[], _tfQSet={}, _tfTimer=null;
+function tfQueue(ac){
+  if(!window.TrafficFilter) return;
+  ac.forEach(function(a){ var cs=(a.flight||'').trim();
+    if(a.is_military||!TrafficFilter.isAirlineCallsign(cs)||_tfQSet[cs]) return;
+    var h=routeCache[cs]; if(h!==undefined&&(Date.now()-h.ts)<ROUTE_TTL_MS) return;
+    _tfQSet[cs]=1; _tfQ.push(cs); });
+  if(!_tfTimer&&_tfQ.length) _tfTimer=setInterval(tfTick,2000);
+}
+function tfTick(){
+  if(window.trafficFilter==='all'||!_tfQ.length){ clearInterval(_tfTimer); _tfTimer=null; _tfQ=[]; _tfQSet={}; return; }
+  var cs=_tfQ.shift(); delete _tfQSet[cs];
+  if(lastAircraft[cs]) lookupRoute(cs,function(){});   // gone from the sky: skip
+}
+function setTrafficFilter(f){
+  if(!window.TrafficFilter||!TrafficFilter.FILTERS.some(function(x){return x.id===f;})) f='all';
+  window.trafficFilter=f;
+  try{ localStorage.setItem('pilnk-traffic-filter',f); }catch(e){}
+  document.querySelectorAll('#tfRow .tf-pill').forEach(function(b){ b.classList.toggle('active',b.id==='tf-'+f); });
+  if(typeof updateFlights==='function') updateFlights();
+}
+(function(){ var r=document.getElementById('tfRow'); if(r&&!window.TrafficFilter) r.style.display='none';   // no classifier: no chips, full list
+  document.querySelectorAll('#tfRow .tf-pill').forEach(function(b){ b.classList.toggle('active',b.id==='tf-'+window.trafficFilter); }); })();
 setSortMode(window.sortMode);
 updateFlights();
 // --- ATC STT -> cinematic-card transcript bridge (feeds the existing updateCCTranscript hook) ---
@@ -8956,8 +9057,39 @@ function toggleArrivalPaths(on) {
   ArrivalPaths._state.on = !!on;
   drawArrivalPaths();
 }
+// Runway choice (AJ, 8 Nov 2026): All / 05R / 23L under the toggle, built from the runways the paths use, remembered.
+try { if (window.ArrivalPaths && ArrivalPaths.setRwy) ArrivalPaths.setRwy(localStorage.getItem('pilnk-arr-rwy')); } catch (e) {}
+function setArrivalRwy(r) {
+  if (!window.ArrivalPaths || !ArrivalPaths.setRwy) return;
+  var v = ArrivalPaths.setRwy(r);
+  try { localStorage.setItem('pilnk-arr-rwy', v); } catch (e) {}
+  drawArrivalPaths();
+}
+function paintArrRwyRow() {
+  var row = document.getElementById('arrRwyRow'); if (!row) return;
+  if (!window.ArrivalPaths || !ArrivalPaths.rwysIn) { row.style.display = 'none'; return; }
+  var rw = ArrivalPaths.rwysIn(ArrivalPaths._state.doc);
+  var show = ArrivalPaths._state.on && rw.length > 1;   // one runway only: nothing to choose
+  row.style.display = show ? 'flex' : 'none';
+  if (!show) return;
+  var keys = ['all'].concat(rw);
+  if (row.getAttribute('data-rwys') !== keys.join(',')) {   // (re)built only when the runways change
+    row.setAttribute('data-rwys', keys.join(','));
+    row.textContent = '';
+    keys.forEach(function (k) {
+      var b = document.createElement('button');
+      b.className = 'cov-btn'; b.style.cssText = 'flex:0 0 auto;padding:2px 10px;';
+      b.setAttribute('data-rwy', k); b.textContent = k === 'all' ? 'All' : k;
+      b.onclick = function () { setArrivalRwy(k); };
+      row.appendChild(b);
+    });
+  }
+  var cur = ArrivalPaths.shownRwy();
+  row.querySelectorAll('button').forEach(function (b) { b.classList.toggle('active', b.getAttribute('data-rwy') === cur); });
+}
 function drawArrivalPaths() {
   if (!window.ArrivalPaths) return;
+  paintArrRwyRow();
   var st = document.getElementById('arrStatus');
   if (st) { st.style.display = ArrivalPaths._state.on ? 'block' : 'none'; st.textContent = ArrivalPaths.statusText(); }
   if (typeof avOverlayOn !== 'undefined' && !avOverlayOn) { ArrivalPaths.clear(map); return; }
@@ -10143,10 +10275,10 @@ setInterval(raPoll, 5000);
   var userListen=false;
   var afMeterRms=0, afMeterT=0, afMeterDisp=0;   // voice (AF) meter state
   var muted=false, volume=0.60, afGainDb=-6;
-  var sqOn=false, sqLevel=-65;
+  var sqOn=false, sqLevel=-65, sqAuto=false;
   var gateNode=null, afsqOn=(localStorage.getItem('pilnk-afsq')==='1'), afsqFloor=null, afsqSmooth=null, afsqSlow=null, afsqHold=0, afsqLast=1;
   var rfSteps=null, rfIndex=0, rfAgc=false;
-  var caps={squelch:false, rfgain:false};
+  var caps={squelch:false, rfgain:false, sqauto:false};
   var audioOpenUntil=0, sqLastOpen=null;
   var st={centerHz:0,vfoHz:118700000,mode:'AM',bandwidthHz:0,playing:false,audioSampleRate:48000};
   var recentFreqs = JSON.parse(localStorage.getItem('pilnk-recent-freqs') || '[]');
@@ -10473,6 +10605,10 @@ setInterval(raPoll, 5000);
       if(typeof st.squelchEnabled==='boolean') sqOn=st.squelchEnabled;
       if(typeof st.squelchLevel==='number') sqLevel=st.squelchLevel;
     }
+    if(!caps.sqauto && 'squelchAuto' in st){   // engine 2.2.0+; an older engine never shows the switch
+      caps.sqauto=true;
+      if(typeof st.squelchAuto==='boolean') sqAuto=st.squelchAuto;
+    }
     if(!caps.rfgain && Array.isArray(st.rfGainSteps) && st.rfGainSteps.length){
       caps.rfgain=true; rfSteps=st.rfGainSteps;
       if(typeof st.rfGainIndex==='number') rfIndex=st.rfGainIndex;
@@ -10487,6 +10623,20 @@ setInterval(raPoll, 5000);
     var ss=$('sdrSqState'); if(ss) ss.textContent=sqOn?'ON':'OFF';
     if(sl){ sl.disabled=!caps.squelch; sl.value=sqLevel; }
     var slv=$('sdrSqLevelVal'); if(slv) slv.textContent=Math.round(sqLevel)+' dBFS';
+    // auto squelch (engine 2.2.0+): the switch, and the floor readout in place of the fixed-level slider
+    var sab=$('sdrSqAuto'), sas=$('sdrSqAutoState'), sar=$('sdrSqAutoRead'), san=$('sdrTuneAutoNote');
+    var autoLive=caps.sqauto && sqOn && sqAuto;
+    if(sab){ sab.style.display=caps.sqauto?'':'none'; sab.classList.toggle('on',sqAuto); sab.setAttribute('aria-checked',sqAuto); }
+    if(sas){ sas.style.display=caps.sqauto?'':'none'; sas.textContent=sqAuto?'AUTO':'FIXED'; }
+    if(sl) sl.style.display=autoLive?'none':'';
+    if(slv) slv.style.display=autoLive?'none':'';
+    if(sar){
+      sar.style.display=autoLive?'':'none';
+      sar.textContent=(typeof st.noiseFloorDb==='number' && typeof st.squelchThresholdDb==='number')
+        ? 'floor '+Math.round(st.noiseFloorDb)+' \u00b7 opens at '+Math.round(st.squelchThresholdDb)+' dBFS'
+        : 'floor measuring\u2026';
+    }
+    if(san) san.style.display=(caps.sqauto && sqAuto)?'':'none';
     var rp=$('sdrRfPending'); if(rp) rp.style.display=caps.rfgain?'none':'inline';
     var rg=$('sdrRfGain'), ra=$('sdrRfAgc');
     if(rg){ rg.disabled=!caps.rfgain||rfAgc; }
@@ -10708,6 +10858,7 @@ setInterval(raPoll, 5000);
     var mute=$('sdrMute'); if(mute) mute.onclick=function(){ muted=!muted; mute.textContent=muted?'🔇':'🔊'; applyVolume(); };
     var af=$('sdrAfGain'); if(af) af.oninput=function(e){ afGainDb=+e.target.value; var v=$('sdrAfGainVal'); if(v)v.textContent=(afGainDb>0?'+':'')+afGainDb+' dB'; applyAfGain(); };
     var sb=$('sdrSqBtn'); if(sb) sb.onclick=function(){ if(!caps.squelch) return; sqOn=!sqOn; refreshControls(); post('/sdr/squelch',{enabled:sqOn,level:sqLevel}); };
+    var sab=$('sdrSqAuto'); if(sab) sab.onclick=function(){ if(!caps.sqauto) return; sqAuto=!sqAuto; refreshControls(); post('/sdr/squelch',{auto:sqAuto}); };
     var sl=$('sdrSqLevel'); if(sl){ sl.oninput=function(e){ sqLevel=+e.target.value; var v=$('sdrSqLevelVal'); if(v)v.textContent=Math.round(sqLevel)+' dBFS'; }; sl.onchange=function(){ if(caps.squelch) post('/sdr/squelch',{enabled:sqOn,level:sqLevel}); }; }
     var rg=$('sdrRfGain'); if(rg){ rg.oninput=function(e){ rfIndex=+e.target.value; if(rfSteps&&rfSteps[rfIndex]!=null){ var v=$('sdrRfGainVal'); if(v)v.textContent=rfSteps[rfIndex].toFixed(1)+' dB'; } }; rg.onchange=function(){ if(caps.rfgain) post('/sdr/gain',{index:rfIndex}); }; }
     var ra=$('sdrRfAgc'); if(ra) ra.onclick=function(){ if(!caps.rfgain) return; rfAgc=!rfAgc; refreshControls(); post('/sdr/agc',{on:rfAgc}); };

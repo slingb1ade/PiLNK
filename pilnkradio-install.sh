@@ -432,7 +432,11 @@ except Exception:
     case "$DASH_PORT" in ''|*[!0-9]*) DASH_PORT=5000 ;; esac
     ORIGINS="\"http://localhost:$DASH_PORT\""
     for ip in $(hostname -I 2>/dev/null); do
-        case "$ip" in *:*) ;; *) ORIGINS="$ORIGINS, \"http://$ip:$DASH_PORT\"" ;; esac
+        case "$ip" in
+            *:*) ;;
+            100.6[4-9].*|100.[7-9][0-9].*|100.1[01][0-9].*|100.12[0-7].*) ;;   # Tailscale (100.64/10) out: the radio is node-local (AJ, 1 Nov)
+            *) ORIGINS="$ORIGINS, \"http://$ip:$DASH_PORT\"" ;;
+        esac
     done
     HN=$(hostname 2>/dev/null || true)
     [ -n "$HN" ] && ORIGINS="$ORIGINS, \"http://$HN:$DASH_PORT\", \"http://$HN.local:$DASH_PORT\""

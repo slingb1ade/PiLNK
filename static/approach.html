@@ -85,6 +85,7 @@
   <div class="s" id="st">loading…</div>
 </div>
 <div class="hud card" id="tr">
+  <div class="pfdsw" id="d_pfdsw" hidden title="Cockpit display (PFD)">PFD</div>
   <div class="row"><span class="k">Callsign</span><span class="v" id="d_cs">—</span></div>
   <div class="row"><span class="k">Type</span><span class="v" id="d_t">—</span></div>
   <div class="row" id="d_dlrow" style="display:none"><span class="k">From the aircraft</span><span class="v" id="d_dl">—</span></div>
@@ -102,6 +103,7 @@
   <div class="row x"><span class="k" id="d_src" style="font-size:10px;opacity:.7">—</span></div>
   <div class="more" id="d_more">more ▾</div>
 </div>
+<div class="hud" id="pfd"></div>
 <div class="hud" id="cams">
   <button class="cambtn on" data-cam="director">Director</button>
   <button class="cambtn" data-cam="chase">Chase</button>
@@ -127,6 +129,11 @@
 <script src="/static/nav-lights.js?v=nl1"></script>
 <script src="/static/runway-lights.js?v=rl1"></script>
 <script src="/static/cloud-deck.js?v=cd2"></script>
+<script src="/static/windsock.js?v=ws1"></script>
+<script src="/static/fixes-nz.js"></script>
+<script src="/static/pfd-core.js?v=pfd1"></script>
+<script src="/static/pfd-svt.js?v=pfd1"></script>
+<script src="/static/pfd.js?v=pfd1"></script>
 <script>
 const _q=new URLSearchParams(location.search);
 const D2R=Math.PI/180, R2D=180/Math.PI;
@@ -209,6 +216,7 @@ async function resolveSite(){
   loadCal(); loadRunways();
   loadQnh();   // here, once SITE.icao is final: a top-level call ran before /api/location had answered, and saw no airport
   cloudsLoad(); if(!_cld.timer) _cld.timer=setInterval(cloudsLoad, 20*60*1000);   // the cloud deck: same METAR, then every 20 min
+  windLoad(); if(!_ws.timer) _ws.timer=setInterval(windLoad, 20*60*1000);   // the windsock: same METAR, same rhythm
   document.getElementById('sub').textContent=(SITE.icao?SITE.name:'your receiver')+' · '+(BASE==='sat'?'satellite hybrid':'OpenFreeMap 3D map')+' + AWS terrain';
 }
 const mPerLat=111320; let mPerLon=111320;
@@ -285,7 +293,7 @@ function integrate(){   // predict where the aircraft is *now* from the last fix
 const _apr=window._apr={pts:null,key:null,sig:null,color:null,mesh:null,line:null,scene:null,anchor:null};
 if(window.ArrivalPaths){ ArrivalPaths.load(fetch.bind(window)); setInterval(()=>ArrivalPaths.load(fetch.bind(window)),ArrivalPaths.C.refetchMs); }   // hourly, as the dashboard: a page left open across the nightly rebuild kept yesterday's paths (22 Oct)
 function aprDrop(){ for(const k of ['mesh','line']) if(_apr[k]){ _apr.scene.remove(_apr[k]); _apr[k].geometry.dispose(); _apr[k].material.dispose(); _apr[k]=null; } }
-function aprClear(){ _apr.pts=null; _apr.key=null; _apr.sig=null; _apr.anchor=null; aprDrop();
+function aprClear(){ _apr.pts=null; _apr.key=null; _apr.sig=null; _apr.anchor=null; _apr.path=null; aprDrop();
   const row=document.getElementById('d_aprow'); if(row) row.style.display='none'; }
 function aprUpdate(list,a){
   const AP=window.ArrivalPaths; if(!AP||!AP._state.enabled||!a){ aprClear(); return; }
@@ -293,6 +301,7 @@ function aprUpdate(list,a){
   for(const x of list) if(x&&x.lat!=null&&x.lon!=null) AP.observe(x,csOf(x),nowS);   // every aircraft: landings tell the runway in use
   const key=(a.hex||'').toLowerCase(), m=AP.matchFor(a,csOf(a),nowS);
   if(!m){ aprClear(); return; }
+  _apr.path=m.path;   // the PFD's course line and top strip
   const pr=AP.profileAt(m.path,a.lat,a.lon), dt=(pr&&typeof a.alt_baro==='number')?AP.deltaText(a.alt_baro,pr.alt):'';
   const row=document.getElementById('d_aprow'); row.style.display=''; document.getElementById('d_ap').textContent=m.path.name+(dt?' · '+dt:'');
   /* The whole approach, built once per aircraft + path (AJ, 19 Oct): the aircraft flies along a still ribbon. It used to be
@@ -358,6 +367,73 @@ const st=(t)=>document.getElementById('st').textContent=t;
 const LIGHTS_ON=(_q.get('lights')!=null)?(_q.get('lights')!=='0'):true;
 // The aircraft's own navigation lights at night (AJ, 20 Oct 2026): static/nav-lights.js. ?navlights=0 turns them off.
 const NAVLIGHTS_ON=(_q.get('navlights')!=null)?(_q.get('navlights')!=='0'):true;
+/* Windsock (Caroline / AJ, 2 Nov 2026): static/windsock.js. One beside each runway end at the airports listed here, driven by
+   the airport METAR (same request as QNH and the clouds, every 20 min). No usable METAR wind = no sock: it never invents one.
+   A failed refresh keeps the last wind for up to WS_KEEP, then the sock goes. Drawn like the lights: its own scene and local
+   frame at the sock, through the aircraft layer's renderer and camera; sized with the aircraft (3x in the tower shot only).
+   ?windsock=0 turns it off. */
+const WINDSOCK_ON=(_q.get('windsock')!=null)?(_q.get('windsock')!=='0'):true;
+const WINDSOCK_AT={NZAA:true}, WS_KEEP=90*60*1000;
+const _ws=window._ws={wind:null, at:0, done:false, socks:[], key:'', chk:-1, drawn:0, timer:0, scene:null,
+  L:null, RX:null, V:null};
+async function windLoad(){
+  try{
+    if(!WINDSOCK_ON||!window.WindSock) return;
+    const w=WindSock.windOf(await metarOnce());
+    if(w){ _ws.wind=w; _ws.at=Date.now(); } else if(!_ws.wind||Date.now()-_ws.at>WS_KEEP) _ws.wind=null;   // a failed refresh keeps the last wind a while
+  }catch(e){}
+  finally{ _ws.done=true; if(typeof map!=='undefined'&&map) map.triggerRepaint(); }
+}
+/* The runway ends that get a sock: only the airport whose runways are loaded, and only if it is listed. */
+function wsEnds(){ return (WINDSOCK_ON&&APT_ICAO&&WINDSOCK_AT[APT_ICAO])?RWY_ENDS:[]; }
+/* Once a second: (re)build when the ends move (the runway snap moves them), and read the ground under each sock. */
+function wsRefresh(){
+  const ends=wsEnds(); let key='';
+  for(const e of ends) key+=e.ident+':'+e.lat.toFixed(6)+','+e.lon.toFixed(6)+','+e.land+';';
+  if(key!==_ws.key){
+    for(const k of _ws.socks){ _ws.scene.remove(k.S.group); disposeTree(k.S.group); }
+    _ws.socks=[]; _ws.key=key;
+    ends.forEach((e,i)=>{ const p=WindSock.placement(e); if(!p) return;
+      const S=WindSock.build(THREE,{pixelRatio:window.devicePixelRatio||1}); S.group.visible=false; _ws.scene.add(S.group);
+      _ws.socks.push({ident:e.ident, lat:p.lat, lon:p.lon, base:(e.elev!=null?e.elev:SITE.elev), S, mc:null, s:0, phase:i*13.7}); });
+  }
+  for(const k of _ws.socks){ const g=groundAt(k.lon,k.lat);
+    const mc=maplibregl.MercatorCoordinate.fromLngLat([k.lon,k.lat], (g!=null?g:k.base)*VE); k.mc=mc; k.s=mc.meterInMercatorCoordinateUnits(); }
+}
+function drawWindsocks(rd,cam,M0){
+  if(!WINDSOCK_ON||!window.WindSock) return;
+  if(!_ws.scene){ _ws.scene=new THREE.Scene();
+    _ws.hemi=new THREE.HemisphereLight(0xbcd4ff,0x24303f,1.0); _ws.sun=new THREE.DirectionalLight(0xfff2e0,1.2); _ws.sun.position.set(-1,2,1);
+    _ws.scene.add(_ws.hemi,_ws.sun); _ws.L=new THREE.Matrix4(); _ws.RX=new THREE.Matrix4().makeRotationX(Math.PI/2); _ws.V=new THREE.Vector3(); }
+  const now=performance.now()/1000;
+  if(now-_ws.chk>1){ _ws.chk=now; wsRefresh(); }
+  const w=_ws.wind;
+  if(!w||Date.now()-_ws.at>WS_KEEP||!_ws.socks.length){ _ws.anim=false; return; }
+  _ws.hemi.color.setHex(NIGHT_ON?0x3a4a68:0xbcd4ff); _ws.hemi.groundColor.setHex(NIGHT_ON?0x0a0f18:0x24303f); _ws.hemi.intensity=NIGHT_ON?0.75:1.0;
+  _ws.sun.color.setHex(NIGHT_ON?0x9fb4d8:0xfff2e0); _ws.sun.intensity=NIGHT_ON?0.45:1.2;
+  for(const k of _ws.socks) k.S.group.visible=false;
+  // metres per screen pixel at each sock, so the mast never thins below ~1.2 px (it breaks up and the sock floats)
+  let camLL=null, camAlt=0, perPx=0;
+  try{ const tr=map.transform; camLL=tr.getCameraLngLat(); camAlt=tr.getCameraAltitude();
+    perPx=2*Math.tan((((map.getVerticalFieldOfView?map.getVerticalFieldOfView():tr.fov)||36.87)*D2R)/2)/Math.max(1,map.getCanvas().clientHeight); }catch(e){}
+  let px=perPx?0:Infinity;   // the biggest sock on screen, in px of mast height (unknown = assume big)
+  for(const k of _ws.socks){
+    if(!k.mc) continue;
+    const t=now+k.phase;
+    let minW=0;
+    if(camLL&&perPx){ const dE=(k.lon-camLL.lng)*111320*Math.cos(k.lat*D2R), dN=(k.lat-camLL.lat)*110574, dU=camAlt-(k.mc.z/k.s);
+      const d=Math.max(1,Math.hypot(dE,dN,dU));
+      minW=1.2*d*perPx/Math.max(modelScale,1e-3); px=Math.max(px,WindSock.MAST_H*modelScale/(d*perPx)); }
+    k.S.update({to:WindSock.dirAt(w,t), kt:WindSock.speedAt(w,t), t, night:NIGHT_ON, minW});
+    k.S.group.scale.setScalar(modelScale);   // the tower shot draws it 3x, like the aircraft; true size everywhere else
+    k.S.group.visible=true;
+    _ws.L.makeTranslation(k.mc.x,k.mc.y,k.mc.z).scale(_ws.V.set(k.s,-k.s,k.s)).multiply(_ws.RX);
+    cam.projectionMatrix.fromArray(M0).multiply(_ws.L);
+    rd.resetState(); rd.render(_ws.scene,cam); k.S.group.visible=false; _ws.drawn++;
+  }
+  _ws.px=px; _ws.anim=w.kt>0&&px>=8;   // the fabric moves; in calm air, or a few px tall, it needs no extra frames
+  if(_ws.anim) map.triggerRepaint();
+}
 const RABBIT=12;      // fallback flasher steps per second (only if runway-lights.js fails to load; the real rabbit is RunwayLights.rabbit)
 /* PAPI box (20 Oct 2026): centre 300 m past the threshold, left of the runway, lights 3 m apart, 2 m up. buildLights places
    the four lights from these and papiUpdate measures the aircraft's angle from them - one definition for both. */
@@ -961,6 +1037,7 @@ const acLayer={
       mm.traverse(o=>{if(o.isMesh&&o.material){(Array.isArray(o.material)?o.material:[o.material]).forEach(mt=>{mt.metalness=0.25;mt.roughness=0.6;mt.userData.ownPaint=own;tintMaterial(mt);});}});
       const or=MODEL_ORIENT[key]||{}; this.holder.rotation.set((or.pitch||0)*D2R,(or.yaw||0)*D2R,(or.roll||0)*D2R);
       this.holder.add(mm); this.props=findProps(mm).concat(splitRotor(mm,key)).concat(splitParts(mm,key));
+      this.gearSets=splitGear(mm,key); this.gearK=null; this.gearIsUp=undefined; this.gearT=null;   // folding gear, see GEAR
       // painted AFTER the props and rotors are split out, so the parts that turn are painted where they ended up
       if(!own) paintAircraft(mm,key,this.wantLiv,this.renderer); this.livKey=this.wantLk;   // every load: windows on the grey ones too (own paint has its own)
       this.measureLow(); this.navBuild(key); this.key=key; this.loading=false; },undefined,()=>{this.loading=false;});
@@ -995,6 +1072,7 @@ const acLayer={
       for(const k of ['mesh','line']) if(_apr[k]){ const u=_apr[k].material.uniforms; if(e){ u.uEye.value.set(e[0],e[1],e[2]); u.uF1.value=RIB_FADE1; } else u.uF1.value=0; }
       this.renderer.resetState(); this.renderer.render(_apr.scene,this.camera);
     }
+    drawWindsocks(this.renderer,this.camera,M0);   // at the runway, like the lights; before the aircraft, which may pass in front
     if(!aircraft||!this.holder.children.length){ drawClouds(this.renderer,this.camera,M0); this.renderer.resetState(); if(gl.bindVertexArray) gl.bindVertexArray(null); return; }
     const a=aircraft;
     // Mercator placement: x east, y SOUTH (flip below), z up; model space = metres, Y-up (same rig as approach.html)
@@ -1010,7 +1088,15 @@ const acLayer={
        an A380, dip up to 6 m under the runway on short final; 12 Oct review.) */
     { const agl=a.gnd?0:Math.max(0,a.altM-(a.ground!=null?a.ground:SITE.elev));
       this.yaw.position.y=Math.max(0,-(this.lowY||0)*modelScale-agl*VE);
-      if(this.gear&&this.gear.length){ this.gearIsUp=gearUp(this.gearIsUp,a.gnd,agl,_q.get('gear')); for(const o of this.gear) o.visible=!this.gearIsUp; } }
+      const hasSets=this.gearSets&&this.gearSets.length;
+      if((this.gear&&this.gear.length)||hasSets) this.gearIsUp=gearUp(this.gearIsUp,a.gnd,agl,_q.get('gear'),fix?fix.vU:null);
+      if(this.gear&&this.gear.length){ for(const o of this.gear) o.visible=!this.gearIsUp; }
+      if(hasSets){ const want=this.gearIsUp?0:1, now=performance.now()/1000;
+        if(this.gearK==null) this.gearK=want;     // first frame: no animation, just the right state
+        else if(this.gearK!==want){ const dt=Math.min(0.25,Math.max(0,now-(this.gearT||now)));
+          this.gearK=want>this.gearK?Math.min(want,this.gearK+dt/GEAR_T):Math.max(want,this.gearK-dt/GEAR_T); map.triggerRepaint(); }
+        this.gearT=now;
+        for(const g of this.gearSets){ g.p.scale.y=Math.max(this.gearK,1e-3); g.p.visible=this.gearK>0.002; } } }
     if(this.props&&this.props.length){
       const pa=performance.now()/1000*PROP_REV*Math.PI*2;
       for(let i=0;i<this.props.length;i++) this.props[i].p.rotation[this.props[i].axis]=pa;
@@ -1199,12 +1285,55 @@ function webglOK(){
    60 fps with six blades aliases into standing still or running backwards — the wagon-wheel effect,
    where the true number produces a false picture. PROP_REV is chosen to read as turning. */
 const PROP_REV=2.0;
-/* ---------- retracting landing gear (main, 18 Oct 2026) ----------
-   A model whose gear meshes are named gear_* (the Yak-3 so far) shows its wheels on the ground and on the way in and
-   hides them in the air: up once the aircraft is more than GEAR_UP_M above the ground, down again below GEAR_DN_M.
-   Two heights, not one, so an aircraft holding 300 m does not flicker. ?gear=up or ?gear=down overrides. */
-const GEAR_UP_M=300, GEAR_DN_M=250;
-function gearUp(wasUp,gnd,agl,q){ if(q==='up') return true; if(q==='down') return false; if(gnd) return false; return wasUp?agl>=GEAR_DN_M:agl>GEAR_UP_M; }
+/* ---------- retracting landing gear (main, 18 Oct 2026; timing + A320 fold 31 Oct) ----------
+   Gear goes UP shortly after take-off: above GEAR_UP_AGL metres and climbing faster than GEAR_CLIMB m/s (300 fpm),
+   or above GEAR_FORCE_UP whatever it is doing. It comes DOWN below GEAR_FORCE_DN when not climbing, or below GEAR_DN_AGL
+   while descending faster than GEAR_DESC m/s. (Not climbing matters: without it a departure at 90 m flicked
+   down, then straight back up, every frame.) Between those it keeps what it had, so a level aircraft does not flicker.
+   On the ground it is always down. A first sighting (wasUp undefined) counts as down. vU null = no climb or descent known.
+   ?gear=up or ?gear=down overrides. GEAR_T is how long the fold takes, in seconds. */
+const GEAR_UP_AGL=15, GEAR_CLIMB=1.5, GEAR_DN_AGL=600, GEAR_DESC=-1.0, GEAR_FORCE_UP=900, GEAR_FORCE_DN=300, GEAR_T=2.0;
+function gearUp(wasUp,gnd,agl,q,vU){ if(q==='up') return true; if(q==='down') return false; if(gnd) return false; const v=(vU==null||!isFinite(vU))?0:vU; if(wasUp) return !((agl<GEAR_FORCE_DN&&v<=0)||(agl<GEAR_DN_AGL&&v<GEAR_DESC)); return agl>GEAR_FORCE_UP||(agl>GEAR_UP_AGL&&v>GEAR_CLIMB); }
+/* Models without gear_* nodes: GEAR picks the wheels out by where they sit. Every vertex of a mesh, in the model's own
+   frame, must fall inside a box (x along the length, az = distance either side of the centreline, y up) for the mesh
+   to count as gear. len:'z' when the model's length runs along z (x is then across); c moves the centreline off 0.
+   Each box becomes one group, folded by squashing it up (scale Y) toward pivotY, the belly or the wing underside.
+   A320 boxes measured from a320_200.glb 31 Oct (nose 63 meshes, mains 59; gear-up renders show a clean belly).
+   ATR72, 737-800, 777 added 1 Nov, each render-checked up and down. Not here: the 787, A330, A350 and A380 models have
+   no gear modelled; the bizjet and 747 build gear, doors and belly into the same meshes, so their gear stays down. */
+const GEAR={
+  'a320_200.glb':{ groups:[
+    { x:[-53,-46.5], az:[0,3.0],   y:[-1,10.5], pivotY:9.5 },    // nose gear; fuselage bottom here is y 8.66
+    { x:[4.5,14],    az:[11.5,23], y:[-1,14.6], pivotY:12.5 } ]},// both mains; wing underside here is y 12.4
+  'atr72.glb':{ groups:[                                        // nose at +x; mains fold into the sponsons
+    { x:[9.9,10.7],  az:[0,0.4],   y:[-2.2,-1.0], pivotY:-1.25 },// nose gear; belly here is y -1.29
+    { x:[-1.25,0.2], az:[1.3,2.9], y:[-2.4,-1.0], pivotY:-1.40 } ]},// both mains; sponson bottom is y -1.42
+  'b737_800.glb':{ len:'z', groups:[                             // nose at +z; the nose box takes the long nose doors
+    { x:[7.5,9.4],   az:[0,0.4],   y:[-0.1,1.55], pivotY:1.2 },  // nose gear; belly here is y 1.16
+    { x:[-5.2,-3.6], az:[1.6,3.2], y:[-0.1,2.0],  pivotY:1.85 } ]},// both mains; fuselage/wing root here is y 1.85
+  'b777_klm.glb':{ len:'z', c:12.755, groups:[                 // nose at -z (near z -1); not centred on x 0
+    { x:[-3.8,-2.75],  az:[0,0.4],    y:[-0.1,1.55], pivotY:1.1 },// nose gear; belly here is y 1.08
+    { x:[-16.7,-14.7], az:[0.95,2.5], y:[-0.1,1.7],  pivotY:1.5 } ]}// both six-wheel mains; up into the belly fairing
+};
+function splitGear(root,key){
+  const spec=GEAR[key]; if(!spec) return [];
+  const L=spec.len==='z', c=spec.c||0;   // length along z (most models) or x; c = the centreline across
+  root.updateMatrixWorld(true);
+  const inv=new THREE.Matrix4().copy(root.matrixWorld).invert(), rel=new THREE.Matrix4(), v=new THREE.Vector3();
+  const meshes=[]; root.traverse(o=>{ if(o.isMesh&&o.geometry&&o.geometry.attributes.position) meshes.push(o); });
+  const pick=meshes.map(m=>{ rel.multiplyMatrices(inv,m.matrixWorld); const pos=m.geometry.attributes.position;
+    for(let gi=0;gi<spec.groups.length;gi++){ const b=spec.groups[gi]; let ok=pos.count>0;
+      for(let i=0;ok&&i<pos.count;i++){ v.fromBufferAttribute(pos,i).applyMatrix4(rel); const l=L?v.z:v.x, az=Math.abs((L?v.x:v.z)-c);
+        ok=l>=b.x[0]&&l<=b.x[1]&&az>=b.az[0]&&az<=b.az[1]&&v.y>=b.y[0]&&v.y<=b.y[1]; }
+      if(ok) return gi; }
+    return -1; });                        // all picked before anything moves
+  const out=[];
+  spec.groups.forEach((b,gi)=>{ const mine=meshes.filter((m,i)=>pick[i]===gi); if(!mine.length) return;
+    const pv=new THREE.Group(), mid=(b.x[0]+b.x[1])/2; if(L) pv.position.set(c,b.pivotY,mid); else pv.position.set(mid,b.pivotY,c); root.add(pv); pv.updateMatrixWorld(true);
+    for(const m of mine) pv.attach(m);    // attach keeps each part exactly where it was
+    out.push({p:pv}); });
+  return out;
+}
 function isAncestor(a,b){ let n=b.parent; while(n){ if(n===a) return true; n=n.parent; } return false; }
 function findProps(root){
   const out=[];
@@ -1802,6 +1931,28 @@ function declAt(lat,lon){
   const d=W.declination(lat,lon);
   return isFinite(d)?d:null;
 }
+/* ---------- Mode S EHS, checked (2 Nov 2026) ----------
+   AJ watched an Atlas 747 departing north swing hard right and back in 3D while its 2D track ran straight. readsb
+   publishes every Comm-B reply as it decoded it (bds50_*, bds60_*) and, beside them, its own checked values (roll,
+   track_rate, tas, mag_heading). A Comm-B reply does not say which register it holds, so now and then another register
+   is read as BDS 5,0: on the hub that day ANZ141M, climbing out on track 79.3, carried bds50_true_track 200.9,
+   bds50_roll 23.9 and bds50_track_rate 1.906 - its checked roll was 1.4, with no checked track rate. Fed to the arc
+   prediction that is a 2 deg/s right turn until the next fix pulls it back. So: checked values first; a raw BDS 5,0
+   value only when that same reply's own true track agrees with the ADS-B track (EHS_TRK_TOL); a raw BDS 6,0 heading only
+   when it lies within EHS_HDG_TOL of the track (crab never comes near 45 deg). Anything else counts as not sent.
+   rej = a raw reply was present and thrown away (shown on the panel). */
+const EHS_TRK_TOL=10, EHS_HDG_TOL=45;
+function ehs(a,decl){
+  const num=v=>(typeof v==='number'&&isFinite(v))?v:null, off=(x,y)=>Math.abs(((x-y+540)%360)-180);
+  const trk=num(a.track), t50=num(a.bds50_true_track), ok50=trk!=null&&t50!=null&&off(t50,trk)<=EHS_TRK_TOL;
+  let rej=false;
+  const pick=(chk,raw)=>{ if(chk!=null) return chk; if(raw==null) return null; if(ok50) return raw; rej=true; return null; };
+  const roll=pick(num(a.roll),num(a.bds50_roll)), rate=pick(num(a.track_rate),num(a.bds50_track_rate)), tas=pick(num(a.tas),num(a.bds50_true_airspeed));
+  let magH=num(a.mag_heading);
+  if(magH==null){ const r=num(a.bds60_magnetic_heading);
+    if(r!=null){ if(trk!=null&&decl!=null&&off(r+decl,trk)<=EHS_HDG_TOL) magH=r; else rej=true; } }
+  return {roll, rate, tas, magH, rej};
+}
 function median(a){const s=a.slice().sort((x,y)=>x-y),m=s.length>>1;return s.length%2?s[m]:(s[m-1]+s[m])/2;}
 async function poll(){
   try{
@@ -1826,9 +1977,10 @@ async function poll(){
     if(target!=='__auto__') a=list.find(x=>(x.hex||'').toLowerCase()===target)||null;
     else { if(lockedHex){const s=list.find(x=>(x.hex||'').toLowerCase()===lockedHex); if(s&&posOf(s)&&distNm(s)<35)a=s; else lockedHex=null;}
       if(!a){ const inb=list.filter(onApproach).sort((p,q)=>distNm(p)-distNm(q)); a=inb[0]||list.filter(x=>posOf(x)&&distNm(x)<40&&x.alt_baro!=='ground').sort((p,q)=>distNm(p)-distNm(q))[0]||null; if(a&&onApproach(a))lockedHex=(a.hex||'').toLowerCase(); } }
+    let pfdIn=null;
     if(a&&posOf(a)){
-      const magH=(typeof a.bds60_magnetic_heading==='number')?a.bds60_magnetic_heading:null, roll=(typeof a.bds50_roll==='number')?a.bds50_roll:0;
       const decl=(CFG.magVar!=null)?CFG.magVar:declAt(a.lat,a.lon);   // magnetic -> true; null = no model
+      const E=ehs(a,decl), magH=E.magH, roll=(E.roll!=null)?E.roll:0;   // checked EHS values only (2 Nov, see ehs)
       /* Heading. Magnetic heading (BDS 6,0) is interrogated, not broadcast: away from the radar it
          can sit unchanged for many seconds while the ADS-B track keeps turning — the model paused
          facing north mid-turn on the 05R base. Its resolution is 0.35°, so in a turn a fresh reply
@@ -1843,7 +1995,7 @@ async function poll(){
         else { hdg=((trkNow+(_hdgMem.crab||0))%360+360)%360; _hdgMem.stale=true; }   // stale heading, aircraft turning: follow the track
       } else { hdg=trkNow!=null?trkNow:0; _hdgMem.stale=false; }
       _hdgMem.hex=hx;
-      const vs=vsOf(a), tas=(typeof a.bds50_true_airspeed==='number')?a.bds50_true_airspeed:(a.gs||250);
+      const vs=vsOf(a), tas=(E.tas!=null)?E.tas:(a.gs||250);
       // inertial vertical rate (BDS 6,0) when the aircraft sends it — steadier than the barometric one
       const vsAtt=(typeof a.bds60_inertial_vertical_rate==='number')?a.bds60_inertial_vertical_rate:vs;
       /* The vertical rate is SMOOTHED here, once, and the smoothed value drives both the pitch of the
@@ -1887,8 +2039,8 @@ async function poll(){
               it still held the last two seconds of the turn.
            3. Change in track between consecutive fixes — for aircraft with no Mode S EHS at all. */
       let rate=0;
-      if(typeof a.bds50_track_rate==='number') rate=a.bds50_track_rate*D2R;
-      else if(typeof a.bds50_roll==='number'&&tas>40) rate=9.81*Math.tan(a.bds50_roll*D2R)/(tas*0.5144);
+      if(E.rate!=null) rate=E.rate*D2R;   // 1 and 2 are the CHECKED values (ehs): a misread reply is not a turn
+      else if(E.roll!=null&&tas>40) rate=9.81*Math.tan(E.roll*D2R)/(tas*0.5144);
       else if(fix&&fix.key===key&&tFix-fix.t>800&&tFix-fix.t<12000){ let d=((trkDeg-fix.trk*R2D+540)%360)-180; rate=d*D2R/((tFix-fix.t)/1000); }
       rate=Math.max(-6*D2R,Math.min(6*D2R,rate));
       if(fix&&fix.key===key&&tFix-fix.t<300) rate=fix.rate;   // same fix re-served: keep the last estimate
@@ -1915,7 +2067,7 @@ async function poll(){
       document.getElementById('d_att').textContent=Math.round(hdg)+'° / '+roll.toFixed(1)+'°';
       document.getElementById('d_crab').textContent=crabText(hdg,trkNow,magH!=null&&decl!=null,!!_hdgMem.stale,a.alt_baro==='ground');
       const n=(v,u,d)=>(typeof v==='number')?(d?v.toFixed(d):Math.round(v))+(u||''):'—';
-      document.getElementById('d_spd').textContent=n(a.gs)+' / '+n(a.bds50_true_airspeed)+' / '+n(a.bds60_indicated_airspeed)+' kt';
+      document.getElementById('d_spd').textContent=n(a.gs)+' / '+n(E.tas)+' / '+n(a.bds60_indicated_airspeed)+' kt';
       document.getElementById('d_mach').textContent=n(a.bds60_mach,'',3);
       document.getElementById('d_vs').textContent=(typeof vs==='number'&&vs!==0?(vs>0?'+':'')+Math.round(vs)+' fpm':'—')
         +(typeof a.bds60_inertial_vertical_rate==='number'?' · inertial '+(a.bds60_inertial_vertical_rate>0?'+':'')+Math.round(a.bds60_inertial_vertical_rate):'');
@@ -1923,12 +2075,14 @@ async function poll(){
       document.getElementById('d_sel').textContent=n(a.bds40_selected_altitude_mcp,' ft')+' / '+n(selHdg,'°');
       document.getElementById('d_qnhset').textContent=(typeof a.bds40_baro_pressure_setting==='number')?a.bds40_baro_pressure_setting.toFixed(1)+' hPa'+(qnh?' (METAR '+Math.round(qnh)+')':''):'—';
       const src=[]; if(a.bds40_selected_altitude_mcp!=null||a.bds40_baro_pressure_setting!=null)src.push('4,0'); if(a.bds50_roll!=null||a.bds50_true_airspeed!=null)src.push('5,0'); if(a.bds60_magnetic_heading!=null||a.bds60_indicated_airspeed!=null)src.push('6,0');
-      document.getElementById('d_src').textContent=(src.length?'Mode S EHS: BDS '+src.join(' · ')+(a.bds50_track_rate!=null?' · turn rate from aircraft':(a.bds50_roll!=null?' · turn rate from bank':'')):'ADS-B only — no EHS from this aircraft')+(_hdgMem.stale?' · hdg stale → track':'');
+      document.getElementById('d_src').textContent=(src.length?'Mode S EHS: BDS '+src.join(' · ')+(E.rate!=null?' · turn rate from aircraft':(E.roll!=null?' · turn rate from bank':''))+(E.rej?' · misread reply ignored':''):'ADS-B only — no EHS from this aircraft')+(_hdgMem.stale?' · hdg stale → track':'');
       st(CFG.magVar!=null?'mag var '+fmtSigned(CFG.magVar)+'° (set)'
         :(decl!=null?'mag var '+fmtSigned(decl)+'° WMM-2025 · heading = magnetic + var'
         :('mag var ?° (no WMM model) · heading follows the ADS-B track…')));
       prefetchAhead();
+      pfdIn={a,E,decl,hdg,hdgStale:!!_hdgMem.stale,trk:trkNow,vsS,pitch,altM,groundM:gM,qnh,dl:acDl,path:_apr.path||null,night:NIGHT_ON,rwys:RWY_ENDS};   // the PFD (pfd.js): the same values the data box shows
     } else { fix=null; aircraft=null; acDl=null; aprClear(); document.getElementById('d_dlrow').style.display='none'; document.getElementById('d_cs').textContent='— no arrivals —'; }
+    if(window.PFD) PFD.feed(pfdIn, Date.now());
   }catch(e){
     /* AUDIT FIX #6 (24 Sep 2026): this was catch(e){} — any failure froze the view on its last fix with
        nothing said anywhere. Now it is logged (first time, then every 30th, so a dead link doesn't flood
@@ -2053,6 +2207,7 @@ function tick(){
   requestAnimationFrame(tick);
   if(!map)return;
   integrate();
+  if(window.PFD) PFD.frame(aircraft, performance.now());
   if(!aircraft){
     /* Nothing inbound: a few seconds after the last aircraft leaves, ease to a wide shot from the
        tower down the runway rather than freezing wherever the camera happened to be. */

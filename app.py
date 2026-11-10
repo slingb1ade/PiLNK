@@ -4736,6 +4736,19 @@ def atc_transcript():
     return jsonify(doc)
 
 
+# ── ATC context feed (spec pilnk-tasks/atc-context-spec.md) ── never sent to pilnk.io
+try:
+    import atc_context_feed as _acf
+
+    def _acf_arrival_doc():         # called on the feed's own thread, so it needs the app context
+        with app.app_context():
+            return api_arrival_paths().get_json()
+    _ACF = _acf.start_from_config(CONFIG_PATH, read_aircraft_json, _datalink_merge, _acf_arrival_doc)
+    _acf.register(app, _ACF)
+except Exception as _acf_err:      # the feed must never cost the dashboard
+    logging.warning('[atc-context] disabled: %s', _acf_err)
+
+
 @app.route('/flights')
 def flights():
     """Return aircraft data with type/registration enrichment from AIRCRAFT_DB.
@@ -6004,7 +6017,8 @@ def _cap_network_info(params):
 # gain step, squelch). No audio is read, recorded or sent anywhere — the ATC
 # rule (nothing captured leaves the user's node) holds.
 _RADIO_KEYS = ('playing', 'vfoHz', 'mode', 'bandwidthHz', 'squelchEnabled', 'squelchLevel',
-               'rfGainSteps', 'rfGainIndex', 'rfAgc', 'channelPowerDb', 'denoise')
+               'rfGainSteps', 'rfGainIndex', 'rfAgc', 'channelPowerDb', 'denoise',
+               'squelchAuto', 'squelchMarginDb', 'noiseFloorDb', 'squelchThresholdDb', 'squelchOpen')
 _RADIO_DOWN = ('radio engine not answering on :5656 — no radio dongle, or the '
                'pilnkradio service is stopped')
 RADIO_SQ_MIN, RADIO_SQ_MAX = -90.0, -20.0    # dBFS; the dashboard slider is -90..-20
@@ -6025,6 +6039,10 @@ def _radio_snapshot():
     # Squelch too: it comes back as -55.599998…, and set_radio compares it with the -55.6 it asked for.
     if isinstance(out.get('squelchLevel'), float):
         out['squelchLevel'] = round(out['squelchLevel'], 1)
+    if isinstance(out.get('noiseFloorDb'), float):
+        out['noiseFloorDb'] = round(out['noiseFloorDb'], 1)
+    if isinstance(out.get('squelchThresholdDb'), float):
+        out['squelchThresholdDb'] = round(out['squelchThresholdDb'], 1)
     idx = st.get('rfGainIndex')
     if isinstance(idx, int) and 0 <= idx < len(steps):
         out['rfGainDb'] = steps[idx]

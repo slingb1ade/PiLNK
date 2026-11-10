@@ -12,7 +12,7 @@
 (function (root) {
   'use strict';
 
-  var HELI = { 'b429.glb': 1, 'as350.glb': 1, 'nh90.glb': 1, 'sh60.glb': 1 };
+  var HELI = { 'b429.glb': 1, 'as350.glb': 1, 'nh90.glb': 1, 'sh60.glb': 1, 'ch47.glb': 1, 'uh60m.glb': 1 };
   function isHeli(key) { return !!HELI[key]; }
 
   // The beacon is looked for in the rear part of the aircraft only, so a rotodome, a cockpit or a rotor further

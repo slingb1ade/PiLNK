@@ -214,7 +214,23 @@
   }
 
   // ── state + Leaflet drawing (only when the overlay is on) ──
-  var S = { enabled: false, doc: null, unavailable: false, on: false, layer: null, timer: null };
+  var S = { enabled: false, doc: null, unavailable: false, on: false, layer: null, timer: null, rwy: 'all' };
+
+  // Which runway's paths to draw (AJ, 8 Nov 2026: "Auckland is using 23L so I don't need the paths for 05").
+  // Drawing only: the card line and the 3D ribbon still match an aircraft to whatever path it is flying.
+  var RWY_RE = /^[0-9]{2}[LRC]?$/;
+  function rwysIn(doc) {   // the runways the paths use, sorted, each once; anything that is not a runway name is left out
+    var seen = {};
+    ((doc && doc.paths) || []).forEach(function (p) { var r = p && p.rwy != null ? String(p.rwy) : ''; if (RWY_RE.test(r)) seen[r] = 1; });
+    return Object.keys(seen).sort();
+  }
+  function setRwy(r) {
+    var v = String(r == null ? '' : r).toUpperCase();
+    S.rwy = RWY_RE.test(v) ? v : 'all';
+    return S.rwy;
+  }
+  // The runway actually shown: the choice when the loaded paths have it, else all of them (never a blank map).
+  function shownRwy() { return S.rwy !== 'all' && rwysIn(S.doc).indexOf(S.rwy) >= 0 ? S.rwy : 'all'; }
 
   function statusText() {
     var have = !!(S.doc && S.doc.paths && S.doc.paths.length);
@@ -222,7 +238,8 @@
     if (!S.doc) return 'Loading arrival paths…';
     if (S.doc.learning) return 'Still learning — ' + (S.doc.arrivals || 0) + ' arrivals so far';
     var n = (S.doc.paths || []).length;
-    return n + ' Auckland arrival path' + (n === 1 ? '' : 's') + ' from ' + (S.doc.arrivals || 0) + ' flights';
+    return n + ' Auckland arrival path' + (n === 1 ? '' : 's') + ' from ' + (S.doc.arrivals || 0) + ' flights' +
+           (shownRwy() !== 'all' ? ' · showing ' + shownRwy() + ' only' : '');
   }
 
   function draw(L, map, nowS) {
@@ -231,8 +248,10 @@
     var maxF = 0; S.doc.paths.forEach(function (p) { maxF = Math.max(maxF, p.flights || 0); });
     var act = activeRwy(landings, nowS);
     S.layer = L.layerGroup();
+    var only = shownRwy();
     S.doc.paths.forEach(function (p) {
       if (!p.line || p.line.length < 2) return;
+      if (only !== 'all' && p.rwy !== only) return;   // the runway choice (line widths still scale over every path)
       var ll = p.line.map(function (q) { return [q[0], q[1]]; });
       // Leaflet puts tooltip strings in as HTML: escape what came from the server
       var tip = esc(p.name) + ' · ' + (p.flights | 0) + ' flights in ' + ((S.doc.window_days | 0) || 14) + ' days';
@@ -375,7 +394,7 @@
     finalRwy: finalRwy, tooLowForArrival: tooLowForArrival, lineWidth: lineWidth, lineStyle: lineStyle, cardLine: cardLine,
     observe: observe, forget: forget, draw: draw, clear: clear, lineFor: lineFor, statusText: statusText,
     matchFor: matchFor, matchAll: matchAll, profileAt: profileAt, ribbonAhead: ribbonAhead, deltaText: deltaText,
-    eyeFromClip: eyeFromClip, ribbonSig: ribbonSig,
+    eyeFromClip: eyeFromClip, ribbonSig: ribbonSig, rwysIn: rwysIn, setRwy: setRwy, shownRwy: shownRwy,
     _state: S, _tracks: tracks, _landings: landings,
     // Browser glue: fetch, show the toggle row, keep the card line current.
     load: function (fetchFn, onDone) {
