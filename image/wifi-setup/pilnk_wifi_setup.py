@@ -13,7 +13,7 @@ never logged, printed or put in an error message; saved connections are never re
 Events (never an SSID, a password or nmcli's own text) also go to EVENT_LOG, which
 survives a reboot; the journal on the image does not.
 """
-import errno
+import errno, glob
 import html, http.server, os, re, shutil, signal, subprocess, sys, threading, time
 import urllib.parse
 
@@ -35,6 +35,8 @@ DNSMASQ_NAME = "pilnk-captive.conf"
 DNSMASQ_SRC = os.path.join(os.path.dirname(os.path.abspath(__file__)), "dnsmasq-captive.conf")
 EVENT_LOG = "/var/log/pilnk-wifi-setup.log"
 EVENT_LOG_MAX = 256 * 1024     # bytes; then it rolls to .1
+REDIRECT_EVERY = 30.0          # seconds: at most one log line per kind of redirect
+LEASE_GLOB = "/var/lib/NetworkManager/dnsmasq-*.leases"
 
 COUNTRIES = frozenset((
     "AD AE AF AG AI AL AM AO AQ AR AS AT AU AW AX AZ BA BB BD BE BF BG BH BI BJ BL BM BN BO BQ BR BS BT BV BW BY BZ "
@@ -51,48 +53,107 @@ def _log(msg):
     print("pilnk-wifi-setup: " + msg, file=sys.stderr, flush=True)
 
 
-_UNSAFE = re.compile(r"[^A-Za-z0-9_./:-]")
+# The only strings _event writes (plus two-letter country codes); anything else
+# is written as "?". Numbers and booleans pass. So no user-typed text, network
+# name, password or nmcli message can reach the log, whatever a caller passes.
+_WORDS = frozenset((
+    "accepted invalid bad_request too_large boot join poll saved_wifi bind_wait "
+    "join_failed no_internet ok secrets auth not_found nm_timeout timeout error other "
+    "probe browser cna webview root gen_204 generate_204 hotspot_detect apple_success "
+    "ncsi connecttest favicon GET POST return").split())
+_EV_LOCK = threading.Lock()
 
 
-def _event(name, **kv):
-    """One line in EVENT_LOG: time, pid, event name, key=value pairs. Values are
-    numbers or short fixed words, cleaned to [A-Za-z0-9_./:-] and 40 chars. Never
-    pass an SSID, a password, form fields or nmcli output here. Never raises."""
-    parts = [time.strftime("%Y-%m-%d %H:%M:%S"), "pid=%d" % os.getpid(), name]
-    for k, v in kv.items():
-        if isinstance(v, bool):
-            v = int(v)
-        if isinstance(v, float):
-            v = "%.1f" % v
-        parts.append("%s=%s" % (k, _UNSAFE.sub("?", str(v))[:40]))
-    line = " ".join(parts)
+def _ev_value(key, v):
+    if isinstance(v, bool):
+        return "1" if v else "0"
+    if isinstance(v, int):
+        return str(v)
+    if isinstance(v, float):
+        return "%.1f" % v
+    if isinstance(v, str):
+        if v in _WORDS or v in COUNTRIES:
+            return v
+        if key == "exit" and re.fullmatch(r"[A-Za-z_]{1,40}", v):   # an exception class name
+            return v
+    return "?"
+
+
+def _uptime():
     try:
+        return time.clock_gettime(time.CLOCK_BOOTTIME)
+    except (AttributeError, OSError):
+        return time.monotonic()
+
+
+def _event(name, _fsync=True, **kv):
+    """One line in EVENT_LOG: time, pid, seconds since boot, event name, key=value.
+    Values are numbers or fixed words (see _WORDS); anything else is written as ?.
+    fsynced (a power pull must not lose it) unless _fsync=False. Never raises."""
+    parts = [time.strftime("%Y-%m-%d %H:%M:%S"), "pid=%d" % os.getpid(), "up=%.1f" % _uptime(), name]
+    parts += ["%s=%s" % (k, _ev_value(k, v)) for k, v in kv.items()]
+    line = " ".join(parts)
+    with _EV_LOCK:
         try:
-            if os.path.getsize(EVENT_LOG) > EVENT_LOG_MAX:
-                os.replace(EVENT_LOG, EVENT_LOG + ".1")
+            try:
+                if os.path.getsize(EVENT_LOG) > EVENT_LOG_MAX:
+                    os.replace(EVENT_LOG, EVENT_LOG + ".1")
+            except OSError:
+                pass
+            fd = os.open(EVENT_LOG, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o640)
+            with os.fdopen(fd, "a", encoding="utf-8") as fh:
+                fh.write(line + "\n")
+                fh.flush()
+                if _fsync:
+                    os.fsync(fh.fileno())
         except OSError:
             pass
-        fd = os.open(EVENT_LOG, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o640)
-        with os.fdopen(fd, "a", encoding="utf-8") as fh:
-            fh.write(line + "\n")
-    except OSError:
-        pass
+
+
+def _path_kind(path):
+    """Request path -> a fixed word. The path itself is never logged."""
+    p = (path or "").split("?", 1)[0].lower()
+    if p == "/":
+        return "root"
+    for key, kind in (("generate_204", "generate_204"), ("gen_204", "gen_204"),
+                      ("hotspot-detect", "hotspot_detect"), ("library/test/success", "apple_success"),
+                      ("success.html", "apple_success"), ("ncsi", "ncsi"), ("connecttest", "connecttest"),
+                      ("favicon", "favicon")):
+        if key in p:
+            return kind
+    return "join" if p == "/join" else "other"
+
+
+def _ua_kind(ua):
+    ua = ua or ""
+    if re.search(r"CaptiveNetworkSupport|wispr|Dalvik|NetworkProbe|captive", ua, re.I):
+        return "probe"
+    if "; wv)" in ua:
+        return "webview"
+    if ua.startswith("Mozilla") and "AppleWebKit" in ua and "Safari/" not in ua:
+        return "cna"                 # the iOS / macOS captive-portal sheet
+    return "browser" if ua.startswith("Mozilla") else "other"
 
 
 def _join_reason(err):
-    """nmcli's error text -> one fixed word. The text itself is never kept: it can
-    quote the network name."""
+    """nmcli's error text -> (fixed word, NetworkManager reason number or -1). The
+    text itself is never kept: it can quote the network name, so quoted parts are
+    dropped before matching."""
     t = (err or b"")
     if isinstance(t, str):
         t = t.encode("utf-8", "replace")
-    t = t.lower()
-    if b"secrets were required" in t or b"802-11-wireless-security" in t or b"psk" in t:
-        return "secrets"
+    t = re.sub(rb"'[^']*'|\"[^\"]*\"", b"", t.lower())
+    m = re.search(rb"activation failed: \((\d{1,3})\)", t)
+    nm = int(m.group(1)) if m else -1
     if b"no network with ssid" in t:
-        return "not_found"
+        return "not_found", nm
+    if b"secrets were required" in t or b"802-11-wireless-security" in t:
+        return "secrets", nm
+    if b"supplicant" in t:
+        return "auth", nm
     if b"timeout" in t or b"timed out" in t:
-        return "nm_timeout"
-    return "other"
+        return "nm_timeout", nm
+    return "other", nm
 
 
 def _b(s):
@@ -247,7 +308,7 @@ def join(country, ssid, psk, run=subprocess.run, wait=JOIN_WAIT, hidden=False, d
     gets rc, reason (a fixed word) and secs, for the event log."""
     fail = (False, "Couldn't join %s — check the password" % _show(ssid))
     info = detail if detail is not None else {}
-    info.update(rc=-1, reason="error", secs=0.0)
+    info.update(rc=-1, reason="error", secs=0.0, nm=-1)
     t0 = time.monotonic()
     try:
         run(["raspi-config", "nonint", "do_wifi_country", country], capture_output=True)
@@ -259,7 +320,10 @@ def join(country, ssid, psk, run=subprocess.run, wait=JOIN_WAIT, hidden=False, d
         r = run(argv, capture_output=True, timeout=wait + 15)
         good = r.returncode == 0
         info["rc"] = r.returncode
-        info["reason"] = "ok" if good else _join_reason(r.stderr)
+        if good:
+            info["reason"] = "ok"
+        else:
+            info["reason"], info["nm"] = _join_reason(r.stderr)
     except subprocess.TimeoutExpired:
         good = False
         info["reason"] = "timeout"
@@ -283,6 +347,8 @@ class State:
         self.country = DEFAULT_COUNTRY
         self.last_post = now()
         self.hotspots = 0
+        self.clients = None
+        self.redirects = {}
         self._pending = None
         self._lock = threading.Lock()
 
@@ -325,29 +391,38 @@ def make_handler(state):
             self._send(302, b"", [("Location", "/")])
 
         def _who(self):
-            ua = self.headers.get("User-Agent", "") or ""
-            if re.search(r"CaptiveNetworkSupport|wispr|Dalvik|captive|NetworkProbe", ua, re.I):
-                kind = "probe"
-            elif ua.startswith("Mozilla"):
-                kind = "browser"
-            else:
-                kind = "other"
             ip = str(self.client_address[0]) if self.client_address else ""
-            return kind, ip.rsplit(".", 1)[-1]
+            last = ip.rsplit(".", 1)[-1]
+            return _ua_kind(self.headers.get("User-Agent", "")), (int(last) if last.isdigit() else -1)
+
+        def _redirected(self, method):
+            """Log a redirect, at most once per kind and method every REDIRECT_EVERY
+            seconds (phones probe often), without fsync."""
+            kind = _path_kind(self.path)
+            ua, client = self._who()
+            t = time.monotonic()
+            with state._lock:
+                c = state.redirects.setdefault((kind, method), [0, None])
+                c[0] += 1
+                due = c[1] is None or t - c[1] >= REDIRECT_EVERY
+                n = c[0]
+                if due:
+                    c[0], c[1] = 0, t
+            if due:
+                _event("redirect", _fsync=False, kind=kind, method=method, n=n, ua=ua, client=client)
+            self._home()
 
         def do_GET(self):
-            path = self.path.split("?", 1)[0]
-            ua, client = self._who()
-            if path == "/":
-                _event("page", path="/", error=bool(state.error), ua=ua, client=client)
+            if self.path.split("?", 1)[0] == "/":
+                ua, client = self._who()
+                _event("page", kind="root", error=bool(state.error), ua=ua, client=client)
                 self._send(200, render_page(state.networks, state.suffix, state.error, state.country))
             else:
-                _event("redirect", path=path, ua=ua, client=client)
-                self._home()
+                self._redirected("GET")
 
         def do_POST(self):
             if self.path.split("?", 1)[0] != "/join":
-                return self._home()
+                return self._redirected("POST")
             try:
                 n = int(self.headers.get("Content-Length", ""))
             except ValueError:
@@ -435,6 +510,23 @@ def start_hotspot(state, run):
     state.last_post = state.now()
 
 
+def _clients(run, lease_glob):
+    """(stations on the hotspot, DHCP leases): counts only, never addresses or names."""
+    r = _quiet(run, ["iw", "dev", "wlan0", "station", "dump"])
+    out = (r.stdout or b"") if r is not None and r.returncode == 0 else b""
+    if isinstance(out, str):
+        out = out.encode("utf-8", "replace")
+    stations = sum(1 for line in out.splitlines() if line.startswith(b"Station "))
+    leases = -1
+    for f in glob.glob(lease_glob):
+        try:
+            with open(f, "rb") as fh:
+                leases = max(leases, 0) + sum(1 for line in fh if line.strip())
+        except OSError:
+            pass
+    return stations, leases
+
+
 def _service_active(run, unit):
     r = _quiet(run, ["systemctl", "is-active", "--quiet", unit])
     return r is not None and r.returncode == 0
@@ -474,7 +566,7 @@ def _cleanup(run, dropin):
 def main(run=subprocess.run, sleep=time.sleep, now=time.monotonic,
          cpuinfo="/proc/cpuinfo", machine_id="/etc/machine-id",
          dnsmasq_dir=DNSMASQ_DIR, dnsmasq_src=DNSMASQ_SRC,
-         host=HOST, port=PORT, on_ready=None, settle=time.sleep):
+         host=HOST, port=PORT, on_ready=None, settle=time.sleep, lease_glob=LEASE_GLOB):
     dropin = os.path.join(dnsmasq_dir, DNSMASQ_NAME)
     _event("start")
     if is_online(run, BOOT_WAIT):
@@ -504,7 +596,8 @@ def main(run=subprocess.run, sleep=time.sleep, now=time.monotonic,
                     # cannot fix that: raise the hotspot again, a few times, then
                     # re-raise so Restart=on-failure starts over.
                     hotspot_tries += 1
-                    _event("bind_error", errno=e.errno, tries=hotspot_tries)
+                    code = e.errno if isinstance(e.errno, int) else -1
+                    _event("bind_error", errno=code, tries=hotspot_tries)
                     if hotspot_tries > HOTSPOT_RETRIES:
                         raise
                     wait = BIND_BACKOFF[min(hotspot_tries - 1, len(BIND_BACKOFF) - 1)]
@@ -533,15 +626,16 @@ def main(run=subprocess.run, sleep=time.sleep, now=time.monotonic,
             req = state.take_pending()
             if req:
                 country, ssid, psk, hidden = req
-                _event("join_start", hidden=hidden)
                 # wlan0 can't scan or join while it is the AP: drop it, rescan, then join.
-                _quiet(run, ["nmcli", "connection", "down", HOTSPOT_CON])
+                r = _quiet(run, ["nmcli", "connection", "down", HOTSPOT_CON])
+                _event("join_start", hidden=hidden, down_rc=r.returncode if r is not None else -1)
                 _quiet(run, ["nmcli", "device", "wifi", "rescan"])
                 settle(SETTLE)
                 info = {}
                 ok_, msg = join(country, ssid, psk, run=run, hidden=hidden, detail=info)
                 del psk, req
-                _event("join_result", ok=ok_, rc=info.get("rc"), reason=info.get("reason"), secs=info.get("secs"))
+                _event("join_result", ok=ok_, rc=info.get("rc"), reason=info.get("reason"),
+                       nm=info.get("nm"), secs=info.get("secs"))
                 if ok_ and is_online(run, JOIN_WAIT):
                     _event("online", via="join")
                     return 0
@@ -551,14 +645,20 @@ def main(run=subprocess.run, sleep=time.sleep, now=time.monotonic,
             elif is_online(run, 1):
                 _event("online", via="poll")
                 return 0
-            elif now() - state.last_post >= IDLE_RESTART:
-                _event("idle_cycle")
-                if try_saved_wifi(run, settle):
-                    _event("online", via="saved_wifi")
-                    return 0
-                start_hotspot(state, run)
+            else:
+                c = _clients(run, lease_glob)
+                if c != state.clients:
+                    state.clients = c
+                    _event("clients", stations=c[0], leases=c[1])
+                if now() - state.last_post >= IDLE_RESTART:
+                    _event("idle_cycle")
+                    if try_saved_wifi(run, settle):
+                        _event("online", via="saved_wifi")
+                        return 0
+                    start_hotspot(state, run)
     finally:
-        _event("stop")
+        _et = sys.exc_info()[0]
+        _event("stop", exit=_et.__name__ if _et else "return")
         if server:
             server.shutdown()
             server.server_close()

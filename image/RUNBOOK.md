@@ -249,13 +249,22 @@ the root partition to fill the card, then restarts. That is expected; the second
 - [ ] Phone joins it and the setup page opens (or browse to `http://10.42.0.1`). tar1090's web server
   (lighttpd) is stopped while the hotspot is up and started again after: once the Pi is on your Wi-Fi,
   `http://pilnk-XXXX.local/tar1090` works again.
-- [ ] A wrong Wi-Fi password: the hotspot comes back with its error message.
+- [ ] A wrong Wi-Fi password: the hotspot comes back with its error message. Whatever happens, read the card
+  afterwards on the laptop: `sudo bash card-identity.sh /dev/sdX` ends with the Wi-Fi setup events from
+  `/var/log/pilnk-wifi-setup.log` (events and counts only, never a network name or password). Wait a minute
+  after the last step before pulling the power.
 - [ ] The right password: the Pi joins your Wi-Fi.
 - [ ] The pairing code shows.
 - [ ] Claim it with a test account: aircraft come in.
 - [ ] Pi5 on a cable: no hotspot, and the pairing code shows.
-- [ ] Two cards, two nodes: different hostnames, machine IDs and SSH host keys, and two separate pending nodes on pilnk.io.
-- [ ] Power cut mid first boot: pull the power, plug in again, the next boot finishes cleanly.
+- [ ] Two cards, two nodes: different machine IDs and SSH host keys, and two separate pending nodes on pilnk.io.
+  The hostname comes from the Pi's own serial (`pilnk-` + last 4 hex), so two cards in the **same** Pi both get
+  the same hostname by design; different hostnames need two different Pis. Read each card on the laptop with
+  `sudo bash card-identity.sh /dev/sdX` (prints public facts only).
+- [ ] Power cut mid first boot: run `bash cut-timer.sh` on the laptop, power the Pi on, pull the power when it
+  says PULL (it waits for the new hostname, then 4 s, which lands inside the receiver stage). Then boot again
+  and let it finish: all six markers, `first boot: complete`, a pairing code. Check the card first: a
+  `filesystem: UNCLEAN` read is expected, and the last ~30 s of writes may not show until the Pi replays the journal.
 - [ ] A bigger card than the image: the first boot rebooted once, and the root partition grew to fill it.
 - [ ] Wi-Fi node, whole-house power cut (Pi and router off, router back slower than the Pi): within about
   half an hour of the router coming back the Pi rejoins your Wi-Fi by itself and `PiLNK-Setup` goes away.

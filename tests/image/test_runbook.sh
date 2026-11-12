@@ -29,3 +29,7 @@ ok "run 2: section 1 has the write-build-userdata.sh fallback when Imager leaves
    'has "$S1" "write-build-userdata\.sh" && has "$S1" "user-data"'
 ok "run 2: section 7 says denylist words and .pyc files can SKIP as stock Debian files" \
    'has "$S7" "unmodified Debian package file" && has "$S7" "denylist" && has "$S7" "\.pyc"'
+ok "12 Nov: section 8 points at the Wi-Fi setup event log and how to read it" \
+   'has "$S8" "pilnk-wifi-setup\.log" && has "$S8" "card-identity\.sh" && has "$S8" "never a network name or password"'
+ok "12 Nov: section 8 power-cut row uses cut-timer.sh; two-cards row says the hostname is per Pi" \
+   'has "$S8" "cut-timer\.sh" && has "$S8" "same hostname by design"'

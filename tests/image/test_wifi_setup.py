@@ -310,29 +310,33 @@ ok("nm-online ok but no default route is treated as offline (hotspot started)",
    f.has("nmcli", "connection", "add") and rc == 0)
 
 # join success path through main: POST -> join -> online -> exit 0
-def run_flow(join_ok, idle_cycles=0):
+def run_flow(join_ok, idle_cycles=0, nm_err=b"", extra=None):
     e = Env(); st = {"joined": False, "hotspots": 0}
     holder = {}
     def rules(a):
         if a[:3] == ["nmcli", "connection", "up"]: st["hotspots"] += 1
         if a[0] == "nmcli" and "list" in a: return cp(a, 0, hx(b"Home"))
+        if extra:
+            r = extra(a)
+            if r is not None: return r
         if a[0] == "nmcli" and "connect" in a: 
-            st["joined"] = join_ok; return cp(a, 0 if join_ok else 4)
+            st["joined"] = join_ok; return cp(a, 0 if join_ok else 4, b"", nm_err)
         if a[0] == "nm-online": return cp(a, 0 if st["joined"] else 1)
         if a[0] == "ip": return cp(a, 0, b"default via 1.1.1.1 dev wlan0\n" if st["joined"] else b"")
     f = Fake(rules)
     return e, f, st
 # drive main in a thread; POST once the server is up
-def drive(join_ok):
-    e, f, st = run_flow(join_ok)
+def drive(join_ok, ssid="Home", psk=None, nm_err=b"", extra=None, **mainkw):
+    psk = secret if psk is None else psk
+    e, f, st = run_flow(join_ok, nm_err=nm_err, extra=extra)
     server_ready = threading.Event(); box = {}
     def on_ready(srv, state): box["srv"] = srv; box["state"] = state; server_ready.set()
     out = {}
     th = threading.Thread(target=lambda: out.setdefault("rc", W.main(**e.kw(f, on_ready=on_ready,
                           settle=lambda s: f.calls.append(["SETTLE", str(s)]),
-                          sleep=lambda s: __import__("time").sleep(0.01)))), daemon=True)
+                          sleep=lambda s: __import__("time").sleep(0.01), **mainkw))), daemon=True)
     th.start(); assert server_ready.wait(5)
-    body = urllib.parse.urlencode({"country": "NZ", "network": b"Home".hex(), "psk": secret})
+    body = urllib.parse.urlencode({"country": "NZ", "network": ssid.encode().hex(), "psk": psk})
     s, h, b = req(box["srv"], "POST", "/join", body=body.encode())
     if join_ok:
         th.join(10)
@@ -601,7 +605,7 @@ def evlog_text(path=None):
     try: return rd(path or W.EVENT_LOG)
     except OSError: return ""
 def ev_names(text):
-    return [l.split()[3] for l in text.splitlines() if len(l.split()) > 3]
+    return [l.split()[4] for l in text.splitlines() if len(l.split()) > 4]
 
 # join() reports why a join failed, as a fixed word
 SECRET_SSID = "MyPrivateHomeNet"
@@ -630,9 +634,10 @@ p = evlog_fresh()
 W._event("page", path="/a b<script>?q=" + "x" * 100, error=True, n=3)
 t = evlog_text()
 ok("EV: _event writes one timestamped line with the event name",
-   len(t.splitlines()) == 1 and re.match(r"^\d{4}-\d\d-\d\d \d\d:\d\d:\d\d pid=\d+ page ", t))
+   len(t.splitlines()) == 1 and re.match(r"^\d{4}-\d\d-\d\d \d\d:\d\d:\d\d pid=\d+ up=\d+\.\d page ", t))
 ok("EV: _event values are sanitised and short (no spaces/markup, <= 40 chars)",
-   "<" not in t and "script>" not in t and all(len(kv.split("=", 1)[1]) <= 40 for kv in t.split()[4:]))
+   "<" not in t and "script>" not in t and all(len(kv.split("=", 1)[1]) <= 40 for kv in t.split()[5:]))
+ok("EV: any string that is not a fixed word becomes ? (user text never reaches the log)", " path=? " in t + " ")
 ok("EV: _event writes bools as 0/1", " error=1" in t and " n=3" in t)
 wr(p, "x" * (W.EVENT_LOG_MAX + 10))
 W._event("start")
@@ -671,6 +676,12 @@ ok("EV: the page served after the failure says error=1", " error=1" in t.splitli
 ok("EV: hotspot_up counts the restarts (n=1 then n=2)",
    " n=1" in t.splitlines()[i_hs1] and " n=2" in t.splitlines()[i_hs2])
 ok("EV: the log never holds the PSK or the SSID", secret not in t and "Home" not in t and b"Home".hex() not in t)
+p = evlog_fresh()
+e, f, st, out, th, s, b = drive(False, ssid="ZqSsidMark77", psk="ZqPskMark77",
+                                nm_err=b"Error: No network with SSID 'ZqSsidMark77' found.\n")
+t = evlog_text(p)
+ok("EV: marker SSID/PSK/nmcli text (cleaner-proof markers) never reach the log",
+   "ZqSsidMark77" not in t and "ZqPskMark77" not in t and "join_result" in t and "reason=not_found" in t)
 
 # an invalid POST is logged as invalid (and still no SSID/PSK)
 p = evlog_fresh()
@@ -682,10 +693,10 @@ req(srv2, "GET", "/", headers={"User-Agent": "Mozilla/5.0 (iPhone)"})
 stop(srv2, t2)
 t = evlog_text(p)
 ok("EV: invalid POST -> post_join result=invalid with an error count", re.search(r"post_join result=invalid errors=\d", t) is not None)
-ok("EV: a captive-portal probe is logged as a redirect with ua=probe",
-   re.search(r" redirect path=/hotspot-detect\.html .*ua=probe", t) is not None)
-ok("EV: a browser GET / is logged as page ua=browser with the client's last octet",
-   re.search(r" page path=/ error=0 ua=browser client=1\b", t) is not None)
+ok("EV: a captive-portal probe is logged as a redirect kind, never its path",
+   re.search(r" redirect kind=hotspot_detect method=GET n=1 ua=probe client=1\b", t) is not None and "hotspot-detect" not in t)
+ok("EV: a browser GET / is logged as page kind=root ua=browser with the client's last octet",
+   re.search(r" page kind=root error=0 ua=browser client=1\b", t) is not None)
 ok("EV: invalid POST never logs the PSK or SSID", "short" not in t and "Home" not in t)
 
 # success: online via=join, then stop
@@ -694,6 +705,122 @@ e, f, st, out, th, s, b = drive(True)
 t = evlog_text(p)
 ok("EV: successful join -> join_result ok=1 reason=ok, online via=join, stop",
    re.search(r" join_result ok=1 rc=0 reason=ok", t) and " online via=join" in t and ev_names(t)[-1] == "stop")
+W.EVENT_LOG = os.path.join(EVLOG_DIR, "wifi-setup.log")
+
+
+# ---- review round (12 Nov): fsync, allowlist, path kinds, uptime, exit reason, lock, clients ----
+import ast
+fsyncs = {"n": 0}; real_fsync = W.os.fsync
+def counting_fsync(fd): fsyncs["n"] += 1; return real_fsync(fd)
+W.os.fsync = counting_fsync
+p = evlog_fresh(); fsyncs["n"] = 0
+W._event("join_result", ok=False, rc=4, reason="secrets")
+ok("R1: a normal event is fsynced (survives a power pull)", fsyncs["n"] == 1)
+st3, srv3, t3 = start_server(); fsyncs["n"] = 0
+for _ in range(5):
+    req(srv3, "GET", "/generate_204", headers={"User-Agent": "Dalvik/2.1.0"})
+stop(srv3, t3)
+t = evlog_text(p)
+ok("R1/M3: probe redirects are rate-limited (5 GETs -> 1 line) and not fsynced",
+   len(re.findall(r" redirect kind=generate_204 ", t)) == 1 and fsyncs["n"] == 0)
+W.os.fsync = real_fsync
+
+p = evlog_fresh()
+W._event("x", word="accepted", c="NZ", bad="MyHomeNet", n=5, fl=1.26, none=None, lst=[1])
+t = evlog_text(p)
+ok("R2: allowlist: fixed words and country codes pass, other strings/None/lists become ?",
+   " word=accepted c=NZ bad=? n=5 fl=1.3 none=? lst=?" in t)
+ok("R4: every line carries seconds since boot (up=)", re.search(r" pid=\d+ up=\d+\.\d x ", t) is not None)
+
+p = evlog_fresh()
+st4, srv4, t4 = start_server()
+for path in ("/MyHomeNet", "/library/test/success.html", "http://example.com/secretpath"):
+    req(srv4, "GET", path, headers={"User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148"})
+req(srv4, "GET", "/", headers={"User-Agent": "Mozilla/5.0 (Linux; Android 14; wv) AppleWebKit/537.36 Chrome/120.0 Mobile Safari/537.36"})
+req(srv4, "POST", "/somewhere", body=b"x=1")
+stop(srv4, t4)
+t = evlog_text(p)
+ok("R3: unknown paths log as kind=other; user text never appears",
+   " redirect kind=other " in t and "MyHomeNet" not in t and "example" not in t and "secretpath" not in t)
+ok("R3: Apple success page is a known kind", " redirect kind=apple_success " in t)
+ok("R12: iOS captive sheet (no Safari/) is ua=cna; Android webview is ua=webview",
+   re.search(r"kind=apple_success method=GET n=1 ua=cna", t) is not None and re.search(r" page kind=root error=0 ua=webview", t) is not None)
+ok("M4: a POST to another path is logged as a redirect with method=POST", " redirect kind=other method=POST " in t)
+
+# exit reasons
+p = evlog_fresh()
+e, f, st, out, th, s, b = drive(True)
+ok("R4: a normal finish logs stop exit=return", " stop exit=return" in evlog_text(p))
+p = evlog_fresh(); e = Env()
+def explode(a):
+    if a[0] == "nm-online": return cp(a, 1)
+    if a[:2] == ["nmcli", "-t"]: raise RuntimeError("boom")
+try:
+    W.main(**e.kw(Fake(explode))); raised = False
+except RuntimeError:
+    raised = True
+ok("R4: a crash logs stop exit=<ExceptionClass> and still raises", raised and " stop exit=RuntimeError" in evlog_text(p))
+
+# rotation lock: concurrent writers never replace .1 with a tiny file
+lock_ok = True
+old_max = W.EVENT_LOG_MAX
+W.EVENT_LOG_MAX = 3000
+W.os.fsync = lambda fd: None          # speed only: the race is in rename/append, not fsync
+real_replace = W.os.replace
+def slow_replace(a, b):                 # widen the check-then-rename window so a race shows every time
+    time.sleep(0.003); return real_replace(a, b)
+W.os.replace = slow_replace
+for trial in range(15):
+    p = evlog_fresh()
+    def burst():
+        for _ in range(60): W._event("x", n=1)
+    ths = [threading.Thread(target=burst) for _ in range(8)]
+    [x.start() for x in ths]; [x.join() for x in ths]
+    if os.path.exists(p + ".1") and os.path.getsize(p + ".1") <= W.EVENT_LOG_MAX:
+        lock_ok = False
+W.EVENT_LOG_MAX = old_max
+W.os.fsync = real_fsync
+W.os.replace = real_replace
+ok("M1: concurrent events never leave a tiny .1 (rotation is locked)", lock_ok)
+
+# join reason: quoted SSID ignored, NM reason number kept, supplicant = auth
+d = {}
+W.join("NZ", "xPSKx", "", run=Fake(lambda a: cp(a, 10, b"", b"Error: No network with SSID 'xPSKx' found.\n") if "connect" in a else None), detail=d)
+ok("M2: a network name containing PSK is still not_found", d.get("reason") == "not_found")
+d = {}
+W.join("NZ", "Home", secret, run=Fake(lambda a: cp(a, 4, b"", b"Error: Connection activation failed: (7) Secrets were required, but not provided.\n") if "connect" in a else None), detail=d)
+ok("M2: NetworkManager's reason number is kept (nm=7)", d.get("nm") == 7 and d.get("reason") == "secrets")
+d = {}
+W.join("NZ", "Home", secret, run=Fake(lambda a: cp(a, 4, b"", b"Error: Connection activation failed: (11) 802.1X supplicant took too long to authenticate.\n") if "connect" in a else None), detail=d)
+ok("M2: supplicant failures are reason=auth", d.get("reason") == "auth" and d.get("nm") == 11)
+d = {}
+W.join("NZ", "supplicant-timeout", "", run=Fake(lambda a: cp(a, 2, b"", b"Error: Failed to add/activate new connection: unknown error for 'supplicant-timeout'.\n") if "connect" in a else None), detail=d)
+ok("M2: words inside the quoted network name never steer the reason", d.get("reason") == "other")
+
+# clients: station + lease counts, logged when they change (counts only)
+p = evlog_fresh()
+ld = tempfile.mkdtemp(); wr(os.path.join(ld, "dnsmasq-wlan0.leases"), "1700000000 aa:bb:cc:dd:ee:ff 10.42.0.23 MyPhoneName *\n")
+def stations(a):
+    if a[:3] == ["iw", "dev", "wlan0"]: return cp(a, 0, b"Station aa:bb:cc:dd:ee:ff (on wlan0)\n\tinactive time: 10 ms\nStation 11:22:33:44:55:66 (on wlan0)\n")
+e, f, st, out, th, s, b = drive(False, extra=stations, lease_glob=os.path.join(ld, "dnsmasq-*.leases"))
+t = evlog_text(p)
+ok("R10: clients stations=2 leases=1 logged (counts only, no MAC or names)",
+   " clients stations=2 leases=1" in t and "aa:bb" not in t and "MyPhoneName" not in t)
+ok("R11: join_start says whether the hotspot went down (down_rc)", re.search(r" join_start hidden=0 down_rc=-?\d+", t) is not None)
+
+# static: every _event keyword value is a constant, a number-ish call, or a vetted name
+tree = ast.parse(src)
+BAD = {"ssid", "psk", "form", "manual", "body", "err", "stderr", "e", "msg", "path", "ua_raw"}
+def bad_value(node):
+    if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id in ("len", "bool", "int"):
+        return False
+    for sub in ast.walk(node):
+        if isinstance(sub, ast.Name) and sub.id in BAD: return True
+        if isinstance(sub, ast.Constant) and isinstance(sub.value, str) and sub.value in ("ssid", "psk"): return True
+    return False
+calls = [n for n in ast.walk(tree) if isinstance(n, ast.Call) and isinstance(n.func, ast.Name) and n.func.id == "_event"]
+ok("R2: static (ast): no _event value is built from ssid/psk/form/nmcli text/raw path",
+   len(calls) >= 12 and not any(bad_value(k.value) for c in calls for k in c.keywords))
 W.EVENT_LOG = os.path.join(EVLOG_DIR, "wifi-setup.log")
 
 # static: no _event call is handed the SSID or the password

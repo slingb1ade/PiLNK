@@ -235,4 +235,5 @@ if [ "$done_all" = 1 ]; then
   systemctl disable pilnk-firstboot || true
   log "first boot complete"
 fi
+sync    # the last log lines and the disabled unit, before a power cut can take them
 exit 0
