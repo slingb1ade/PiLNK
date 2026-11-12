@@ -329,3 +329,24 @@ echo 'RECEIVER_OPTIONS="--device 00001090 --gain auto"' > "$ROOT/etc/default/rea
 fakebin systemctl 'case "$1" in is-active) echo activating; exit 3;; *) true;; esac'
 run
 ok "N3: a pinned readsb in 'activating' is not stopped" '! called "systemctl stop readsb"'
+
+# --- 12 Nov 2026 hardware find (power cut mid first boot, 64 GB card): an empty
+# marker file is journaled within ~5 s, but a stage's own files can take ~30 s
+# to reach the card (ext4 delayed allocation). A cut in between kept the marker
+# and lost the stage's log lines; it could as well leave empty SSH keys or
+# config.json behind a marker. So: sync before every stage marker.
+setup
+fakebin sync 'echo "markers=$(cd "$ROOT/var/lib/pilnk-firstboot" 2>/dev/null && ls | grep -vx grown | sort | paste -sd, -)" >> "$CALLS"'
+run
+lnx() { grep -nxF -- "$1" "$CALLS" | head -1 | cut -d: -f1 | grep . || echo 0; }
+afterx() { local a b; a=$(ln "$1"); b=$(lnx "$2"); [ "$a" -gt 0 ] && [ "$b" -gt "$a" ]; }
+ok "sync: before the identity marker, after the hostname is set" 'afterx "hostnamectl set-hostname pilnk-7f3a" "markers="'
+ok "sync: before the network marker"   '[ "$(lnx "markers=identity")" -gt 0 ]'
+ok "sync: before the update marker"    'afterx "update-flag" "markers=identity,network"'
+ok "sync: before the receiver marker, after self-heal" 'afterx bootstrap-selfheal "markers=identity,network,update"'
+ok "sync: before the started marker, after pilnk is queued" 'afterx "systemctl --no-block start pilnk" "markers=identity,network,receiver,update"'
+ok "sync: run still ends with all five markers" '[ "$(markers)" = "identity,network,receiver,started,update" ]'
+setup; echo 2 > "$ROOT/.hw_rc"
+fakebin sync 'echo "markers=$(cd "$ROOT/var/lib/pilnk-firstboot" 2>/dev/null && ls | grep -vx grown | sort | paste -sd, -)" >> "$CALLS"'
+run
+ok "sync: a failed stage gets no marker (receiver missing, retried next boot)" '[ ! -e "$S/receiver" ] && [ -e "$S/started" ]'

@@ -216,11 +216,17 @@ stage_started() {
   log "start: pilnk enabled; start queued"
 }
 
-[ -e "$STATE/identity" ] || { stage_identity && touch "$STATE/identity"; }
-[ -e "$STATE/network" ]  || { stage_network  && touch "$STATE/network"; }
-[ -e "$STATE/update" ]   || { stage_update   && touch "$STATE/update"; }
-[ -e "$STATE/receiver" ] || { stage_receiver && touch "$STATE/receiver"; }
-[ -e "$STATE/started" ]  || { stage_started  && touch "$STATE/started"; }
+# A marker says "this stage's files are on the card". An empty marker file is
+# journaled within seconds, but file contents can take ~30 s to be written
+# (ext4 delayed allocation): a power cut in between kept the marker and lost
+# the stage's work (hardware test, 12 Nov 2026). So flush first, then mark.
+mark() { sync; touch "$STATE/$1"; }
+
+[ -e "$STATE/identity" ] || { stage_identity && mark identity; }
+[ -e "$STATE/network" ]  || { stage_network  && mark network; }
+[ -e "$STATE/update" ]   || { stage_update   && mark update; }
+[ -e "$STATE/receiver" ] || { stage_receiver && mark receiver; }
+[ -e "$STATE/started" ]  || { stage_started  && mark started; }
 
 # Done once every marker exists; a missing receiver keeps us enabled to retry.
 done_all=1
