@@ -20,6 +20,10 @@ except Exception as e:
     print("FAIL: module image/wifi-setup/pilnk_wifi_setup.py loads (%s)" % type(e).__name__)
     sys.exit(1)
 
+# Event log (#549): every test run writes to a temp file, never /var/log.
+EVLOG_DIR = tempfile.mkdtemp()
+W.EVENT_LOG = os.path.join(EVLOG_DIR, "wifi-setup.log")
+
 def rd(path):
     with open(path, encoding="utf-8") as fh: return fh.read()
 
@@ -585,6 +589,117 @@ ordering = "\n".join(l for l in unit.splitlines() if re.match(r"(After|Before|Re
 ok("unit: not ordered after multi-user.target or pilnk-firstboot (deadlock)",
    not re.search(r"^(After|Requires|BindsTo)=.*(multi-user\.target|pilnk-firstboot)", ordering, re.M))
 ok("unit: runs as root (no User=)", not re.search(r"^User=", unit, re.M))
+
+
+# ---------------- event log (#549, 12 Nov 2026) ----------------
+# The journal is volatile on the image, so the 6 Nov wrong-password run left no
+# trace. A small persistent log of EVENTS only: never an SSID, a password, or
+# nmcli's own text (which can quote the SSID).
+def evlog_fresh():
+    W.EVENT_LOG = os.path.join(tempfile.mkdtemp(), "wifi-setup.log"); return W.EVENT_LOG
+def evlog_text(path=None):
+    try: return rd(path or W.EVENT_LOG)
+    except OSError: return ""
+def ev_names(text):
+    return [l.split()[3] for l in text.splitlines() if len(l.split()) > 3]
+
+# join() reports why a join failed, as a fixed word
+SECRET_SSID = "MyPrivateHomeNet"
+d = {}
+f = Fake(lambda a: cp(a, 4, b"", b"Error: Connection activation failed: (7) Secrets were required, but not provided.\n")
+         if a[0] == "nmcli" and "connect" in a else None)
+W.join("NZ", SECRET_SSID, secret, run=f, detail=d)
+ok("EV: join detail: wrong password -> reason=secrets, rc=4, secs recorded",
+   d.get("reason") == "secrets" and d.get("rc") == 4 and isinstance(d.get("secs"), (int, float)))
+d = {}
+f = Fake(lambda a: cp(a, 10, b"", ("Error: No network with SSID '%s' found.\n" % SECRET_SSID).encode())
+         if a[0] == "nmcli" and "connect" in a else None)
+W.join("NZ", SECRET_SSID, "", run=f, detail=d)
+ok("EV: join detail: unknown network -> reason=not_found (SSID not copied into the detail)",
+   d.get("reason") == "not_found" and SECRET_SSID not in repr(d))
+d = {}
+W.join("NZ", "Home", secret, run=run_boom, detail=d)
+ok("EV: join detail: nmcli timeout -> reason=timeout", d.get("reason") == "timeout")
+d = {}
+W.join("NZ", "Home", "password1", run=Fake(), detail=d)
+ok("EV: join detail: success -> reason=ok, rc=0", d.get("reason") == "ok" and d.get("rc") == 0)
+ok("EV: join without detail= still returns the same tuple", W.join("NZ", "Home", "password1", run=Fake()) == (True, "Connected to Home"))
+
+# _event: one line, safe values only, size-capped
+p = evlog_fresh()
+W._event("page", path="/a b<script>?q=" + "x" * 100, error=True, n=3)
+t = evlog_text()
+ok("EV: _event writes one timestamped line with the event name",
+   len(t.splitlines()) == 1 and re.match(r"^\d{4}-\d\d-\d\d \d\d:\d\d:\d\d pid=\d+ page ", t))
+ok("EV: _event values are sanitised and short (no spaces/markup, <= 40 chars)",
+   "<" not in t and "script>" not in t and all(len(kv.split("=", 1)[1]) <= 40 for kv in t.split()[4:]))
+ok("EV: _event writes bools as 0/1", " error=1" in t and " n=3" in t)
+wr(p, "x" * (W.EVENT_LOG_MAX + 10))
+W._event("start")
+ok("EV: over the size cap the log rolls to .1 and starts fresh",
+   os.path.exists(p + ".1") and len(evlog_text()) < 200)
+W.EVENT_LOG = "/nonexistent-dir-pilnk/x.log"
+try:
+    W._event("start"); ev_ok = True
+except Exception:
+    ev_ok = False
+ok("EV: an unwritable log never raises", ev_ok)
+
+# online at boot: logged, then exit
+p = evlog_fresh(); e = Env(); rc = W.main(**e.kw(net(0, True)))
+ok("EV: online at boot -> start + online(via=boot)",
+   rc == 0 and ev_names(evlog_text(p))[:2] == ["start", "online"] and "via=boot" in evlog_text(p))
+
+# the wrong-password story, end to end
+p = evlog_fresh()
+e, f, st, out, th, s, b = drive(False)
+t = evlog_text(p); names = ev_names(t)
+def first(n, after=-1):
+    for i, x in enumerate(names):
+        if x == n and i > after: return i
+    return -1
+i_start, i_hs1 = first("start"), first("hotspot_up")
+i_post = first("post_join"); i_js = first("join_start"); i_jr = first("join_result")
+i_err = first("error_set"); i_hs2 = first("hotspot_up", i_jr); i_page = first("page", i_hs2)
+ok("EV: failed join logged in order: start, hotspot_up, post_join, join_start, join_result, error_set, hotspot_up, page",
+   0 <= i_start < i_hs1 < i_post < i_js < i_jr < i_err < i_hs2 < i_page)
+jr = t.splitlines()[i_jr]
+ok("EV: join_result says ok=0 with an rc and a reason word", " ok=0" in jr and re.search(r" rc=-?\d+", jr) and re.search(r" reason=[a-z_]+", jr))
+ok("EV: post_join says accepted, ssid length and whether a password was given (never the password)",
+   all(x in t.splitlines()[i_post] for x in (" result=accepted", " ssid_bytes=4", " has_psk=1", " hidden=0")))
+ok("EV: the page served after the failure says error=1", " error=1" in t.splitlines()[i_page])
+ok("EV: hotspot_up counts the restarts (n=1 then n=2)",
+   " n=1" in t.splitlines()[i_hs1] and " n=2" in t.splitlines()[i_hs2])
+ok("EV: the log never holds the PSK or the SSID", secret not in t and "Home" not in t and b"Home".hex() not in t)
+
+# an invalid POST is logged as invalid (and still no SSID/PSK)
+p = evlog_fresh()
+st2, srv2, t2 = start_server()
+body = urllib.parse.urlencode({"country": "XX", "network": b"Home".hex(), "psk": "short"})
+req(srv2, "POST", "/join", body=body.encode())
+req(srv2, "GET", "/hotspot-detect.html", headers={"User-Agent": "CaptiveNetworkSupport-443 wispr"})
+req(srv2, "GET", "/", headers={"User-Agent": "Mozilla/5.0 (iPhone)"})
+stop(srv2, t2)
+t = evlog_text(p)
+ok("EV: invalid POST -> post_join result=invalid with an error count", re.search(r"post_join result=invalid errors=\d", t) is not None)
+ok("EV: a captive-portal probe is logged as a redirect with ua=probe",
+   re.search(r" redirect path=/hotspot-detect\.html .*ua=probe", t) is not None)
+ok("EV: a browser GET / is logged as page ua=browser with the client's last octet",
+   re.search(r" page path=/ error=0 ua=browser client=1\b", t) is not None)
+ok("EV: invalid POST never logs the PSK or SSID", "short" not in t and "Home" not in t)
+
+# success: online via=join, then stop
+p = evlog_fresh()
+e, f, st, out, th, s, b = drive(True)
+t = evlog_text(p)
+ok("EV: successful join -> join_result ok=1 reason=ok, online via=join, stop",
+   re.search(r" join_result ok=1 rc=0 reason=ok", t) and " online via=join" in t and ev_names(t)[-1] == "stop")
+W.EVENT_LOG = os.path.join(EVLOG_DIR, "wifi-setup.log")
+
+# static: no _event call is handed the SSID or the password
+ev_lines = [l for l in src.splitlines() if "_event(" in l]
+ok("EV: static: _event is used, and never with =ssid / =psk / =clean[...]",
+   len(ev_lines) >= 8 and not any(re.search(r"=\s*(ssid|psk|clean\[\"(ssid|psk)\"\]|form\b)", l) for l in ev_lines))
 
 # ---------------- privacy: static ----------------
 ok("source never touches /etc/NetworkManager/system-connections",

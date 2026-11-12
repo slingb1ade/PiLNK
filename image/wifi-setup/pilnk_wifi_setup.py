@@ -10,6 +10,8 @@ can rejoin a saved Wi-Fi network (a router that came back after a power cut).
 
 Rules: nmcli/raspi-config get argv lists (never a shell); the Wi-Fi password is
 never logged, printed or put in an error message; saved connections are never read.
+Events (never an SSID, a password or nmcli's own text) also go to EVENT_LOG, which
+survives a reboot; the journal on the image does not.
 """
 import errno
 import html, http.server, os, re, shutil, signal, subprocess, sys, threading, time
@@ -31,6 +33,8 @@ DEFAULT_COUNTRY = "NZ"
 DNSMASQ_DIR = "/etc/NetworkManager/dnsmasq-shared.d"
 DNSMASQ_NAME = "pilnk-captive.conf"
 DNSMASQ_SRC = os.path.join(os.path.dirname(os.path.abspath(__file__)), "dnsmasq-captive.conf")
+EVENT_LOG = "/var/log/pilnk-wifi-setup.log"
+EVENT_LOG_MAX = 256 * 1024     # bytes; then it rolls to .1
 
 COUNTRIES = frozenset((
     "AD AE AF AG AI AL AM AO AQ AR AS AT AU AW AX AZ BA BB BD BE BF BG BH BI BJ BL BM BN BO BQ BR BS BT BV BW BY BZ "
@@ -45,6 +49,50 @@ COUNTRIES = frozenset((
 def _log(msg):
     # Never pass user-supplied secrets here.
     print("pilnk-wifi-setup: " + msg, file=sys.stderr, flush=True)
+
+
+_UNSAFE = re.compile(r"[^A-Za-z0-9_./:-]")
+
+
+def _event(name, **kv):
+    """One line in EVENT_LOG: time, pid, event name, key=value pairs. Values are
+    numbers or short fixed words, cleaned to [A-Za-z0-9_./:-] and 40 chars. Never
+    pass an SSID, a password, form fields or nmcli output here. Never raises."""
+    parts = [time.strftime("%Y-%m-%d %H:%M:%S"), "pid=%d" % os.getpid(), name]
+    for k, v in kv.items():
+        if isinstance(v, bool):
+            v = int(v)
+        if isinstance(v, float):
+            v = "%.1f" % v
+        parts.append("%s=%s" % (k, _UNSAFE.sub("?", str(v))[:40]))
+    line = " ".join(parts)
+    try:
+        try:
+            if os.path.getsize(EVENT_LOG) > EVENT_LOG_MAX:
+                os.replace(EVENT_LOG, EVENT_LOG + ".1")
+        except OSError:
+            pass
+        fd = os.open(EVENT_LOG, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o640)
+        with os.fdopen(fd, "a", encoding="utf-8") as fh:
+            fh.write(line + "\n")
+    except OSError:
+        pass
+
+
+def _join_reason(err):
+    """nmcli's error text -> one fixed word. The text itself is never kept: it can
+    quote the network name."""
+    t = (err or b"")
+    if isinstance(t, str):
+        t = t.encode("utf-8", "replace")
+    t = t.lower()
+    if b"secrets were required" in t or b"802-11-wireless-security" in t or b"psk" in t:
+        return "secrets"
+    if b"no network with ssid" in t:
+        return "not_found"
+    if b"timeout" in t or b"timed out" in t:
+        return "nm_timeout"
+    return "other"
 
 
 def _b(s):
@@ -193,10 +241,14 @@ def render_done(suffix):
 
 
 # ---------------------------------------------------------------- join
-def join(country, ssid, psk, run=subprocess.run, wait=JOIN_WAIT, hidden=False):
+def join(country, ssid, psk, run=subprocess.run, wait=JOIN_WAIT, hidden=False, detail=None):
     """Set the Wi-Fi country, then join. Returns (ok, message). The PSK is only ever
-    an argv element; it is not logged and not in any message."""
+    an argv element; it is not logged and not in any message. If detail is a dict it
+    gets rc, reason (a fixed word) and secs, for the event log."""
     fail = (False, "Couldn't join %s — check the password" % _show(ssid))
+    info = detail if detail is not None else {}
+    info.update(rc=-1, reason="error", secs=0.0)
+    t0 = time.monotonic()
     try:
         run(["raspi-config", "nonint", "do_wifi_country", country], capture_output=True)
         argv = ["nmcli", "-w", str(wait), "device", "wifi", "connect", ssid]
@@ -206,8 +258,14 @@ def join(country, ssid, psk, run=subprocess.run, wait=JOIN_WAIT, hidden=False):
             argv += ["hidden", "yes"]
         r = run(argv, capture_output=True, timeout=wait + 15)
         good = r.returncode == 0
+        info["rc"] = r.returncode
+        info["reason"] = "ok" if good else _join_reason(r.stderr)
+    except subprocess.TimeoutExpired:
+        good = False
+        info["reason"] = "timeout"
     except (OSError, subprocess.SubprocessError):
         good = False
+    info["secs"] = round(time.monotonic() - t0, 1)
     if good:
         return True, "Connected to %s" % _show(ssid)
     try:
@@ -224,6 +282,7 @@ class State:
         self.error = None
         self.country = DEFAULT_COUNTRY
         self.last_post = now()
+        self.hotspots = 0
         self._pending = None
         self._lock = threading.Lock()
 
@@ -265,10 +324,25 @@ def make_handler(state):
         def _home(self):
             self._send(302, b"", [("Location", "/")])
 
+        def _who(self):
+            ua = self.headers.get("User-Agent", "") or ""
+            if re.search(r"CaptiveNetworkSupport|wispr|Dalvik|captive|NetworkProbe", ua, re.I):
+                kind = "probe"
+            elif ua.startswith("Mozilla"):
+                kind = "browser"
+            else:
+                kind = "other"
+            ip = str(self.client_address[0]) if self.client_address else ""
+            return kind, ip.rsplit(".", 1)[-1]
+
         def do_GET(self):
-            if self.path.split("?", 1)[0] == "/":
+            path = self.path.split("?", 1)[0]
+            ua, client = self._who()
+            if path == "/":
+                _event("page", path="/", error=bool(state.error), ua=ua, client=client)
                 self._send(200, render_page(state.networks, state.suffix, state.error, state.country))
             else:
+                _event("redirect", path=path, ua=ua, client=client)
                 self._home()
 
         def do_POST(self):
@@ -279,8 +353,10 @@ def make_handler(state):
             except ValueError:
                 n = -1
             if n < 0:
+                _event("post_join", result="bad_request")
                 return self._send(400, b"bad request", [("Connection", "close")])
             if n > MAX_BODY:
+                _event("post_join", result="too_large")
                 self.close_connection = True
                 return self._send(413, b"too large", [("Connection", "close")])
             form = _parse_form(self.rfile.read(n))
@@ -294,7 +370,10 @@ def make_handler(state):
                     ssid, errs = "", ["Choose a Wi-Fi network, or type its name."]
             clean, verrs = validate({"country": form.get("country"), "ssid": ssid, "psk": form.get("psk", "")})
             if clean is None or errs:
+                _event("post_join", result="invalid", errors=len(errs or verrs))
                 return self._send(200, render_page(state.networks, state.suffix, " ".join(errs or verrs), state.country))
+            _event("post_join", result="accepted", hidden=hidden, ssid_bytes=len(_b(clean["ssid"])),
+                   has_psk=bool(clean["psk"]), country=clean["country"])
             state.error = None
             state.submit(clean["country"], clean["ssid"], clean["psk"], hidden)
             self._send(200, render_done(state.suffix))
@@ -350,7 +429,9 @@ def start_hotspot(state, run):
     _quiet(run, ["nmcli", "connection", "add", "type", "wifi", "ifname", "wlan0", "con-name", HOTSPOT_CON,
                  "autoconnect", "no", "ssid", "PiLNK-Setup-" + state.suffix,
                  "802-11-wireless.mode", "ap", "802-11-wireless.band", "bg", "ipv4.method", "shared"])
-    _quiet(run, ["nmcli", "connection", "up", HOTSPOT_CON])
+    r = _quiet(run, ["nmcli", "connection", "up", HOTSPOT_CON])
+    state.hotspots += 1
+    _event("hotspot_up", n=state.hotspots, networks=len(state.networks), rc=r.returncode if r is not None else -1)
     state.last_post = state.now()
 
 
@@ -395,10 +476,13 @@ def main(run=subprocess.run, sleep=time.sleep, now=time.monotonic,
          dnsmasq_dir=DNSMASQ_DIR, dnsmasq_src=DNSMASQ_SRC,
          host=HOST, port=PORT, on_ready=None, settle=time.sleep):
     dropin = os.path.join(dnsmasq_dir, DNSMASQ_NAME)
+    _event("start")
     if is_online(run, BOOT_WAIT):
         _cleanup(run, dropin)        # a power cut can leave a stale drop-in / profile behind
+        _event("online", via="boot")
         return 0
     country = prepare_radio(run)
+    _event("radio", country=country)
     suffix = host_suffix(cpuinfo, machine_id)
     state = State(suffix, now=now)
     state.country = country
@@ -420,6 +504,7 @@ def main(run=subprocess.run, sleep=time.sleep, now=time.monotonic,
                     # cannot fix that: raise the hotspot again, a few times, then
                     # re-raise so Restart=on-failure starts over.
                     hotspot_tries += 1
+                    _event("bind_error", errno=e.errno, tries=hotspot_tries)
                     if hotspot_tries > HOTSPOT_RETRIES:
                         raise
                     wait = BIND_BACKOFF[min(hotspot_tries - 1, len(BIND_BACKOFF) - 1)]
@@ -433,8 +518,10 @@ def main(run=subprocess.run, sleep=time.sleep, now=time.monotonic,
                 _log("cannot serve the setup page on %s:%s (%s); retrying in %ss"
                      % (host, port, e.strerror or e, wait))
                 tries += 1
+                _event("bind_busy", tries=tries)
                 sleep(wait)
                 if is_online(run, 1):
+                    _event("online", via="bind_wait")
                     return 0
                 lighttpd_stopped = free_port80(run) or lighttpd_stopped
         thread = threading.Thread(target=server.serve_forever, daemon=True)
@@ -446,23 +533,32 @@ def main(run=subprocess.run, sleep=time.sleep, now=time.monotonic,
             req = state.take_pending()
             if req:
                 country, ssid, psk, hidden = req
+                _event("join_start", hidden=hidden)
                 # wlan0 can't scan or join while it is the AP: drop it, rescan, then join.
                 _quiet(run, ["nmcli", "connection", "down", HOTSPOT_CON])
                 _quiet(run, ["nmcli", "device", "wifi", "rescan"])
                 settle(SETTLE)
-                ok_, msg = join(country, ssid, psk, run=run, hidden=hidden)
+                info = {}
+                ok_, msg = join(country, ssid, psk, run=run, hidden=hidden, detail=info)
                 del psk, req
+                _event("join_result", ok=ok_, rc=info.get("rc"), reason=info.get("reason"), secs=info.get("secs"))
                 if ok_ and is_online(run, JOIN_WAIT):
+                    _event("online", via="join")
                     return 0
                 state.error = msg if not ok_ else "Joined, but there was no internet. Check the router and try again."
+                _event("error_set", kind="join_failed" if not ok_ else "no_internet")
                 start_hotspot(state, run)
             elif is_online(run, 1):
+                _event("online", via="poll")
                 return 0
             elif now() - state.last_post >= IDLE_RESTART:
+                _event("idle_cycle")
                 if try_saved_wifi(run, settle):
+                    _event("online", via="saved_wifi")
                     return 0
                 start_hotspot(state, run)
     finally:
+        _event("stop")
         if server:
             server.shutdown()
             server.server_close()

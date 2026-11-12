@@ -168,6 +168,8 @@ sterile_check() {
   _sc_dir_empty transcripts "$R/home/pilnk/atc-stt"
   _sc_absent firstboot-markers "$R/var/lib/pilnk-firstboot"
   _sc_absent firstboot-log "$R/var/log/pilnk-firstboot.log"
+  _sc_absent wifi-setup-log "$R/var/log/pilnk-wifi-setup.log"
+  _sc_absent wifi-setup-log "$R/var/log/pilnk-wifi-setup.log.1"
 
   # -- receiver
   # a pin is --device N / --device=N; wiedehopf's stock --device-type is not one
