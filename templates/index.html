@@ -2247,6 +2247,9 @@
 .wc-atis{font-family:'Share Tech Mono',monospace;font-size:0.6rem;letter-spacing:0.06em;color:#38bdf8;white-space:nowrap;}   /* ATIS letter + runway, inside the wind chip (8 Oct) */
   /* Datalink on the 2D map (static/datalink-map.js, 8 Oct): label route line, arrival ring, destination end */
   .ac-label-dl{font-size:0.5rem;color:var(--info);letter-spacing:0.04em;}   /* --info: readable on both themes */
+  /* To/from (AJ, 12 Nov 2026): the timetable route is grey, the aircraft's own datalink route blue, so the kind shows at a glance. */
+  .ac-label-sched{font-size:0.5rem;color:var(--text-dim);letter-spacing:0.04em;}
+  .cc-route{font-family:'Share Tech Mono',monospace;font-size:0.72rem;color:var(--text);letter-spacing:0.04em;margin-top:3px;}
   .dl-ring-wrap{pointer-events:none;}
   .dl-ring{width:28px;height:28px;box-sizing:border-box;border:1.5px solid #38bdf8;border-radius:50%;box-shadow:0 0 6px rgba(56,189,248,0.6);}
   .dl-ring-min{position:absolute;left:31px;top:6px;font-family:'Share Tech Mono',monospace;font-size:0.6rem;color:#38bdf8;white-space:nowrap;text-shadow:0 0 3px #000,0 0 3px #000;}
@@ -2307,6 +2310,9 @@
           <div class="cc-model" id="ccModel"></div>
         </div>
         <div class="cc-airline" id="ccAirline"></div>
+        <!-- To/from (AJ, 12 Nov 2026): the aircraft's own datalink route first, else the timetable route from adsbdb.
+             The source line goes with it, so a screenshot can never show a route without saying where it came from. -->
+        <div class="cc-route" id="ccRoute" style="display:none;"><div id="ccRouteTxt"></div><span class="route-src" id="ccRouteSrc"></span></div>
       </div>
       <div class="cc-photo" id="ccPhoto">
         <!-- Photo layer -->
@@ -4182,13 +4188,38 @@ function routeIsPlausible(c, a) {
 // wrong claim left the building.
 function routeHtmlFor(c, a, prefix) {
   var ok = routeIsPlausible(c, a);
-  return '<span>' + (prefix || '') + c.route + '</span>' +
+  return '<span>' + (prefix || '') + avEsc(c.route) + '</span>' +
          '<span class="route-src' + (ok ? '' : ' route-suspect') + '">' + routeSrcText(ok) + '</span>';
 }
 // The provenance line's words — the 2D HTML above and the 3D box's plain-text copy (ttFields) say the same thing.
 function routeSrcText(ok) {
   return ok ? 'scheduled route · adsbdb, not from this aircraft'
             : '⚠ scheduled route disagrees with observed position · adsbdb';
+}
+// To/from for the map tag and the card (AJ, 12 Nov 2026). dlText: the route the aircraft itself sent (datalink),
+// '' when none. info: an adsbdb cache entry or null. kind: 'dl' | 'sched' | 'suspect' | null (nothing to show).
+function routeView(dlText, info, a) {
+  if (dlText) return { kind: 'dl', text: dlText, src: 'from the aircraft · datalink' };
+  if (!info || !info.route) return { kind: null, text: '', src: '' };
+  var ok = routeIsPlausible(info, a);
+  return { kind: ok ? 'sched' : 'suspect', text: info.route, src: routeSrcText(ok) };
+}
+// A route cache entry still inside ROUTE_TTL_MS, else null (the rule lookupRoute uses).
+function routeCached(cs) {
+  var h = routeCache[cs];
+  return (h !== undefined && (Date.now() - h.ts) < ROUTE_TTL_MS) ? h : null;
+}
+// The card's route line. textContent only: the codes come from a third-party lookup.
+function ccShowRoute(a, cs) {
+  var el = document.getElementById('ccRoute'); if (!el) return;
+  var dlb = (a && typeof datalinkBrief === 'function') ? datalinkBrief(a.datalink, Date.now() / 1000) : null;
+  var rv = routeView(dlb && dlb.route ? dlb.route : '', routeCached(cs), a);
+  if (!rv.kind) { el.style.display = 'none'; return; }
+  document.getElementById('ccRouteTxt').textContent = '✈ ' + rv.text;
+  var src = document.getElementById('ccRouteSrc');
+  src.textContent = rv.src;
+  src.className = 'route-src' + (rv.kind === 'suspect' ? ' route-suspect' : '');
+  el.style.display = '';
 }
 
 function lookupRoute(callsign, callback) {
@@ -6013,7 +6044,7 @@ function updateFlights(){
     var tfG=ac.map(tfGroup);
     tfPaint(window.TrafficFilter?TrafficFilter.counts(tfG):null);
     var shown=window.TrafficFilter?ac.filter(function(a,i){return TrafficFilter.matches(window.trafficFilter,tfG[i]);}):ac;
-    if(window.trafficFilter!=='all') tfQueue(ac);
+    if(window.trafficFilter!=='all'||labelsOn) tfQueue(ac);   // labels on: the tag's grey route line needs the route (12 Nov 2026)
     if(!shown.length){list.innerHTML='<div class="no-flights">No aircraft in this filter right now</div>';return;}
     list.innerHTML=shown.map(function(a){
       var cs=a.flight.trim(), cat=getCat(a.t,a.category), tx=!!transmitting[cs], sel=selectedFlight===cs;
@@ -6024,7 +6055,7 @@ function updateFlights(){
       // Dense scanning list: a marker only, no attribution line — the full
       // provenance lives on the tooltip and the card, where people read before
       // they screenshot. A silent row that is quietly wrong is the thing to avoid.
-      var routeHtml=cached&&cached.route?'<div class="flight-route'+(routeIsPlausible(cached,a)?'':' route-suspect')+'">'+cached.route+(routeIsPlausible(cached,a)?'':' ⚠')+'</div>':'';
+      var routeHtml=cached&&cached.route?'<div class="flight-route'+(routeIsPlausible(cached,a)?'':' route-suspect')+'">'+avEsc(cached.route)+(routeIsPlausible(cached,a)?'':' ⚠')+'</div>':'';
       return '<div class="flight-item '+(sel?'selected ':'')+(tx?'transmitting':'')+'" style="border-left:3px solid '+col+';" onclick="sidebarSelect(\''+cs+'\')">' +
         '<div class="flight-cs" style="color:'+col+';">'+function(){var f=getFlag(cs);return f==='✈'?em+' '+cs:f+' '+em+' '+cs;}()+(sqInfo?'<span class="flight-sqk-badge" style="background:'+sqInfo.color+';">'+sqInfo.icon+' '+a.squawk+'</span>':'')+'</div>' +
         '<div class="flight-details">'+(a.alt_baro?Math.round(a.alt_baro)+'ft':'--')+' · '+(a.gs?Math.round(a.gs)+'kt':'--')+' · '+(a.track?Math.round(a.track)+'°':'--')+'</div>' +
@@ -6530,6 +6561,7 @@ function populateBDS(a) {
 function refreshCinematicCardLive(a, cs) {
   if (!a) return;
   if (typeof ccLiveRefresh === 'function') ccLiveRefresh(a, cs);
+  ccShowRoute(a, cs);   // to/from: datalink can arrive, and the lookup can land, while the card is open
   var ph = getPhase(a, cs);
   var col = ph.color === '#ffffff' ? '#dc2626' : ph.color;
   var vr = a.baro_rate || a.geom_rate || 0;
@@ -6636,8 +6668,9 @@ function openCinematicCard(cs, auto) {
   document.getElementById('ccAirline').textContent = '';
 
   lookupRoute(cs, function(info) {
-    if (info.airline) document.getElementById('ccAirline').textContent = info.airline;
+    if (ccCurrentCS === cs && info.airline) document.getElementById('ccAirline').textContent = info.airline;   // not on a card opened since (12 Nov 2026)
     if (ccCurrentCS === cs) ccLiveRefresh(lastAircraft[cs] || a, cs);
+    if (ccCurrentCS === cs) ccShowRoute(lastAircraft[cs] || a, cs);
   });
 
   // Meta tags
@@ -7317,11 +7350,19 @@ function updateLabel(a) {
 
   // Datalink route as a second line (static/datalink-map.js): codes are checked there, 4 capital letters only.
   var dlr = (window.dlMap && a.datalink) ? window.dlMap.routeLine(a.datalink) : '';
+  // No datalink route: the timetable route in grey (AJ, 12 Nov 2026). Airline flights only, and only when it agrees
+  // with where the aircraft is: the tag has no room for the warning the card and the hover box carry.
+  var sched = '';
+  if (!dlr && !a.is_military && window.TrafficFilter && TrafficFilter.isAirlineCallsign(cs)) {
+    var rv = routeView('', routeCached(cs), a);
+    if (rv.kind === 'sched') sched = avEsc(rv.text);
+  }
   var icon = L.divIcon({
     className: '',
-    html: '<div class="ac-label">' + text + (dlr ? '<div class="ac-label-dl">' + dlr + '</div>' : '') + '</div>',
+    html: '<div class="ac-label">' + text + (dlr ? '<div class="ac-label-dl">' + dlr + '</div>' : '')
+        + (sched ? '<div class="ac-label-sched">' + sched + '</div>' : '') + '</div>',
     iconSize: null,
-    iconAnchor: [-4, dlr ? 50 : 38] // centered above aircraft icon (two lines sit a little higher)
+    iconAnchor: [-4, (dlr || sched) ? 50 : 38] // centered above aircraft icon (two lines sit a little higher)
   });
   labelMarkers[cs] = L.marker([a.lat, a.lon], {
     icon: icon,
@@ -8288,7 +8329,7 @@ function tfPaint(c){
     var n=b.querySelector('.tf-n'); if(n) n.textContent=c[f.id];
     b.classList.toggle('active',window.trafficFilter===f.id); b.classList.toggle('tf-empty',f.id!=='all'&&!c[f.id]); });
 }
-// Routes are looked up only while a filter is on, one every 2 s, airline callsigns only, each at most once per ROUTE_TTL_MS.
+// Routes are looked up only while a filter or the map labels are on, one every 2 s, airline callsigns only, each at most once per ROUTE_TTL_MS.
 var _tfQ=[], _tfQSet={}, _tfTimer=null;
 function tfQueue(ac){
   if(!window.TrafficFilter) return;
@@ -8299,7 +8340,7 @@ function tfQueue(ac){
   if(!_tfTimer&&_tfQ.length) _tfTimer=setInterval(tfTick,2000);
 }
 function tfTick(){
-  if(window.trafficFilter==='all'||!_tfQ.length){ clearInterval(_tfTimer); _tfTimer=null; _tfQ=[]; _tfQSet={}; return; }
+  if((window.trafficFilter==='all'&&!labelsOn)||!_tfQ.length){ clearInterval(_tfTimer); _tfTimer=null; _tfQ=[]; _tfQSet={}; return; }
   var cs=_tfQ.shift(); delete _tfQSet[cs];
   if(lastAircraft[cs]) lookupRoute(cs,function(){});   // gone from the sky: skip
 }
