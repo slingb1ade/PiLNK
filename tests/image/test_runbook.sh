@@ -33,3 +33,7 @@ ok "12 Nov: section 8 points at the Wi-Fi setup event log and how to read it" \
    'has "$S8" "pilnk-wifi-setup\.log" && has "$S8" "card-identity\.sh" && has "$S8" "never a network name or password"'
 ok "12 Nov: section 8 power-cut row uses cut-timer.sh; two-cards row says the hostname is per Pi" \
    'has "$S8" "cut-timer\.sh" && has "$S8" "same hostname by design"'
+ok "run4: section 5 says a dark green light does not prove sterilise finished; the mark does" \
+   'has "$S5" "does not (prove|mean)" && has "$S5" "pilnk-sterile\.ok"'
+ok "run4: section 7 explains FAIL sterilise-unfinished and that the card is rebuilt" \
+   'has "$S7" "sterilise-unfinished" && has "$S7" "rebuild|build .*again"'

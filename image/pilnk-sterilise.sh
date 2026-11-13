@@ -47,6 +47,11 @@ say() { printf '%s\n' "$*"; }
 
 LOG=/run/pilnk-sterilise.log
 FAILED_REPORT=pilnk-sterilise-failed.txt
+# Written to the boot partition only after the final check passes; the image
+# verifier rejects a card without it (13 Nov, run 4: a stalled sterilise left no
+# trace but a dark LED). Fixed text, nothing about the build or the builder.
+DONE_MARK=pilnk-sterile.ok
+DONE_TEXT="pilnk-sterilise finished: its final check found 0 problems"
 ERR_LINES=()      # "FAIL <id>: ..." lines counted in ERRORS, for the reports
 
 # PILNK_ROOT -> "" for the live system (any spelling of "/": "//", "/.",
@@ -250,15 +255,31 @@ remove_swap() {
 }
 
 ZERO_FILE=""
+# A problem found on the way: counted in ERRORS, so the final check fails.
+note_fail() { # id text
+  ERR_LINES+=("FAIL $1: $2"); say "${ERR_LINES[-1]}"; ERRORS=$((ERRORS + 1))
+}
+# Fill the free space with zeros, then delete the fill file. The only normal
+# end is a full disk ("No space left on device", or the test cap); any other
+# end means the card stopped part way, and a fill file that survives rm would
+# ship. Both fail the final check. dd's message is read, never printed.
 zero_fill() { # dir
-  local cnt=()
+  local cnt=() ef rc
   [ -d "$1" ] || return 0
   ZERO_FILE="$1/.pilnk-zero"
   [ -n "${PILNK_ZERO_LIMIT_MB:-}" ] && cnt=(count="$PILNK_ZERO_LIMIT_MB")
-  dd if=/dev/zero of="$ZERO_FILE" bs=1M "${cnt[@]}" status=none 2>/dev/null || true
+  ef=$(mktemp -p /run pilnk-zero.XXXXXX 2>/dev/null || mktemp)
+  LC_ALL=C dd if=/dev/zero of="$ZERO_FILE" bs=1M "${cnt[@]}" status=none 2>"$ef"; rc=$?
   sync
-  rm -f "$ZERO_FILE"; ZERO_FILE=""
-  say "zero-filled: free space on $1"
+  rm -f "$ZERO_FILE"
+  if [ -e "$ZERO_FILE" ]; then note_fail zero-fill-rm "${ZERO_FILE#"$R"} (the fill file is still there)"; fi
+  ZERO_FILE=""
+  if [ "$rc" -ne 0 ] && ! grep -q 'No space left on device' "$ef" 2>/dev/null; then
+    note_fail zero-fill-short "${1#"$R"} (dd stopped before the disk was full)"
+  else
+    say "zero-filled: free space on $1"
+  fi
+  rm -f "$ef"
 }
 remove_zero_file() { if [ -n "$ZERO_FILE" ]; then rm -f "$ZERO_FILE"; fi; }
 
@@ -297,6 +318,13 @@ report_failure() {
   else say "WARNING: could not write $f"; fi
 }
 
+# The positive proof the run finished: the verifier rejects a card without it.
+write_done_mark() {
+  local f="$B/$DONE_MARK"
+  if { printf '%s\n' "$DONE_TEXT" > "$f"; } 2>/dev/null; then sync; say "wrote: finished mark $f"
+  else say "WARNING: could not write the finished mark $f (the image verifier will reject this card)"; fi
+}
+
 # Last step: the check, then power off only when it finds nothing.
 final_check() {
   say "== self-check"
@@ -307,6 +335,7 @@ final_check() {
     exit 1
   fi
   say "STERILE: 0 problems."
+  write_done_mark
   if [ "$POWEROFF" = 1 ]; then
     say "powering off. Do not boot this card again before it is imaged."
     poweroff
@@ -384,6 +413,7 @@ say "== sterilising ${R:-/} (boot $B)"
 [ "$FAKE_NOPOWER" = 1 ] && say "fake root: never powers off (as --no-poweroff)"
 remove_paths "leftover zero-fill files" "$R/.pilnk-zero" "$B/.pilnk-zero"
 remove_paths "previous failure report" "$B/$FAILED_REPORT"
+remove_paths "previous finished mark" "$B/$DONE_MARK"
 
 # -- Logins --------------------------------------------------------------
 remove_matching "SSH host keys" "$R/etc/ssh" -maxdepth 1 -name 'ssh_host_*'

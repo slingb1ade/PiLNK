@@ -149,6 +149,13 @@ FOUND=0
 sterile_check "$ROOTDIR" "$BOOTDIR"
 NF=$?
 [ "$NF" -gt 0 ] && FOUND=1
+# sterilise writes this mark only after its own final check passed. Without it
+# the run stopped part way (13 Nov, run 4: the card stalled mid zero-fill and
+# nothing after that was written), whatever else looks clean.
+if [ ! -f "$BOOTDIR/pilnk-sterile.ok" ]; then
+  echo "FAIL sterilise-unfinished: /pilnk-sterile.ok missing on the boot partition (sterilise never finished: rebuild the card)"
+  FOUND=1
+fi
 
 # -- whole-image search: one pass -------------------------------------------
 # tr turns NUL into newline byte for byte, so offsets stay exact and zeroed

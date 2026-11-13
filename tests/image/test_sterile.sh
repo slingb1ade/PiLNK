@@ -41,6 +41,8 @@ make_clean() {
   # the unit files the enable links point at (pilnk-image-build.sh installs them)
   printf '[Unit]\n' > "$R/etc/systemd/system/pilnk-firstboot.service"
   printf '[Unit]\n' > "$R/etc/systemd/system/pilnk-wifi-setup.service"
+  # the mark sterilise writes after its final check passes (13 Nov, run 4)
+  printf 'pilnk-sterilise finished: its final check found 0 problems\n' > "$B/pilnk-sterile.ok"
 }
 
 # Fixtures never spell a pattern the raw search hunts for, so the repo's own
@@ -867,3 +869,56 @@ ok "I5: stage 2 removes NM state/leases/connections written after the pre-check;
 ok "I5: stage 2 on a fake root never calls systemctl" "! grep -q '^systemctl ' '$CALLS'"
 ok "I5: stage 2 order: sessions closed -> network stopped/removed -> self-check" \
    "a=\$(lineno \"\$OUTS6\" '^closed: login sessions'); b=\$(lineno \"\$OUTS6\" '^stopped: NetworkManager'); c=\$(lineno \"\$OUTS6\" '^== self-check'); [ -n \"\$a\" ] && [ -n \"\$b\" ] && [ -n \"\$c\" ] && [ \"\$a\" -lt \"\$b\" ] && [ \"\$b\" -lt \"\$c\" ]"
+
+# ---- 9. run 4 (13 Nov): an unfinished sterilise must not pass ---------------
+# The run-4 build card stopped taking writes 2.3 GB into the zero-fill: no rm,
+# no final check, no poweroff. The verifier caught it only through the leftover
+# fill file. Now: dd must end on a full disk, the fill file must really be gone,
+# and sterilise leaves a "finished" mark that the verifier requires.
+MARK=pilnk-sterile.ok
+DDX="$ROOT/ddx"; mkdir -p "$DDX"
+fake_dd() { # BODY-for-the-of=-file EXIT STDERR
+  printf '#!/bin/bash\nfor a; do case $a in of=*) f="${a#of=}";; esac; done\n%s\n[ -n %q ] && echo %q >&2\nexit %s\n' \
+    "$1" "$3" "$3" "$2" > "$DDX/dd"; chmod +x "$DDX/dd"
+}
+# 9a. dd stops early with an I/O error -> FAIL zero-fill-short, no mark, stale mark gone
+fake_dd ': > "$f"' 1 "dd: error writing 'x': Input/output error"
+Z1="$ROOT/z9a"; make_clean "$Z1"
+OUT9A=$(PATH="$DDX:$PATH" PILNK_ZERO_LIMIT_MB=4 PILNK_ROOT="$Z1" bash "$STER" --no-poweroff 2>&1); RC9A=$?
+ok "run4: dd stops early (I/O error) -> non-zero exit and FAIL zero-fill-short" \
+   "[ '$RC9A' != 0 ] && grep -q '^FAIL zero-fill-short: ' <<< \"\$OUT9A\""
+ok "run4: dd stops early -> not 'zero-filled', no fill file left" \
+   "! grep -q '^zero-filled' <<< \"\$OUT9A\" && [ -z \"\$(find '$Z1' -name '.pilnk-zero*')\" ]"
+ok "run4: a failed run leaves no finished mark (the stale one from make_clean is removed)" "[ ! -e '$Z1/boot/firmware/$MARK' ]"
+# 9b. dd ends on a full disk (ENOSPC) -> the normal end, mark written
+fake_dd ': > "$f"' 1 "dd: error writing 'x': No space left on device"
+Z2="$ROOT/z9b"; make_clean "$Z2"; rm -f "$Z2/boot/firmware/$MARK"   # sterilise must write it itself
+OUT9B=$(PATH="$DDX:$PATH" PILNK_ZERO_LIMIT_MB=4 PILNK_ROOT="$Z2" bash "$STER" --no-poweroff 2>&1); RC9B=$?
+ok "run4: dd ends with 'No space left on device' -> exit 0, zero-filled, no FAIL" \
+   "[ '$RC9B' = 0 ] && grep -q '^zero-filled' <<< \"\$OUT9B\" && ! grep -q '^FAIL' <<< \"\$OUT9B\""
+ok "run4: a finished run writes the mark on the boot partition, fixed text only" \
+   "[ \"\$(cat '$Z2/boot/firmware/$MARK' 2>/dev/null)\" = 'pilnk-sterilise finished: its final check found 0 problems' ]"
+ok "run4: the mark is written after the final check passed" \
+   "a=\$(lineno \"\$OUT9B\" '^STERILE: 0 problems'); b=\$(lineno \"\$OUT9B\" '^wrote: finished mark'); [ -n \"\$a\" ] && [ -n \"\$b\" ] && [ \"\$a\" -lt \"\$b\" ]"
+# 9c. the fill file survives rm -> FAIL zero-fill-rm
+fake_dd ': > "$f"' 0 ""
+RMB="$ROOT/rmbin"; mkdir -p "$RMB"
+printf '#!/bin/bash\ncase "$*" in *.pilnk-zero*) exit 0;; esac\nexec /bin/rm "$@"\n' > "$RMB/rm"; chmod +x "$RMB/rm"
+Z3="$ROOT/z9c"; make_clean "$Z3"
+OUT9C=$(PATH="$RMB:$DDX:$PATH" PILNK_ZERO_LIMIT_MB=4 PILNK_ROOT="$Z3" bash "$STER" --no-poweroff 2>&1); RC9C=$?
+ok "run4: fill file not removed -> non-zero exit and FAIL zero-fill-rm" \
+   "[ '$RC9C' != 0 ] && grep -q '^FAIL zero-fill-rm: ' <<< \"\$OUT9C\" && [ ! -e '$Z3/boot/firmware/$MARK' ]"
+# 9d. dd runs in the C locale (the ENOSPC test reads its English message)
+fake_dd 'echo "LC_ALL=$LC_ALL" >> "$CALLS"; : > "$f"' 0 ""
+Z4="$ROOT/z9d"; make_clean "$Z4"; : > "$CALLS"
+PATH="$DDX:$PATH" LC_ALL=de_DE.UTF-8 PILNK_ZERO_LIMIT_MB=4 PILNK_ROOT="$Z4" bash "$STER" --no-poweroff >/dev/null 2>&1
+ok "run4: dd runs with LC_ALL=C" "grep -qx 'LC_ALL=C' '$CALLS'"
+# 9e. the verifier requires the mark; sterilise's own check does not
+NM="$ROOT/nomark"; make_clean "$NM"; rm -f "$NM/boot/firmware/$MARK"
+run_check "$NM"
+ok "run4: sterile_check itself does not ask for the mark (it runs before the mark exists)" "[ '$N' = 0 ]"
+OUTNM=$(bash "$VER" --root "$NM" --boot "$NM/boot/firmware" --raw "$EMPTYRAW" 2>&1); RCNM=$?
+ok "run4: verifier without the mark -> exit 1, FAIL sterilise-unfinished" \
+   "[ '$RCNM' = 1 ] && grep -q '^FAIL sterilise-unfinished: ' <<< \"\$OUTNM\" && grep -q '^NOT CLEAN' <<< \"\$OUTNM\""
+OUTWM=$(bash "$VER" --root "$V" --boot "$V/boot/firmware" --raw "$EMPTYRAW" 2>&1); RCWM=$?
+ok "run4: verifier with the mark -> no sterilise-unfinished line" "[ '$RCWM' = 0 ] && ! grep -q 'sterilise-unfinished' <<< \"\$OUTWM\""

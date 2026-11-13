@@ -151,10 +151,15 @@ How long the zero-fill takes depends on the card size and speed (about 10–20 M
 Use a 16 or 32 GB card for the build if you can; Inkpot shrinks the image anyway.
 
 How to tell it is still working: the Pi's **green activity LED flickers** (or stays mostly on) the whole
-time it writes. When it is done, the Pi powers off: the green LED goes dark and stays dark (the red power
-LED may stay on).
+time it writes. When it is done, the Pi powers off and the green LED goes dark (the red power LED may stay on).
 
-Expect: the session drops, the green LED flickers for a while, then the Pi is off.
+A dark green LED does not prove it finished: a Pi 4 that is on but stuck looks the same (run 4, 13 Nov: the
+card stopped taking writes part way through the zero-fill and the LED simply went dark). Wait at least the
+time in the table, then pull the power. The proof comes on the laptop: only a finished run writes
+`pilnk-sterile.ok` to the boot partition, and the verifier (section 7) fails with `sterilise-unfinished`
+when it is missing.
+
+Expect: the session drops, the green LED flickers for a while, then goes dark.
 
 **If the Pi is still on after 2 hours** and the green LED has stopped flickering for 10 minutes or more,
 the final check failed (nobody can log in any more, so it never powers off). If a screen is plugged into
@@ -234,7 +239,12 @@ What the lines mean:
   byte for byte as the package shipped it (its md5 matches the package's list). Python's compiled `.pyc` files count
   too when their `.py` is such a file and the `.pyc` was built from it as it is now. Not a failure: it is public text,
   not something the build wrote.
-- The last line `NOT CLEAN` means at least one HIT.
+- `FAIL sterilise-unfinished`: the boot partition has no `pilnk-sterile.ok`, so sterilise never reached the
+  end of its final check (it stalled, lost power, or was stopped). Whatever else looks clean, **do not use the
+  image**: erase the build card and build it again from section 1.
+- `FAIL zero-fill-short` or `FAIL zero-fill-rm` (in the sterilise log or the failure file): the zero-fill
+  stopped before the card was full, or its fill file could not be deleted. Same answer: build again.
+- The last line `NOT CLEAN` means at least one HIT or FAIL.
 
 ## 8. Test matrix
 
