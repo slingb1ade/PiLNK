@@ -197,6 +197,11 @@ stage_receiver() {
        if printf '%s\n' "$out" | grep -qx 'DECODER_MODE=airspy'; then
          airspy_setup || return 1
        fi
+       # Leave readsb running (#607). On a retry boot we stopped it above, and
+       # the self-heal timer leaves a cleanly stopped decoder alone for 30 min.
+       # hw-setup restarts it after pinning, but only on a real root and not on
+       # the Airspy path. A no-op when it already runs; never block (Before=pilnk).
+       systemctl --no-block start readsb || log "receiver: starting readsb failed"
        rm -f "$PILNK_DIR/.no_receiver"
        # NO_BLOCK: self-heal must not start units that are After=pilnk.service
        # shellcheck disable=SC2097,SC2098  # value is identical; the prefix exports it to the child

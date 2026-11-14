@@ -61,6 +61,10 @@ ok "full: nm-online -> update"    'before nm-online "update-flag"'
 ok "full: update -> hw-setup"     'before update-flag hw-env'
 ok "full: hw-setup -> enable readsb"       'before hw-env "systemctl enable readsb"'
 ok "full: enable readsb -> selfheal"       'before "systemctl enable readsb" bootstrap-selfheal'
+# #607 (run 5): a bound receiver leaves readsb running. On a real root hw-setup
+# restarts it after pinning, but that is skipped under a fake root and missing on
+# the Airspy path, so first boot starts it itself (a no-op when it already runs)
+ok "#607 full: readsb started (no-block) once enabled" 'before "systemctl enable readsb" "systemctl --no-block start readsb"'
 ok "full: selfheal -> enable pilnk -> no-block start"  'before bootstrap-selfheal "systemctl enable pilnk" && before "systemctl enable pilnk" "systemctl --no-block start pilnk"'
 ok "full: update runs with NO_RESTART=1"   'called "update-flag=1"'
 ok "full: update runs as pilnk user"       'called "runuser -u pilnk --"'
@@ -115,6 +119,7 @@ ok "no rx: pilnk still enabled+started" 'called "systemctl --no-block start piln
 ok "no rx: receiver marker NOT written" '[ ! -e "$S/receiver" ] && [ -e "$S/started" ]'
 ok "no rx: .no_receiver exists"   '[ -e "$PD/.no_receiver" ]'
 ok "no rx: readsb NOT enabled"    '! called "systemctl enable readsb"'
+ok "#607 no rx: readsb NOT started" '! called "start readsb"'
 ok "no rx: no self-heal"          '! called bootstrap-selfheal'
 ok "no rx: firstboot stays enabled" '! called "systemctl disable pilnk-firstboot"'
 run
@@ -124,12 +129,14 @@ echo 0 > "$ROOT/.hw_rc"; run
 ok "dongle plugged: receiver marker"  '[ -e "$S/receiver" ]'
 ok "dongle plugged: flag removed"     '[ ! -e "$PD/.no_receiver" ]'
 ok "dongle plugged: readsb then selfheal" 'before "systemctl enable readsb" bootstrap-selfheal'
+ok "#607 dongle plugged: readsb started after enable" 'before "systemctl enable readsb" "systemctl --no-block start readsb"'
 ok "dongle plugged: pilnk not restarted" '! called "start pilnk"'
 ok "dongle plugged: now disables itself" 'called "systemctl disable pilnk-firstboot"'
 
 # --- hw-setup error (exit 1): not marked, PiLNK still starts, flag untouched ---
 setup; echo 1 > "$ROOT/.hw_rc"; run
 ok "hw error: not marked, still starts" '[ ! -e "$S/receiver" ] && [ -e "$S/started" ] && ! called "enable readsb"'
+ok "#607 hw error: readsb not started" '! called "start readsb"'
 
 # --- test builds skip the update ---
 setup; mkdir "$PD/.git"; echo sterile-image > "$ROOT/.branch"; run
@@ -202,6 +209,10 @@ setup; fakebin systemctl 'case "$*" in "enable readsb") exit 1;; esac'; run
 ok "readsb enable fails: receiver not marked" '[ ! -e "$S/receiver" ]'
 ok "readsb enable fails: PiLNK still starts" '[ -e "$S/started" ] && called "--no-block start pilnk"'
 ok "readsb enable fails: firstboot stays enabled" '! called "systemctl disable pilnk-firstboot"'
+ok "#607 readsb enable fails: readsb not started" '! called "start readsb"'
+# a failed start is logged, not fatal: readsb is enabled, and the self-heal timer revives it
+setup; fakebin systemctl 'case "$*" in "--no-block start readsb") exit 1;; esac'; run
+ok "#607 readsb start fails: logged, receiver still bound" 'grep -q "receiver: starting readsb failed" "$LOG" && [ -e "$S/receiver" ]'
 
 # --- M-2: hostnamectl failure/missing -> write /etc/hostname directly ---
 setup; fakebin hostnamectl 'exit 127'; run
@@ -274,6 +285,8 @@ ok "I2 boot 1: no receiver -> .no_receiver, pilnk started" '[ -e "$PD/.no_receiv
 rtl 00000003 00001090; active readsb; aircraft readsb   # boot 2: dongles in, readsb up unpinned
 run
 ok "I2 boot 2: unpinned running readsb is stopped before hw-setup" 'before "systemctl stop readsb" "systemctl enable readsb"'
+ok "#607 I2 boot 2: the readsb we stopped is started again after the bind" \
+   'before "systemctl stop readsb" "systemctl --no-block start readsb" && before "systemctl enable readsb" "systemctl --no-block start readsb"'
 ok "I2 boot 2: ADS-B pinned to the 1090 dongle (not consumed)" \
    'grep -q -- "--device 00001090 --device-type rtlsdr" "$ROOT/etc/default/readsb" && [ "$(grep -oE -- "--device[ =]" "$ROOT/etc/default/readsb" | wc -l)" -eq 1 ]'
 ok "I2 boot 2: VHF is the other dongle, never the ADS-B one" \
@@ -303,9 +316,11 @@ ok "I3: Airspy -> airspy-conf downloaded (curl --retry) and run, then readsb ena
    'called "airspy-conf ran" && grep -qE "^curl .*--retry .*airspy-conf" "$CALLS" && before "systemctl enable readsb" "airspy-conf ran"'
 ok "N2: airspy-conf made readsb net-only; logged only after the check" 'grep -q -- "--net-only" "$ROOT/etc/default/readsb" && grep -q "readsb is now net-only" "$LOG"'
 ok "I3: Airspy bound -> receiver marker, no banner" '[ -e "$S/receiver" ] && [ ! -e "$PD/.no_receiver" ]'
+ok "#607 Airspy: readsb started only after airspy-conf made it net-only" 'before "airspy-conf ran" "systemctl --no-block start readsb"'
 airspy_case 'cp "$ROOT/.airspy-conf" "$o"' 1
 ok "I3: airspy-conf fails -> no receiver marker, logged, retried next boot" \
    '[ ! -e "$S/receiver" ] && grep -q "airspy-conf failed" "$LOG" && [ -e "$S/started" ]'
+ok "#607 Airspy fails: readsb not started" '! called "start readsb"'
 # N2: airspy-conf exits 0 but readsb is still not net-only -> logged, retried next boot
 airspy_case 'printf "#!/bin/bash\nexit 0\n" > "$o"' 0
 ok "N2: readsb not net-only after airspy-conf -> no marker, logged, no false claim" \
