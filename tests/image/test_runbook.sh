@@ -23,8 +23,6 @@ ok "M12: first boot reboots once to grow the card" 'grep -qiE "first boot.*reboo
 ok "Inkpot M-2: save name ends .img (Inkpot adds .xz)" \
    'has "$S6" "save it as \`~/pilnk-images/pilnk-sterile\.img\`" && ! has "$S6" "save it as \`[^\`]*\.img\.xz\`" && has "$S6" "pilnk-sterile\.img\.xz"'
 ok "C2: test matrix checks the setup page with tar1090 installed" 'has "$S8" "lighttpd|tar1090"'
-ok "run 2: section 2 removes ~/sterile-patches on the Pi once the patches are applied" \
-   'a=$(grep -n "am ~/sterile-patches" "$RB" | head -1 | cut -d: -f1); b=$(grep -n "^rm -rf ~/sterile-patches\$" "$RB" | head -1 | cut -d: -f1); [ -n "$a" ] && [ -n "$b" ] && [ "$a" -lt "$b" ]'
 ok "run 2: section 1 has the write-build-userdata.sh fallback when Imager leaves the stock template" \
    'has "$S1" "write-build-userdata\.sh" && has "$S1" "user-data"'
 ok "run 2: section 7 says denylist words and .pyc files can SKIP as stock Debian files" \
@@ -37,17 +35,21 @@ ok "run4: section 5 says a dark green light does not prove sterilise finished; t
    'has "$S5" "does not (prove|mean)" && has "$S5" "pilnk-sterile\.ok"'
 ok "run4: section 7 explains FAIL sterilise-unfinished and that the card is rebuilt" \
    'has "$S7" "sterilise-unfinished" && has "$S7" "rebuild|build .*again"'
-# run 5 (14 Nov): the patches are made on one exact main commit; pin it so a newer
-# main cannot break git am, and so a stale pin after a rebase is caught here
-PIN=$(grep -oE 'switch -c sterile-image [0-9a-f]{7,40}' "$RB" | head -1 | awk '{print $4}')
-ok "run5: section 2 starts the branch at a pinned base commit" 'has "$S2" "switch -c sterile-image [0-9a-f]{7,}"'
-ok "run5: section 7 starts the verify clone at the same base" 'has "$S7" "switch -c sterile-image $PIN"'
-ok "run5: no 'switch -c sterile-image' line without the base" \
-   '! grep -E "switch -c sterile-image" "$RB" | grep -vqE "switch -c sterile-image $PIN( |\`|\$)"'
-ok "run5: the pinned base is an ancestor of this branch with the same VERSION (a stale pin is not)" \
-   '[ -n "$PIN" ] && git -C "$REPO" merge-base --is-ancestor "$PIN" HEAD && [ "$(git -C "$REPO" show "$PIN:VERSION")" = "$(cat "$REPO/VERSION")" ]'
-ok "run5: section 8 warns that auto-update resets an online card to main when pilnk.io lists a newer version" \
-   'has "$S8" "auto-update" && has "$S8" "newer version" && has "$S8" "resets? the card to .main"'
-ok "run5: section 8 says the branch rows come first" 'has "$S8" "(do|run) the rows that test the branch.{0,80}first"'
-ok "run5: section 8 lets the whole-house cut move to the release image built from main" \
-   'has "$S8" "release image" && has "$S8" "built from .main"'
+# 14 Nov, after v1.6.24 shipped: the image work is on main, so the image is built
+# from a plain clone of main. No patches, no pinned base, no branch.
+ok "ship: section 2 clones main, with no patches and no branch" \
+   'has "$S2" "git clone https://github.com/slingb1ade/PiLNK.git ~/pilnk" && ! has "$S2" "git am|sterile-patches|switch -c"'
+ok "ship: section 2 shows which release the image is" \
+   'has "$S2" "git -C ~/pilnk log --oneline -1" && has "$S2" "cat ~/pilnk/VERSION"'
+ok "ship: section 2 says a main-built first boot logs update: ok; only a branch build skips it" \
+   'has "$S2" "update: ok" && has "$S2" "update skipped"'
+ok "ship: no patches or pinned base left anywhere in the runbook" \
+   '! grep -qiE "\.patch|git am|switch -c|fba3ccd" "$RB"'
+ok "ship: section 1 runs write-build-userdata.sh from an up-to-date clone of main" \
+   'has "$S1" "git clone https://github.com/slingb1ade/PiLNK.git ~/pilnk-main" && has "$S1" "git -C ~/pilnk-main pull --ff-only" && has "$S1" "bash ~/pilnk-main/image/write-build-userdata.sh"'
+ok "ship: section 7 verifies from the same clone of main, updated first" \
+   'has "$S7" "git -C ~/pilnk-main pull --ff-only" && has "$S7" "cd ~/pilnk-main" && ! has "$S7" "pilnk-verify"'
+ok "ship: section 8 says a main-built card updates itself like any node" \
+   'has "$S8" "updates itself like any node" && ! has "$S8" "replace the branch"'
+ok "ship: section 8 lets the whole-house cut wait for another day on the same cards" \
+   'has "$S8" "whole-house" && has "$S8" "same cards"'

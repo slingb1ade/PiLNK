@@ -20,11 +20,13 @@ Nothing here holds a password or key. Use a spare card for the build, never the 
 laptop, open its `bootfs` partition in the file manager (that mounts it), then:
 
 ```
-bash ~/Downloads/PiLNK/sterile-image/write-build-userdata.sh /media/$USER/bootfs
+[ -d ~/pilnk-main ] || git clone https://github.com/slingb1ade/PiLNK.git ~/pilnk-main
+git -C ~/pilnk-main pull --ff-only
+bash ~/pilnk-main/image/write-build-userdata.sh /media/$USER/bootfs
 ```
 
-(once the branch is on `main` the same script is `image/write-build-userdata.sh` in a clone).
-It types nothing secret on screen: it asks for the temporary password twice and writes only its hash
+The first two lines keep a clone of `main` on the laptop (section 7 uses the same one).
+The script types nothing secret on screen: it asks for the temporary password twice and writes only its hash
 into `user-data`. It refuses, and changes nothing, if `user-data` already holds real settings or
 `network-config` has Wi-Fi in it. Sterilise deletes `user-data` and the cloud-init state later.
 
@@ -35,23 +37,10 @@ Put the card in the Pi4, plug in the network cable, and power on.
 
 Expect: `ssh pilnk@pilnk-build.local` asks for the temporary password and logs in.
 
-## 2. Clone and apply the branch
+## 2. Clone PiLNK
 
-Do this **before "ship it"**. The branch is not on `main` yet, so you get patches
-(they will be in `PiLNK/sterile-image/patches/`).
-
-The patches are made on top of one exact commit of `main`: `fba3ccd` (release 1.6.23). Both clones below
-start the branch at that commit, so a newer `main` cannot make `git am` fail.
-
-**Laptop**: put the patches in one dedicated directory, `~/sterile-patches/`, and copy that directory to the build Pi:
-
-```
-mkdir -p ~/sterile-patches
-cp ~/Downloads/PiLNK/sterile-image/patches/*.patch ~/sterile-patches/
-scp -r ~/sterile-patches pilnk@pilnk-build.local:/home/pilnk/
-```
-
-Expect: one line per patch, no errors. The patches are now in `/home/pilnk/sterile-patches/` on the Pi.
+The image is built from `main`, the same code every node runs. (Until release 1.6.24 the image work
+lived on a branch and came as patches. It is all on `main` now, so there is nothing to apply.)
 
 **Pi4 (build card)**: bring Pi OS up to date first, then reboot (a new kernel needs it):
 
@@ -67,31 +56,20 @@ Expect: the SSH session drops. Wait a minute, then `ssh pilnk@pilnk-build.local`
 ```
 sudo apt install -y git
 git clone https://github.com/slingb1ade/PiLNK.git ~/pilnk
-git -C ~/pilnk switch -c sterile-image fba3ccd
-git -C ~/pilnk -c user.name=AJ -c user.email=aj@pilnk.io am ~/sterile-patches/*.patch
-git -C ~/pilnk log --oneline | head -5
+git -C ~/pilnk log --oneline -1
+cat ~/pilnk/VERSION
 ```
 
-Expect: `git am` prints "Applying: ..." for each patch with no conflict. The newest commit is the last patch.
-`git -C ~/pilnk branch --show-current` prints `sterile-image`.
-
-**Pi4 (build card)**: the patches are in the clone now, so remove the copied folder (it must not end up on the image):
-
-```
-rm -rf ~/sterile-patches
-```
-
-Expect: no output. (Sterilise removes it too, and its check fails if it is still there, as a second guard.)
+Expect: the newest release commit (`Release v1.6.24 ...` or later) and its version number.
+Note both down: that is the release this image carries.
 
 Two things matter here:
 
-- **Do the `switch -c` before `git am`.** First boot skips its self-update only when the clone is on a branch
-  other than `main`. On `main` it would run the update, which does `git reset --hard origin/main` and throws
-  the patches away. On the first boot of a test card the log (`/var/log/pilnk-firstboot.log`) must read
-  `test build: update skipped (branch sterile-image)`. If it does not, the card is not running the branch's code.
-  A shipped image is built from `main` and updates normally.
-- **Never run `git config user.name` or `user.email` in the clone.** The identity above is passed with `-c`
-  for this one command only and is not stored. A stored identity would sit in `.git/config` on every card.
+- **Stay on `main`.** First boot then runs the normal self-update, and on a test card the log
+  (`/var/log/pilnk-firstboot.log`) reads `update: ok`. A card built from any other branch skips that update
+  and logs `test build: update skipped (branch ...)`; that is only for testing unreleased code.
+- **Never run `git config user.name` or `user.email` in the clone.** Nothing is committed on the Pi, so no
+  identity is needed, and a stored one would sit in `.git/config` on every card.
   (Sterilise also removes any `[user]` section and its check fails if one is left, as a second guard.)
 
 ## 3. Build
@@ -194,21 +172,20 @@ xz -dk pilnk-sterile.img.xz
 
 Expect: `pilnk-sterile.img` appears next to it.
 
-The verifier runs from a clone of the **branch** on the laptop (it is not on `main` yet, so a plain clone does not have it).
-**Laptop**: build that clone from the same patches (skip this if `~/pilnk-verify` already exists):
+The verifier runs from the laptop's clone of `main` (the one section 1 uses). **Laptop**: bring it up to date:
 
 ```
-git clone https://github.com/slingb1ade/PiLNK.git ~/pilnk-verify
-git -C ~/pilnk-verify switch -c sterile-image fba3ccd
-git -C ~/pilnk-verify -c user.name=AJ -c user.email=aj@pilnk.io am ~/sterile-patches/*.patch
+[ -d ~/pilnk-main ] || git clone https://github.com/slingb1ade/PiLNK.git ~/pilnk-main
+git -C ~/pilnk-main pull --ff-only
+git -C ~/pilnk-main log --oneline -1
 ```
 
-Expect: "Applying: ..." for each patch, no conflict.
+Expect: the same release commit you noted on the build card in section 2.
 
 **Laptop**: run the verifier on the raw image:
 
 ```
-cd ~/pilnk-verify
+cd ~/pilnk-main
 sudo bash image/pilnk-image-verify.sh ~/pilnk-images/pilnk-sterile.img --denylist ~/.config/pilnk/denylist
 ```
 
@@ -225,7 +202,7 @@ The system disk is the one holding `/`; never use it. Then use that name in plac
 (the verifier opens it read-only):
 
 ```
-cd ~/pilnk-verify
+cd ~/pilnk-main
 sudo bash image/pilnk-image-verify.sh /dev/sdX --denylist ~/.config/pilnk/denylist
 ```
 
@@ -256,11 +233,8 @@ Write the image to two test cards with Inkpot. Tick each box on **both a Pi 4 an
 The first boot of any card bigger than the image **reboots once** by itself, a minute or so in: it grows
 the root partition to fill the card, then restarts. That is expected; the second boot carries on.
 
-**Auto-update can replace the branch.** Once a test card is online, the app checks pilnk.io. If pilnk.io
-lists a newer version than the card's own `VERSION`, auto-update (on by default) resets the card to `main`
-and the branch's code is gone (run 5: the card went from 1.6.21 to 1.6.23 this way).
-So do the rows that test the branch's code first (first boot, Wi-Fi setup, power cut mid first boot), on a fresh card.
-While the branch's `VERSION` matches the live version this does not happen.
+**Auto-update.** A card built from `main` updates itself like any node: on its first boot, and later from
+the app whenever pilnk.io lists a newer version than the card's own `VERSION` (auto-update is on by default).
 
 **Pi4 / Pi5 (test card)**:
 
@@ -287,8 +261,8 @@ While the branch's `VERSION` matches the live version this does not happen.
 - [ ] A bigger card than the image: the first boot rebooted once, and the root partition grew to fill it.
 - [ ] Wi-Fi node, whole-house power cut (Pi and router off, router back slower than the Pi): within about
   half an hour of the router coming back the Pi rejoins your Wi-Fi by itself and `PiLNK-Setup` goes away.
-  If the house internet cannot go off during this run, leave the box open and do it when the release image
-  (built from `main`) is tested: the Wi-Fi setup code is the same.
+  If the house internet cannot go off during this run, leave the box open and do the whole-house cut
+  another day on the same cards.
 
 Expect: every box ticked on Pi4 and Pi5, or a note of what failed.
 
