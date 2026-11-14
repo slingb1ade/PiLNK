@@ -18,6 +18,25 @@ log "=== OTA UPDATE STARTED ==="
 OLD_VERSION=$(cat VERSION 2>/dev/null || echo 'unknown')
 log "Current version: $OLD_VERSION"
 
+# Step 0: Clean up after a power cut in the middle of an earlier git command.
+# A cut can leave git's lock files behind (.git/index.lock during a reset,
+# .git/refs/remotes/origin/main.lock during a fetch) or a half-written
+# .git/index. git then refuses every later fetch and reset, so the node would
+# never update again until someone fixed it by hand. If no git process is
+# running at all, any lock is a leftover, and the index is only a cache of the
+# commit: reset --hard below rebuilds it. With git running, touch nothing.
+if pgrep -x git >/dev/null 2>&1; then
+    log "A git process is running; leaving .git lock files and the index alone."
+else
+    while IFS= read -r stale; do
+        rm -f -- "$stale" && log "Removed stale lock ${stale#./} (left by an interrupted git command)"
+    done < <(find .git -name '*.lock' -type f 2>/dev/null)
+    if ! git ls-files >/dev/null 2>&1; then
+        rm -f .git/index
+        log "The git index was unreadable (a write was cut off); removed it, reset --hard rebuilds it."
+    fi
+fi
+
 # Step 1: Fetch the latest refs from GitHub (no working-tree changes yet).
 log "Fetching latest from GitHub..."
 git fetch origin main 2>> "$LOG_FILE"
