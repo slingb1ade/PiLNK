@@ -40,6 +40,9 @@ Expect: `ssh pilnk@pilnk-build.local` asks for the temporary password and logs i
 Do this **before "ship it"**. The branch is not on `main` yet, so you get patches
 (they will be in `PiLNK/sterile-image/patches/`).
 
+The patches are made on top of one exact commit of `main`: `fba3ccd` (release 1.6.23). Both clones below
+start the branch at that commit, so a newer `main` cannot make `git am` fail.
+
 **Laptop**: put the patches in one dedicated directory, `~/sterile-patches/`, and copy that directory to the build Pi:
 
 ```
@@ -64,7 +67,7 @@ Expect: the SSH session drops. Wait a minute, then `ssh pilnk@pilnk-build.local`
 ```
 sudo apt install -y git
 git clone https://github.com/slingb1ade/PiLNK.git ~/pilnk
-git -C ~/pilnk switch -c sterile-image
+git -C ~/pilnk switch -c sterile-image fba3ccd
 git -C ~/pilnk -c user.name=AJ -c user.email=aj@pilnk.io am ~/sterile-patches/*.patch
 git -C ~/pilnk log --oneline | head -5
 ```
@@ -196,7 +199,7 @@ The verifier runs from a clone of the **branch** on the laptop (it is not on `ma
 
 ```
 git clone https://github.com/slingb1ade/PiLNK.git ~/pilnk-verify
-git -C ~/pilnk-verify switch -c sterile-image
+git -C ~/pilnk-verify switch -c sterile-image fba3ccd
 git -C ~/pilnk-verify -c user.name=AJ -c user.email=aj@pilnk.io am ~/sterile-patches/*.patch
 ```
 
@@ -253,6 +256,12 @@ Write the image to two test cards with Inkpot. Tick each box on **both a Pi 4 an
 The first boot of any card bigger than the image **reboots once** by itself, a minute or so in: it grows
 the root partition to fill the card, then restarts. That is expected; the second boot carries on.
 
+**Auto-update can replace the branch.** Once a test card is online, the app checks pilnk.io. If pilnk.io
+lists a newer version than the card's own `VERSION`, auto-update (on by default) resets the card to `main`
+and the branch's code is gone (run 5: the card went from 1.6.21 to 1.6.23 this way).
+So do the rows that test the branch's code first (first boot, Wi-Fi setup, power cut mid first boot), on a fresh card.
+While the branch's `VERSION` matches the live version this does not happen.
+
 **Pi4 / Pi5 (test card)**:
 
 - [ ] Pi4, no cable, dongle in: the `PiLNK-Setup-XXXX` hotspot appears (open, no password).
@@ -278,6 +287,8 @@ the root partition to fill the card, then restarts. That is expected; the second
 - [ ] A bigger card than the image: the first boot rebooted once, and the root partition grew to fill it.
 - [ ] Wi-Fi node, whole-house power cut (Pi and router off, router back slower than the Pi): within about
   half an hour of the router coming back the Pi rejoins your Wi-Fi by itself and `PiLNK-Setup` goes away.
+  If the house internet cannot go off during this run, leave the box open and do it when the release image
+  (built from `main`) is tested: the Wi-Fi setup code is the same.
 
 Expect: every box ticked on Pi4 and Pi5, or a note of what failed.
 

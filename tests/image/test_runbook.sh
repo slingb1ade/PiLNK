@@ -37,3 +37,17 @@ ok "run4: section 5 says a dark green light does not prove sterilise finished; t
    'has "$S5" "does not (prove|mean)" && has "$S5" "pilnk-sterile\.ok"'
 ok "run4: section 7 explains FAIL sterilise-unfinished and that the card is rebuilt" \
    'has "$S7" "sterilise-unfinished" && has "$S7" "rebuild|build .*again"'
+# run 5 (14 Nov): the patches are made on one exact main commit; pin it so a newer
+# main cannot break git am, and so a stale pin after a rebase is caught here
+PIN=$(grep -oE 'switch -c sterile-image [0-9a-f]{7,40}' "$RB" | head -1 | awk '{print $4}')
+ok "run5: section 2 starts the branch at a pinned base commit" 'has "$S2" "switch -c sterile-image [0-9a-f]{7,}"'
+ok "run5: section 7 starts the verify clone at the same base" 'has "$S7" "switch -c sterile-image $PIN"'
+ok "run5: no 'switch -c sterile-image' line without the base" \
+   '! grep -E "switch -c sterile-image" "$RB" | grep -vqE "switch -c sterile-image $PIN( |\`|\$)"'
+ok "run5: the pinned base is an ancestor of this branch with the same VERSION (a stale pin is not)" \
+   '[ -n "$PIN" ] && git -C "$REPO" merge-base --is-ancestor "$PIN" HEAD && [ "$(git -C "$REPO" show "$PIN:VERSION")" = "$(cat "$REPO/VERSION")" ]'
+ok "run5: section 8 warns that auto-update resets an online card to main when pilnk.io lists a newer version" \
+   'has "$S8" "auto-update" && has "$S8" "newer version" && has "$S8" "resets? the card to .main"'
+ok "run5: section 8 says the branch rows come first" 'has "$S8" "(do|run) the rows that test the branch.{0,80}first"'
+ok "run5: section 8 lets the whole-house cut move to the release image built from main" \
+   'has "$S8" "release image" && has "$S8" "built from .main"'
