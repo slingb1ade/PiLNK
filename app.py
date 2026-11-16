@@ -4258,6 +4258,66 @@ def services_status():
             continue
     return jsonify({'services': out})
 
+def _vitals_from_proc(root='/', interval=0.2, sleep=None):
+    """psutil-free vitals for /api/system: reads /proc and /sys directly so the
+    System tab works on nodes without python3-psutil (it is in no install path).
+    Each field is independent; anything unreadable is None."""
+    sleep = sleep or time.sleep
+    p = lambda rel: os.path.join(root, rel)
+    v = {'cpu_pct': None, 'mem_pct': None, 'disk_pct': None, 'uptime_s': None, 'temp_c': None}
+
+    def cpu_times():
+        with open(p('proc/stat')) as f:
+            parts = f.readline().split()
+        if not parts or parts[0] != 'cpu' or len(parts) < 5:
+            raise ValueError('bad /proc/stat')
+        nums = [int(x) for x in parts[1:9]]
+        idle = nums[3] + (nums[4] if len(nums) > 4 else 0)
+        return idle, sum(nums)
+    try:
+        i1, t1 = cpu_times()
+        sleep(interval)
+        i2, t2 = cpu_times()
+        dt = t2 - t1
+        v['cpu_pct'] = round(100.0 * (1 - (i2 - i1) / dt), 1) if dt > 0 else 0.0
+    except Exception:
+        pass
+    try:
+        mi = {}
+        with open(p('proc/meminfo')) as f:
+            for line in f:
+                k, _, rest = line.partition(':')
+                if rest.split():
+                    mi[k.strip()] = int(rest.split()[0])
+        total = mi['MemTotal']
+        avail = mi.get('MemAvailable')
+        if avail is None:
+            avail = mi.get('MemFree', 0) + mi.get('Buffers', 0) + mi.get('Cached', 0)
+        if total > 0:
+            v['mem_pct'] = round(100.0 * (total - avail) / total, 1)
+    except Exception:
+        pass
+    try:
+        st = os.statvfs(root)
+        used = (st.f_blocks - st.f_bfree) * st.f_frsize
+        free = st.f_bavail * st.f_frsize
+        if used + free > 0:
+            v['disk_pct'] = round(100.0 * used / (used + free), 1)
+    except Exception:
+        pass
+    try:
+        with open(p('proc/uptime')) as f:
+            v['uptime_s'] = int(float(f.read().split()[0]))
+    except Exception:
+        pass
+    try:
+        with open(p('sys/class/thermal/thermal_zone0/temp')) as f:
+            v['temp_c'] = round(int(f.read().strip()) / 1000.0, 1)
+    except Exception:
+        pass
+    return v
+
+
 @app.route('/api/system')
 def system_health():
     """Node health for the System tab: CPU/mem/disk/temp/uptime (psutil),
@@ -4297,6 +4357,16 @@ def system_health():
             except Exception:
                 temp = None
         v['temp_c'] = temp
+    except ImportError:
+        # No psutil on this node (it is in no install path): read /proc instead.
+        try:
+            v = info['vitals']
+            try: v['load1'] = round(os.getloadavg()[0], 2)
+            except Exception: v['load1'] = None
+            v.update(_vitals_from_proc())
+            info['vitals_source'] = 'proc'
+        except Exception as e:
+            info['vitals_error'] = str(e)
     except Exception as e:
         info['vitals_error'] = str(e)
 

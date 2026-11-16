@@ -59,16 +59,38 @@ const LIVERIES={
   LOT:{ body:'#f2f4f6', belly:'#f2f4f6', fin:'#11397e', wing:'#c9ced3' },   // LOT: white; navy tail
   ITY:{ body:'#0b2d6b', belly:'#0b2d6b', fin:'#0b2d6b', wing:'#c9ced3' },   // ITA Airways: Blu Italia all over
   ICE:{ body:'#f2f4f6', belly:'#f2f4f6', fin:'#003a7d', wing:'#c9ced3' },   // Icelandair: white; blue tail
-  WZZ:{ body:'#f2f4f6', belly:'#f2f4f6', fin:'#c6007e', wing:'#c9ced3' }    // Wizz Air: white; magenta tail
+  WZZ:{ body:'#f2f4f6', belly:'#f2f4f6', fin:'#c6007e', wing:'#c9ced3' },   // Wizz Air: white; magenta tail
+  /* US Air Force Air Mobility Command, callsign REACH (RCH): the C-17, C-5 and KC-46 fly it. Gunship Gray (FS 36118) all
+     over, a shade lighter so the shape still reads under the scene's light. No roundels, flash or serials (16 Nov). */
+  RCH:{ body:'#5d6266', belly:'#5d6266', fin:'#5d6266', wing:'#5d6266' }
 };
 /* Sister operators flying the parent's colours under their own callsign prefix: easyJet Europe and Switzerland; Ryanair's
    Buzz, Malta Air and Lauda; Lufthansa CityLine; KLM Cityhopper; BA CityFlyer and the BA Shuttle callsign. */
 for(const [a,p] of [['EJU','EZY'],['EZS','EZY'],['RYS','RYR'],['MAY','RYR'],['LDM','RYR'],['CLH','DLH'],['KLC','KLM'],['CFE','BAW'],['SHT','BAW']]) LIVERIES[a]=LIVERIES[p];
-function liveryFor(callsign,t){
+/* Military paint by MODEL (16 Nov). Most military flights carry no callsign we can match (RNZAF flies as KIWI, RAAF as
+   ASY, many send none), so the model decides: every C-17 is grey whoever flies it. A callsign scheme (REACH above, or an
+   airline on a forced model) still wins; ?livery=off turns this off too. Flat colours only - no roundels, flashes, serials
+   or camouflage patterns. Warbirds (Spitfire, Yak-3, L-39) are mostly civil and stay as they are. */
+const MIL_GREY='#5d6266', MIL_DARK='#3f4347', OLIVE='#4a5130';
+const mil=(c,belly)=>({ body:c, belly:belly||c, fin:c, wing:c });
+const MIL_PAINT={
+  'c17.glb':mil(MIL_GREY), 'c5.glb':mil(MIL_GREY), 'kc46.glb':mil(MIL_GREY), 'kc135.glb':mil(MIL_GREY), 'e3.glb':mil(MIL_GREY),
+  'e7.glb':mil(MIL_GREY), 'p8.glb':mil(MIL_GREY), 'a400.glb':mil(MIL_GREY), 'c130.glb':mil(MIL_GREY),   // transports, tankers, patrol: Gunship Gray
+  'b1b.glb':mil(MIL_DARK), 'b52.glb':mil(MIL_DARK),            // bombers: dark grey
+  'f16.glb':mil('#8b949a','#a9b0b5'),                          // F-16: two-tone air-superiority grey, paler underneath
+  't38.glb':mil('#eef0f2'),                                    // T-38: white
+  'hawk.glb':mil('#222528'),                                   // Hawk: RAF trainer gloss black
+  'uh60m.glb':mil(OLIVE), 'ch47.glb':mil(OLIVE),               // Army helicopters: olive drab
+  'nh90.glb':mil('#3e4a3c'),                                   // NH90: RNZAF dark green
+  'sh60.glb':mil('#6e767d'),                                   // Seahawk: navy grey
+  'strk.glb':mil('#5f6a5a')                                    // Super Tucano: grey-green
+};
+function liveryFor(callsign,t,key){
   const f=(_q.get('livery')||'').toUpperCase();
   if(f==='OFF') return null;
   const op=f||((callsign||'').trim().toUpperCase().match(/^[A-Z]{3}(?=\d)/)||[''])[0];
-  const L=LIVERIES[op]; if(!L) return null;
+  const L=LIVERIES[op];
+  if(!L){ const M=key&&MIL_PAINT[key]; return M?Object.assign({op:'',t},M):null; }   // op '' : no artwork to fetch
   const v=L[(t||'').toUpperCase()]; if(!v) return Object.assign({op,t},L);
   return Object.assign({op,t},L,v);
 }

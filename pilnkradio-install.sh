@@ -68,6 +68,35 @@ _on_exit() {
     return "$rc"
 }
 
+# >>> stuck-pkgs (#586, 11 Nov 2026) — keep byte-identical in pilnkradio-install.sh and datalink-install.sh
+# Names the package(s) dpkg could not finish, so a failed apt install says WHICH
+# one. A package left half-installed by something else (an old tutorial, another
+# feeder) makes every later `apt-get install` fail with only "dpkg returned an
+# error code (1)" — JMK, 11 Nov 2026: dump1090-mutability. $1 = apt's output.
+# Prints "pkg" or "pkg1, pkg2" (max 3), or nothing. Read-only, and never fails:
+# it runs on the way to die(). apt's own "Errors were encountered while
+# processing:" list first (English); if that names nothing and apt's error is
+# about dpkg, `dpkg --audit` (any language: its package lines are indented).
+# A held dpkg lock (another apt running) is NOT a stuck package: those lines
+# name /var/lib/dpkg/lock* in every language, so they never trigger the audit.
+# Every awk reads to EOF, so nothing upstream can SIGPIPE (killer #4).
+_stuck_pkgs() {
+    local out="${1:-}" names=""
+    names="$(printf '%s\n' "$out" | awk '
+        /^Errors were encountered while processing:/ { grab = 1; next }
+        grab && /^ [^ ]/ { print $1; next }
+        { grab = 0 }
+        /^dpkg: error processing package / { print $5 }')" || names=""
+    if [ -z "$names" ] && printf '%s\n' "$out" | awk '/^E:.*dpkg/ && !/dpkg\/lock/ { f = 1 } END { exit !f }'; then
+        names="$(dpkg --audit 2>/dev/null | awk '/^ [a-z0-9]/ { print $1 }')" || true
+    fi
+    printf '%s\n' "$names" | awk '
+        { sub(/:.*/, "", $1) }
+        $1 ~ /^[a-z0-9][a-z0-9+.-]+$/ && !seen[$1]++ && n < 3 { sep = n++ ? ", " : ""; out = out sep $1 }
+        END { print out }' || true
+}
+# <<< stuck-pkgs
+
 # ── Denoise-only run (4 Oct 2026) ───────────────────────────
 # update.sh asks for this when the engine is fine but the live-denoise files
 # are missing or out of date: it writes "denoise" to the task file and starts
@@ -158,6 +187,17 @@ if ! APT_OUT="$(sudo apt-get install -y build-essential cmake git pkg-config \
         libusb-1.0-0-dev libfftw3-dev curl 2>&1)"; then
     printf '%s\n' "$APT_OUT" | tail -8
     APT_ERR="$(printf '%s\n' "$APT_OUT" | grep -E '^E:' || true)"
+    # #586: name the package dpkg is stuck on — FIRST in the detail, so it
+    # survives the 200-char cap here and pilnk.io's 60-byte cut (node.php keeps
+    # only the first 60 bytes of audio_build_err when a node's features JSON
+    # passes 500 chars), however much apt says after it.
+    STUCK="$(_stuck_pkgs "$APT_OUT")"
+    if [ -n "$STUCK" ]; then
+        case "$STUCK" in *,*) STUCK_LBL="stuck packages" ;; *) STUCK_LBL="stuck package" ;; esac
+        warn "apt can't install anything until dpkg finishes setting up: $STUCK"
+        warn "See it with: sudo dpkg --audit  (PiLNK won't remove another program's package for you)"
+        die "$STUCK_LBL: $STUCK — build dependencies failed — apt: ${APT_ERR:-see journalctl -u pilnk-audio-build}"
+    fi
     die "build dependencies failed — apt: ${APT_ERR:-see journalctl -u pilnk-audio-build}"
 fi
 ok "deps installed"

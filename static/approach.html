@@ -28,6 +28,19 @@
   #tr .more{display:block;margin-top:3px;color:var(--purple);font-size:10px;text-align:right;cursor:pointer}
   .row{display:flex;justify-content:space-between;gap:14px}.row .k{color:var(--dim)}.row .v{font-variant-numeric:tabular-nums}
   #cams{bottom:12px;left:50%;transform:translateX(-50%);display:flex;gap:6px;pointer-events:auto}
+  /* ATC caption (11 Nov 2026): the latest call from this node's speech-to-text (static/atc-caption.js), above the camera
+     row. Only ever on a node that has speech-to-text; hidden outright everywhere else. Never takes a click. */
+  #atccap{bottom:52px;left:50%;transform:translateX(-50%);display:flex;gap:8px;align-items:baseline;width:max-content;max-width:min(760px,94vw);
+    background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:5px 10px;color:var(--dim);
+    opacity:0;visibility:hidden;transition:opacity .4s,visibility 0s .4s}
+  #atccap[hidden]{display:none}
+  #atccap.on{opacity:1;visibility:visible;transition:opacity .4s}
+  #atccap.mine{border-color:var(--amber);color:var(--txt)}
+  #atc_cs{flex:none;font-weight:700;color:var(--txt)}
+  #atc_cs:empty{display:none}
+  #atccap.mine #atc_cs{color:var(--amber)}
+  #atc_x{min-width:0;overflow-wrap:anywhere}
+  #atc_t,#atc_a{flex:none;font-size:10px;opacity:.75;white-space:nowrap}
   .cambtn{font-family:inherit;font-size:11px;background:#0e1526;color:var(--dim);border:1px solid var(--line);border-radius:6px;padding:6px 10px;cursor:pointer}
   .cambtn.on{color:var(--txt);border-color:var(--purple)}
   #helpbtn{bottom:12px;left:12px;pointer-events:auto;width:28px;padding:6px 0;text-align:center}   /* bottom-right belongs to the map attribution */
@@ -62,6 +75,8 @@
     #tr.open .row.x{display:flex}
     #tr .more{display:block;margin-top:4px;color:var(--purple);font-size:9px;text-align:right;cursor:pointer}
     #cams{bottom:calc(10px + env(safe-area-inset-bottom));gap:4px;max-width:96vw;flex-wrap:wrap;justify-content:center}
+    #atccap{flex-wrap:wrap;row-gap:1px;padding:4px 8px}
+    #atc_x{flex-basis:100%;order:5}
     .cambtn{font-size:10px;padding:6px 9px}
     #helpbtn{bottom:calc(10px + env(safe-area-inset-bottom));left:8px}
     #themebtn{bottom:calc(10px + env(safe-area-inset-bottom));left:42px}
@@ -111,11 +126,12 @@
   <button class="cambtn" data-cam="tower">Tower</button>
   <button class="cambtn" data-cam="free">Free (drag · right-drag tilt)</button>
 </div>
+<div class="hud" id="atccap" hidden><span id="atc_t"></span><span id="atc_cs"></span><span id="atc_x"></span><span id="atc_a"></span></div>
 <button class="hud cambtn" id="themebtn" title="Day / night — long-press to follow the sun" onclick="setTheme(NIGHT_ON?'day':'night')" oncontextmenu="event.preventDefault();setTheme('auto');return false;">☀</button>
 <button class="hud cambtn" id="cloudbtn" title="Cloud deck from the airport weather (METAR) - on / off" onclick="cloudsSet(!CLOUDS_ON)"><svg viewBox="0 0 16 12" aria-hidden="true"><path d="M4.2 10.6h8a2.9 2.9 0 0 0 .3-5.8 4.1 4.1 0 0 0-7.9-.6A3.2 3.2 0 0 0 4.2 10.6z"/></svg></button>
 <div id="cldfog"></div>
 <button class="hud cambtn" id="helpbtn" title="Options" onclick="document.getElementById('note').classList.toggle('show')">?</button>
-<div class="hud" id="note"><b>Orbit</b>: drag to go round the aircraft, up/down for height, double-click to go back behind it. Wheel: chase distance / tower zoom. Buildings are OSM heights (patchy outside city centres). Options: <b>?buildings=0</b>, <b>?ve=</b> terrain exaggeration (1.5), <b>?fov=</b> tower lens (18), <b>?cut=</b> tower cut, ft above the field (500), <b>?acscale=</b> aircraft size in the tower shot (3), <b>?magvar= ?geomoff= ?qnh=</b> calibration overrides, <b>?terrain=0</b>, <b>?dem=</b>, <b>?base=sat</b>, <b>?clouds=0</b>.</div>
+<div class="hud" id="note"><b>Orbit</b>: drag to go round the aircraft, up/down for height, double-click to go back behind it. Wheel: chase distance / tower zoom. Buildings are OSM heights (patchy outside city centres). Options: <b>?buildings=0</b>, <b>?ve=</b> terrain exaggeration (1.5), <b>?fov=</b> tower lens (18), <b>?cut=</b> tower cut, ft above the field (500), <b>?acscale=</b> aircraft size in the tower shot (3), <b>?magvar= ?geomoff= ?qnh=</b> calibration overrides, <b>?terrain=0</b>, <b>?dem=</b>, <b>?base=sat</b>, <b>?clouds=0</b>, <b>?atc=0</b> (no ATC caption), <b>?atc=own</b> (this aircraft's calls only).</div>
 
 <script src="https://unpkg.com/maplibre-gl@5.24.0/dist/maplibre-gl.js"></script>
 <script crossorigin="anonymous" src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
@@ -130,6 +146,7 @@
 <script src="/static/runway-lights.js?v=rl1"></script>
 <script src="/static/cloud-deck.js?v=cd2"></script>
 <script src="/static/windsock.js?v=ws1"></script>
+<script src="/static/atc-caption.js?v=atc1"></script>
 <script src="/static/fixes-nz.js"></script>
 <script src="/static/pfd-core.js?v=pfd1"></script>
 <script src="/static/pfd-svt.js?v=pfd1"></script>
@@ -563,6 +580,50 @@ function dlInfoText(dl, now){   // 'NZAA → NZWN · ETA 15:42 (in 12 min) · RW
   return b?[b.route,b.line].filter(Boolean).join(' · '):'';
 }
 /* ---------- end datalink runway ---------- */
+/* ---------- ATC caption (11 Nov 2026) ----------
+   AJ: "we can add the STT in 3D fairly easy. The STT model doesn't have to be perfect to display the text so we can prove
+   that it works". The node's speech-to-text writes each call it hears to /atc/transcript (the dashboard's ATC panel reads
+   the same feed; it is node-local and never leaves the node). Here the latest call is shown as one line above the camera
+   row, with the followed aircraft's own calls picked out. The rules - which call, whose it is, when it goes - are in
+   static/atc-caption.js and tested there; this is only the fetch and the four text nodes.
+   Nothing is drawn, and nothing more than one request a minute is made, on a node that has no speech-to-text.
+   The words came off a radio through a speech model: they are only ever written with textContent.
+   ?atc=0 turns it off. ?atc=own shows only the followed aircraft's calls (AJ: where the feature is heading). */
+const ATC_MODE=_q.get('atc');
+let atcCs='';                                   // the followed aircraft's callsign; poll() keeps it
+const _atc={state:null, has:false, timer:null, on:false};
+/* The feed's times are the node's clock; this page is usually on another machine. poll() already works out the difference
+   between the two (_lagHist: the smallest gap seen is the offset), so "how long ago" is measured on the node's clock. */
+function atcNow(){ return Date.now()/1000-(_lagHist.length?Math.min.apply(null,_lagHist):0); }
+function atcDraw(show){
+  const el=document.getElementById('atccap'); if(!el) return;
+  el.hidden=!_atc.has;
+  if(!show){ el.classList.remove('on'); return; }
+  document.getElementById('atc_t').textContent=AtcCaption.clock(show.t);
+  document.getElementById('atc_cs').textContent=show.cs;
+  document.getElementById('atc_x').textContent=show.text;
+  document.getElementById('atc_a').textContent=[AtcCaption.ageText(show.age),AtcCaption.freqText(show.freq)].filter(Boolean).join(' \u00b7 ');
+  el.classList.toggle('mine',!!show.mine);
+  const cams=document.getElementById('cams'), r=cams?cams.getBoundingClientRect():null;      // the camera row wraps on a phone: sit above wherever it is
+  if(r&&r.height) el.style.bottom=Math.round(window.innerHeight-r.top+8)+'px';
+  el.classList.add('on');
+}
+async function atcTick(){
+  try{
+    if(document.hidden&&_atc.has) return;                       // nobody is looking: no fetch (the next call is judged on its age when they are)
+    const r=await fetch('/atc/transcript',{cache:'no-store'}); const d=r.ok?await r.json():null;
+    _atc.has=AtcCaption.has(d);
+    if(!_atc.has){ atcDraw(null); return; }
+    const o=AtcCaption.step(_atc.state,d,atcNow(),atcCs,{ownOnly:ATC_MODE==='own'});
+    _atc.state=o.state; atcDraw(o.show);
+  }catch(e){ atcDraw(null); }                                   // no answer: nothing on screen rather than an old call
+  finally{ _atc.timer=setTimeout(atcTick,_atc.has?AtcCaption.POLL_MS:AtcCaption.PROBE_MS); }   // no speech-to-text here: look again in a minute, no more
+}
+function atcStart(){            // called from poll() once the node has answered, so the clock offset above is known first
+  if(_atc.on||ATC_MODE==='0'||!window.AtcCaption) return;
+  _atc.on=true; atcTick();
+}
+/* ---------- end ATC caption ---------- */
 /* Which end is in use: the one whose landing direction the aircraft is actually flying, and which it
    is still short of. Falls back to the site heading when nothing is inbound, so the lights are lit
    before the first arrival appears rather than after it. */
@@ -1022,7 +1083,7 @@ const acLayer={
     this.wantSpan=(forced?null:spanFor(t,key))||MODEL_SPAN[key]||this.targetSpan;
     /* cs: the callsign, for the livery. Same model, different airline - an Air NZ A320 followed by a Jetstar one -
        repaints in place rather than reloading. '' is the neutral grey. */
-    this.wantLiv=own?null:liveryFor(cs,t); const lk=this.wantLk=this.wantLiv?this.wantLiv.op+'/'+(t||''):'';
+    this.wantLiv=own?null:liveryFor(cs,t,key); /* key: military paint by model (16 Nov) */ const lk=this.wantLk=this.wantLiv?this.wantLiv.op+'/'+(t||''):'';
     if(this.mm&&key===this.key&&!this.loading&&!own&&lk!==this.livKey){ paintAircraft(this.mm,key,this.wantLiv,this.renderer); this.livKey=lk; }
     /* Same model, different type — a Phenom followed by a Global on the bizjet stand-in. The reload below is
        skipped when the model has not changed, which used to mean the second aircraft kept the first one's
@@ -1972,6 +2033,7 @@ async function poll(){
     } else _jsonAge=0;
     if(_pollFails>=3) st('live data back');
     _pollFails=0;
+    atcStart();
     learnDatum(list);
     let a=null;
     if(target!=='__auto__') a=list.find(x=>(x.hex||'').toLowerCase()===target)||null;
@@ -2058,6 +2120,7 @@ async function poll(){
            gs:gsMs, trk, rate, t:tFix, key};
       acLayer.ensureModel(a.t,a.category,a.flight,a.hex,a.r);   // hex + registration: an airframe with its own paint (ZK-VVS)
       acDl=(a&&a.datalink&&typeof a.datalink==='object')?a.datalink:null;
+      atcCs=(a.flight||'').trim();
       { const dlt=dlInfoText(acDl,Date.now()/1000); document.getElementById('d_dl').textContent=dlt; document.getElementById('d_dlrow').style.display=dlt?'':'none'; }
       try{ aprUpdate(list,a); }catch(e){ aprClear(); }   // arrival-path ribbon: never allowed to break the poll
       document.getElementById('d_cs').textContent=(a.flight||'').trim()||(a.hex||'').toUpperCase();
@@ -2081,7 +2144,7 @@ async function poll(){
         :('mag var ?° (no WMM model) · heading follows the ADS-B track…')));
       prefetchAhead();
       pfdIn={a,E,decl,hdg,hdgStale:!!_hdgMem.stale,trk:trkNow,vsS,pitch,altM,groundM:gM,qnh,dl:acDl,path:_apr.path||null,night:NIGHT_ON,rwys:RWY_ENDS};   // the PFD (pfd.js): the same values the data box shows
-    } else { fix=null; aircraft=null; acDl=null; aprClear(); document.getElementById('d_dlrow').style.display='none'; document.getElementById('d_cs').textContent='— no arrivals —'; }
+    } else { fix=null; aircraft=null; acDl=null; atcCs=''; aprClear(); document.getElementById('d_dlrow').style.display='none'; document.getElementById('d_cs').textContent='— no arrivals —'; }
     if(window.PFD) PFD.feed(pfdIn, Date.now());
   }catch(e){
     /* AUDIT FIX #6 (24 Sep 2026): this was catch(e){} — any failure froze the view on its last fix with

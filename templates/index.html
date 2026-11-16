@@ -2120,6 +2120,8 @@
               <div class="sys-stat"><div class="sys-stat-label">Memory</div><div class="sys-stat-val" id="sys-mem">--</div></div>
               <div class="sys-stat"><div class="sys-stat-label">Disk</div><div class="sys-stat-val" id="sys-disk">--</div></div>
               <div class="sys-stat"><div class="sys-stat-label">Uptime</div><div class="sys-stat-val" id="sys-uptime">--</div></div>
+              <div class="sys-stat"><div class="sys-stat-label">Power</div><div class="sys-stat-val" id="sys-power">--</div></div>
+              <div class="sys-stat"><div class="sys-stat-label">Supply</div><div class="sys-stat-val" id="sys-volts">--</div></div>
             </div>
           </div>
 
@@ -2783,6 +2785,25 @@ function sysRender(sys, svc){
     else { vs.textContent='UP TO DATE'; vs.className='sys-pill up'; }
   }
 }
+// Power + Supply cards from /api/power (powerfloor). Missing or failed = '--'.
+// Volts only exist on a Pi 5 (EXT5V rail); a Pi 4 still reports the state.
+function sysRenderPower(d){
+  var pEl = document.getElementById('sys-power'), vEl = document.getElementById('sys-volts');
+  var st = d && d.power, txt = '--', cls = '';
+  if (st === 'low'){ txt = 'LOW NOW'; cls = ' hot'; }
+  else if (st === 'was_low'){ txt = 'WAS LOW'; cls = ' warn'; }
+  else if (st === 'ok'){ txt = d.throttled ? 'OK \u00b7 THROTTLED' : 'OK'; cls = d.throttled ? ' warn' : ''; }
+  if (pEl){
+    pEl.textContent = txt; pEl.className = 'sys-stat-val' + cls;
+    if (st === 'was_low') pEl.title = 'Supply dipped too low since the last restart'; else pEl.removeAttribute('title');
+  }
+  if (vEl){
+    var v = d && typeof d.volts === 'number' ? d.volts : null;
+    vEl.textContent = v == null ? '--' : v.toFixed(2) + ' V';
+    vEl.className = 'sys-stat-val' + (v == null ? '' : (v < 4.63 ? ' hot' : (v < 4.8 ? ' warn' : '')));
+    if (v == null) vEl.title = 'Supply volts are read on a Pi 5 only'; else vEl.removeAttribute('title');
+  }
+}
 // ── Coverage polar plot ── per-bearing range footprint + horizon floor from /api/coverage.
 var covData = null, covModeCur = 'range';
 function covMode(m){
@@ -2881,8 +2902,9 @@ function sysRefresh(){
   Promise.all([
     fetch('/api/system',{cache:'no-store'}).then(function(r){return r.ok?r.json():null;}).catch(function(){return null;}),
     fetch('/api/services',{cache:'no-store'}).then(function(r){return r.ok?r.json():null;}).catch(function(){return null;}),
-    fetch('/api/coverage',{cache:'no-store'}).then(function(r){return r.ok?r.json():null;}).catch(function(){return null;})
-  ]).then(function(res){ sysRender(res[0], res[1]); if (res[2]) covData = res[2]; covDraw(); });
+    fetch('/api/coverage',{cache:'no-store'}).then(function(r){return r.ok?r.json():null;}).catch(function(){return null;}),
+    fetch('/api/power',{cache:'no-store'}).then(function(r){return r.ok?r.json():null;}).catch(function(){return null;})
+  ]).then(function(res){ sysRender(res[0], res[1]); sysRenderPower(res[3]); if (res[2]) covData = res[2]; covDraw(); });
   sysRefreshNet();
 }
 var sysTimer = null;

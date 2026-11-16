@@ -1,4 +1,4 @@
-"""ATC context feed: who is likely talking on a frequency (spec pilnk-tasks/atc-context-spec.md v2.2).
+"""ATC context feed: who is likely talking on a frequency (spec pilnk-tasks/atc-context-spec.md v2.4).
 
 One pure function, build_context(snapshot, history, airport, profile, arrival_doc, freq=None),
 used by the node's live route and by STT's replay. Standard library only: no file reads, no
@@ -13,6 +13,10 @@ TOWER_NM = 8.0
 TOWER_FT = 3000
 APP_NM = 40.0
 APP_FT = 24500
+TMA_FT = 15000          # inside APP_NM, level traffic between TOWER_FT and this is Approach's too
+OUT_NM = 60.0           # a climbing departure stays on Approach out to here
+IN_NM = 60.0            # a descending arrival is on Approach from here in
+TREND_FT = 300          # height change over the look-back that counts as climbing / descending
 RAMP_NM = 2.0
 RAMP_FT = 1000.0
 MATCH_KM = 4.0
@@ -297,6 +301,17 @@ def _clean_line(line):
     return pts or None
 
 
+def trend(track, vs):
+    """(climbing, descending) from the vertical rate now, else from the height change over the
+    look-back, so a level-off by ATC part-way up or down does not hide which way the flight is going."""
+    dalt = None
+    if len(track) >= 2 and track[0]['alt'] is not None and track[-1]['alt'] is not None:
+        dalt = track[-1]['alt'] - track[0]['alt']
+    up = (vs is not None and vs > 300) or (dalt is not None and dalt >= TREND_FT and (vs is None or vs > -300))
+    down = (vs is not None and vs < -300) or (dalt is not None and dalt <= -TREND_FT and (vs is None or vs < 300))
+    return up, down
+
+
 def paths_for(arrival_doc, airport):
     """The learned paths, only when the document is for this airport. The document comes over the
     network, so a path keeps only its well-formed line points; a path left without a line is dropped."""
@@ -326,7 +341,7 @@ def phase_of(ac, points, t, airport, rwy_ends, paths):
     dist_nm = dist_km / NM_KM if dist_km is not None else None
     gs = ac.get('gs') if _num(ac.get('gs')) else derive_gs(points, t)
     vs = ac.get('baro_rate') if _num(ac.get('baro_rate')) else None
-    ex = {'dist_nm': dist_nm, 'gs': gs, 'final_rwy': None, 'path': None}
+    ex = {'dist_nm': dist_nm, 'gs': gs, 'final_rwy': None, 'path': None, 'terminal': False}
     if alt == 'ground':
         return 'ground', ex
     if altn is None:
@@ -344,19 +359,31 @@ def phase_of(ac, points, t, airport, rwy_ends, paths):
         if out:
             return 'takeoff', ex
     trk = track5(points, t)
+    climbing, descending = trend(trk, vs)
     if is_arriving(trk, ref):
         rwy_hint = ac.get('dl_rwy') if isinstance(ac.get('dl_rwy'), str) and ac.get('dl_rwy') else None
         ex['path'] = match_path(trk, paths, rwy_hint) if paths else None
         if dist_nm <= 20 or altn < 6000 or ex['path']:
             return 'approach', ex
         return 'arrival', ex
-    if vs is not None and vs > 300 and dist_nm <= 40 and altn < 15000:
-        if out is None:
-            out = opening(points, t, ref)
-        if out:
-            return 'departure', ex
     if too_low_for_arrival(ref, ac.get('lat'), ac.get('lon'), altn):
         return 'local', ex
+    # Approach's terminal area: inside APP_NM but outside Tower's own airspace, where the old rules still decide
+    terminal = dist_nm <= APP_NM and not (dist_nm <= TOWER_NM and altn <= TOWER_FT)
+    if climbing and altn < APP_FT and dist_nm <= max(APP_NM, OUT_NM):
+        # in the terminal area a climb is a departure whichever way it points (turns after take-off,
+        # go-arounds); anywhere else it must also be moving away
+        if not terminal and out is None:
+            out = opening(points, t, ref)
+        if terminal or out:
+            return 'departure', ex
+    if descending and not climbing and altn < APP_FT:
+        if terminal:
+            ex['terminal'] = True
+            return 'approach', ex           # downwind, base, vectors: descending but not closing
+        if APP_NM < dist_nm <= IN_NM and len(trk) >= 3 and \
+                km(ref[0], ref[1], trk[-1]['lat'], trk[-1]['lon']) < km(ref[0], ref[1], trk[0]['lat'], trk[0]['lon']) - 1:
+            return 'arrival', ex            # above the dashboard's 20,000 ft arriving cap, still inbound
     if altn >= 15000 or (vs is not None and abs(vs) <= 300 and dist_nm > 40):
         return 'enroute', ex
     return 'overflight', ex
@@ -468,9 +495,34 @@ def service_of(phase, dist_nm, alt):
         return 'control'
     if phase in ('final', 'takeoff') or (dist_nm <= TOWER_NM and alt <= TOWER_FT):
         return 'tower'
-    if phase in ('approach', 'arrival', 'departure') and dist_nm <= APP_NM and alt <= APP_FT:
-        return 'approach'
+    if alt <= APP_FT:
+        if phase == 'departure' and dist_nm <= max(APP_NM, OUT_NM):
+            return 'approach'
+        if phase in ('approach', 'arrival') and dist_nm <= max(APP_NM, IN_NM):
+            return 'approach'
+    if phase == 'overflight' and dist_nm <= APP_NM and TOWER_FT < alt <= TMA_FT:
+        return 'approach'                   # level in the terminal area: a held climb or a long downwind
     return 'control'
+
+
+def also_of(phase, service):
+    """The service a flight is about to be handed to, when it is likely to call it next: a departure
+    still inside Tower's airspace is also on Approach's list, from wheels-up (v2.4; v2.3 waited for
+    500 ft above the field, and STT's misses were exactly the aircraft below that)."""
+    if service == 'tower' and phase in ('takeoff', 'departure'):
+        return 'approach'
+    return None
+
+
+# Who is likely to be talking (§2.5 order, v2.4): an aircraft changing level or lining up is being
+# given clearances; a level one is talked to less; the rest least. Nearest first within each group.
+# The order no longer follows score, which is lowest at a hand-off: the moment a flight calls.
+MOVING = ('final', 'takeoff', 'departure', 'approach', 'arrival')
+LEVEL = ('overflight', 'local')
+
+
+def talk_rank(phase):
+    return 0 if phase in MOVING else (1 if phase in LEVEL else 2)
 
 
 def score_of(phase, service, dist_nm, alt):
@@ -512,6 +564,8 @@ def why_of(phase, ac, extras):
         parts.append('%.1fnm' % d if d < 10 else '%.0fnm' % d)
     if phase == 'final':
         parts.append('lined up %s' % extras.get('final_rwy'))
+    elif phase == 'approach' and extras.get('terminal'):
+        parts.append('terminal area')
     elif phase in _TAGS:
         parts.append(_TAGS[phase])
     elif phase == 'enroute' and _num(ac.get('alt_baro')):
@@ -586,12 +640,15 @@ def build_context(snapshot, history, airport, profile, arrival_doc, freq=None):
         ph, ex = phase_of(a, pts, tt, apt, ends, paths)
         altn = a.get('alt_baro') if _num(a.get('alt_baro')) else None
         svc = service_of(ph, ex['dist_nm'], altn)
+        also = also_of(ph, svc)
+        freqs = list(freqs_by.get(svc, [])) if svc else []
+        freqs += [f for f in freqs_by.get(also, []) if f not in freqs] if also else []
         dl_rwy = a.get('dl_rwy') if isinstance(a.get('dl_rwy'), str) and a.get('dl_rwy').strip() else None
         path = ex['path']
         sel, changes = selected_and_changes(pts)
         rows.append({
             'callsign': _cs(a), 'hex': _hex(a), 'phase': ph, 'why': why_of(ph, a, ex), 'service': svc,
-            'freqs': list(freqs_by.get(svc, [])) if svc else [],
+            'also_service': also, 'freqs': freqs,
             'score': score_of(ph, svc, ex['dist_nm'], altn),
             'alt_ft': _int(altn), 'vs_fpm': _int(a.get('baro_rate')), 'gs_kt': _int(ex['gs']),
             'track': a.get('track') if _num(a.get('track')) else None,
@@ -603,7 +660,7 @@ def build_context(snapshot, history, airport, profile, arrival_doc, freq=None):
         })
     if freq is not None and freqs_by:
         rows = [r for r in rows if freq_match(r['freqs'], freq)]
-    rows.sort(key=lambda r: (-r['score'], r['dist_nm'] if r['dist_nm'] is not None else float('inf'),
+    rows.sort(key=lambda r: (talk_rank(r['phase']), r['dist_nm'] if r['dist_nm'] is not None else float('inf'),
                              r['callsign'] or ''))
     return {'t': t, 'airport': apt['icao'] if apt else None, 'freq': freq, 'profile': prof is not None,
             'aircraft': rows}
