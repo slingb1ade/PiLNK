@@ -31,6 +31,10 @@ try:                                  # message -> facts (route, ETA, runway, AT
     import datalink_decode as _decode
 except Exception:                     # a missing decoder must never stop the ingest
     _decode = None
+try:                                  # fix positions learned from the planes (17 Nov 2026)
+    import fix_learn as _fix_learn
+except Exception:                     # a missing learner must never stop the ingest
+    _fix_learn = None
 
 CFG_PATH = '/etc/pilnk-datalink/config.json'
 STATUS_PATH = '/run/pilnk-datalink/status.json'
@@ -51,6 +55,7 @@ ROUTE_TTL = 3 * 3600
 FAST_FACTS = ('eta_ts', 'rwy', 'next_wp', 'next_wp_eta_ts', 'last_wp', 'then_wp',
               'alt_ft', 'temp_c', 'lat', 'lon')
 FAST_TTL = 30 * 60
+NEXT_PASSED_S = 120             # a next fix this long past its ETA has been passed
 ARRIVAL_FACTS = ('eta_ts', 'rwy', 'next_wp', 'next_wp_eta_ts', 'then_wp')   # void once landed
 DEPART_FACTS = ('dep_rwy', 'sid')                # from the departure clearance
 DEPART_TTL = 90 * 60
@@ -175,6 +180,8 @@ class Store(object):
         self._atis = {}                                    # airport -> dict incl. ts
         self._legs = {}                                    # key -> ts the current flight leg began
         self.last_frame_ts = None
+        self.learner = None                                # fix_learn.FixLearner, set by enable_fix_learning
+        self._trail_at = None
         self.dupes = 0
         self.total = 0
         self.bad = 0
@@ -238,6 +245,14 @@ class Store(object):
                 if cur is None or cur.get('ts', 0) <= msg['ts']:
                     self._atis[atis['airport']] = dict(atis, ts=msg['ts'])
             facts.pop('kind', None)
+            if self.learner is not None and hexc:
+                try:
+                    if facts.get('last_wp'):         # confirm first: a report never confirms its own sample
+                        self.learner.confirm(hexc, facts['last_wp'], msg['ts'])
+                    if facts.get('next_wp') and facts.get('next_wp_eta_ts'):
+                        self.learner.note(hexc, facts['next_wp'], facts['next_wp_eta_ts'], msg['ts'])
+                except Exception as e:                  # learning must never cost the ingest
+                    log.warning('[datalink] fix learning: %s', e)
             if key is None:
                 return
             if facts:
@@ -305,9 +320,19 @@ class Store(object):
             del out['arr_gate']
         if 'eta_ts' in out and out['eta_ts'][0] < now - FAST_TTL:
             del out['eta_ts']
-        if 'next_wp_eta_ts' in out and out['next_wp_eta_ts'][0] < now - 600:
-            for k in ('next_wp', 'next_wp_eta_ts', 'then_wp'):
-                out.pop(k, None)
+        # The fix after next belongs to the report that named the next one: a then_wp left over from an older
+        # report may already be behind the plane (review 17 Nov: it came back as "next" 28 min after passing).
+        if 'then_wp' in out and ('next_wp' not in out or out['then_wp'][1] != out['next_wp'][1]):
+            del out['then_wp']
+        # Two minutes past its ETA the next fix has been flown: the fix after it is now the next one
+        # (17 Nov 2026, QFA145 still showed DOMRI as next 10 min after passing it).
+        if 'next_wp_eta_ts' in out and out['next_wp_eta_ts'][0] < now - NEXT_PASSED_S:
+            then = out.pop('then_wp', None)
+            out.pop('next_wp_eta_ts', None)
+            if then is not None:
+                out['next_wp'] = then
+            else:
+                out.pop('next_wp', None)
         summary = {k: v for k, (v, _) in out.items() if k not in ('lat', 'lon')}
         if 'lat' in out and 'lon' in out and not has_adsb_pos:
             summary['pos'] = [out['lat'][0], out['lon'][0], out['lat'][1]]
@@ -570,6 +595,65 @@ def status(store, cfg_path=CFG_PATH, status_path=STATUS_PATH, now=None):
     return out
 
 
+# ── Fix positions learned from the planes (17 Nov 2026, QFA145 / DOMRI) ──────
+# The node's fix list is 2013 data and the AIP may not be republished, so the node measures fixes
+# itself: an aircraft's report "next fix N at time E" + where its own ADS-B trail puts it at E.
+# Local only, like everything here. trail_at(hex_lower, t) -> (lat, lon) or None, from app.py.
+FIX_TICK_S = 30
+_fix_err = [0.0]
+
+
+def enable_fix_learning(store, trail_at, path, start_thread=True):
+    """Attach a learner to the store (loading what was learned before). None when there is no store."""
+    if store is None or _fix_learn is None:
+        return None
+    try:
+        learner = _fix_learn.FixLearner(path)
+        learner.load()
+    except Exception as e:                  # never take the datalink card down with it
+        log.warning('[datalink] fix learning off: %s', e)
+        return None
+    with store._lock:
+        store.learner = learner
+        store._trail_at = trail_at
+    if start_thread:
+        def loop():
+            while True:
+                time.sleep(FIX_TICK_S)
+                try:
+                    fix_learning_tick(store, time.time())
+                except Exception as e:
+                    if time.time() - _fix_err[0] > 3600:
+                        _fix_err[0] = time.time()
+                        log.warning('[datalink] fix learning tick failed: %s', e)
+        threading.Thread(target=loop, name='datalink-fixes', daemon=True).start()
+    return learner
+
+
+def fix_learning_tick(store, now):
+    """Resolve due reports and save. Trail lookups run WITHOUT the store lock (they take the
+    trail lock): no lock is ever held while waiting for the other. Returns samples added."""
+    learner = getattr(store, 'learner', None) if store is not None else None
+    if learner is None:
+        return 0
+    with store._lock:
+        keys = learner.due(now)
+        trail_at = store._trail_at
+    positions = {}
+    for k in keys:
+        try:
+            positions[k] = trail_at(k[0], k[2]) if trail_at else None
+        except Exception as e:
+            positions[k] = None
+            if time.time() - _fix_err[0] > 3600:
+                _fix_err[0] = time.time()
+                log.warning('[datalink] trail lookup failed: %s', e)
+    with store._lock:
+        added = learner.apply(positions)
+        learner.save(now)
+    return added
+
+
 def merge_into(store, ac, hex_upper):
     """/flights helper: add the datalink summary to one aircraft. Never raises."""
     if store is None:
@@ -613,6 +697,15 @@ def register(app, store, cfg_path=CFG_PATH, status_path=STATUS_PATH):
                 last_err[0] = time.time()
                 log.warning('[datalink] board failed: %s', e)
             return _nocache(jsonify(empty))
+
+    @app.route('/api/datalink/fixes', methods=['GET'])
+    def datalink_fixes():
+        learner = getattr(store, 'learner', None) if store is not None else None
+        if learner is None:
+            return _nocache(jsonify({'fixes': [], 'pending': 0, 'names': 0}))
+        with store._lock:
+            out = dict(learner.stats(), fixes=learner.learned())
+        return _nocache(jsonify(out))
 
     @app.route('/api/datalink/<hexcode>', methods=['GET'])
     def datalink_messages(hexcode):

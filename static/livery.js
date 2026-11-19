@@ -62,11 +62,78 @@ const LIVERIES={
   WZZ:{ body:'#f2f4f6', belly:'#f2f4f6', fin:'#c6007e', wing:'#c9ced3' },   // Wizz Air: white; magenta tail
   /* US Air Force Air Mobility Command, callsign REACH (RCH): the C-17, C-5 and KC-46 fly it. Gunship Gray (FS 36118) all
      over, a shade lighter so the shape still reads under the scene's light. No roundels, flash or serials (16 Nov). */
-  RCH:{ body:'#5d6266', belly:'#5d6266', fin:'#5d6266', wing:'#5d6266' }
+  RCH:{ body:'#5d6266', belly:'#5d6266', fin:'#5d6266', wing:'#5d6266' },
+  /* What AJ's node sees (17 Nov): every operator in the NZAA arrival and overhead logs, matched to photos of the
+     aircraft seen there. Same rules as above: body / belly / fin / wing, a rear block where the real scheme has one,
+     no titles, logos or emblems. A flag, pattern or logo tail takes its main colour (Emirates' flag -> its red, Fiji's
+     masi -> its dark brown); where the tail is a logo on white (China Eastern, China Airlines, Air China, Malaysia) it
+     stays white. Stripes and cheatlines (Singapore, Malaysia, China Airlines) are not drawn yet. */
+  QFA:{ body:'#f2f4f6', belly:'#f2f4f6', fin:'#e0001b', wing:'#c9ced3' },   // Qantas 2016: white; red tail
+  UAE:{ body:'#f2f4f6', belly:'#f2f4f6', fin:'#d71a21', wing:'#c9ced3' },   // Emirates: white; flag tail -> its red
+  SIA:{ body:'#f2f4f6', belly:'#e4e7ea', fin:'#1d2d5b', wing:'#c9ced3' },   // Singapore: white; navy tail (blue/gold cheatline not drawn)
+  FJI:{ body:'#f2f4f6', belly:'#f2f4f6', fin:'#4a3a36', wing:'#c9ced3' },   // Fiji Airways: white; masi tail -> dark brown
+  CSN:{ body:'#f2f4f6', belly:'#f2f4f6', fin:'#0076c7', wing:'#c9ced3' },   // China Southern: white; sky-blue tail
+  /* Malaysia: white over a navy lower rear (the red and white stripes on it are not drawn); the navy starts under the
+     wing at the belly and rises to about half height at the tail. Tail white with the wau kite (not drawn). */
+  MAS:{ body:'#f2f4f6', belly:'#f2f4f6', fin:'#f2f4f6', wing:'#c9ced3', aft:{ col:'#1c2a6e', b0:0.42, b1:1.08 } },
+  CES:{ body:'#f2f4f6', belly:'#f2f4f6', fin:'#f2f4f6', wing:'#c9ced3' },   // China Eastern: white; swallow logo on a white tail
+  /* Qatar: Qatar grey, burgundy tail; the burgundy carries forward over the top of the rear fuselage and down to the tail
+     cone (front edge furthest forward at the roof, never reaching the belly). */
+  QTR:{ body:'#d9dbdc', belly:'#d9dbdc', fin:'#5c0632', wing:'#c9ced3', aft:{ col:'#5c0632', b0:1.06, b1:0.80 } },
+  CPA:{ body:'#f2f4f6', belly:'#f2f4f6', fin:'#006564', wing:'#c9ced3' },   // Cathay: white; jade tail
+  KAL:{ body:'#5aaee0', belly:'#e9edf0', fin:'#5aaee0', wing:'#c9ced3' },   // Korean 2025 (the 787-10s): sky blue over white; sky-blue tail
+  CAL:{ body:'#f2f4f6', belly:'#f2f4f6', fin:'#f2f4f6', wing:'#c9ced3' },   // China Airlines: white; plum blossom on a white tail
+  LAN:{ body:'#f2f4f6', belly:'#f2f4f6', fin:'#241f6e', wing:'#c9ced3' },   // LATAM: white; indigo tail (coral band not drawn)
+  CCA:{ body:'#f2f4f6', belly:'#dfe3e6', fin:'#f2f4f6', wing:'#c9ced3' },   // Air China: white over light grey; phoenix on a white tail
+  CHH:{ body:'#f4f1ea', belly:'#f4f1ea', fin:'#d4202c', wing:'#c9ced3', aft:{ col:'#d4202c', b0:0.74, b1:0.90 } },   // Hainan: red tail sweeping onto the lower rear
+  SOL:{ body:'#f2f4f6', belly:'#f2f4f6', fin:'#0e4f86', wing:'#c9ced3' },   // Solomon: white; flag tail -> its blue
+  THT:{ body:'#1d7cc4', belly:'#f2f4f6', fin:'#2b9fc4', wing:'#d5d9dd' },   // Air Tahiti Nui 787: blue over white; turquoise tail
+  ACI:{ body:'#f2f4f6', belly:'#f2f4f6', fin:'#1d3f9a', wing:'#c9ced3', aft:{ col:'#1d3f9a', b0:0.52, b1:0.42 } },   // Aircalin: white front, blue rear and tail
+  CVA:{ body:'#f2f4f6', belly:'#f2f4f6', fin:'#0f5a4a', wing:'#dfe3e6' },   // Air Chathams (Saab 340, ATR): white; dark green tail
+  TMN:{ body:'#ffcc00', belly:'#ffcc00', fin:'#ffcc00', wing:'#b9bec3' },   // Tasman Cargo 767s fly in DHL yellow
+  TNZ:{ body:'#f2f4f6', belly:'#f2f4f6', fin:'#1b2a5e', wing:'#c9ced3' },   // Texel Air 737 freighters: white; navy tail
+  AWK:{ body:'#f2f4f6', belly:'#f2f4f6', fin:'#f2f4f6', wing:'#c9ced3' },   // Airwork 737-400 freighters: plain white
+  /* Local operators (stand-in models: King Airs on the ATR, helicopters on the 429). */
+  GBA:{ body:'#f2f4f6', belly:'#3c4146', fin:'#f2f4f6', wing:'#f2f4f6' },   // Barrier Air Caravans: white, dark belly pod (teal stripes not drawn)
+  NOR:{ body:'#cc2a1e', belly:'#cc2a1e', fin:'#f5b800', wing:'#cc2a1e' },   // Auckland/Northland rescue: red, yellow top and fin
+  PLC:{ body:'#1d2b52', belly:'#1d2b52', fin:'#1d2b52', wing:'#1d2b52' },   // NZ Police Eagle: dark blue (chequers not drawn)
+  SKL:{ body:'#f2f4f6', belly:'#f2f4f6', fin:'#f2f4f6', wing:'#e3e6e9',     // Skyline / NZ Air Ambulance King Air 200s: white
+        B350:{ body:'#1f5fbf', belly:'#1f5fbf', fin:'#f2f4f6' } },           // ZK-SSH, the Starship King Air 350: blue
+  LFT:{ body:'#f2f4f6', belly:'#d0102a', fin:'#f2f4f6', wing:'#f2f4f6' },   // Life Flight King Airs: white over red
+  CFL:{ body:'#c8102e', belly:'#c8102e', fin:'#c8102e', wing:'#c8102e' },   // Waikato/BOP rescue (Search and Rescue Services): red
+  FDC:{ body:'#f2f4f6', belly:'#1a2a6b', fin:'#f2f4f6', wing:'#f2f4f6' },   // NZ Flying Doctor King Airs: white over navy
+  MDK:{ body:'#f2f4f6', belly:'#1a2a6b', fin:'#f2f4f6', wing:'#f2f4f6' },   // Air Wanganui King Airs: white over navy
+  /* What the US nodes see (19 Nov): the airlines with the most airframes over KICTPI, adsb-pi, raspi5, JMK and ELAKE in three
+     weeks, each matched to photos of its current scheme. Same rules: body / belly / fin / wing, a rear block where the real
+     scheme has one, no titles, logos, stripes or tail art. Regionals that fly in a partner's colours are in the sister list
+     below. SkyWest and Republic fly for several partners, so the callsign can't tell which paint - they stay grey, as do
+     managed private jets (owners' own paint) and fleets with no clear photo (Wheels Up, JSX, Executive AirShare, Jet Linx). */
+  ACA:{ body:'#f2f4f6', belly:'#1a1a1c', fin:'#1a1a1c', wing:'#c9ced3' },   // Air Canada 2017: white over black; black tail (maple leaf not drawn)
+  ROU:{ body:'#f2f4f6', belly:'#f2f4f6', fin:'#c8102e', wing:'#c9ced3',     // Air Canada Rouge A321/A319: white; red tail
+        B38M:{ belly:'#1a1a1c', fin:'#1a1a1c' } },                          // the 737 MAXes moved over from mainline in 2026 keep its black
+  WJA:{ body:'#f2f4f6', belly:'#f2f4f6', fin:'#155d73', wing:'#c9ced3', aft:{ col:'#14808e', b0:0.62, b1:0.92 } },   // WestJet 2018: white; teal sweep onto the lower rear, deep-teal tail
+  FFT:{ body:'#f2f4f6', belly:'#f2f4f6', fin:'#f2f4f6', wing:'#c9ced3' },   // Frontier: white; animal-photo tails and green engines not drawn
+  MXY:{ body:'#3b7bd4', belly:'#3b7bd4', fin:'#1b2a6b', wing:'#c9ced3' },   // Breeze A220: pearl blue all over; navy tail
+  AAY:{ body:'#f2f4f6', belly:'#f2f4f6', fin:'#2453a0', wing:'#c9ced3', aft:{ col:'#2453a0', b0:0.42, b1:0.86 } },   // Allegiant: white; blue lower rear and tail (orange sunburst not drawn)
+  SCX:{ body:'#f26522', belly:'#1f2a5c', fin:'#1f2a5c', wing:'#c9ced3' },   // Sun Country 2018: orange over navy; navy tail (sun not drawn)
+  VOI:{ body:'#f2f4f6', belly:'#f2f4f6', fin:'#5c2d91', wing:'#c9ced3' },   // Volaris: white; purple tail
+  AMX:{ body:'#f2f4f6', belly:'#f2f4f6', fin:'#0b2343', wing:'#c9ced3' },   // Aeromexico: white; navy tail (eagle knight not drawn)
+  CMP:{ body:'#f2f4f6', belly:'#f2f4f6', fin:'#1b3c87', wing:'#c9ced3' },   // Copa: white; blue tail
+  POE:{ body:'#cddff0', belly:'#cddff0', fin:'#1c2b4d', wing:'#c9ced3' },   // Porter E2: pale blue all over; navy patterned tail -> navy
+  VIV:{ body:'#f2f4f6', belly:'#f2f4f6', fin:'#f2f4f6', wing:'#c9ced3' },   // Viva Aerobus: white; logo on a white tail; green engines not drawn
+  VXP:{ body:'#f2f4f6', belly:'#f2f4f6', fin:'#4b2a8c', wing:'#c9ced3', aft:{ col:'#4b2a8c', b0:0.46, b1:0.88 } },   // Avelo: white; purple lower rear and tail
+  GTI:{ body:'#f2f4f6', belly:'#f2f4f6', fin:'#1f3f8f', wing:'#c9ced3' },   // Atlas Air 747s: white; blue tail
+  /* Fractional and charter jets (bizjet model) */
+  EJA:{ body:'#f4f5f6', belly:'#f4f5f6', fin:'#f4f5f6', wing:'#dfe3e6' },   // NetJets: white (thin pinstripe not drawn)
+  LXJ:{ body:'#f2f4f6', belly:'#2e3236', fin:'#2e3236', wing:'#dfe3e6' },   // Flexjet: white over charcoal; charcoal tail (red-gold stripe not drawn)
+  VJA:{ body:'#c4c8cc', belly:'#c4c8cc', fin:'#c4c8cc', wing:'#b9bec3' }    // Vista America / VistaJet: silver (red stripe not drawn)
 };
 /* Sister operators flying the parent's colours under their own callsign prefix: easyJet Europe and Switzerland; Ryanair's
-   Buzz, Malta Air and Lauda; Lufthansa CityLine; KLM Cityhopper; BA CityFlyer and the BA Shuttle callsign. */
-for(const [a,p] of [['EJU','EZY'],['EZS','EZY'],['RYS','RYR'],['MAY','RYR'],['LDM','RYR'],['CLH','DLH'],['KLC','KLM'],['CFE','BAW'],['SHT','BAW']]) LIVERIES[a]=LIVERIES[p];
+   Buzz, Malta Air and Lauda; Lufthansa CityLine; KLM Cityhopper; BA CityFlyer and the BA Shuttle callsign; and the US list below. */
+for(const [a,p] of [['EJU','EZY'],['EZS','EZY'],['RYS','RYR'],['MAY','RYR'],['LDM','RYR'],['CLH','DLH'],['KLC','KLM'],['CFE','BAW'],['SHT','BAW'],
+  // US regionals in their partner's colours: Envoy, PSA and Piedmont (American Eagle); Endeavor (Delta Connection); Mesa,
+  // GoJet and CommuteAir (United Express); Baron Aviation's Caravans (FedEx Feeder); VistaJet's Malta callsign.
+  ['ENY','AAL'],['JIA','AAL'],['PDT','AAL'],['EDV','DAL'],['ASH','UAL'],['GJS','UAL'],['UCA','UAL'],['BVN','FDX'],['VJT','VJA']]) LIVERIES[a]=LIVERIES[p];
 /* Military paint by MODEL (16 Nov). Most military flights carry no callsign we can match (RNZAF flies as KIWI, RAAF as
    ASY, many send none), so the model decides: every C-17 is grey whoever flies it. A callsign scheme (REACH above, or an
    airline on a forced model) still wins; ?livery=off turns this off too. Flat colours only - no roundels, flashes, serials
@@ -124,13 +191,71 @@ function artItems(art,t){ if(!art) return {}; const s=art.spec, o=Object.assign(
   return Object.assign(o,(s.types||{})[(t||'').toUpperCase()]||{}); }
 /* Models that need windows DRAWN: a passenger cabin, but no windows modelled. Each checked in a WebGL render before
    going on this list. Models with their own windows (A320, 777) are not on it - their glass is kept, see keep(). */
+/* Models exported with their skin set to blend at full opacity (the Caravan's fuselage, fin and wing struts). For these
+   only parts you can actually see through - opacity under 1 - count as glass; elsewhere every blend part is still kept. */
+const BLEND_SKIN=new Set(['c208.glb']);
+/* Where the fin may start, as a fraction back from the nose, for models whose roof behind the wing stands a little above
+   the cabin roof the painter measures - the Caravan's does, and from 55% back it took the tail colour as a stripe. */
+const FIN_FROM={'c208.glb':0.68};
 const WINDOWED={
   'b787.glb': { pitch:0.53, w:0.28, h:0.46, yc:0.60, cockpit:true,  doors:true  },   // no windows, doors or glass modelled at all
   /* The ATR's windows were only ever in its own texture (see TAKEOVER). yc 0.28: on the frames modelled into its skin. */
   'atr72.glb':{ pitch:0.76, w:0.30, h:0.40, yc:0.28, cockpit:false, doors:false },
   // the A380's windows were only in the texture it lost to TAKEOVER: two decks, so two rows (yc2: the upper deck)
-  'a380_v2.glb':{ pitch:0.53, w:0.26, h:0.40, yc:0.38, yc2:0.74, cockpit:false, doors:true }
+  'a380_v2.glb':{ pitch:0.53, w:0.26, h:0.40, yc:0.38, yc2:0.74, cockpit:false, doors:true },
+  /* 18 Nov: AJ saw an A350 with no windows at all. Every model was then rendered grey and in a livery (outputs/windows):
+     these are the ones whose cabin windows, cockpit glass or canopy were missing, each placed against a WebGL render.
+     cabin:false - no row of cabin windows (tankers, AWACS, freighters, bombers). ck - where the cockpit panes go when the
+     default nose does not fit: n0/n1 fuselage-heights back from the tip, y0/y1 up the section (0 belly, 1 roof).
+     panes - extra glass drawn on both side views, polygons of [b, y]: b back from the nose as a fraction of the length,
+     y up the section. top - glass seen from above, polygons of [b, l]: l across, as a fraction of the half-width. */
+  'a350.glb':   { pitch:0.53, w:0.28, h:0.46, yc:0.60, cockpit:true,  doors:true  },   // nothing modelled at all, as on the 787
+  'a333_v2.glb':{ pitch:0.53, w:0.26, h:0.40, yc:0.58, cockpit:true,  doors:true  },   // windows only in its texture, lost to a livery
+  'pc24.glb':   { pitch:0.95, w:0.42, h:0.50, yc:0.55, cockpit:false, doors:false,
+                  panes:[[[0.088,0.50],[0.097,0.64],[0.150,0.86],[0.196,0.93],[0.196,0.70],[0.150,0.62]]] },   // the same, on the PC-24
+  'crj.glb':    { pitch:0.51, w:0.25, h:0.36, yc:0.58, cockpit:true,  doors:true  },
+  'kc135.glb':  { cabin:false, cockpit:true, doors:false },
+  'e3.glb':     { cabin:false, cockpit:true, doors:false },
+  'c17.glb':    { cabin:false, cockpit:true, doors:false },
+  'b1b.glb':    { cabin:false, cockpit:false, doors:false,
+                  panes:[[[0.103,0.58],[0.101,0.64],[0.121,0.90],[0.127,0.91],[0.127,0.80],[0.124,0.80]], [[0.131,0.82],[0.131,0.93],[0.147,0.94],[0.147,0.84]]],
+                  top:[[[0.101,-0.35],[0.101,0.35],[0.124,0.55],[0.124,-0.55]]] },
+  'as350.glb':  { cabin:false, cockpit:false, doors:false,                                 // panes measured on a grid render
+                  panes:[[[0.026,0.34],[0.030,0.60],[0.052,0.82],[0.092,0.93],[0.095,0.42],[0.058,0.28]],      // windscreen
+                         [[0.098,0.44],[0.098,0.72],[0.162,0.72],[0.162,0.44]], [[0.100,0.20],[0.100,0.36],[0.150,0.36],[0.150,0.20]],  // front door, chin
+                         [[0.172,0.44],[0.172,0.71],[0.250,0.71],[0.250,0.44]]] },                                  // rear door
+  'uh60m.glb':  { cabin:false, cockpit:false, doors:false,                                 // own texture when grey; this is for paint
+                  panes:[[[0.157,0.40],[0.160,0.66],[0.170,0.81],[0.211,0.84],[0.211,0.39]], [[0.216,0.32],[0.216,0.86],[0.238,0.86],[0.238,0.32]]] }
 };
+/* ---- glass the file names but does not colour (18 Nov) ----
+   Some of our models lost their materials on the way in and kept only their part names: the Hawk's canopy is
+   "Canopy_Glass", the Phenom's windows "Glass_windows", the B-52's "Glass", the A400M's "Translucent_Glass_Gray". Those
+   parts were drawn in the body colour, so the canopy or the windows vanished into the skin. Others have their glass as a
+   part of its own with no telling name (GLASS_NODES, found by where each part sits on the airframe). Either way the part
+   gets one dark tinted glass, which the painter keeps (byName) and the day/night themes leave alone (ownPaint). A part
+   with a material of its own is never touched: the A320's and the 777's glass already shows. */
+const GLASS_NAME=/glass|canopy|windscreen|windshield/i;
+const GLASS_NODES={ 'p8.glb':['Object_6','Object_8'], 'e7.glb':['Object_5'], 't38.glb':['Object_19'] };
+function glassPass(root,key){
+  const only=GLASS_NODES[key]||[]; let gm=null;
+  root.traverse(o=>{ if(!o.isMesh||!o.material||Array.isArray(o.material)) return;
+    const mt=o.material; if(mt.name||mt.map||(mt.userData&&mt.userData._origMap)) return;   // its own material, or already glass
+    let hit=false; for(let p=o;p&&!hit;p=p.parent){ const n=p.name||''; hit=GLASS_NAME.test(n)||only.includes(n); if(p===root) break; }
+    if(!hit) return;
+    if(!gm){ gm=new THREE.MeshStandardMaterial({ color:0x1b222c, metalness:0.5, roughness:0.18, name:'PiLNK glass' }); gm.userData.ownPaint=true; }
+    o.material=gm; });
+}
+/* ---- built inside-out (18 Nov) ----
+   Three quarters of the A400M's triangles face inward, normals and all. Drawn one-sided, the near skin was dropped
+   and you looked through the plane at the inside of the far side. Drawing both sides puts the skin back, and the
+   shader turns the inward normals round for the faces we see, so it lights as normal. The C-130 is built the same
+   way, but its file already asks for both sides. */
+const DOUBLE_SIDED=new Set(['a400.glb']);
+function sidesPass(root,key){
+  if(!DOUBLE_SIDED.has(key)) return;
+  root.traverse(o=>{ if(!o.isMesh||!o.material) return;
+    (Array.isArray(o.material)?o.material:[o.material]).forEach(m=>{ if(m.side!==THREE.DoubleSide){ m.side=THREE.DoubleSide; m.needsUpdate=true; } }); });
+}
 /* Models whose own textures carry ANOTHER operator's markings - names, titles, logos, a registration - greyed but still
    legible on every node: Bahamasair on the ATR, KLM on the 777, ANA on the 747, Airbus house colours on the A380. Found
    by rendering every textured airliner model grey (17 Oct). The painter takes these over even when they are grey, so
@@ -218,6 +343,11 @@ function atlasLayout(W){ const k=W/4096, g=8, h={L:544,R:544,FL:272,FR:272,T:160
   for(const n of ['L','R','FL','FR','T','B','S']){ rows[n]=[y,Math.round(h[n]*k)]; y+=Math.round(h[n]*k)+g; }
   let H=1; while(H<y) H*=2; return {W,H,rows}; }
 const FIN_B0=0.5;    // the fin views cover the back half of the aircraft
+/* A helicopter's cabin bulges wider than the fuselage the painter measures, so its doors and windscreen fell to the
+   flat strip and a pane drawn in the side view never reached them. A wide part that touches one of the model's panes
+   takes the side view instead: the pane lands on it edge-true, and the skin round it takes the body paint. */
+function inPane(poly,px,py){ let c=false; for(let i=0,j=poly.length-1;i<poly.length;j=i++){ const [xi,yi]=poly[i],[xj,yj]=poly[j];
+  if((yi>py)!==(yj>py)&&px<(xj-xi)*(py-yi)/(yj-yi)+xi) c=!c; } return c; }
 function finRange(A){ return [A.yTop-0.4*A.H, A.finTop+0.02*A.H]; }
 function drawAtlas(A,liv,L){
   const c=document.createElement('canvas'); c.width=L.W; c.height=L.H; const x=c.getContext('2d');
@@ -236,18 +366,20 @@ function drawAtlas(A,liv,L){
     const pitch=S.pitch*pxM, ww=S.w*pxM, wh=Math.max(2,S.h*pyM);
     const xs=Xb(A.cab0)+0.9*D*pxM, xe=Xb(A.cab1)-0.6*D*pxM;
     x.fillStyle='#1b222c';
-    for(const yc of (S.yc2?[S.yc,S.yc2]:[S.yc])){ const wy2=Y(A.yBot+yc*A.H);
+    if(S.cabin!==false) for(const yc of (S.yc2?[S.yc,S.yc2]:[S.yc])){ const wy2=Y(A.yBot+yc*A.H);
       for(let px=xs;px<=xe;px+=pitch){ rrect(x,px-ww/2,wy2-wh/2,ww,wh,Math.min(ww,wh)*0.4); x.fill(); } }
     if(S.doors){ // the first door just ahead of the window line, the last just behind it - outlines, as on the real thing
       x.strokeStyle='rgba(20,24,30,0.45)'; x.lineWidth=Math.max(1,0.05*pxM);
       const dw=0.85*pxM, dh=1.85*pyM, dt=wy-0.55*dh;
       for(const dx of [xs-0.75*D*pxM, xe+0.5*D*pxM]){ rrect(x,dx-dw/2,dt,dw,dh,dw*0.15); x.stroke(); } }
     if(S.cockpit){ // four panes on the nose, 0.45 to 0.92 fuselage-heights back from the tip, raked back along the top
-      x.fillStyle='#161c24';
-      const n0=Xb(0)+0.45*D*pxM, n1=Xb(0)+0.92*D*pxM, yb=Y(A.yBot+0.63*A.H), yt=Y(A.yBot+0.745*A.H), gap=0.06*pxM;
+      x.fillStyle='#161c24'; const k=S.ck||{}, at=(v,d)=>v!=null?v:d;
+      const n0=Xb(0)+at(k.n0,0.45)*D*pxM, n1=Xb(0)+at(k.n1,0.92)*D*pxM, yb=Y(A.yBot+at(k.y0,0.63)*A.H), yt=Y(A.yBot+at(k.y1,0.745)*A.H), gap=0.06*pxM;
       const posts=[0,0.24,0.5,0.76,1], rake=0.10*D*pxM;
       for(let i=0;i<4;i++){ const a=n0+(n1-n0)*posts[i]+gap/2, b=n0+(n1-n0)*posts[i+1]-gap/2;
         x.beginPath(); x.moveTo(a,yb); x.lineTo(b,yb); x.lineTo(b-rake*0.35,yt); x.lineTo(a+(i?-rake*0.35:rake*0.6),yt); x.closePath(); x.fill(); } }
+    if(S.panes){ x.fillStyle='#161c24';   // the same glass on both sides: the left view and the right are both drawn nose-left
+      for(const poly of S.panes){ x.beginPath(); poly.forEach(([b,yn],i)=>{ const px=Xb(b), py=Y(A.yBot+yn*A.H); if(i) x.lineTo(px,py); else x.moveTo(px,py); }); x.closePath(); x.fill(); } }
   }
   for(const v of ['FL','FR']){ const [r0,rh]=L.rows[v]; x.fillStyle=liv.fin; x.fillRect(0,r0,W,rh); }
   // the artwork slot: images over the paint, in the body views and the fin views
@@ -269,7 +401,9 @@ function drawAtlas(A,liv,L){
       x.fillStyle=liv.aft.col; x.beginPath(); x.moveTo(W,Yl(-A.hw*1.1));
       for(let k=0;k<=24;k++){ const lr=-1+2*k/24, h=0.5*Math.sqrt(Math.max(0,1-lr*lr)), yn=v==='T'?0.5+h:0.5-h;
         x.lineTo(aftB(liv.aft,yn)*W,Yl(lr*A.hw*1.1)); }
-      x.lineTo(W,Yl(A.hw*1.1)); x.closePath(); x.fill(); } }
+      x.lineTo(W,Yl(A.hw*1.1)); x.closePath(); x.fill(); }
+    if(v==='T'&&A.windowed&&A.windowed.top){ x.fillStyle='#161c24';
+      for(const poly of A.windowed.top){ x.beginPath(); poly.forEach(([b,ln],i)=>{ const px=b*W, py=Yl(ln*A.hw); if(i) x.lineTo(px,py); else x.moveTo(px,py); }); x.closePath(); x.fill(); } } }
   { const [r0,rh]=L.rows.S; x.fillStyle=liv.wing; x.fillRect(0,r0,W,rh); }
   return c;
 }
@@ -283,6 +417,7 @@ function rrect(x,a,b,w,h,r){ x.beginPath(); x.moveTo(a+r,b); x.arcTo(a+w,b,a+w,b
    side, or the plan view when it faces mostly up or down (the crown, the belly). Wings, tailplane, engines: the
    plan views, or the flat strip when they face sideways. */
 function paintAircraft(root,key,liv,renderer){
+  glassPass(root,key); sidesPass(root,key);
   const windowed=WINDOWED[key]||null;
   const old=root.userData.paintTex;
   const meshes=[]; root.traverse(o=>{ if(o.isMesh&&o.geometry&&o.geometry.attributes.position) meshes.push(o); });
@@ -290,7 +425,7 @@ function paintAircraft(root,key,liv,renderer){
   /* The model's own detail stays as it is: glass, windows, tyres, lights and anything near-black. Most of our models
      have their cabin windows, doors and cockpit glass modelled - the A320 and the ATR do - and painting over them
      would lose real detail to a drawing of it. Only the skin takes the picture. */
-  const byName=mt=>/glass|window|windshield|clear|rubber|tyre|tire|light(red|green|white)|interior|cockpit/i.test(mt.name||'')||mt.transparent;
+  const byName=mt=>/glass|window|windshield|clear|rubber|tyre|tire|light(red|green|white)|interior|cockpit/i.test(mt.name||'')||(mt.transparent&&!(BLEND_SKIN.has(key)&&mt.opacity>=0.99));
   const dark=mt=>{ const o=mt.userData._origCol||mt.color; return o?(0.3*o.r+0.59*o.g+0.11*o.b)<0.03:false; };
   // a model with its own textures keeps them when it is grey - the painter only takes it over for a livery, or TAKEOVER
   const ownMaps=[...mats].some(mt=>mt.userData._origMap);
@@ -299,7 +434,10 @@ function paintAircraft(root,key,liv,renderer){
       mats.forEach(mt=>{ mt.userData.paintMap=null; mt.userData.livery=false; mt.map=null; tintMaterial(mt); }); old.dispose(); root.userData.paintTex=null; }
     return null;
   }
-  const A=measureAirframe(root,key); if(!A) return null;
+  /* Measured once per loaded model and kept: a repaint (same model, new livery) comes after the rotors and props
+     have been turning, and a main rotor caught mid-turn moved the nose and the height the panes are placed by -
+     the helicopters' glass jumped off the windows. The first measure is taken at rest. */
+  const A=root.userData.airframe||(root.userData.airframe=measureAirframe(root,key)); if(!A) return null;
   A.windowed=windowed;
   const maxT=renderer&&renderer.capabilities?renderer.capabilities.maxTextureSize:4096;
   const L=atlasLayout(Math.min(4096,maxT));
@@ -322,13 +460,15 @@ function paintAircraft(root,key,liv,renderer){
          fin's ROOT: where the fin rises out of the tail cone the roof has already dropped below the section's roof,
          so a height test alone left a band of body colour at the foot of the fin. A thin, steep surface on the
          centreline, near the roof, no further back than the fin's root, is fin wherever it is. */
-      const finRoot=back>0.6&&back<=A.finEnd+0.01&&l<0.15*A.hw&&Math.abs(nl)>0.85&&y>A.yTop-0.3*A.H;
-      const fin=finRoot||(y>A.yTop+0.08*A.H&&back>0.55&&l<0.35*A.semi);
+      const f0=FIN_FROM[key]||0.55, finRoot=back>Math.max(0.6,f0)&&back<=A.finEnd+0.01&&l<0.15*A.hw&&Math.abs(nl)>0.85&&y>A.yTop-0.3*A.H;
+      const fin=finRoot||(y>A.yTop+0.08*A.H&&back>f0&&l<0.35*A.semi);
       const body=!fin&&l<=A.hw*1.1&&y>=A.yBot-0.05*A.H&&y<=A.yTop+0.08*A.H;
       let view;
       if(fin) view=ls<0?'FL':'FR';
       else if(body) view=Math.abs(ny)>0.8?(y>(A.yTop+A.yBot)/2?'T':'B'):(ls<0?'L':'R');
       else view=Math.abs(ny)>0.5?(ny>0?'T':'B'):'S';
+      if(view==='S'&&windowed&&windowed.panes){ const hit=(bb,yy)=>windowed.panes.some(poly=>inPane(poly,bb,(yy-A.yBot)/A.H));
+        if(hit(back,y)||hit((A.fMax-a[i])/A.len,a[i+2])||hit((A.fMax-a[i+3])/A.len,a[i+5])||hit((A.fMax-a[i+6])/A.len,a[i+8])) view=ls<0?'L':'R'; }
       const [r0,rh]=L.rows[view];
       for(let j=0;j<3;j++){ const p=i+j*3; let u,vv;
         if(view==='L'||view==='R'){ u=(A.fMax-a[p])/A.len; vv=r0+(yHi-a[p+2])/(yHi-yLo)*rh; }

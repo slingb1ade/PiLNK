@@ -19,6 +19,10 @@
 (function () {
   'use strict';
   var WP = /^[A-Z][A-Z0-9]{1,6}$/, MAX_NM = 400;
+  // A "next" fix with an ETA must be reachable by then (17 Nov 2026, QFA145: the 2013 fix list put DOMRI
+  // 25 nm from where the aircraft's own FMS had it 31 s ahead). Speed from ADS-B, else a generous 600 kt;
+  // 1.5x + 5 nm leaves room for winds and rounding. Two minutes past its ETA the fix has been passed.
+  var GS_DEFAULT = 600, GS_MIN = 30, GS_MAX = 700, REACH_X = 1.5, REACH_PAD_NM = 5, PASSED_S = 120;
   var D2R = Math.PI / 180;
 
   function num(v) { return typeof v === 'number' && isFinite(v); }
@@ -50,14 +54,24 @@
     return best && bd <= MAX_NM ? { name: name, lat: best.lat, lon: best.lon } : null;
   }
 
-  // a: one aircraft from /flights; fixes: [{name, lat, lon}].
+  // Can the plane be at fix f by its ETA? Only judged when both the ETA and now are known.
+  function reachable(a, f, eta, now) {
+    if (!num(eta) || eta <= 0 || !num(now)) return true;
+    var left = eta - now;
+    if (left < -PASSED_S) return false;
+    var gs = num(a.gs) && a.gs >= GS_MIN && a.gs <= GS_MAX ? a.gs : GS_DEFAULT;
+    return nm(a.lat, a.lon, f.lat, f.lon) <= gs * Math.max(left, 0) / 3600 * REACH_X + REACH_PAD_NM;
+  }
+
+  // a: one aircraft from /flights; fixes: [{name, lat, lon}]; now: epoch s (optional, enables the reach check).
   // -> {passed, next, then} (each {name, lat, lon} or null; next also eta_ts) or null when there is nothing to draw.
-  function plan(a, fixes) {
+  function plan(a, fixes, now) {
     var d = a && a.datalink;
     if (!a || !d || typeof d !== 'object' || !num(a.lat) || !num(a.lon)) return null;
     if ((num(d.on_ts) && d.on_ts > 0) || (num(d.in_ts) && d.in_ts > 0)) return null;   // landed: the route is done
     var ix = index(fixes);
     var out = { passed: locate(d.last_wp, a, ix), next: locate(d.next_wp, a, ix), then: locate(d.then_wp, a, ix) };
+    if (out.next && !reachable(a, out.next, d.next_wp_eta_ts, now)) out.next = null;
     if (out.next && num(d.next_wp_eta_ts) && d.next_wp_eta_ts > 0) out.next.eta_ts = d.next_wp_eta_ts;
     if (out.then && out.next && out.then.name === out.next.name) out.then = null;
     if (out.passed && ((out.next && out.passed.name === out.next.name) || (out.then && out.passed.name === out.then.name))) out.passed = null;
@@ -89,11 +103,11 @@
       icon: o.L.divIcon({ className: 'dlfx-wrap', html: wrap, iconSize: [size, size], iconAnchor: [size / 2, size / 2] }) }).addTo(o.map);
   }
 
-  // o: {map, L, aircraft: {cs: a}, selected: cs|null, fixes: [{name, lat, lon}]}
+  // o: {map, L, aircraft: {cs: a}, selected: cs|null, fixes: [{name, lat, lon}], now: epoch s}
   function sync(o) {
     if (!o || !o.map || !o.L) return;
     var a = o.selected && o.aircraft ? o.aircraft[o.selected] : null;
-    var p = a ? plan(a, o.fixes) : null;
+    var p = a ? plan(a, o.fixes, o.now) : null;
     if (!p) { clear(o.map); return; }
     var eta = p.next ? hhmm(p.next.eta_ts) : '';
     var key = [o.selected, p.passed && p.passed.name, p.next && p.next.name, eta, p.then && p.then.name].join('|');

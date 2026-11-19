@@ -19,7 +19,7 @@
 <script defer src="/static/datalink-board.js?v=b4"></script>
 <script src="/static/datalink-map.js?v=m2"></script>
 <script src="/static/fixes-nz.js?v=f1"></script>
-<script src="/static/datalink-fixes.js?v=fx1"></script>
+<script src="/static/datalink-fixes.js?v=fx2"></script>
 <!-- Airport live streams in the navbar: a red LIVE pill while a stream near this node is live (static/live-pill.js). -->
 <script src="/static/live-pill.js?v=lp1"></script>
 <style>
@@ -2555,6 +2555,7 @@ function updateNearestAirport(lat, lon) {
   // Update IFR waypoints based on region
   if (typeof nzIfrList === 'function') {
     IFR_WAYPOINTS = isInNZ() ? nzIfrList() : [];
+    if (typeof withLearnedFixes === 'function') IFR_WAYPOINTS = withLearnedFixes(IFR_WAYPOINTS);
   }
   // Airspace and NAVAIDs were fetched around the old airport (Auckland by default): a node overseas kept Auckland's
   // until someone searched for an airport. Fetch again around the new one.
@@ -7026,7 +7027,7 @@ function dlMapSync() {
       station: METAR_STATION, now: now, airports: GLOBAL_AIRPORTS, db: airportDB, loadDb: loadAirportDB });
     // The selected plane's last / next / following fix from its own position reports (30 Oct 2026, AJ: POKOM then SABAV)
     if (window.dlFixes) window.dlFixes.sync({ map: map, L: L, aircraft: lastAircraft, selected: sky ? null : selectedFlight,
-      fixes: (typeof IFR_WAYPOINTS !== 'undefined') ? IFR_WAYPOINTS : [] });
+      fixes: (typeof IFR_WAYPOINTS !== 'undefined') ? IFR_WAYPOINTS : [], now: now });
     if (!sky) { dlSkyLast = ''; return; }
     var v = window.dlMap.skyView({ aircraft: lastAircraft, selected: selectedFlight, station: METAR_STATION, now: now,
       airports: GLOBAL_AIRPORTS, db: airportDB, loadDb: loadAirportDB });
@@ -9026,6 +9027,46 @@ window.IFR_FIXES_MANUAL = IFR_FIXES_MANUAL;
 function isInNZ() { return RX_LAT < -34 && RX_LAT > -48 && RX_LON > 165 && RX_LON < 179; }
 var IFR_WAYPOINTS = isInNZ() ? nzIfrList() : [];
 
+// Fix positions this node learned from the planes (17 Nov 2026, QFA145: the 2013 list put DOMRI 25 nm from
+// where the aircraft's own FMS had it). /api/datalink/fixes = where aircraft really were at the ETAs their
+// FMS gave, several flights agreeing. A learned spot replaces the listed one for that name; a name the old
+// list lacks (GEWNY) is added. Names came over the air: shape-checked, never used as HTML.
+var LEARNED_FIXES = [];
+function withLearnedFixes(list) {
+  var out = Array.isArray(list) ? list.slice() : [];
+  if (typeof RX_LAT !== 'number' || typeof RX_LON !== 'number') return out;
+  var navIds = Object.create(null);           // the list names navaids 'AA VOR' / 'WP NDB'
+  out.forEach(function (w) { if (w && (w.type === 'VOR' || w.type === 'NDB') && typeof w.name === 'string') navIds[w.name.split(' ')[0]] = 1; });
+  LEARNED_FIXES.forEach(function (f) {
+    if (!f || typeof f.name !== 'string' || !/^[A-Z][A-Z0-9]{1,6}$/.test(f.name)) return;
+    if (navIds[f.name]) return;               // a navaid: the list has it right, and a learned twin would sit on it
+    if (typeof f.lat !== 'number' || typeof f.lon !== 'number' || !isFinite(f.lat) || !isFinite(f.lon)) return;
+    if (haversineKm(RX_LAT, RX_LON, f.lat, f.lon) > IFR_FIX_RANGE_KM) return;
+    var n = (typeof f.n === 'number' && isFinite(f.n) && f.n > 0) ? Math.floor(f.n) : 1;
+    var i = -1;
+    out.forEach(function (w, k) { if (i < 0 && w && w.name === f.name && w.type !== 'VOR' && w.type !== 'NDB') i = k; });
+    if (i >= 0) {
+      var w = Object.assign({}, out[i]);
+      w.listedNm = haversineKm(w.lat, w.lon, f.lat, f.lon) / 1.852;
+      w.lat = f.lat; w.lon = f.lon; w.learned = n;
+      out[i] = w;
+    } else {
+      out.push({ name: f.name, lat: f.lat, lon: f.lon, type: 'Enroute', learned: n });
+    }
+  });
+  return out;
+}
+function loadLearnedFixes() {
+  fetch('/api/datalink/fixes', { cache: 'no-store' }).then(function (r) { return r.ok ? r.json() : null; }).then(function (j) {
+    if (!j || !Array.isArray(j.fixes)) return;
+    LEARNED_FIXES = j.fixes;
+    IFR_WAYPOINTS = withLearnedFixes(isInNZ() ? nzIfrList() : []);
+    if (typeof drawWaypoints === 'function' && typeof map !== 'undefined' && map) drawWaypoints();
+  }).catch(function () { /* no datalink on this node: nothing learned */ });
+}
+setTimeout(loadLearnedFixes, 1500);
+setInterval(loadLearnedFixes, 10 * 60 * 1000);
+
 var waypointMarkers = [];
 var waypointsVisible = false;
 
@@ -9103,6 +9144,8 @@ function drawWaypoints() {
     var tipHtml = '<b>' + wp.name + '</b><br>' + typeLabel;
     if (wp.unverified) tipHtml += '<br><span style="color:#f59e0b;">Hand-entered, position not verified</span>';
     if (wp.was) tipHtml += '<br><span style="color:#94a3b8;">Was ' + wp.was + ' (renamed Aug 2026)</span>';
+    if (wp.learned) tipHtml += '<br><span style="color:#34d399;">Learned from ' + wp.learned + ' flight' + (wp.learned === 1 ? '' : 's') +
+      (wp.listedNm >= 1 ? '; the 2013 list had it ' + Math.round(wp.listedNm) + ' nm away' : '') + '</span>';
     if (wp.airfield) {
       tipHtml += '<br><span style="color:#7dd3fc;"><svg width="9" height="9" viewBox="0 0 24 24" fill="#7dd3fc" style="vertical-align:-1px;"><path d="M12 2C8.1 2 5 5.1 5 9c0 5.2 7 13 7 13s7-7.8 7-13c0-3.9-3.1-7-7-7z"/><circle cx="12" cy="9" r="2.5" fill="#0b0f1a"/></svg> ' + wp.airfield + '</span>';
     }

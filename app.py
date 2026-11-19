@@ -4692,6 +4692,15 @@ try:
     if _DATALINK is not None:
         logging.info('[datalink] ingest on — /api/datalink/status, /api/datalink/<hex>')
 
+        # Fix positions learned from the planes (17 Nov 2026): where an aircraft's own ADS-B
+        # trail puts it at the ETA its FMS gave for a fix. Local file, never sent anywhere.
+        def _trail_at(hex_lower, t):
+            with TRAIL_LOCK:
+                pts = list(TRAIL_HISTORY[hex_lower]) if hex_lower in TRAIL_HISTORY else []
+            return _dl._fix_learn.interpolate(pts, t) if _dl._fix_learn else None
+        _dl.enable_fix_learning(_DATALINK, _trail_at,
+                                os.path.join(os.path.dirname(os.path.abspath(__file__)), 'datalink_fixes.json'))
+
     def _datalink_merge(ac, hex_upper):
         _dl.merge_into(_DATALINK, ac, hex_upper)
 except Exception as _dl_err:      # never let datalink cost the dashboard

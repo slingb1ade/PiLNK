@@ -46,6 +46,9 @@ capsules/
 # OpenAIP airspace/navaid cache — persisted so a restart doesn't empty it (v1.5.22).
 openaip_cache.json
 openaip_cache.json.tmp
+# Datalink fix positions learned from the planes (17 Nov 2026) — per-node, never committed.
+datalink_fixes.json
+datalink_fixes.json.tmp
 # History-tab day store — survives restarts (v1.5.23).
 history_day.json
 history_day.json.tmp
