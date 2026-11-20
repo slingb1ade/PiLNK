@@ -1,0 +1,2 @@
+release namespaces="pilnk-release" sk-ssh-ed25519@openssh.com AAAAGnNrLXNzaC1lZDI1NTE5QG9wZW5zc2guY29tAAAAIATRIJFuAnfEFRO76I7BzZHfZBp4TbVRGu5AxC5SB0lUAAAAEXNzaDpwaWxuay1yZWxlYXNl pilnk-release-yubikey
+release namespaces="pilnk-release" ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIKY/NXwfJKHl/dzUZjYOE4DuJ4BGI5NC7AKzsrzbgmBn pilnk-release-backup
