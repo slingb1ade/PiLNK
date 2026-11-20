@@ -88,6 +88,27 @@ mkroot; mkrepo; release_to 1.6.9; cp "$ROOT/st" "$ROOT/st9"; cp "$ROOT/st.sig" "
 ( cd "$ROOT/up" && echo 1.6.10 > VERSION && G commit -qam v1.6.10 ); node_pull; chk "$ROOT/st9" "$ROOT/st9.sig"
 ok "numeric compare (node 1.6.10, signed 1.6.9) -> ahead" '[ "$(f ota_sig_run)" = ahead ]'
 
+# --- FIDO (YubiKey) signatures: the touch flag inside the signature (Task 1, Ruling S2)
+# Real signatures from AJ's YubiKey (throwaway keys, tests/image/fixtures/sk-spike).
+# OpenSSH 8.9 itself says "Good" for all three; only release-check's flag check tells them apart.
+SK="$REPO/tests/image/fixtures/sk-spike"
+sk_node() {  # sk_node PUBFILE: a node whose running release_signers trusts that key only
+  mkroot; mkrepo
+  printf 'release namespaces="pilnk-release" %s\n' "$(cut -d' ' -f1,2 "$1")" > "$HOME/pilnk/release_signers"
+}
+sk_node "$SK/touch.pub"; chk "$SK/statement" "$SK/touch.sig"
+ok "YubiKey signature made with a touch -> ok" '[ "$(f ota_sig)" = ok ] && [ "$(f signed_version)" = 0.0.1 ]'
+chk "$SK/statement" "$SK/touch2.sig"
+ok "a second touched signature -> ok" '[ "$(f ota_sig)" = ok ]'
+sk_node "$SK/notouch.pub"
+ok "(OpenSSH 8.9 alone accepts the no-touch signature)" 'ssh-keygen -Y verify -f "$HOME/pilnk/release_signers" -I release -n pilnk-release -s "$SK/notouch.sig" < "$SK/statement" >/dev/null 2>&1'
+chk "$SK/statement" "$SK/notouch.sig"
+ok "YubiKey signature made WITHOUT a touch -> bad/none" '[ "$(f ota_sig)" = bad ] && [ "$(f ota_sig_run)" = none ] && [ -z "$(f signed_version)" ]'
+chk --fetched "$SK/statement" "$SK/notouch.sig"
+ok "... with --fetched too" '[ "$(f ota_sig)" = bad ]'
+sk_node "$SK/touch.pub"; fakebin python3 'exit 127'; chk "$SK/statement" "$SK/touch.sig"
+ok "touch check cannot run (no python3) -> error, never ok" '[ "$(f ota_sig)" = error ] && [ "$(f ota_sig_run)" = none ]'
+
 # --- usage
 bash "$CHK" >/dev/null 2>&1; RC=$?
 ok "no arguments -> exit 2" '[ "$RC" = 2 ]'

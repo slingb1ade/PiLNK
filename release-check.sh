@@ -53,6 +53,47 @@ parse_statement() {
     COMMIT=${BASH_REMATCH[3]}
 }
 
+# FIDO (YubiKey) signatures carry a "user present" flag inside the signed data.
+# OpenSSH 8.9 does not check it, so a key made with no-touch-required would pass;
+# we check it ourselves (Task 1, Ruling S2). Plain keys (the offline backup) have
+# no flag. Exit 0 = fine, 1 = FIDO signature made without a touch, 2 = unreadable.
+touch_check() {
+    python3 - "$SIG" <<'PY'
+import base64, struct, sys
+def field(b, o):
+    if o + 4 > len(b):
+        raise ValueError
+    n = struct.unpack('>I', b[o:o + 4])[0]
+    if o + 4 + n > len(b):
+        raise ValueError
+    return b[o + 4:o + 4 + n], o + 4 + n
+try:
+    lines = open(sys.argv[1], 'rb').read().decode('ascii').strip().split('\n')
+    if lines[0].strip() != '-----BEGIN SSH SIGNATURE-----' or lines[-1].strip() != '-----END SSH SIGNATURE-----':
+        sys.exit(2)
+    b = base64.b64decode(''.join(l.strip() for l in lines[1:-1]), validate=True)
+    if b[:6] != b'SSHSIG':
+        sys.exit(2)
+    o = 10                              # magic + version
+    for _ in range(4):                  # public key, namespace, reserved, hash
+        _, o = field(b, o)
+    sig, o = field(b, o)
+    if o != len(b):
+        sys.exit(2)
+    kind, p = field(sig, 0)
+    if not kind.startswith(b'sk-'):
+        sys.exit(0)
+    _, p = field(sig, p)                # the signature proper
+    if p + 5 != len(sig):               # flags byte + 32-bit counter
+        sys.exit(2)
+    sys.exit(0 if sig[p] & 0x01 else 1)
+except SystemExit:
+    raise
+except Exception:
+    sys.exit(2)
+PY
+}
+
 run_state() {
     local head local_ver
     if [ -n "$(git_ro status --porcelain --untracked-files=no 2>/dev/null)" ]; then
@@ -71,6 +112,12 @@ if ! ssh-keygen -Y verify -f "$PILNK_DIR/release_signers" -I release -n pilnk-re
         -s "$SIG" < "$ST" >/dev/null 2>&1; then
     TOKEN=bad; emit
 fi
+touch_check; tc=$?
+case "$tc" in
+    0) ;;
+    1|2) TOKEN=bad; emit ;;
+    *) TOKEN=error; emit ;;
+esac
 parse_statement || { TOKEN=not_on_main; VER=""; COMMIT=""; emit; }
 
 TOKEN=ok

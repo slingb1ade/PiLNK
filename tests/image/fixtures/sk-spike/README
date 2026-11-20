@@ -1,0 +1,6 @@
+Real signatures from AJ's YubiKey (Security Key NFC, fw 5.7.4), made in the Task 1 spike on
+20 Nov 2026 with two THROWAWAY ed25519-sk keys (deleted afterwards). All public.
+  statement   pilnk-release 1 / version 0.0.1 / commit 000...0
+  touch.pub   key made normally (touch required);  touch.sig, touch2.sig  flags 0x01 (user present)
+  notouch.pub key made with -O no-touch-required;   notouch.sig           flags 0x00
+OpenSSH 8.9 `ssh-keygen -Y verify` says Good for all three; only release-check's flag check tells them apart.
