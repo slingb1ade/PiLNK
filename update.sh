@@ -3,7 +3,7 @@
 # Location: ~/pilnk/update.sh
 # Called by app.py when a new version is detected
 
-PILNK_DIR="$HOME/pilnk"
+PILNK_DIR="${PILNK_DIR:-$HOME/pilnk}"
 LOG_FILE="$PILNK_DIR/update.log"
 BACKUP_BRANCH="pre-update-backup"
 
@@ -49,6 +49,83 @@ if [ $FETCH_RESULT -ne 0 ]; then
     exit 1
 fi
 
+# Step 1.5: Is the newest release signed by AJ? (signed-releases spec 5.5)
+# pilnk.io serves AJ's signed release statement next to the version; the
+# running tree's release-check.sh checks it against the running tree's
+# release_signers. release_policy (also from the running tree, so only a signed
+# release can change it) decides what the answer does:
+#   report  - log + state file only; the update goes ahead exactly as before.
+#   enforce - install only the signed commit; refuse anything else (exit 6),
+#             leaving the tree as it is. The service keeps running either way.
+RELEASE_URL="${PILNK_RELEASE_URL:-https://pilnk.io/api/version.php}"
+POLICY=report
+if [ "$(head -n 1 "$PILNK_DIR/release_policy" 2>/dev/null | tr -d '[:space:]')" = enforce ]; then
+    POLICY=enforce
+fi
+RESET_TARGET=origin/main
+SKIP_RULE28=0
+SIG_TOKEN=error; SIG_RUN=none; SIGNED_VERSION=""; SIGNED_COMMIT=""
+REL_TMP=$(mktemp -d 2>/dev/null) || REL_TMP=""
+trap '[ -n "$REL_TMP" ] && rm -rf "$REL_TMP"' EXIT
+if [ -n "$REL_TMP" ] \
+   && curl -fsS --max-time 15 -H 'User-Agent: PiLNK-OTA/1.0' -o "$REL_TMP/version.json" "$RELEASE_URL" 2>> "$LOG_FILE" \
+   && python3 - "$REL_TMP" <<'PY' 2>> "$LOG_FILE"
+import json, os, sys
+d = sys.argv[1]
+rel = json.load(open(os.path.join(d, 'version.json'))).get('release')
+def text(k):
+    v = rel.get(k) if isinstance(rel, dict) else None
+    return v.encode('utf-8') if isinstance(v, str) else b''
+# Byte-exact: the signature covers these bytes; no newline translation.
+for name in ('statement', 'sig'):
+    with open(os.path.join(d, name), 'wb') as f:
+        f.write(text(name))
+PY
+then
+    CHECK_OUT=$(PILNK_DIR="$PILNK_DIR" bash "$PILNK_DIR/release-check.sh" --fetched \
+                    "$REL_TMP/statement" "$REL_TMP/sig" 2>> "$LOG_FILE")
+    SIG_TOKEN=$(printf '%s\n' "$CHECK_OUT" | sed -n 's/^ota_sig=//p')
+    SIG_RUN=$(printf '%s\n' "$CHECK_OUT" | sed -n 's/^ota_sig_run=//p')
+    SIGNED_VERSION=$(printf '%s\n' "$CHECK_OUT" | sed -n 's/^signed_version=//p')
+    SIGNED_COMMIT=$(printf '%s\n' "$CHECK_OUT" | sed -n 's/^signed_commit=//p')
+    [ -n "$SIG_TOKEN" ] || { SIG_TOKEN=error; SIG_RUN=none; }
+fi
+# release_state.json: what the app reports in its ping. Written to a temp file
+# and renamed, so the app never reads half a file.
+python3 - "$PILNK_DIR/release_state.json" "$SIG_TOKEN" "${SIG_RUN:-none}" "$POLICY" \
+        "$SIGNED_VERSION" "$SIGNED_COMMIT" <<'PY' 2>> "$LOG_FILE" || log "could not write release_state.json (continuing)"
+import json, os, sys, time
+path, tok, run, mode, ver, commit = sys.argv[1:7]
+tmp = '%s.tmp.%d' % (path, os.getpid())
+with open(tmp, 'w') as f:
+    json.dump({'ota_sig': tok, 'ota_sig_run': run, 'mode': mode, 'signed_version': ver,
+               'signed_commit': commit, 'checked_at': int(time.time()), 'by': 'update'}, f)
+os.replace(tmp, path)
+PY
+log "Release signature: ota_sig=$SIG_TOKEN ota_sig_run=${SIG_RUN:-none} mode=$POLICY signed=${SIGNED_VERSION:-none}"
+
+if [ "$POLICY" = enforce ]; then
+    refuse() {
+        log "SIGNATURE REFUSED: $1 — nothing installed, still v$OLD_VERSION."
+        log "=== OTA UPDATE REFUSED — release signature ($1) ==="
+        exit 6
+    }
+    ver_lt() { [ "$1" != "$2" ] && [ "$(printf '%s\n%s\n' "$1" "$2" | sort -V | head -n 1)" = "$1" ]; }
+    [ "$SIG_TOKEN" = ok ] || refuse "$SIG_TOKEN"
+    ver_lt "$SIGNED_VERSION" "$OLD_VERSION" && refuse downgrade
+    if [ "$SIGNED_VERSION" = "$OLD_VERSION" ]; then
+        if [ "$(git rev-parse HEAD 2>/dev/null)" = "$SIGNED_COMMIT" ]; then
+            log "Already on the signed release v$SIGNED_VERSION — nothing to do."
+            log "=== OTA UPDATE COMPLETE (already on the signed release) ==="
+            exit 0
+        fi
+        # Same version, other commit (left over from report mode): move to the
+        # signed commit. The code does change, so Rule #28's abort is skipped.
+        SKIP_RULE28=1
+    fi
+    RESET_TARGET="$SIGNED_COMMIT"
+fi
+
 # Step 2: Force the working tree to exactly match origin/main.
 # reset --hard replaces the old stash+pull+pop dance ON PURPOSE:
 #   - No stash => no stash accumulation and no stale-stash pop (the old failure
@@ -59,8 +136,8 @@ fi
 #     *.bak) so local config and state are preserved untouched.
 #   - A node mirrors the official code; local edits to TRACKED files are
 #     intentionally discarded (the old stash-and-abandon discarded them too).
-log "Resetting working tree to origin/main..."
-git reset --hard origin/main 2>> "$LOG_FILE"
+log "Resetting working tree to $RESET_TARGET..."
+git reset --hard "$RESET_TARGET" 2>> "$LOG_FILE"
 RESET_RESULT=$?
 
 if [ $RESET_RESULT -ne 0 ]; then
@@ -85,7 +162,9 @@ if [ "$OLD_VERSION" = "$NEW_VERSION" ] && [ "${PILNK_UPDATE_NO_RESTART:-}" = 1 ]
     log "=== OTA UPDATE COMPLETE (no restart) ==="
     exit 0
 fi
-if [ "$OLD_VERSION" = "$NEW_VERSION" ]; then
+if [ "$OLD_VERSION" = "$NEW_VERSION" ] && [ "$SKIP_RULE28" = 1 ]; then
+    log "Moved to the signed commit at the same version ($NEW_VERSION) — restarting to load it."
+elif [ "$OLD_VERSION" = "$NEW_VERSION" ]; then
     log "ABORT: git pull succeeded but VERSION unchanged (still $OLD_VERSION)."
     log "This usually means api/version.php reports a newer version than"
     log "what's actually been pushed to GitHub (Rule #28 violation)."

@@ -65,3 +65,4 @@ assist_actions.log
 # 200 MB. Per-node runtime data: never the same twice, never worth committing.
 cache/
 .no_receiver
+release_state.json
