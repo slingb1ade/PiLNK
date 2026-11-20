@@ -195,6 +195,11 @@ ok "touch_ok: touched YubiKey signatures pass" '[ "$(tc "$SKFIX/touch.sig")" = 0
 ok "touch_ok: no-touch YubiKey signature fails" '[ "$(tc "$SKFIX/notouch.sig")" = 1 ]'
 ok "touch_ok: plain ed25519 signature (backup key) passes" '[ "$(tc "$ROOT/m.sig")" = 0 ]'
 ok "touch_ok: not a signature fails" '[ "$(tc "$ROOT/junk.sig")" = 2 ]'
+# final review (FIDO delta) I1: python3 must not import modules from the current folder
+mkdir -p "$ROOT/plant"; printf 'import sys\nsys.exit(0)\n' > "$ROOT/plant/struct.py"; cp "$ROOT/plant/struct.py" "$ROOT/plant/json.py"
+tcp() { ( cd "$ROOT/plant" && tc "$1" ); }
+ok "touch_ok ignores a struct.py planted in the current folder" '[ "$(tcp "$SKFIX/notouch.sig")" = 1 ]'
+ok "every python3 call in pilnk-sign runs isolated (-I)" '! grep -nE "python3( |$)" "$SIGN" | grep -v "python3 -I" | grep -v "^[0-9]*: *#"'
 
 # ---- what reaches the terminal is shown, never obeyed (review I3) ------------------------
 has_ctrl() { LC_ALL=C grep -q $'[\x01-\x08\x0b-\x1f\x7f]' <<<"$1"; }

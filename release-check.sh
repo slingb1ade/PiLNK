@@ -58,7 +58,7 @@ parse_statement() {
 # we check it ourselves (Task 1, Ruling S2). Plain keys (the offline backup) have
 # no flag. Exit 0 = fine, 1 = FIDO signature made without a touch, 2 = unreadable.
 touch_check() {
-    python3 - "$SIG" <<'PY'
+    python3 -I - "$SIG" <<'PY'
 import base64, struct, sys
 def field(b, o):
     if o + 4 > len(b):

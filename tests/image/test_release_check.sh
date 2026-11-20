@@ -108,6 +108,11 @@ chk --fetched "$SK/statement" "$SK/notouch.sig"
 ok "... with --fetched too" '[ "$(f ota_sig)" = bad ]'
 sk_node "$SK/touch.pub"; fakebin python3 'exit 127'; chk "$SK/statement" "$SK/touch.sig"
 ok "touch check cannot run (no python3) -> error, never ok" '[ "$(f ota_sig)" = error ] && [ "$(f ota_sig_run)" = none ]'
+# final review (FIDO delta) I1: a struct.py in the current folder must not decide the touch check
+sk_node "$SK/notouch.pub"; mkdir -p "$ROOT/plant"; printf 'import sys\nsys.exit(0)\n' > "$ROOT/plant/struct.py"
+cd "$ROOT/plant" && chk "$SK/statement" "$SK/notouch.sig"; cd - >/dev/null
+ok "touch check ignores a struct.py planted in the current folder -> bad" '[ "$(f ota_sig)" = bad ]'
+ok "every python3 call in release-check runs isolated (-I)" '! grep -nE "python3( |$)" "$CHK" | grep -v "python3 -I" | grep -v "^[0-9]*: *#"'
 
 # --- usage
 bash "$CHK" >/dev/null 2>&1; RC=$?

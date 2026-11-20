@@ -77,7 +77,7 @@ gitc() { GIT_LITERAL_PATHSPECS=1 git -C "$CACHE" --no-pager "$@"; }
 # Everything from GitHub passes through here before it reaches AJ's terminal: control
 # characters and bidi overrides are shown as <1B> / <U+202E>, never obeyed (final review I3).
 safe_show() {
-  python3 -c '
+  python3 -I -c '
 import sys
 BIDI = set(range(0x200e, 0x2010)) | set(range(0x202a, 0x202f)) | set(range(0x2066, 0x206a))
 out = []
@@ -103,7 +103,7 @@ fetch_main() {
 
 release_parts() {  # release_parts JSONFILE DIR -> none | bad | "ok VERSION COMMIT"; exit 2 if not JSON
   # "ok" writes DIR/prev.txt + DIR/prev.sig; VERSION and COMMIT come from the statement itself.
-  python3 - "$1" "$2" <<'PY'
+  python3 -I - "$1" "$2" <<'PY'
 import json, os, re, sys
 try:
     with open(sys.argv[1], encoding='utf-8') as f:
@@ -147,7 +147,7 @@ not_newer() {  # not_newer NEW OLD -> NEW is not newer than OLD
 # touch_ok SIGFILE -> 0 touched (or a plain key, e.g. the backup), 1 FIDO without a touch,
 # 2 not a readable signature. Same logic as release-check.sh's touch_check.
 touch_ok() {
-  python3 - "$1" <<'PY'
+  python3 -I - "$1" <<'PY'
 import base64, struct, sys
 def field(b, o):
     if o + 4 > len(b):
@@ -332,7 +332,7 @@ cmd_sign() {
   # 9. pilnk.io must now serve exactly these bytes
   curl -fsS --max-time 20 -o "$T/after.json" "$VERSION_URL" \
     || die 3 "uploaded, but could not read $VERSION_URL to confirm."
-  python3 - "$T/after.json" "$ver" "$head" "$T/$ver.txt" "$T/$ver.sig" <<'PY' \
+  python3 -I - "$T/after.json" "$ver" "$head" "$T/$ver.txt" "$T/$ver.sig" <<'PY' \
     || die 3 "uploaded, but $VERSION_URL does not show PiLNK $ver yet. Check _private/releases on syd1."
 import json, sys
 j, ver, head, st, sig = sys.argv[1:6]
