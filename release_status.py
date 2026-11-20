@@ -157,3 +157,46 @@ def ping_fields(state, mode, svc_sudo):
     cut = lambda v: str(v or '')[:16]
     return {'ota_sig': cut(s.get('ota_sig')), 'ota_sig_run': cut(s.get('ota_sig_run')),
             'ota_sig_mode': cut(mode), 'svc_sudo': cut(svc_sudo)}
+
+
+# update.sh checks with --fetched (ancestry + VERSION-at-commit); the app's
+# 5-minute check cannot. Its "ok" must not wipe update.sh's not_on_main /
+# mismatch for the SAME signed commit (final review I1). A new signed commit,
+# or a fresh bad/missing/no_tool/error, always wins.
+_FETCH_ONLY = ('not_on_main', 'mismatch')
+
+
+def keep_fetched_verdict(old, result):
+    r = dict(result or {})
+    o = old if isinstance(old, dict) else {}
+    if (r.get('ota_sig') == 'ok' and o.get('ota_sig') in _FETCH_ONLY
+            and o.get('signed_commit') and o.get('signed_commit') == r.get('signed_commit')):
+        r['ota_sig'] = o['ota_sig']
+    return r
+
+
+# node.php stores json_encode($features) in a varchar(500) and cuts anything
+# longer mid-JSON (final review I2). Measure the way PHP will ('/' -> '\/',
+# non-ASCII -> \uXXXX) and drop the least useful keys first; never mutate the
+# caller's dict.
+_FEATURE_LIMIT = 500
+_DROP_FIRST = ('svc_sudo', 'ota_sig_mode', 'stt_bench', 'ota_sig_run', 'audio_build_err')
+
+
+def _php_json_len(d):
+    return len(json.dumps(d, separators=(',', ':'), ensure_ascii=True).replace('/', '\\/'))
+
+
+def fit_features(feats, limit=_FEATURE_LIMIT):
+    d = dict(feats or {})
+    if _php_json_len(d) <= limit:
+        return d
+    if isinstance(d.get('audio_build_err'), str):
+        d['audio_build_err'] = d['audio_build_err'][:60]
+    for k in _DROP_FIRST:
+        if _php_json_len(d) <= limit:
+            return d
+        d.pop(k, None)
+    while d and _php_json_len(d) > limit:
+        d.pop(next(reversed(d)))
+    return d

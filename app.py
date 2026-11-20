@@ -1717,7 +1717,7 @@ def ping_server():
                 # the reason makes "who actually has working ATC audio?" a query
                 # instead of a survey.
                 'env': NODE_ENV,
-                'features': dict({
+                'features': _fit_features(dict({
                     'sdr_audio': _sdr_audio_feature(),
                     'denoise': _denoise_feature(),
                     'audio_build': _audio_build_feature(),
@@ -1735,7 +1735,7 @@ def ping_server():
                     # supply drops the radio dongle and looks like "no aircraft".
                     'hw_tier': HW_TIER,
                     **_power.ping_features(),
-                }, **_ota_ping_features()),
+                }, **_ota_ping_features())),
             }
             if emergency_aircraft:
                 ping_data['emergency_aircraft'] = emergency_aircraft
@@ -2135,6 +2135,14 @@ def _denoise_kick_later(delay=90):
     time.sleep(delay)   # let the engine and the OTA settle first
     _denoise_kick()
 
+def _fit_features(feats):
+    """The ping's features dict, trimmed to fit pilnk.io's node_features
+    (varchar 500) as whole JSON — node.php would otherwise cut it mid-JSON
+    (final review I2). Unchanged when release_status is missing."""
+    if release_status is None:
+        return feats
+    return release_status.fit_features(feats)
+
 def _ota_ping_features():
     """Three LOW-CARDINALITY strings for the ping's features dict — states,
     not timestamps, so fleet_query's grouping stays useful (a raw timestamp
@@ -2436,6 +2444,9 @@ def _perform_ota_check(auto_install_on_available=True):
         if release_status is not None:
             _policy = release_status.read_policy(PILNK_DIR)
             _sig = release_status.check(PILNK_DIR, data.get('release'))
+            # This check has no --fetched: keep update.sh's not_on_main /
+            # mismatch for the same signed commit (final review I1).
+            _sig = release_status.keep_fetched_verdict(release_status.load_state(PILNK_DIR), _sig)
             release_status.save_state(PILNK_DIR, _sig, _policy, by='app')
             _available, _awaiting = release_status.signed_update_available(
                 _policy, local_ver, remote_ver, data.get('release'), _sig, _semver_gt)

@@ -41,3 +41,20 @@ ok("release_status import is guarded (a missing module never stops the app)", gu
 st = top("api_ota_status")
 keys = [k.value for d in ast.walk(st) if isinstance(d, ast.Dict) for k in d.keys if isinstance(k, ast.Constant)] if st else []
 ok("/api/ota/status reports awaiting_signature (R8)", "awaiting_signature" in keys)
+
+# final review I1: the app's no-fetch check must not wipe update.sh's verdict
+ok("_perform_ota_check keeps update.sh's fetched verdict (keep_fetched_verdict)",
+   calls_in("_perform_ota_check", "release_status.keep_fetched_verdict"))
+# final review I2: the ping's features dict is fitted to node_features (varchar 500)
+ok("_fit_features uses release_status.fit_features", calls_in("_fit_features", "release_status.fit_features"))
+feat_vals = [v for d in ast.walk(TREE) if isinstance(d, ast.Dict)
+             for k, v in zip(d.keys, d.values) if isinstance(k, ast.Constant) and k.value == "features"]
+ok("the ping's features go through _fit_features",
+   bool(feat_vals) and all(isinstance(v, ast.Call) and getattr(v.func, "id", None) == "_fit_features" for v in feat_vals))
+ff = top("_fit_features")
+if ff is not None:
+    ns2 = {"release_status": None}
+    exec(compile(ast.Module([ff], []), "app.py", "exec"), ns2)
+    ok("_fit_features without release_status returns the dict unchanged", ns2["_fit_features"]({"a": 1}) == {"a": 1})
+else:
+    ok("_fit_features without release_status returns the dict unchanged", False)

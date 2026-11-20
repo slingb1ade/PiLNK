@@ -144,4 +144,63 @@ ok("ping fields fit", len(json.dumps(pf)) <= 110 and all(len(v) <= 16 for v in p
 ok("ping fields: long values cut to 16", len(rs.ping_fields({"ota_sig": "y" * 99}, "x" * 99, "z" * 99)["ota_sig"]) == 16)
 ok("ping fields: empty state -> ''", rs.ping_fields({}, "report", "none")["ota_sig"] == "")
 
+# --- update.sh's fetched verdict survives the app's 5-minute check (final review I1)
+# The app checks WITHOUT --fetched, so it cannot see ancestry or VERSION-at-commit;
+# its "ok" must not wipe update.sh's not_on_main / mismatch for the same commit.
+root2, up2, node2, key2 = make_node()
+rel2 = release(up2, key2, "1.0.1"); run("git", "pull", "-q", cwd=node2)
+kfv = getattr(rs, "keep_fetched_verdict", None)
+ok("keep_fetched_verdict exists", callable(kfv))
+if callable(kfv):
+    upd = {"ota_sig": "mismatch", "ota_sig_run": "on_signed", "signed_version": "1.0.1",
+           "signed_commit": rel2["commit"], "by": "update"}
+    app_r = rs.check(node2, rel2)
+    ok("app check alone says ok (it cannot see VERSION-at-commit)", app_r["ota_sig"] == "ok")
+    ok("app check keeps update.sh's mismatch for the same signed commit", kfv(upd, app_r)["ota_sig"] == "mismatch")
+    ok("... and not_on_main", kfv(dict(upd, ota_sig="not_on_main"), app_r)["ota_sig"] == "not_on_main")
+    ok("a different signed commit clears it", kfv(dict(upd, signed_commit="f" * 40), app_r)["ota_sig"] == "ok")
+    ok("a fresh bad/missing result is never replaced by the old verdict",
+       kfv(upd, dict(app_r, ota_sig="bad"))["ota_sig"] == "bad" and kfv(upd, dict(app_r, ota_sig="missing"))["ota_sig"] == "missing")
+    json.dump(upd, open(node2 + "/release_state.json", "w"))
+    for _ in range(3):   # three 5-minute app checks after update.sh's run
+        rs.save_state(node2, kfv(rs.load_state(node2), rs.check(node2, rel2)), "report", by="app")
+    ok("after several app checks the state file still says mismatch", rs.load_state(node2).get("ota_sig") == "mismatch")
+    ok("... and the ping says so", rs.ping_fields(rs.load_state(node2), "report", "none")["ota_sig"] == "mismatch")
+    ok("enforce: a kept mismatch is not an available update",
+       rs.signed_update_available("enforce", "1.0.0", "1.0.1", rel2, kfv(upd, app_r), gt)[0] is False)
+
+# --- node_features is never stored as cut (invalid) JSON (final review I2)
+# node.php keeps 500 chars of PHP's json_encode ('/' -> '\/', non-ASCII -> \uXXXX),
+# after shortening audio_build_err to 60; anything longer is cut mid-JSON.
+fit = getattr(rs, "fit_features", None)
+ok("fit_features exists", callable(fit))
+if callable(fit):
+    def php_len(d): return len(json.dumps(d, separators=(",", ":"), ensure_ascii=True).replace("/", "\\/"))
+    small = {"ota": "auto", "ota_sig": "ok", "volts": 5.11}
+    ok("small features pass through unchanged", fit(dict(small)) == small)
+    trouble = {"sdr_audio": "not_listening", "denoise": "off", "audio_build": "failed:2/8",
+               "audio_build_err": "E: /usr/lib/aarch64-linux-gnu/libfoo.so: cannot open (dpkg lock held by apt)",
+               "atc_stt": "absent", "stt_bench": 12.34, "remote_maintenance": True, "hw_tier": "pi4",
+               "power": "was_low", "volts": 4.81, "throttled": "0x50005", "uv_now": True,
+               "ota": "auto", "ota_check": "stale", "ota_last_result": "error:TimeoutExpired", "ota_fail": "exception",
+               "restart_pending": "1.6.28", "ota_restart": "unknown",
+               "ota_sig": "not_on_main", "ota_sig_run": "on_signed", "ota_sig_mode": "enforce", "svc_sudo": "scoped"}
+    ok("(the trouble case really is over 500 before fitting)", php_len(trouble) > 500)
+    before = dict(trouble)
+    out = fit(trouble)
+    ok("a node in trouble fits node_features (PHP-measured)", php_len(out) <= 500)
+    ok("... keeping the diagnosis fields", all(out.get(k) == trouble[k] for k in
+       ("ota_sig", "ota_fail", "ota_last_result", "audio_build", "power", "ota_check")))
+    ok("... and never mutating the caller's dict", trouble == before)
+    # Just over the line: shortening audio_build_err (as node.php does) is enough,
+    # so nothing is dropped.
+    near = dict(trouble); near.pop("power"); near.pop("throttled"); near.pop("uv_now"); near.pop("volts")
+    near["audio_build_err"] = "x" * (60 + 501 - php_len(dict(near, audio_build_err="x" * 60)))
+    ok("(the near case is just over 500)", php_len(near) > 500)
+    out2 = fit(near)
+    ok("just over 500: audio_build_err cut to 60, every other key kept",
+       out2.get("audio_build_err") == "x" * 60 and set(out2) == set(near) and php_len(out2) <= 500)
+    huge = {("k%03d" % i): "v/" * 15 for i in range(40)}
+    ok("anything at all comes out under 500 as valid JSON", php_len(fit(huge)) <= 500)
+
 for r_ in ROOTS: shutil.rmtree(r_, ignore_errors=True)
