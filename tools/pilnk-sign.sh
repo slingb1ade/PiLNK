@@ -12,13 +12,12 @@
 #   PILNK_SIGN_REPO_URL     [https://github.com/slingb1ade/PiLNK.git]
 #   PILNK_SIGN_CACHE        [~/.cache/pilnk-sign/repo]   its own clone, never your work tree
 #   PILNK_SIGN_VERSION_URL  [https://pilnk.io/api/version.php]
-#   PILNK_SIGN_KEY          [~/.ssh/pilnk_release_yk.pub]  YubiKey key, used through ssh-agent
+#   PILNK_SIGN_KEY          [~/.ssh/pilnk_release_yk]  the YubiKey's FIDO key file (made by --init;
+#                           useless without the YubiKey itself) and its .pub beside it
 #   PILNK_SIGN_BACKUP_KEY   [~/.ssh/pilnk_release_backup]  never added to any agent
 #   PILNK_SIGN_DEST         [aj@66.226.148.29:/var/www/pilnkio/_private/releases/]
 #   PILNK_SIGN_SCP          [scp]
 #   PILNK_SIGN_FIXTURE      [~/pilnk-sign-fixture]   --init writes its test signature here
-#   PILNK_SIGN_PKCS11       [first libykcs11 found]  the YubiKey's PKCS#11 module
-#   PILNK_SIGN_PIV_SLOT     [9c]  the PIV slot --init puts the YubiKey key in (must be empty)
 #   PILNK_SIGN_RECORD       [${XDG_STATE_HOME:-~/.local/state}/pilnk-sign/signed]
 #                           one "version commit" line per release you signed; the review
 #                           starts from here, not from what pilnk.io says
@@ -31,12 +30,11 @@ cfg() {
   REPO_URL="${PILNK_SIGN_REPO_URL:-https://github.com/slingb1ade/PiLNK.git}"
   CACHE="${PILNK_SIGN_CACHE:-$HOME/.cache/pilnk-sign/repo}"
   VERSION_URL="${PILNK_SIGN_VERSION_URL:-https://pilnk.io/api/version.php}"
-  KEY="${PILNK_SIGN_KEY:-$HOME/.ssh/pilnk_release_yk.pub}"
+  KEY="${PILNK_SIGN_KEY:-$HOME/.ssh/pilnk_release_yk}"
   BACKUP_KEY="${PILNK_SIGN_BACKUP_KEY:-$HOME/.ssh/pilnk_release_backup}"
   DEST="${PILNK_SIGN_DEST:-aj@66.226.148.29:/var/www/pilnkio/_private/releases/}"
   SCP="${PILNK_SIGN_SCP:-scp}"
   FIXTURE="${PILNK_SIGN_FIXTURE:-$HOME/pilnk-sign-fixture}"
-  SLOT="${PILNK_SIGN_PIV_SLOT:-9c}"
   RECORD="${PILNK_SIGN_RECORD:-${XDG_STATE_HOME:-$HOME/.local/state}/pilnk-sign/signed}"
 }
 
@@ -130,7 +128,7 @@ PY
 
 local_signers() {  # local_signers OUT -> signer lines for AJ's OWN public keys (never GitHub's file)
   : > "$1"
-  if [ -f "$KEY" ]; then signer_line "$KEY" pilnk-release-yubikey >> "$1"; fi
+  if [ -f "$KEY.pub" ]; then signer_line "$KEY.pub" pilnk-release-yubikey >> "$1"; fi
   if [ -f "$BACKUP_KEY.pub" ]; then signer_line "$BACKUP_KEY.pub" pilnk-release-backup >> "$1"; fi
   return 0
 }
@@ -144,25 +142,45 @@ not_newer() {  # not_newer NEW OLD -> NEW is not newer than OLD
   [ "$1" = "$2" ] || [ "$(printf '%s\n%s\n' "$1" "$2" | sort -V | tail -n 1)" != "$1" ]
 }
 
-key_in_agent() {  # key_in_agent PUBFILE -> the agent holds that key
-  local blob
-  blob="$(awk '{print $2; exit}' "$1" 2>/dev/null)"
-  [ -n "$blob" ] || return 1
-  ssh-add -L 2>/dev/null | awk '{print $2}' | grep -qxF "$blob"
-}
-
-pkcs11_module() {
-  local m
-  if [ -n "${PILNK_SIGN_PKCS11:-}" ]; then
-    [ -e "$PILNK_SIGN_PKCS11" ] && echo "$PILNK_SIGN_PKCS11"
-    return
-  fi
-  for m in /usr/lib/x86_64-linux-gnu/libykcs11.so /usr/lib/x86_64-linux-gnu/libykcs11.so.2 \
-           /usr/lib/aarch64-linux-gnu/libykcs11.so /usr/lib/aarch64-linux-gnu/libykcs11.so.2 \
-           /usr/local/lib/libykcs11.so /usr/local/lib/libykcs11.dylib /opt/homebrew/lib/libykcs11.dylib; do
-    if [ -e "$m" ]; then echo "$m"; return 0; fi
-  done
-  return 1
+# A YubiKey (FIDO) signature carries a signed "user present" flag. OpenSSH 8.9 ignores it, so
+# nodes check it themselves (release-check.sh) and so does this tool (Task 1, Ruling S2).
+# touch_ok SIGFILE -> 0 touched (or a plain key, e.g. the backup), 1 FIDO without a touch,
+# 2 not a readable signature. Same logic as release-check.sh's touch_check.
+touch_ok() {
+  python3 - "$1" <<'PY'
+import base64, struct, sys
+def field(b, o):
+    if o + 4 > len(b):
+        raise ValueError
+    n = struct.unpack('>I', b[o:o + 4])[0]
+    if o + 4 + n > len(b):
+        raise ValueError
+    return b[o + 4:o + 4 + n], o + 4 + n
+try:
+    lines = open(sys.argv[1], 'rb').read().decode('ascii').strip().split('\n')
+    if lines[0].strip() != '-----BEGIN SSH SIGNATURE-----' or lines[-1].strip() != '-----END SSH SIGNATURE-----':
+        sys.exit(2)
+    b = base64.b64decode(''.join(l.strip() for l in lines[1:-1]), validate=True)
+    if b[:6] != b'SSHSIG':
+        sys.exit(2)
+    o = 10
+    for _ in range(4):
+        _, o = field(b, o)
+    sig, o = field(b, o)
+    if o != len(b):
+        sys.exit(2)
+    kind, p = field(sig, 0)
+    if not kind.startswith(b'sk-'):
+        sys.exit(0)
+    _, p = field(sig, p)
+    if p + 5 != len(sig):
+        sys.exit(2)
+    sys.exit(0 if sig[p] & 0x01 else 1)
+except SystemExit:
+    raise
+except Exception:
+    sys.exit(2)
+PY
 }
 
 signer_line() {  # signer_line PUBFILE COMMENT -> one release_signers line (namespaces option only)
@@ -206,7 +224,7 @@ cmd_sign() {
       read -r _ pv pc <<<"$rel"
       local_signers "$T/local_signers"
       if [ -s "$T/local_signers" ] && ssh-keygen -Y verify -f "$T/local_signers" -I release -n "$NS" \
-           -s "$T/prev.sig" < "$T/prev.txt" >/dev/null 2>&1; then
+           -s "$T/prev.sig" < "$T/prev.txt" >/dev/null 2>&1 && touch_ok "$T/prev.sig"; then
         pstate=verified
       else
         pstate=unverified
@@ -290,15 +308,10 @@ cmd_sign() {
     SSH_AUTH_SOCK= ssh-keygen -q -Y sign -f "$BACKUP_KEY" -n "$NS" "$T/$ver.txt" >/dev/null \
       || die 1 "signing failed. Nothing uploaded."
   else
-    [ -f "$KEY" ] || die 1 "$KEY not found (run pilnk-sign --init first)"
-    if ! key_in_agent "$KEY"; then
-      die 1 "The YubiKey release key is not in your ssh-agent. Plug the YubiKey in, run
-    ssh-add -s $(pkcs11_module || echo /path/to/libykcs11.so)
-then run pilnk-sign again. Nothing signed."
-    fi
-    echo "Touch the YubiKey when it blinks (type its PIN if asked)."
+    [ -f "$KEY" ] || die 1 "$KEY not found (run pilnk-sign --init first). Nothing signed."
+    echo "Touch the YubiKey when it blinks (within 30 s)."
     ssh-keygen -q -Y sign -f "$KEY" -n "$NS" "$T/$ver.txt" >/dev/null \
-      || die 1 "signing failed (YubiKey removed, not touched, or wrong PIN). Nothing uploaded."
+      || die 1 "signing failed: YubiKey not plugged in, or not touched within 30 s. Nothing uploaded."
   fi
   mv "$T/$ver.txt.sig" "$T/$ver.sig" || die 1 "no signature written. Nothing uploaded."
 
@@ -308,6 +321,8 @@ then run pilnk-sign again. Nothing signed."
   ssh-keygen -Y verify -f "$T/release_signers" -I release -n "$NS" -s "$T/$ver.sig" \
     < "$T/$ver.txt" >/dev/null 2>&1 \
     || die 1 "The signature does not verify against release_signers at $head (wrong key?). Nothing uploaded."
+  touch_ok "$T/$ver.sig" \
+    || die 1 "The signature carries no touch flag (a FIDO key made without touch?). Nodes refuse it. Nothing uploaded."
 
   # 8. upload; the web server reads these as group/other, whatever this umask is
   chmod 0644 "$T/$ver.txt" "$T/$ver.sig"
@@ -336,68 +351,59 @@ PY
 }
 
 # ---------------------------------------------------------------------- one-time key set-up
-# The YubiKey half. Ruling R10/P1: a PIV key in slot 9c, generated on the YubiKey (it can
-# never leave), touch ALWAYS + PIN ONCE (both fixed at generation), used through ssh-agent
-# with the PKCS#11 module. If the Task 1 spike picks another mechanism, only this changes.
-init_hw_key() {  # init_hw_key MODULE PEM_OUT
-  ykman piv keys generate --algorithm ECCP256 --pin-policy ONCE --touch-policy ALWAYS "$SLOT" "$2" || return 1
-  ykman piv certificates generate --subject "CN=pilnk-release" "$SLOT" "$2" || return 1
-  ssh-add -s "$1" || return 1
-}
-
+# Task 1 (20 Nov 2026): AJ's key is a Yubico Security Key (FIDO only, no PIV). The release key is
+# an OpenSSH FIDO key, ed25519-sk, non-resident: nothing is stored on the YubiKey, the key file
+# is useless without it, and every signature needs a touch (Rulings S1, S2). Everything is made
+# in a folder beside the keys and moved into place only once the test signature has passed, so
+# a failure part-way leaves nothing behind.
 cmd_init() {
-  local f mod yk type blob
-  for f in "$KEY" "$BACKUP_KEY" "$BACKUP_KEY.pub"; do
+  local f
+  for f in "$KEY" "$KEY.pub" "$BACKUP_KEY" "$BACKUP_KEY.pub"; do
     [ -e "$f" ] && die 1 "$f already exists. Refusing to overwrite release keys."
   done
-  command -v ykman >/dev/null 2>&1 || die 1 "ykman not found (install yubikey-manager)."
-  mod="$(pkcs11_module)" || die 1 "no YubiKey PKCS#11 module found (install ykcs11, or set PILNK_SIGN_PKCS11)."
-  ykman info || die 1 "No YubiKey found. Plug it in and run again."
-  # Generating would silently replace whatever is in the slot (final review I5).
-  if ykman piv info 2>/dev/null | grep -qi "slot $SLOT\b" || ykman piv keys info "$SLOT" >/dev/null 2>&1; then
-    die 1 "PIV slot $SLOT on this YubiKey already holds a key. Nothing created. Free the slot
-    yourself if you are sure it is unused, or set PILNK_SIGN_PIV_SLOT to an empty slot."
-  fi
-  T="$(mktemp -d)" || die 1 "no temp dir"
-  trap 'rm -rf "$T"' EXIT
   mkdir -p "$(dirname "$KEY")" "$(dirname "$BACKUP_KEY")" || die 1 "cannot create key folders"
+  T="$(mktemp -d "$(dirname "$KEY")/.pilnk-init.XXXXXX")" || die 1 "no temp folder"
+  trap 'rm -rf "$T"' EXIT
 
   echo
-  echo "1/4 Backup key. Choose a strong passphrase; it is stored with the key, offline."
-  ssh-keygen -t ed25519 -a 100 -C pilnk-release-backup -f "$BACKUP_KEY" >/dev/null \
-    || die 1 "backup key not created."
-  if ssh-keygen -y -P '' -f "$BACKUP_KEY" >/dev/null 2>&1; then
-    rm -f "$BACKUP_KEY" "$BACKUP_KEY.pub"
-    die 1 "the backup key must have a passphrase. Removed it; run pilnk-sign --init again."
+  echo "1/4 YubiKey key. Touch the YubiKey when it blinks."
+  echo "    (ssh-keygen may ask for a passphrase for the key file: Enter for none is fine,"
+  echo "     the file is useless without the YubiKey.)"
+  ssh-keygen -t ed25519-sk -O application=ssh:pilnk-release -C pilnk-release-yubikey -f "$T/yk" >/dev/null \
+    || die 1 "No YubiKey answered. Plug it in, touch it when it blinks, and run again. Nothing created."
+
+  echo
+  echo "2/4 Backup key. Choose a strong passphrase; it is stored with the key, offline."
+  ssh-keygen -t ed25519 -a 100 -C pilnk-release-backup -f "$T/backup" >/dev/null \
+    || die 1 "backup key not created. Nothing kept."
+  if ssh-keygen -y -P '' -f "$T/backup" >/dev/null 2>&1; then
+    die 1 "the backup key must have a passphrase. Nothing kept; run pilnk-sign --init again."
   fi
-
-  echo
-  echo "2/4 YubiKey key. ykman asks for the PIV management key and PIN; touch when it blinks."
-  init_hw_key "$mod" "$T/yk.pem" || die 1 "the YubiKey key was not created and loaded."
-  yk="$(ssh-keygen -i -m PKCS8 -f "$T/yk.pem")" || die 1 "could not read the new YubiKey public key."
-  read -r type blob _ <<<"$yk"
-  ssh-keygen -D "$mod" 2>/dev/null | awk '{print $2}' | grep -qxF "$blob" \
-    || die 1 "the new key is not visible through $mod."
-  printf '%s %s pilnk-release-yubikey\n' "$type" "$blob" > "$KEY"
 
   echo
   echo "3/4 Test signature over a fixed statement. Touch the YubiKey when it blinks."
-  mkdir -p "$FIXTURE" || die 1 "cannot create $FIXTURE"
-  printf 'pilnk-release 1\nversion 0.0.0\ncommit %s\n' "$ZERO_COMMIT" > "$FIXTURE/statement"
-  { signer_line "$KEY" pilnk-release-yubikey; signer_line "$BACKUP_KEY.pub" pilnk-release-backup; } \
-    > "$FIXTURE/release_signers"
-  key_in_agent "$KEY" || die 1 "the YubiKey key is not in your ssh-agent."
-  rm -f "$FIXTURE/statement.sig"
-  ssh-keygen -q -Y sign -f "$KEY" -n "$NS" "$FIXTURE/statement" >/dev/null \
-    || die 1 "the test signature failed (no touch?)."
-  ssh-keygen -Y verify -f "$FIXTURE/release_signers" -I release -n "$NS" \
-    -s "$FIXTURE/statement.sig" < "$FIXTURE/statement" >/dev/null 2>&1 \
-    || die 1 "the test signature does not verify."
+  mkdir -p "$T/fixture"
+  printf 'pilnk-release 1\nversion 0.0.0\ncommit %s\n' "$ZERO_COMMIT" > "$T/fixture/statement"
+  { signer_line "$T/yk.pub" pilnk-release-yubikey; signer_line "$T/backup.pub" pilnk-release-backup; } \
+    > "$T/fixture/release_signers"
+  ssh-keygen -q -Y sign -f "$T/yk" -n "$NS" "$T/fixture/statement" >/dev/null \
+    || die 1 "the test signature failed (not touched within 30 s?). Nothing kept."
+  ssh-keygen -Y verify -f "$T/fixture/release_signers" -I release -n "$NS" \
+    -s "$T/fixture/statement.sig" < "$T/fixture/statement" >/dev/null 2>&1 \
+    || die 1 "the test signature does not verify. Nothing kept."
+  touch_ok "$T/fixture/statement.sig" \
+    || die 1 "the test signature carries no touch flag. Nothing kept."
+
+  mv "$T/yk" "$KEY" && mv "$T/yk.pub" "$KEY.pub" \
+    && mv "$T/backup" "$BACKUP_KEY" && mv "$T/backup.pub" "$BACKUP_KEY.pub" \
+    || die 1 "could not move the keys into place. Check $(dirname "$KEY") and run again."
+  mkdir -p "$FIXTURE" && cp "$T/fixture/statement" "$T/fixture/statement.sig" "$T/fixture/release_signers" "$FIXTURE/" \
+    || echo "pilnk-sign: warning: could not write the test fixture to $FIXTURE" >&2
 
   echo
   echo "4/4 Done. These two lines go in release_signers at the top of the PiLNK repo:"
   echo
-  cat "$FIXTURE/release_signers"
+  cat "$T/fixture/release_signers"
   echo
   echo "Test fixture (statement, signature, signers): $FIXTURE"
   echo

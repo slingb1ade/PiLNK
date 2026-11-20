@@ -1,6 +1,7 @@
 #!/bin/bash
 # tools/pilnk-sign.sh — AJ's release signer (signed-releases plan Task 6, spec 5.3).
-# Throwaway keys stand in for the YubiKey: a real ssh-agent holds the "YubiKey" key.
+# Throwaway plain ed25519 keys stand in for the YubiKey (a FIDO key needs the hardware); the
+# YubiKey's touch flag is tested with real spike signatures from tests/image/fixtures/sk-spike.
 # GitHub is a local repo, pilnk.io is a file:// JSON, syd1 is a folder reached by a fake
 # scp that also rebuilds the fake version.php answer. No test reaches the network.
 source "$(dirname "$0")/lib.sh"
@@ -8,25 +9,35 @@ source "$(dirname "$0")/sigtest-lib.sh"
 SIGN="$REPO/tools/pilnk-sign.sh"
 REAL_KEYGEN="$(command -v ssh-keygen)"; REAL_ADD="$(command -v ssh-add)"
 export REAL_KEYGEN REAL_ADD
+SKFIX="$REPO/tests/image/fixtures/sk-spike"; export SKFIX
 
-# one agent + throwaway keys for the whole file
+# throwaway keys for the whole file; an agent runs only to prove pilnk-sign never uses it
 KROOT="$(mktemp -d /tmp/pilnk-sign-keys.XXXXXX)"; _ROOTS+=("$KROOT"); export KROOT
 for k in yk backup stranger; do "$REAL_KEYGEN" -q -t ed25519 -N '' -C "$k" -f "$KROOT/$k"; done
-"$REAL_KEYGEN" -q -t ecdsa -b 256 -N '' -C yk2 -f "$KROOT/yk2"          # the --init "PIV" key
-"$REAL_KEYGEN" -e -m PKCS8 -f "$KROOT/yk2.pub" > "$KROOT/yk2.pem"
 eval "$(ssh-agent -s)" >/dev/null
 trap '_rm_roots; ssh-agent -k >/dev/null 2>&1' EXIT
-"$REAL_ADD" -q "$KROOT/yk" "$KROOT/stranger" 2>/dev/null
 AGENT_SOCK="$SSH_AUTH_SOCK"
 
 sl() { printf 'release namespaces="pilnk-release" %s %s\n' "$(cut -d' ' -f1,2 "$KROOT/$1.pub")" "$1"; }
 
-# ssh-keygen stand-in: logs SSH_AUTH_SOCK on -Y sign; fakes -D (PKCS#11 listing);
-# gives --init's backup key a test passphrase (or none, when $ROOT/.nopass exists)
+# ssh-keygen stand-in. Logs SSH_AUTH_SOCK on -Y sign. `-t ed25519-sk` (the YubiKey) makes a
+# plain ed25519 key instead, or fails when $ROOT/.no_yk exists; other -t (the backup key) get a
+# test passphrase (none when $ROOT/.nopass exists). $ROOT/.sign_fail: -Y sign fails (no touch).
+# $ROOT/.sign_notouch: -Y sign writes the spike's no-touch YubiKey signature. $ROOT/.verify_ok:
+# -Y verify says yes (so the touch check is what has to catch it).
 keygen_wrapper() {
   fakebin ssh-keygen '
-case " $* " in *" -Y sign "*) echo "SSH_AUTH_SOCK=${SSH_AUTH_SOCK-}" >> "$CALLS";; esac
-if [ "$1" = "-D" ]; then echo "$(cut -d" " -f1,2 "$KROOT/yk2.pub") Public key for Digital Signature"; exit 0; fi
+case " $* " in *" -Y sign "*)
+  echo "SSH_AUTH_SOCK=${SSH_AUTH_SOCK-}" >> "$CALLS"
+  if [ -e "$ROOT/.sign_fail" ]; then exit 1; fi
+  if [ -e "$ROOT/.sign_notouch" ]; then cp "$SKFIX/notouch.sig" "${@: -1}.sig"; exit 0; fi ;;
+esac
+case " $* " in *" -Y verify "*) if [ -e "$ROOT/.verify_ok" ]; then exit 0; fi ;; esac
+for a in "$@"; do if [ "$a" = "ed25519-sk" ]; then
+  if [ -e "$ROOT/.no_yk" ]; then echo "Key enrollment failed: device not found" >&2; exit 1; fi
+  f=""; c=""; while [ $# -gt 0 ]; do case "$1" in -f) f="$2"; shift ;; -C) c="$2"; shift ;; esac; shift; done
+  exec "$REAL_KEYGEN" -q -t ed25519 -N "" -C "$c" -f "$f"
+fi; done
 for a in "$@"; do if [ "$a" = "-t" ]; then
   if [ -e "$ROOT/.nopass" ]; then exec "$REAL_KEYGEN" "$@" -N ""; else exec "$REAL_KEYGEN" "$@" -N "test-pass"; fi
 fi; done
@@ -82,7 +93,7 @@ for ((i=0; i<n-1; i++)); do case "${a[i]}" in -*) ;; *) (umask 022; cp "${a[i]}"
 [ -e "$ROOT/.scp_noupdate" ] || python3 "$ROOT/mkjson.py" "$ROOT/syd1" "$ROOT/version.json"'
   keygen_wrapper
   export PILNK_SIGN_REPO_URL="$ROOT/up" PILNK_SIGN_CACHE="$ROOT/cache/repo" \
-         PILNK_SIGN_VERSION_URL="file://$ROOT/version.json" PILNK_SIGN_KEY="$KROOT/yk.pub" \
+         PILNK_SIGN_VERSION_URL="file://$ROOT/version.json" PILNK_SIGN_KEY="$KROOT/yk" \
          PILNK_SIGN_BACKUP_KEY="$KROOT/backup" PILNK_SIGN_DEST="syd1:/releases/" \
          PILNK_SIGN_SCP="$BIN/scp"
 }
@@ -126,14 +137,18 @@ ok "uploads <v>.txt and <v>.sig, confirms version.php" '[ "$RC" = 0 ] && grep -q
 ok "statement is exactly the spec format" 'cmp -s "$ROOT/syd1/1.0.1.txt" "$ROOT/expected.txt"'
 ok "uploaded signature verifies on this OpenSSH with the repo's release_signers" \
    '"$REAL_KEYGEN" -Y verify -f "$ROOT/up/release_signers" -I release -n pilnk-release -s "$ROOT/syd1/1.0.1.sig" < "$ROOT/syd1/1.0.1.txt" >/dev/null 2>&1'
-ok "normal signing goes through the agent" 'grep -q "^SSH_AUTH_SOCK=/" "$CALLS" && ! grep -q "^SSH_AUTH_SOCK=$" "$CALLS"'
+ok "YubiKey signing uses the key file itself, no agent" 'grep -qF -- "-Y sign -f $KROOT/yk -n pilnk-release" "$CALLS"'
 scenario; ANS='y\n'; OUT="$(printf 'y\n' | (umask 077; bash "$SIGN" 1.0.1 "$HEADC") 2>&1)"; RC=$?
 ok "uploaded files are readable by the web server even under umask 077" \
    '[ "$RC" = 0 ] && [ "$(stat -c %a "$ROOT/syd1/1.0.1.txt")" = 644 ] && [ "$(stat -c %a "$ROOT/syd1/1.0.1.sig")" = 644 ]'
-scenario; export PILNK_SIGN_KEY="$KROOT/stranger.pub"; ANS='y\ny\n'; run_sign 1.0.1 "$HEADC"
+scenario; export PILNK_SIGN_KEY="$KROOT/stranger"; ANS='y\ny\n'; run_sign 1.0.1 "$HEADC"
 ok "self-verify catches a key not in release_signers" '[ "$RC" != 0 ] && grep -q "does not verify" <<<"$OUT" && ! uploaded'
-scenario; ANS='y\n'; OUT="$(printf 'y\n' | SSH_AUTH_SOCK= bash "$SIGN" 1.0.1 "$HEADC" 2>&1)"; RC=$?
-ok "YubiKey key not in the agent -> stops and says so" '[ "$RC" != 0 ] && grep -q "not in your ssh-agent" <<<"$OUT" && ! uploaded'
+scenario; export PILNK_SIGN_KEY="$ROOT/nokey"; ANS='y\ny\n'; run_sign 1.0.1 "$HEADC"
+ok "YubiKey key file missing -> says to run --init, nothing uploaded" '[ "$RC" != 0 ] && grep -q -- "--init" <<<"$OUT" && ! uploaded'
+scenario; touch "$ROOT/.sign_notouch" "$ROOT/.verify_ok"; ANS='y\n'; run_sign 1.0.1 "$HEADC"
+ok "a YubiKey signature without the touch flag is never uploaded" '[ "$RC" != 0 ] && grep -q "no touch flag" <<<"$OUT" && ! uploaded'
+scenario; touch "$ROOT/.sign_fail"; ANS='y\n'; run_sign 1.0.1 "$HEADC"
+ok "YubiKey not touched in time -> stops, nothing uploaded" '[ "$RC" != 0 ] && grep -q "not touched" <<<"$OUT" && ! uploaded'
 scenario; ANS='y\n'; run_sign 1.0.1 "$HEADC" --backup
 ok "--backup signs with the backup key, agent unset" '[ "$RC" = 0 ] && grep -q "SSH_AUTH_SOCK=$" "$CALLS"'
 scenario; touch "$ROOT/.scp_noupdate"; ANS='y\n'; run_sign 1.0.1 "$HEADC"
@@ -158,6 +173,28 @@ scenario; put_rec 1.0.0 "$ONE"; ANS='y\n'; run_sign 1.0.1 "$HEADC"
 ok "record matching pilnk.io: one y signs" '[ "$RC" = 0 ] && ! grep -q "does not show" <<<"$OUT"'
 scenario app.py null; put_rec 1.0.2 "$ONE"; ANS='y\ny\n'; run_sign 1.0.1 "$HEADC"
 ok "a version not newer than AJ's own record is refused" '[ "$RC" != 0 ] && grep -q "not newer" <<<"$OUT" && ! uploaded'
+
+sk_prev() {  # sk_prev touch|notouch: pilnk.io's last release = the spike statement signed by that
+  # YubiKey key, and AJ's YubiKey key is that key
+  python3 - "$ROOT/version.json" "$SKFIX/statement" "$SKFIX/$1.sig" <<'PY'
+import json, sys
+out, st, sig = sys.argv[1:4]
+json.dump({'version': '1.0.1', 'release': {'version': '0.0.1', 'commit': '0' * 40,
+           'statement': open(st).read(), 'sig': open(sig).read()}}, open(out, 'w'))
+PY
+  mkdir -p "$ROOT/sk"; cp "$SKFIX/$1.pub" "$ROOT/sk/yk.pub"; export PILNK_SIGN_KEY="$ROOT/sk/yk"
+}
+scenario; sk_prev touch; ANS='n\n'; run_sign 1.0.1 "$HEADC"
+ok "pilnk.io release signed by AJ's YubiKey with a touch -> checked" 'grep -q "checked against your keys" <<<"$OUT" && ! grep -q UNVERIFIED <<<"$OUT"'
+scenario; sk_prev notouch; ANS='n\n'; run_sign 1.0.1 "$HEADC"
+ok "pilnk.io release signed by AJ's YubiKey WITHOUT a touch -> UNVERIFIED" 'grep -q UNVERIFIED <<<"$OUT"'
+tc() { bash -c 'source "$1"; touch_ok "$2"' _ "$SIGN" "$1" >/dev/null 2>&1; echo $?; }
+mkroot; printf 'x\n' > "$ROOT/m"; "$REAL_KEYGEN" -q -Y sign -f "$KROOT/yk" -n pilnk-release "$ROOT/m" >/dev/null 2>&1
+printf 'not a signature\n' > "$ROOT/junk.sig"
+ok "touch_ok: touched YubiKey signatures pass" '[ "$(tc "$SKFIX/touch.sig")" = 0 ] && [ "$(tc "$SKFIX/touch2.sig")" = 0 ]'
+ok "touch_ok: no-touch YubiKey signature fails" '[ "$(tc "$SKFIX/notouch.sig")" = 1 ]'
+ok "touch_ok: plain ed25519 signature (backup key) passes" '[ "$(tc "$ROOT/m.sig")" = 0 ]'
+ok "touch_ok: not a signature fails" '[ "$(tc "$ROOT/junk.sig")" = 2 ]'
 
 # ---- what reaches the terminal is shown, never obeyed (review I3) ------------------------
 has_ctrl() { LC_ALL=C grep -q $'[\x01-\x08\x0b-\x1f\x7f]' <<<"$1"; }
@@ -186,49 +223,45 @@ FT="$(flag_table update.sh release_signers release_policy bootstrap-selfheal.sh 
 ok "every spec 5.3 step 4 file (and release-check.sh) is flagged" '[ "$(grep -c "^Y " <<<"$FT")" = 17 ]'
 ok "ordinary files are not flagged" 'grep -q "^N app.py" <<<"$FT" && grep -q "^N static/index.html" <<<"$FT" && grep -q "^N README.md" <<<"$FT" && grep -q "^N tools/install.sh.md" <<<"$FT"'
 
-# ---- --init ------------------------------------------------------------------------------
+# ---- --init: a FIDO key on the YubiKey (Task 1, Ruling S1) ------------------------------
 init_scenario() {
   mkroot
   export HOME="$ROOT/home"; mkdir -p "$HOME"
   export SSH_AUTH_SOCK="$AGENT_SOCK"
-  unset PILNK_SIGN_KEY PILNK_SIGN_BACKUP_KEY
-  : > "$ROOT/libykcs11.so"; export PILNK_SIGN_PKCS11="$ROOT/libykcs11.so"
-  fakebin ykman 'if [ "$1" = info ]; then [ -e "$ROOT/.no_yk" ] && exit 1; echo "Device type: YubiKey 5"; exit 0; fi
-if [ "$1 $2" = "piv info" ]; then echo "PIV version: 5.4.3"; [ -e "$ROOT/.slot_used" ] && printf "Slot 9C (SIGNATURE):\n  Algorithm: ECCP256\n"; exit 0; fi
-if [ "$1 $2 $3" = "piv keys info" ]; then [ -e "$ROOT/.slot_key" ] && { echo "Algorithm: ECCP256"; exit 0; }; echo "ERROR: no key in slot" >&2; exit 1; fi
-if [ "$1 $2 $3" = "piv keys generate" ]; then cp "$KROOT/yk2.pem" "${@: -1}"; fi
-exit 0'
-  fakebin ssh-add 'if [ "$1" = "-s" ]; then exec "$REAL_ADD" -q "$KROOT/yk2" 2>/dev/null; fi
-exec "$REAL_ADD" "$@"'
+  unset PILNK_SIGN_KEY PILNK_SIGN_BACKUP_KEY PILNK_SIGN_FIXTURE
+  fakebin ssh-add 'exec "$REAL_ADD" "$@"'
+  fakebin ykman 'exit 0'
   keygen_wrapper
 }
 run_init() { OUT="$(bash "$SIGN" --init </dev/null 2>&1)"; RC=$?; }
+nothing_kept() { [ -z "$(ls -A "$HOME/.ssh" 2>/dev/null)" ] && [ ! -e "$HOME/pilnk-sign-fixture" ]; }
 
 init_scenario; run_init
 ok "--init succeeds" '[ "$RC" = 0 ]'
 ok "--init never prints private key material" '! grep -q "PRIVATE KEY" <<<"$OUT"'
 ok "--init prints two namespaces-only signer lines" '[ "$(grep -c "^release namespaces=\"pilnk-release\" " <<<"$OUT")" = 2 ]'
-ok "--init runs the hardware steps in order (ykman info, slot 9c checks, PIV generate, certificate, ssh-add -s, ssh-keygen -D)" '
-  [ "$(grep -E "^(ykman info|ykman piv info|ykman piv keys info 9c|ykman piv keys generate --algorithm ECCP256 --pin-policy ONCE --touch-policy ALWAYS 9c |ykman piv certificates generate |ssh-add -s |ssh-keygen -D )" "$CALLS" | cut -c1-12 | tr "\n" "|")" = "ykman info|ykman piv in|ykman piv ke|ykman piv ke|ykman piv ce|ssh-add -s /|ssh-keygen -|" ]'
-ok "--init writes the YubiKey public key file" '[ "$(cut -d" " -f1,2 "$HOME/.ssh/pilnk_release_yk.pub")" = "$(cut -d" " -f1,2 "$KROOT/yk2.pub")" ]'
+ok "--init: YubiKey FIDO key first, then the backup key, then a test signature" '
+  [ "$(grep -E "^ssh-keygen (-t ed25519-sk -O application=ssh:pilnk-release |-t ed25519 -a 100 |-q -Y sign -f )" "$CALLS" | cut -d" " -f1-3 | tr "\n" "|")" = "ssh-keygen -t ed25519-sk|ssh-keygen -t ed25519|ssh-keygen -q -Y|" ]'
+ok "--init: the YubiKey key file and .pub are in place and are the fixture's first signer" \
+   '[ -f "$HOME/.ssh/pilnk_release_yk" ] && [ "$(head -n 1 "$HOME/pilnk-sign-fixture/release_signers" | cut -d" " -f3,4)" = "$(cut -d" " -f1,2 "$HOME/.ssh/pilnk_release_yk.pub")" ]'
 ok "--init fixture: exact fixed statement" '[ "$(cat "$HOME/pilnk-sign-fixture/statement")" = "$(printf "pilnk-release 1\nversion 0.0.0\ncommit %s" 0000000000000000000000000000000000000000)" ]'
 ok "--init fixture: the YubiKey signature verifies on OpenSSH 8.9" \
    '"$REAL_KEYGEN" -Y verify -f "$HOME/pilnk-sign-fixture/release_signers" -I release -n pilnk-release -s "$HOME/pilnk-sign-fixture/statement.sig" < "$HOME/pilnk-sign-fixture/statement" >/dev/null 2>&1'
-ok "--init never loads the backup key into an agent" '! grep -q "ssh-add.*backup" "$CALLS" && ! "$REAL_ADD" -L | grep -qF "$(cut -d" " -f2 "$HOME/.ssh/pilnk_release_backup.pub")"'
+ok "--init never uses ssh-agent or ykman" '! grep -q "^ssh-add" "$CALLS" && ! grep -q "^ykman" "$CALLS"'
 ok "--init tells AJ to move the backup key offline and delete it" 'grep -q "Bitwarden" <<<"$OUT" && grep -q "delete" <<<"$OUT"'
+ok "--init leaves nothing but the four key files beside them" '[ "$(ls -A "$HOME/.ssh" | grep -cv "^pilnk_release_")" = 0 ] && [ "$(ls -A "$HOME/.ssh" | wc -l)" = 4 ]'
 run_init
 ok "--init refuses to overwrite existing keys" '[ "$RC" != 0 ]'
 rm -f "$HOME/.ssh/pilnk_release_backup"; run_init     # AJ did as told: backup private key moved off the laptop
-ok "--init after the backup key was moved offline still refuses, YubiKey slot untouched" \
-   '[ "$RC" != 0 ] && grep -q "already exists" <<<"$OUT" && [ "$(grep -c "^ykman piv keys generate" "$CALLS")" = 1 ]'
+ok "--init after the backup key was moved offline still refuses, no new YubiKey key" \
+   '[ "$RC" != 0 ] && grep -q "already exists" <<<"$OUT" && [ "$(grep -c "^ssh-keygen -t ed25519-sk" "$CALLS")" = 1 ]'
 
 init_scenario; touch "$ROOT/.nopass"; run_init
-ok "--init refuses a backup key with no passphrase (removes it, YubiKey untouched)" \
-   '[ "$RC" != 0 ] && [ ! -e "$HOME/.ssh/pilnk_release_backup" ] && ! grep -q "^ykman piv keys generate" "$CALLS"'
+ok "--init refuses a backup key with no passphrase and keeps nothing" '[ "$RC" != 0 ] && grep -q "passphrase" <<<"$OUT" && nothing_kept'
 init_scenario; touch "$ROOT/.no_yk"; run_init
-ok "--init with no YubiKey stops before creating any key" '[ "$RC" != 0 ] && grep -q "No YubiKey" <<<"$OUT" && [ ! -e "$HOME/.ssh/pilnk_release_backup" ]'
-for f in .slot_used .slot_key; do
-  init_scenario; touch "$ROOT/$f"; run_init
-  ok "--init refuses when PIV slot 9c is not empty ($f): no key created, slot untouched" \
-     '[ "$RC" != 0 ] && grep -q "already holds a key" <<<"$OUT" && [ ! -e "$HOME/.ssh/pilnk_release_backup" ] && ! grep -q "^ykman piv keys generate" "$CALLS"'
-done
+ok "--init with no YubiKey stops before the backup key and keeps nothing" \
+   '[ "$RC" != 0 ] && grep -q "No YubiKey" <<<"$OUT" && ! grep -q "^ssh-keygen -t ed25519 -a 100" "$CALLS" && nothing_kept'
+init_scenario; touch "$ROOT/.sign_fail"; run_init
+ok "--init test signature not touched -> keeps nothing" '[ "$RC" != 0 ] && nothing_kept'
+init_scenario; touch "$ROOT/.sign_notouch" "$ROOT/.verify_ok"; run_init
+ok "--init test signature without the touch flag -> refused, keeps nothing" '[ "$RC" != 0 ] && grep -q "no touch flag" <<<"$OUT" && nothing_kept'
