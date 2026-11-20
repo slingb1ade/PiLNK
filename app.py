@@ -1807,6 +1807,15 @@ OTA_CHECK_INTERVAL = 300   # 5 minutes (was 1 hour — too slow for active dev i
 OTA_COOLDOWN = 3600       # 1 hour after update before re-checking
 OTA_STATE_FILE = os.path.join(PILNK_DIR, 'ota_state.json')
 
+# Signed releases (signed-releases spec 5.6): every OTA check verifies AJ's
+# signature over the newest release and the ping reports the result. Guarded:
+# a tree without the module still runs, it just reports nothing about it.
+try:
+    import release_status
+except Exception as _rs_err:
+    release_status = None
+    logging.warning('[ota] release_status unavailable: %s', _rs_err)
+
 # ── GUARDRAIL #2 (May 2026): Persistent OTA cooldown ──
 # ota_last_update used to be a plain module variable that reset to 0
 # on every process restart. update.sh restarts the service as its
@@ -2139,6 +2148,11 @@ def _ota_ping_features():
                       (WHY the last attempt failed — empty when it did not)
       restart_pending:'' | <installed version>   (new code on disk, old running)
       ota_restart:    ok | blocked | unknown     (can the next OTA restart us)
+      ota_sig:        ok | missing | bad | not_on_main | mismatch | no_tool | error
+      ota_sig_run:    on_signed | behind | ahead | dirty | none
+      ota_sig_mode:   report | enforce           (release_policy in this tree)
+      svc_sudo:       full | scoped | none       (passwordless root for this account)
+      (the last four: signed releases, spec 5.6 / 5.11; '' on a tree without them)
 
     ota_last_result says an attempt broke; ota_fail says where. update.sh has
     three separate exit-1 paths, so the exit code alone cannot tell them apart
@@ -2153,7 +2167,7 @@ def _ota_ping_features():
         check = 'starting'   # too soon after boot to judge
     else:
         check = 'never'      # process is old and the checker has never succeeded
-    return {
+    feats = {
         'ota':             'auto' if _is_auto_update_enabled() else 'manual',
         'ota_check':       check,
         'ota_last_result': str(_load_ota_state().get('last_result', 'none'))[:40],
@@ -2164,6 +2178,11 @@ def _ota_ping_features():
         # ok | blocked | unknown: can the next OTA restart us unattended?
         'ota_restart':     _ota_restart_probe(),
     }
+    if release_status is not None:
+        feats.update(release_status.ping_fields(
+            release_status.load_state(PILNK_DIR),
+            release_status.read_policy(PILNK_DIR), _svc_sudo()))
+    return feats
 
 ota_last_update = _load_ota_last_update()
 ota_status = {'available': False, 'current': '', 'latest': '', 'last_check': 0, 'updating': False}
@@ -2211,6 +2230,15 @@ def _ota_restart_probe():
         except Exception:
             _OTA_RESTART_PROBE = 'unknown'
     return _OTA_RESTART_PROBE
+
+_SVC_SUDO = None
+
+def _svc_sudo():
+    # Asked once per process, like _ota_restart_probe: sudo -n prompts log a line.
+    global _SVC_SUDO
+    if _SVC_SUDO is None:
+        _SVC_SUDO = release_status.svc_sudo_probe() if release_status is not None else ''
+    return _SVC_SUDO
 
 def _restart_cmd():
     """The exact command the operator should run to get onto the installed code.
@@ -2292,6 +2320,7 @@ def _is_auto_update_enabled():
 #
 # Ordered: the first match wins, so specific patterns sit above general ones.
 _OTA_FAIL_PATTERNS = (
+    ('signature refused',                'sig_refused'),        # exit 6, enforce mode
     ('cannot cd to',                     'cd_failed'),          # exit 1
     ('git fetch failed',                 'fetch_failed'),       # exit 1
     ('git reset --hard failed',          'reset_failed'),       # exit 1
@@ -2401,7 +2430,20 @@ def _perform_ota_check(auto_install_on_available=True):
         ota_status['latest'] = remote_ver
         ota_status['last_check'] = time.time()
 
-        if remote_ver and _semver_gt(remote_ver, local_ver):
+        # Signed releases (spec 5.6): check AJ's signature on every pass, keep
+        # the answer for the ping, and in enforce mode count an update as
+        # available only once its release is signed. Report mode: as before.
+        if release_status is not None:
+            _policy = release_status.read_policy(PILNK_DIR)
+            _sig = release_status.check(PILNK_DIR, data.get('release'))
+            release_status.save_state(PILNK_DIR, _sig, _policy, by='app')
+            _available, _awaiting = release_status.signed_update_available(
+                _policy, local_ver, remote_ver, data.get('release'), _sig, _semver_gt)
+        else:
+            _available, _awaiting = bool(remote_ver) and _semver_gt(remote_ver, local_ver), False
+        ota_status['awaiting_signature'] = _awaiting
+
+        if _available:
             ota_status['available'] = True
             print(f'[PILNK-OTA] Update available: {local_ver} → {remote_ver}')
             if auto_install_on_available:
@@ -4137,6 +4179,8 @@ def api_ota_status():
         'available':   bool(ota_status.get('available', False)),
         'updating':    bool(ota_status.get('updating', False)),
         'last_check':  ota_status.get('last_check', 0),
+        # enforce mode: GitHub has a newer version that AJ has not signed yet
+        'awaiting_signature': bool(ota_status.get('awaiting_signature', False)),
         'auto_update': _is_auto_update_enabled()
     })
 
