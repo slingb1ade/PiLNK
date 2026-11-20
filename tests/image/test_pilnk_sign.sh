@@ -111,6 +111,14 @@ ok "refuses a version not newer than the last signed one" '[ "$RC" != 0 ] && ! u
 scenario; run_sign
 ok "no arguments -> usage, exit 2" '[ "$RC" = 2 ]'
 
+# ---- the upload address stays off GitHub (pilnk.io sits behind Cloudflare) --------------------
+ok "no IPv4 address is written anywhere in pilnk-sign" '! grep -nE "[0-9]{1,3}[.][0-9]{1,3}[.][0-9]{1,3}[.][0-9]{1,3}" "$SIGN"'
+scenario; unset PILNK_SIGN_DEST; mkdir -p "$HOME/.config/pilnk-sign"
+printf '# where signed releases go\n\nsyd1:/releases/\n' > "$HOME/.config/pilnk-sign/dest"; ANS='y\n'; run_sign 1.0.1 "$HEADC"
+ok "upload address read from ~/.config/pilnk-sign/dest" '[ "$RC" = 0 ] && [ -e "$ROOT/syd1/1.0.1.sig" ] && grep -q "to syd1:/releases/" <<<"$OUT"'
+scenario; unset PILNK_SIGN_DEST; ANS='y\n'; run_sign 1.0.1 "$HEADC"
+ok "no upload address -> refuses before anything is shown or signed" '[ "$RC" != 0 ] && ! uploaded && grep -q "pilnk-sign/dest" <<<"$OUT" && ! grep -qw "two" <<<"$OUT" && ! grep -q -- "-Y sign" "$CALLS"'
+
 # ---- what AJ is shown --------------------------------------------------------------------
 scenario; ANS='n\n'; run_sign 1.0.1 "$HEADC"
 ok "lists commits since the last signed release" 'grep -qw "two" <<<"$OUT" && ! grep -qw "one" <<<"$OUT"'

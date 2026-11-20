@@ -15,7 +15,9 @@
 #   PILNK_SIGN_KEY          [~/.ssh/pilnk_release_yk]  the YubiKey's FIDO key file (made by --init;
 #                           useless without the YubiKey itself) and its .pub beside it
 #   PILNK_SIGN_BACKUP_KEY   [~/.ssh/pilnk_release_backup]  never added to any agent
-#   PILNK_SIGN_DEST         [aj@66.226.148.29:/var/www/pilnkio/_private/releases/]
+#   PILNK_SIGN_DEST         [first line of ~/.config/pilnk-sign/dest]  where the signed pair is
+#                           copied (user@host:/path/). Kept on the laptop, never in this repo:
+#                           pilnk.io sits behind Cloudflare and the server address stays private.
 #   PILNK_SIGN_SCP          [scp]
 #   PILNK_SIGN_FIXTURE      [~/pilnk-sign-fixture]   --init writes its test signature here
 #   PILNK_SIGN_RECORD       [${XDG_STATE_HOME:-~/.local/state}/pilnk-sign/signed]
@@ -32,7 +34,11 @@ cfg() {
   VERSION_URL="${PILNK_SIGN_VERSION_URL:-https://pilnk.io/api/version.php}"
   KEY="${PILNK_SIGN_KEY:-$HOME/.ssh/pilnk_release_yk}"
   BACKUP_KEY="${PILNK_SIGN_BACKUP_KEY:-$HOME/.ssh/pilnk_release_backup}"
-  DEST="${PILNK_SIGN_DEST:-aj@66.226.148.29:/var/www/pilnkio/_private/releases/}"
+  DEST_FILE="${XDG_CONFIG_HOME:-$HOME/.config}/pilnk-sign/dest"
+  DEST="${PILNK_SIGN_DEST:-}"
+  if [ -z "$DEST" ] && [ -r "$DEST_FILE" ]; then
+    DEST="$(grep -v '^[[:space:]]*#' "$DEST_FILE" | grep -m1 -v '^[[:space:]]*$' | tr -d '[:space:]')"
+  fi
   SCP="${PILNK_SIGN_SCP:-scp}"
   FIXTURE="${PILNK_SIGN_FIXTURE:-$HOME/pilnk-sign-fixture}"
   RECORD="${PILNK_SIGN_RECORD:-${XDG_STATE_HOME:-$HOME/.local/state}/pilnk-sign/signed}"
@@ -201,6 +207,8 @@ cmd_sign() {
   [ -n "$ver" ] && [ -n "$commit" ] || usage
   [[ "$ver" =~ $VERSION_RE ]] || die 2 "version must look like 1.6.28, not '$ver'"
   [[ "$commit" =~ ^[0-9a-f]{7,40}$ ]] || die 2 "commit must be a lowercase hex hash, not '$commit'"
+  [ -n "$DEST" ] || die 1 "no upload address. Put user@host:/path/ on one line in $DEST_FILE
+(it stays on this laptop, never on GitHub), or set PILNK_SIGN_DEST. Nothing signed."
   T="$(mktemp -d)" || die 1 "no temp dir"
   trap 'rm -rf "$T"' EXIT
 
