@@ -139,6 +139,7 @@
 <script src="/static/models.js"></script>
 <script src="/static/livery.js"></script>
 <script src="/static/city-lights.js"></script>
+<script src="/static/tile-hub.js?v=th1"></script>
 <script src="/static/wmm.js"></script>
 <script src="/static/datalink-card.js?v=dl5"></script>
 <script src="/static/arrival-paths.js?v=ap7"></script>
@@ -1207,6 +1208,10 @@ const TILE_DB=(()=>{ let p=null; return ()=>p||(p=new Promise((res,rej)=>{ try{
    a week at a time. The date is stripped from the KEY only; requests still go to the live address.
    Terrain (AWS) has no build segment and is unaffected. Map data changes slowly, so a tile from last
    week's build is a correct tile — and anything older than TILE_STALE is refreshed in the background. */
+/* The node's tile store (21 Nov 2026): terrain and map tiles are asked of this node first (static/tile-hub.js),
+   which keeps one shared copy for every device in the house and fetches the likely areas overnight. If the node
+   can't help, the tile comes straight from its source as before. */
+const tileNet=(u,o)=>window.pilnkTileNet?window.pilnkTileNet(u,o):fetch(u,o);
 const TILE_DAY=86400000, TILE_STALE=30*TILE_DAY;
 function tileKey(u){ return u.replace(/\/planet\/[0-9]{8}_[0-9]{6}_[a-z]+\//,'/planet/'); }
 async function tileRec(url){ try{ const db=await TILE_DB(), key=tileKey(url); return await new Promise(res=>{ const q=db.transaction('t','readonly').objectStore('t').get(key); q.onsuccess=()=>res(q.result||null); q.onerror=()=>res(null); }); }catch(e){ return null; } }
@@ -1218,7 +1223,7 @@ async function tileGet(url){ const r=await tileRec(url); return r?r.b:null; }
 async function tileTouch(url,rec){ try{ const db=await TILE_DB(); db.transaction('t','readwrite').objectStore('t').put({b:rec.b,t:Date.now()},tileKey(url)); }catch(e){} }
 const _rfBusy=new Set();
 function tileRefresh(url){ const k=tileKey(url); if(_rfBusy.has(k))return; _rfBusy.add(k);
-  fetch(url).then(r=>r.ok?r.arrayBuffer():null).then(async b=>{ if(b){ if(/terrarium/.test(url)) b=await cleanDem(b); tilePut(url,b); } })
+  tileNet(url).then(r=>r.ok?r.arrayBuffer():null).then(async b=>{ if(b){ if(/terrarium/.test(url)) b=await cleanDem(b); tilePut(url,b); } })
     .catch(()=>{}).then(()=>{ _rfBusy.delete(k); }); }
 let _tileCount=null;
 async function tilePut(url,buf){ try{ const db=await TILE_DB(), key=tileKey(url); const tx=db.transaction('t','readwrite'), s=tx.objectStore('t'); s.put({b:buf,t:Date.now()},key);
@@ -1298,7 +1303,7 @@ async function tileFetch(url,signal){
     if(age>TILE_STALE) tileRefresh(url);          // serve the cached copy now, fetch a fresh one behind it
     else if(age>TILE_DAY) tileTouch(url,rec);     // mark it as used, so eviction leaves it alone
     return rec.b; }
-  const r=await fetch(url,{signal}); if(!r.ok) throw new Error('tile '+r.status);
+  const r=await tileNet(url,{signal}); if(!r.ok) throw new Error('tile '+r.status);
   let buf=await r.arrayBuffer(); if(/terrarium/.test(url)) buf=await cleanDem(buf);
   tilePut(url,buf); return buf;
 }
@@ -1776,6 +1781,25 @@ function paintRunway(style,night){
   return style;
 }
 
+/* ---------- terrain skirts (20 Nov 2026) ----------
+   AJ: "black lines appear in different places" in the distant ground. They were holes: the page background showing
+   through cracks where a detailed terrain tile meets a coarser one. MapLibre hides those cracks with a skirt hung
+   under every tile's edges, but sizes it from the CAMERA's zoom (draw_terrain: getMeshFrameDelta(transform.zoom)).
+   The chase camera sits at zoom ~20-21, so every skirt was ~4 m deep, while the distant tiles are drawn several levels
+   coarser (at VE x1.5) and disagree at their edges by far more. Measured in AJ's Chrome: 25,000-48,000 see-through
+   pixels per 60 frames; ~900 with skirts sized as if the camera were at zoom 14 (~490 m). A deeper skirt is hidden
+   under the neighbouring tile everywhere except exactly where a crack would be. Patched on the shared prototype, so a
+   rebuilt terrain object keeps it; zoomed out (camera zoom <= SKIRT_MAX_Z) MapLibre's own value stands. */
+const SKIRT_MAX_Z=14;
+function deepenSkirts(){
+  try{ const P=map.terrain&&Object.getPrototypeOf(map.terrain);
+    if(!P||P.__pilnkSkirts||typeof P.getMeshFrameDelta!=='function') return;
+    const stock=P.getMeshFrameDelta;
+    P.getMeshFrameDelta=function(zoom){ return stock.call(this, Math.min(zoom, SKIRT_MAX_Z)); };
+    P.__pilnkSkirts=true;
+  }catch(e){}
+}
+
 /* ---------- map ---------- */
 async function boot(){
   if(_q.get('debug')==='1'){ try{ document.getElementById('tl').classList.add('show'); }catch(e){} }
@@ -1810,7 +1834,7 @@ async function boot(){
   map.on('load',()=>{
     map.addSource('dem',{type:'raster-dem', tiles:['pilnk://s3.amazonaws.com/elevation-tiles-prod/terrarium/{z}/{x}/{y}.png'], encoding:'terrarium', tileSize:256, maxzoom:DEM_MAX, attribution:'Elevation: AWS Terrain Tiles'});
     /* DEM maxzoom is DEM_MAX (15 by default — see its declaration for why lower is not cheaper). */
-    if(TERRAIN) map.setTerrain({source:'dem', exaggeration:VE}); else terrainReady=true;
+    if(TERRAIN){ map.setTerrain({source:'dem', exaggeration:VE}); deepenSkirts(); } else terrainReady=true;
     /* Field elevation, sampled from the same terrain the aircraft is drawn against (queryTerrainElevation
        returns exaggerated metres — measured, 603 at KICT for 402 m real — so divide by VE).
        AUDIT FIX #1 (main, 24 Sep 2026): this used to accept the FIRST answer. It runs in the same tick

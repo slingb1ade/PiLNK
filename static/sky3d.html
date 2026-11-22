@@ -134,6 +134,7 @@ Options: <b>?ve=</b> terrain exaggeration (1.5), <b>?scale=</b> aircraft size (1
 <script crossorigin="anonymous" src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/loaders/GLTFLoader.js"></script>
 <script src="/static/models.js"></script>
 <script src="/static/city-lights.js"></script>
+<script src="/static/tile-hub.js?v=th1"></script>
 <script>
 const _q=new URLSearchParams(location.search);
 const num=(k,d)=>{const v=_q.get(k);return (v!=null&&v!=='')?+v:d;};
@@ -728,9 +729,13 @@ async function cleanDem(raw){
     return await (await c.convertToBlob({type:'image/png'})).arrayBuffer();
   }catch(e){ return raw; }
 }
+/* The node's tile store (21 Nov 2026): terrain and map tiles are asked of this node first (static/tile-hub.js),
+   which keeps one shared copy for every device in the house and fetches the likely areas overnight. If the node
+   can't help, the tile comes straight from its source as before. */
+const tileNet=(u,o)=>window.pilnkTileNet?window.pilnkTileNet(u,o):fetch(u,o);
 async function tileFetch(url,signal){
   const hit=await tileGet(url); if(hit) return hit;
-  const r=await fetch(url,{signal}); if(!r.ok) throw new Error('tile '+r.status);
+  const r=await tileNet(url,{signal}); if(!r.ok) throw new Error('tile '+r.status);
   let buf=await r.arrayBuffer(); if(/terrarium/.test(url)) buf=await cleanDem(buf);
   tilePut(url,buf); return buf;
 }

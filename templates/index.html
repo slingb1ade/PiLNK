@@ -22,6 +22,8 @@
 <script src="/static/datalink-fixes.js?v=fx2"></script>
 <!-- Airport live streams in the navbar: a red LIVE pill while a stream near this node is live (static/live-pill.js). -->
 <script src="/static/live-pill.js?v=lp1"></script>
+<!-- Signal Border: range bins to map points and words (static/signal-border.js); the same file runs on pilnk.io. -->
+<script src="/static/signal-border.js?v=1"></script>
 <style>
   @import url('https://fonts.googleapis.com/css2?family=Orbitron:wght@400;600;700&family=Share+Tech+Mono&family=Noto+Color+Emoji&display=swap');
   :root{--bg-deep:#f0f4ff;--bg-panel:#ffffff;--bg-card:#f5f8ff;--border:#dbeafe;--blue-dim:#2563eb;--blue-mid:#3b82f6;--blue-light:#1d4ed8;--text:#1e3a6e;--text-dim:#5c7aa3;--green:#16a34a;--success:#16a34a;--warn:#d97706;--danger:#dc2626;--info:#2563eb;--shadow:0 1px 2px rgba(30,58,110,.06),0 4px 12px rgba(30,58,110,.09);--shadow-2:0 8px 24px rgba(30,58,110,.13);--edge:inset 0 1px 0 rgba(255,255,255,.65);--r-1:6px;--r-2:10px;--r-3:14px;--sp-1:4px;--sp-2:8px;--sp-3:12px;--sp-4:16px;--sp-5:24px;}
@@ -1899,6 +1901,38 @@
               <input type="range" id="mapBrightSlider" min="40" max="130" step="5" value="100" oninput="setMapBrightness(this.value)" style="width:100%;"/>
             </div>
           </div>
+          <!-- Signal Border (22 Nov 2026): how far this receiver hears, by direction - the last 24 h or all time.
+               It was "Footprint" inside Aviation Overlay. The switch keeps its id (avFootprint) so saved setups still find it. -->
+          <div class="panel" id="sbPanel">
+            <div class="panel-title">Signal Border</div>
+            <div class="toggle-row" title="An outline of how far your receiver hears aircraft in each direction. A dip shows where something blocks or drowns out the signal.">
+              <span style="display:flex;align-items:center;"><span class="av-dot" style="background:#22d3ee;"></span>Show on map</span>
+              <label class="toggle-switch"><input type="checkbox" id="avFootprint" autocomplete="off" onchange="toggleFootprint(this.checked)"/><span class="toggle-slider"></span></label>
+            </div>
+            <div id="fpViewRow" style="display:none;">
+              <div class="cov-toggle">
+                <button class="cov-btn active" id="fpBtn24h" style="flex:1 1 auto;white-space:nowrap;padding:3px 5px;" onclick="setFootprintMode('24h')" title="The furthest position heard in each direction over the last 24 hours">24 h</button>
+                <button class="cov-btn" id="fpBtnAll" style="flex:1 1 auto;white-space:nowrap;padding:3px 5px;" onclick="setFootprintMode('all')" title="The furthest position ever heard in each direction">All time</button>
+                <button class="cov-btn" id="fpBtnHorizon" style="flex:1 1 auto;white-space:nowrap;padding:3px 5px;" onclick="setFootprintMode('horizon')" title="How low towards the horizon you hear, by direction. A shape to compare, not distances.">Horizon</button>
+                <button class="cov-btn" id="fpBtnRays" style="flex:1 1 auto;white-space:nowrap;padding:3px 5px;" onclick="setFootprintMode('rays')" title="The last 24 hours as spokes, one per direction">Rays</button>
+              </div>
+              <div class="av-status" id="sbReadout" style="font-style:normal;color:var(--text);"></div>
+              <div class="av-status" id="sbSub" style="margin-top:2px;display:none;"></div>
+              <div style="text-align:right;margin-top:4px;"><a href="#" id="sbReset" onclick="sbResetAll();return false;" style="font-size:0.6rem;color:var(--text-dim);" title="Forget the all-time outline and start it again from now. The last 24 hours is kept.">Reset all time</a></div>
+            </div>
+          </div>
+          <!-- 3D Terrain (22 Nov 2026). OPT-IN: the node only downloads terrain overnight once its owner turns this on.
+               A setting of the NODE (saved in its config.json through /api/tiles/settings), not of this browser,
+               so it is deliberately not part of My Setup. -->
+          <div class="panel" id="tilePanel">
+            <div class="panel-title">3D Terrain</div>
+            <div class="toggle-row" title="For the 3D Approach and 3D Sky views. A setting of this node, for every device in your home.">
+              <span>Fetch 3D terrain overnight</span>
+              <label class="toggle-switch"><input type="checkbox" id="tilePrewarm" autocomplete="off" disabled onchange="tileSetPrewarm(this.checked)"/><span class="toggle-slider"></span></label>
+            </div>
+            <div class="av-status" id="tileNote">Off by default. When on, between 01:00 and 05:00 this node downloads the terrain the 3D views are likely to need around your airports, up to 500 MB a night, and only if someone used the 3D views in the last 14 days. Either way it keeps the terrain and maps you have already looked at, for every device in your home.</div>
+            <div class="av-status" id="tileStatus" style="display:none;"></div>
+          </div>
           <div class="panel">
             <div class="panel-title">Weather Radar</div>
             <div class="toggle-row">
@@ -1932,12 +1966,6 @@
               <div class="av-toggle-row" id="arrRow" style="display:none;" title="Arrival paths into Auckland, learned from the tracks PiLNK has seen land. Not an official procedure — for watching aircraft only."><span style="display:flex;align-items:center;"><span class="av-dot" style="background:#ff3df2;"></span>Arrival Paths</span><label class="toggle-switch" style="transform:scale(0.85);"><input type="checkbox" id="avArrivals" onchange="toggleArrivalPaths(this.checked)"/><span class="toggle-slider"></span></label></div>
               <div class="av-status" id="arrStatus" style="display:none;padding-left:18px;"></div>
               <div class="av-toggle-row" id="arrRwyRow" style="display:none;padding-left:18px;justify-content:flex-end;gap:4px;" title="Which runway's arrival paths to draw. Auckland lands on one runway at a time, and which one changes with the wind."></div>
-              <div class="av-toggle-row"><span style="display:flex;align-items:center;"><span class="av-dot" style="background:#22d3ee;"></span>Footprint</span><label class="toggle-switch" style="transform:scale(0.85);"><input type="checkbox" id="avFootprint" onchange="toggleFootprint(this.checked)"/><span class="toggle-slider"></span></label></div>
-              <div class="av-toggle-row" id="fpViewRow" style="display:none;padding-left:18px;justify-content:flex-end;gap:4px;">
-                <button class="cov-btn active" id="fpBtnRange" onclick="setFootprintMode('range')" style="flex:0 0 auto;padding:2px 10px;">Range</button>
-                <button class="cov-btn" id="fpBtnHorizon" onclick="setFootprintMode('horizon')" style="flex:0 0 auto;padding:2px 10px;">Horizon</button>
-                <button class="cov-btn" id="fpBtnRays" onclick="setFootprintMode('rays')" style="flex:0 0 auto;padding:2px 10px;">Rays</button>
-              </div>
               <div class="av-toggle-row"><span style="display:flex;align-items:center;"><span class="av-dot" style="background:#7dd3fc;"></span>Airfields</span><label class="toggle-switch" style="transform:scale(0.85);"><input type="checkbox" id="avAirfields" onchange="toggleAirfields(this.checked)"/><span class="toggle-slider"></span></label></div>
               <div class="av-toggle-row" title="Side-on altitude view — slides up from the bottom. Shows the vertical separation between aircraft that the top-down map can't.">​<span style="display:flex;align-items:center;"><span class="av-dot" style="background:#36d3ff;"></span>Altitude View</span><label class="toggle-switch" style="transform:scale(0.85);"><input type="checkbox" id="avAltProfile" onchange="toggleAltProfile(this.checked)"/><span class="toggle-slider"></span></label></div>
               <div class="av-toggle-row" title="Extended runway centerlines with 1 km distance ticks — see whether an aircraft on approach is tracking the runway, and how far out it is."><span style="display:flex;align-items:center;"><span class="av-dot" style="background:#a3e635;"></span>Runway Centerlines</span><label class="toggle-switch" style="transform:scale(0.85);"><input type="checkbox" id="avRunways" onchange="toggleRunways(this.checked)"/><span class="toggle-slider"></span></label></div>
@@ -2823,17 +2851,27 @@ function covDraw(){
   var R = Math.min(W, H)/2 - 30;
   var d = covData, n = (d && d.sectors) || 36, secDeg = 360 / n;
   var legend = document.getElementById('covLegend');
-  var vals = null, rings = [], ringLabels = null, legendTxt = 'Accumulating data\u2026';
+  var vals = null, polys = null, rings = [], ringLabels = null, legendTxt = 'Accumulating data\u2026';
 
   if (covModeCur === 'range'){
     var mx = 0, mxI = -1;
     if (d) for (var i = 0; i < n; i++) if (d.max_nm[i] > mx){ mx = d.max_nm[i]; mxI = i; }
+    // Signal Border (1-degree bins) when this app.py has it: all time faint, the last 24 h solid on top.
+    var SBc = window.SignalBorder, sb = !!(SBc && SBc.has(d)), f24 = null, fAll = null;
+    if (sb){ f24 = SBc.furthest(d.border_24h); fAll = SBc.furthest(d.border_all); mx = Math.max(f24 ? f24.nm : 0, fAll ? fAll.nm : 0); }
     var step = mx <= 100 ? 25 : (mx <= 200 ? 50 : 100);
     var top = Math.max(step, Math.ceil(mx / step) * step);
     ringLabels = [];
     for (var r = step; r <= top; r += step){ rings.push(r / top); ringLabels.push(r); }
-    if (d) vals = d.max_nm.map(function(v){ return Math.max(0, Math.min(1, v / top)); });
-    if (mx > 0) legendTxt = 'Best ' + Math.round(mx) + ' nm @ ' + Math.round(mxI * secDeg + secDeg/2) + '\u00b0 \u00b7 rings ' + step + ' nm';
+    if (sb){
+      polys = [{ bins: d.border_all, faint: true }, { bins: d.border_24h, faint: false }];
+      var allTxt = fAll ? ' \u00b7 all time ' + Math.round(fAll.nm) + ' nm' : '';
+      if (f24) legendTxt = 'Last 24 h: best ' + Math.round(f24.nm) + ' nm @ ' + ('00' + f24.deg).slice(-3) + '\u00b0' + allTxt;
+      else if (fAll) legendTxt = 'Last 24 h: nothing yet' + allTxt;
+    } else {
+      if (d) vals = d.max_nm.map(function(v){ return Math.max(0, Math.min(1, v / top)); });
+      if (mx > 0) legendTxt = 'Best ' + Math.round(mx) + ' nm @ ' + Math.round(mxI * secDeg + secDeg/2) + '\u00b0 \u00b7 rings ' + step + ' nm';
+    }
   } else {
     rings = [0.25, 0.5, 0.75, 1];
     var worst = -1, worstI = -1, any = false;
@@ -2874,6 +2912,23 @@ function covDraw(){
       ctx.fillText(String(ringLabels[m2]), cx + 2, cy - R * rings[m2] + 11);
     }
     ctx.globalAlpha = 1;
+  }
+  if (polys){
+    polys.forEach(function (pl) {
+      var pm = pl.bins.length, sd = 360 / pm, cnt = 0;
+      ctx.beginPath();
+      for (var q = 0; q < pm; q++){
+        var pv = parseFloat(pl.bins[q]) || 0;
+        if (pv <= 0) continue;                       // empty bins are skipped, as on the map
+        var bg = (q * sd + sd/2 - 90) * Math.PI / 180, rr = R * Math.max(0, Math.min(1, pv / top));
+        if (cnt++ === 0) ctx.moveTo(cx + rr * Math.cos(bg), cy + rr * Math.sin(bg)); else ctx.lineTo(cx + rr * Math.cos(bg), cy + rr * Math.sin(bg));
+      }
+      if (cnt < 3) return;
+      ctx.closePath();
+      if (pl.faint){ ctx.fillStyle = cBlue; ctx.globalAlpha = 0.08; ctx.fill(); ctx.globalAlpha = 0.5; ctx.lineWidth = 1.5; ctx.strokeStyle = cDim; ctx.stroke(); }
+      else { ctx.fillStyle = cBlue; ctx.globalAlpha = 0.16; ctx.fill(); ctx.globalAlpha = 1; ctx.lineWidth = 2.5; ctx.strokeStyle = cBlue; ctx.stroke(); }
+      ctx.globalAlpha = 1;
+    });
   }
   if (vals){
     ctx.beginPath();
@@ -3623,7 +3678,7 @@ function skySettings() {
     // Aviation Overlay: Runway Centerlines + Airfields, under the same master switch as 2D
     rwy: !!avOverlayOn && !!runwaysVisible, afld: !!avOverlayOn && !!airfieldsVisible,
     asp: !!avOverlayOn && skyChecked('avAirways'), nav: !!avOverlayOn && skyChecked('avNavaids'), fix: !!avOverlayOn && skyChecked('avWaypoints'),
-    fp: !!avOverlayOn && !!footprintVisible, notam: !!notamsOn,
+    fp: !!footprintVisible, notam: !!notamsOn,
     modelMi: (typeof skyModels === 'number') ? skyModels : 50 };
 }
 function skyChecked(id) { var e = document.getElementById(id); return !!(e && e.checked); }
@@ -4376,8 +4431,6 @@ function clearAvOverlay() {
   }
   // Same for airfields — same overlay, same lifecycle.
   if (typeof clearAirfields === 'function') clearAirfields();
-  // And the RangeScope footprint — same overlay, same lifecycle.
-  if (typeof clearFootprint === 'function') clearFootprint();
   // Runway centerlines — same overlay, same lifecycle.
   if (typeof clearRunways === 'function') clearRunways();
   // Arrival paths — same overlay, same lifecycle.
@@ -4443,13 +4496,6 @@ function redrawAvOverlay() {
   if (typeof airfieldsVisible !== 'undefined' && airfieldsVisible
       && typeof drawAirfields === 'function') {
     drawAirfields();
-  }
-
-  // RangeScope footprint — same pattern: re-render if its sub-toggle
-  // is on so master/theme/sibling redraws keep it visible.
-  if (typeof footprintVisible !== 'undefined' && footprintVisible
-      && typeof drawFootprint === 'function') {
-    drawFootprint();
   }
 
   // Runway centerlines — same pattern: re-render if its sub-toggle is on
@@ -5015,6 +5061,7 @@ function toggleTheme(){
   updateThemeBtn(next);applyTileFilter();
   Object.keys(lastAircraft).forEach(function(cs){updateMarker(lastAircraft[cs]);});
   drawRxMarker();if(ringsOn)drawRings();if(avOverlayOn&&avData)redrawAvOverlay();
+  if(typeof footprintVisible!=='undefined'&&footprintVisible)drawFootprint();   // Signal Border follows the theme on its own now
 }
 function updateThemeBtn(t){var b=document.getElementById('themeBtn');if(b)b.innerHTML=t==='light'?'<svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor" style="vertical-align:-3px;"><path d="M21 12.8A9 9 0 1 1 11.2 3 7 7 0 0 0 21 12.8z"/></svg> Dark':'<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" style="vertical-align:-3px;"><circle cx="12" cy="12" r="4.5"/><path d="M12 1.5v2.5M12 20v2.5M4.2 4.2l1.8 1.8M18 18l1.8 1.8M1.5 12h2.5M20 12h2.5M4.2 19.8l1.8-1.8M18 6l1.8-1.8"/></svg> Light';}
 
@@ -8143,6 +8190,7 @@ function applyThemeAt(t) {
   drawRxMarker();
   if (ringsOn) drawRings();
   if (avOverlayOn && avData) redrawAvOverlay();
+  if (typeof footprintVisible !== 'undefined' && footprintVisible) drawFootprint();
 }
 
 // ── SUNRISE/SUNSET CALCULATOR ──────────────────────────────
@@ -9227,46 +9275,94 @@ setInterval(function () { if (window.ArrivalPaths && ArrivalPaths._state.on) dra
 // Draws this node's own reception footprint — per-bearing max range
 // from /api/coverage (the RangeScope dataset) — as a polygon around
 // the receiver. Same great-circle math as the pilnk.io network map's
-// fleet footprint, so the two views always agree. Lives in the
-// Aviation Overlay between IFR Fixes and Airfields.
+// fleet footprint, so the two views always agree.
+// SIGNAL BORDER (22 Nov 2026): users now know this as Signal Border, in its own Options panel, on its own
+// switch (no Aviation Overlay needed). The outline is the node's 1-degree bins - last 24 h or all time -
+// turned into points by static/signal-border.js. An app.py that has not restarted since the update still
+// answers with the old 36 ten-degree sectors only: that is drawn the old way and the readout says so.
 var footprintPoly = null;
 var footprintRays = null;   // L.layerGroup of radial spokes (FancyFeet 'rays' view)
 var footprintVisible = false;
 var footprintData = null;   // cached /api/coverage payload
-var footprintMode = 'range'; // 'range' (max nm per bearing) | 'horizon' (elevation floor)
+var footprintMode = '24h';   // '24h' | 'all' (the outlines) | 'horizon' (elevation floor) | 'rays' (the last 24 h as spokes)
+var SB_MODE_BTN = { '24h': 'fpBtn24h', 'all': 'fpBtnAll', 'horizon': 'fpBtnHorizon', 'rays': 'fpBtnRays' };
+var SB_REFRESH_MS = 60000;   // the outline moves slowly: one small local read a minute while it is shown
+var sbTimer = null;
 
 function setFootprintMode(m) {
+  if (m === 'range') m = '24h';          // setups saved before Signal Border knew the outline as "range"
+  if (!SB_MODE_BTN[m]) m = '24h';
   footprintMode = m;
-  var br = document.getElementById('fpBtnRange'), bh = document.getElementById('fpBtnHorizon'), by = document.getElementById('fpBtnRays');
-  if (br) br.classList.toggle('active', m === 'range');
-  if (bh) bh.classList.toggle('active', m === 'horizon');
-  if (by) by.classList.toggle('active', m === 'rays');
-  if (footprintVisible) drawFootprint();
+  Object.keys(SB_MODE_BTN).forEach(function (k) {
+    var b = document.getElementById(SB_MODE_BTN[k]);
+    if (b) b.classList.toggle('active', k === m);
+  });
+  if (footprintVisible) drawFootprint(); else sbRenderReadout();
+}
+
+// 3D Terrain: the node's overnight terrain download (hub tile store, OPT-IN since 22 Nov 2026). A NODE setting:
+// read from /api/tiles/status, saved with POST /api/tiles/settings. Never part of My Setup, so a saved setup can
+// never switch it on.
+function tileShow(s, msg) {
+  var el = document.getElementById('tilePrewarm'), st = document.getElementById('tileStatus');
+  if (!el) return;
+  var ok = !!(s && s.enabled === true && s.prewarm);
+  el.disabled = !ok;
+  el.checked = !!(ok && s.prewarm.enabled === true);
+  var why = msg || (ok ? '' : (s ? 'Not available: the tile store is switched off on this node.' : 'Not available on this node.'));
+  if (st) { st.textContent = why; st.style.display = why ? '' : 'none'; }
+}
+function tileLoad() {
+  fetch('/api/tiles/status', { cache: 'no-store' })
+    .then(function (r) { return r.ok ? r.json() : null; })
+    .then(function (s) { tileShow(s); })
+    .catch(function () { tileShow(null); });
+}
+function tileSetPrewarm(on) {
+  var el = document.getElementById('tilePrewarm'); if (!el) return;
+  el.disabled = true;
+  fetch('/api/tiles/settings', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ prewarm: !!on }) })
+    .then(function (r) { if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); })
+    .then(function (s) { tileShow(s); })
+    .catch(function () { tileShow({ enabled: true, prewarm: { enabled: !on } }, 'Not saved. Try again in a moment.'); });
+}
+if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', tileLoad); else tileLoad();
+
+function sbLoad() {
+  fetch('/api/coverage', {cache: 'no-store'})
+    .then(function(r) { return r.ok ? r.json() : null; })
+    .then(function(d) { if (d) footprintData = d; if (footprintVisible) drawFootprint(); })   // a look that fails keeps the last outline
+    .catch(function() {});
 }
 
 function toggleFootprint(show) {
-  footprintVisible = show;
+  footprintVisible = !!show;
   var vr = document.getElementById('fpViewRow');
-  if (vr) vr.style.display = show ? 'flex' : 'none';
-  // Master Aviation Overlay must be on for this sub-layer to render —
-  // auto-enable it, matching the other sub-toggles' behaviour.
-  if (show && (typeof avOverlayOn !== 'undefined' && !avOverlayOn)) {
-    var master = document.getElementById('avToggle');
-    if (master && !master.checked) {
-      master.checked = true;
-      if (typeof toggleAvOverlay === 'function') toggleAvOverlay(true);
-    }
-  }
+  if (vr) vr.style.display = show ? 'block' : 'none';
+  if (sbTimer) { clearInterval(sbTimer); sbTimer = null; }
   if (show) {
-    // Refetch on every enable — coverage accumulates over time, so a
-    // toggle off/on doubles as a refresh. Tiny payload (~1 KB).
-    fetch('/api/coverage', {cache: 'no-store'})
-      .then(function(r) { return r.ok ? r.json() : null; })
-      .then(function(d) { footprintData = d; if (footprintVisible) drawFootprint(); })
-      .catch(function() {});
+    sbLoad();
+    sbTimer = setInterval(function () { if (footprintVisible) sbLoad(); }, SB_REFRESH_MS);
   } else {
     clearFootprint();
   }
+}
+
+// The words under the buttons. Reset all time only shows when this app.py has the outlines to reset.
+function sbRenderReadout() {
+  var SBr = window.SignalBorder;
+  var t = (SBr && footprintData) ? SBr.readout(footprintData, footprintMode) : { main: '', sub: '' };
+  var m = document.getElementById('sbReadout'), s = document.getElementById('sbSub'), r = document.getElementById('sbReset');
+  if (m) m.textContent = t.main;
+  if (s) { s.textContent = t.sub; s.style.display = t.sub ? '' : 'none'; }
+  if (r) r.style.display = (SBr && SBr.has(footprintData)) ? '' : 'none';
+}
+
+function sbResetAll() {
+  if (!confirm('Forget the all-time outline and start it again from now?\n\nThe last 24 hours is kept.')) return;
+  fetch('/api/coverage/reset-all', {method: 'POST'})
+    .then(function () { sbLoad(); })
+    .catch(function () {});
 }
 
 function raysColor(t, dark) {
@@ -9283,6 +9379,19 @@ function raysColor(t, dark) {
 // The footprint's shape, in map terms, for 2D and the 3D view alike: pts [lat,lon] per sector for 'range' and
 // 'horizon', or spokes {lat, lon, t} from the receiver for 'rays' (t = this sector's range / the longest). null = nothing yet.
 function footprintGeom(d, mode) {
+  if (mode === 'range') mode = '24h';
+  if (typeof RX_LAT !== 'number' || typeof RX_LON !== 'number') return null;   // no receiver location yet: nothing to draw round
+  var SBg = window.SignalBorder;
+  if (mode !== 'horizon' && SBg && SBg.has(d)) {
+    // Signal Border: one point per heard 1-degree bin (empty bins skipped, date line safe). 3D gets the same shape.
+    if (mode === 'rays') {
+      var sr = SBg.rays(RX_LAT, RX_LON, d.border_24h);
+      return sr.length ? { mode: 'rays', rays: sr } : null;
+    }
+    var sp = SBg.outline(RX_LAT, RX_LON, mode === 'all' ? d.border_all : d.border_24h);
+    return sp.length ? { mode: 'range', pts: sp } : null;
+  }
+  // Horizon, or an app.py from before Signal Border: the 36 ten-degree sectors, as before.
   if (!d || !d.max_nm || !d.max_nm.length) return null;
   var n = d.max_nm.length, secDeg = 360 / n, any = false, pts = [];
   function dest(rNm, s) {   // great-circle point rNm out along sector s's centre bearing
@@ -9330,6 +9439,7 @@ function footprintGeom(d, mode) {
 
 function drawFootprint() {
   clearFootprint();
+  sbRenderReadout();
   if (!footprintVisible) return;
   var g = footprintGeom(footprintData, footprintMode);
   if (!g) return;
@@ -11077,7 +11187,7 @@ window.PilnkOptions = (function () {
   ];
 
   var TILE = { tileOsm: 'osm', tileSat: 'sat', tileTopo: 'topo' };
-  var FPM  = { fpBtnRange: 'range', fpBtnHorizon: 'horizon', fpBtnRays: 'rays' };
+  var FPM  = { fpBtn24h: '24h', fpBtnAll: 'all', fpBtnHorizon: 'horizon', fpBtnRays: 'rays' };   // Signal Border views ('range' in older saves = 24h)
 
   function $(id) { return document.getElementById(id); }
   function activeOf(ids) {
@@ -11101,7 +11211,7 @@ window.PilnkOptions = (function () {
 
     var t = activeOf(['tileOsm', 'tileSat', 'tileTopo']);   if (t) s.tile = TILE[t];
     s.view3d = isSkyOpen();
-    var f = activeOf(['fpBtnRange', 'fpBtnHorizon', 'fpBtnRays']); if (f) s.footprintMode = FPM[f];
+    var f = activeOf(['fpBtn24h', 'fpBtnAll', 'fpBtnHorizon', 'fpBtnRays']); if (f) s.footprintMode = FPM[f];
     var u = activeOf(['unitNm', 'unitKm']);                 if (u) s.ringUnit = (u === 'unitKm') ? 'km' : 'nm';
 
     if (typeof runwaySelected !== 'undefined' && runwayAirports.length) s.rwyAirports = runwaySelected.slice();

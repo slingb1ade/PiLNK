@@ -49,6 +49,9 @@ openaip_cache.json.tmp
 # Datalink fix positions learned from the planes (17 Nov 2026) — per-node, never committed.
 datalink_fixes.json
 datalink_fixes.json.tmp
+# Signal Border — this node's 24 h + all-time range outline (22 Nov 2026). Per-node, never committed.
+signal_border.json
+signal_border.json.tmp
 # History-tab day store — survives restarts (v1.5.23).
 history_day.json
 history_day.json.tmp

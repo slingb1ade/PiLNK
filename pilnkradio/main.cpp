@@ -22,6 +22,7 @@
  * pilnk_bridge/src/main.cpp @ 5aefe59 — audit fixes H2/M1/M2 carried over.
  */
 #include "json.hpp"
+#include "dsp.hpp"       // v2.3.0: shared DSP (engine + bench replay)
 #include <rtl-sdr.h>
 #include <fftw3.h>
 
@@ -60,7 +61,7 @@
 
 using nlohmann::json;
 
-#define PILNKRADIO_VERSION "2.2.0"
+#define PILNKRADIO_VERSION "2.3.0"
 #define PILNK_FFT_SIZE     1024
 #define PILNK_FFT_RATE     25.0
 
@@ -192,6 +193,8 @@ struct Config {
     double      squelchLevel   = -50.0;
     bool        squelchAuto    = false;                 // v2.2.0: opt-in automatic squelch
     double      squelchMarginDb = SQ_MARGIN_DEF;
+    std::string demod    = "classic";                   // v2.3.0: "classic" | "clean"
+    std::string cleanOptions = "detector=auto,hpf=250,lpf=3400";   // v2.3.0: canonical CleanOptions
     bool        playing  = false;      // consent: off by default, persisted
     int         port     = 5656;
     std::vector<std::string> allowedOrigins; // M3 enforcement lands in milestone 5
@@ -220,7 +223,16 @@ struct Config {
         pick(j, "squelchAuto", squelchAuto); pick(j, "squelchMarginDb", squelchMarginDb);
         pick(j, "playing", playing); pick(j, "port", port); pick(j, "token", token);
         pick(j, "allowedOrigins", allowedOrigins);
+        pick(j, "demod", demod); pick(j, "cleanOptions", cleanOptions);
         const Config d;   // the defaults
+        if (demod != "classic" && demod != "clean") {
+            logW("config: demod '%s' is not classic or clean — using classic", demod.c_str()); demod = d.demod; }
+        {
+            pdsp::CleanOptions o; std::string err;
+            if (pdsp::CleanOptions::parse(cleanOptions, o, err)) cleanOptions = o.str();
+            else { logW("config: cleanOptions '%s' refused (%s) — using %s", cleanOptions.c_str(), err.c_str(),
+                        d.cleanOptions.c_str()); cleanOptions = d.cleanOptions; }
+        }
         if (!(std::isfinite(vfoHz) && vfoHz >= VFO_MIN_HZ && vfoHz <= VFO_MAX_HZ)) {
             logW("config: vfoHz %g out of range — using %.0f", vfoHz, d.vfoHz); vfoHz = d.vfoHz; }
         if (!(std::isfinite(bandwidthHz) && bandwidthHz >= BW_MIN_HZ && bandwidthHz <= BW_MAX_HZ)) {
@@ -258,6 +270,7 @@ struct Config {
         j["squelchAuto"] = squelchAuto; j["squelchMarginDb"] = squelchMarginDb;
         j["playing"] = playing; j["port"] = port;
         j["allowedOrigins"] = allowedOrigins; j["token"] = token;
+        j["demod"] = demod; j["cleanOptions"] = cleanOptions;
         const std::string text = j.dump(4) + "\n", tmp = path + ".tmp";
         int fd = ::open(tmp.c_str(), O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0644);
         if (fd < 0) { logE("config: save failed, cannot open %s: %s", tmp.c_str(), strerror(errno)); return false; }
@@ -428,64 +441,10 @@ private:
     uint32_t rate = 2400000;
 };
 
-// ======================= DSP: decimating FIR =======================
-// Windowed-sinc (Hamming) lowpass FIR over interleaved complex float,
-// decimating by `factor` (factor 1 = plain filter). Block-based with carried
-// history so phase is continuous across librtlsdr callbacks.
-class FirDecimator {
-public:
-    void init(int factor, int nTaps, float cutoffNorm /* cycles/sample, <0.5 */) {
-        this->factor = factor;
-        taps.resize(nTaps);
-        double sum = 0.0;
-        for (int i = 0; i < nTaps; i++) {
-            double x = (double)i - (nTaps - 1) / 2.0;
-            double sinc = (x == 0.0) ? 2.0 * cutoffNorm
-                                     : sin(2.0 * M_PI * cutoffNorm * x) / (M_PI * x);
-            double hamm = 0.54 - 0.46 * cos(2.0 * M_PI * i / (nTaps - 1));
-            taps[i] = (float)(sinc * hamm);
-            sum += taps[i];
-        }
-        for (auto& t : taps) t = (float)(t / sum); // unity DC gain
-        hist.assign((size_t)(nTaps - 1) * 2, 0.0f);
-        phase = 0;
-    }
-
-    // in: nIn complex samples (2*nIn floats). out must hold nIn/factor+1 complex.
-    // returns number of complex samples produced.
-    size_t process(const float* in, size_t nIn, float* out) {
-        size_t histC = hist.size() / 2;
-        work.resize((histC + nIn) * 2);
-        memcpy(work.data(), hist.data(), hist.size() * sizeof(float));
-        memcpy(work.data() + hist.size(), in, nIn * 2 * sizeof(float));
-        const int nT = (int)taps.size();
-        size_t total = histC + nIn;
-        size_t nOut = 0;
-        // output at input positions p = (nT-1) + phase, stepping by factor
-        size_t p = (size_t)(nT - 1) + phase;
-        while (p < total) {
-            float re = 0.0f, im = 0.0f;
-            const float* w = work.data() + (p - (nT - 1)) * 2;
-            for (int k = 0; k < nT; k++) {
-                float h = taps[nT - 1 - k];
-                re += h * w[2*k];
-                im += h * w[2*k + 1];
-            }
-            out[2*nOut] = re; out[2*nOut + 1] = im;
-            nOut++;
-            p += factor;
-        }
-        phase = p - total; // carry sub-factor position into the next block
-        // carry last nT-1 samples as history
-        memcpy(hist.data(), work.data() + (total - histC) * 2, hist.size() * sizeof(float));
-        return nOut;
-    }
-
-private:
-    int factor = 1;
-    size_t phase = 0;
-    std::vector<float> taps, hist, work;
-};
+// ======================= DSP =======================
+// FirDecimator, the channel power, the cutoff rule and the Classic audio chain live in dsp.hpp
+// (engine 2.3.0) so the bench replay tool compiles the radio's own code. Moved byte-for-byte.
+using pdsp::FirDecimator;
 
 // ======================= live denoise (optional, v2.1.0) =======================
 // AJ, 25 Sep 2026, after hearing DeepFilterNet3 on labelled clips: "almost crystal
@@ -734,7 +693,7 @@ private:
         // RAW_STALL_S between callbacks some may be gone, so the raw stream can't be
         // trusted as unbroken: close its readers rather than hand them a splice.
         const auto now = std::chrono::steady_clock::now();
-        if (iqSeen && nRawSubs.load(std::memory_order_relaxed) > 0) {
+        if (iqSeen && (nRawSubs.load(std::memory_order_relaxed) > 0 || nIqSubs.load(std::memory_order_relaxed) > 0)) {
             const double gap = std::chrono::duration<double>(now - lastIq).count();
             if (gap > RAW_STALL_S) {
                 char why[96];
@@ -854,8 +813,28 @@ private:
             sqFloorValid.store(false, std::memory_order_relaxed);
         }
     }
-    float dcState = 0.0f, dcPrev = 0.0f;      // DC blocker (one-pole HPF)
-    float agcGain = 20.0f;                    // DSP thread only
+    pdsp::ClassicDemod classic;               // DC blocker + AGC + clip (dsp.hpp); DSP thread only
+    std::vector<float> classicOut;            // its output for the current block
+    // v2.3.0: Clean beside Classic. Classic always runs (its state never stops); Clean runs while
+    // it is the demod or still fading out. The control thread publishes what it wants under
+    // demodMtx and bumps demodGen; the DSP thread applies it at the next block. A demod change
+    // crossfades over MIX_LEN samples; new options while Clean plays restart it and fade it in.
+    static constexpr int MIX_LEN = 480;
+    std::mutex demodMtx;
+    bool demodWantClean = false, demodReconfig = false;   // guarded by demodMtx
+    pdsp::CleanOptions demodWantOpts;                      // guarded by demodMtx
+    std::atomic<uint64_t> demodGen{0};
+    uint64_t demodGenSeen = 0;                // DSP thread
+    pdsp::CleanDemod clean;                   // DSP thread
+    pdsp::CleanOptions cleanOpts;             // DSP thread: what Clean is configured with
+    std::vector<float> cleanOut;              // DSP thread
+    bool cleanActive = false;                 // DSP thread: the output is moving to (or is) Clean
+    int mixPos = 0;                           // DSP thread: 0 = Classic .. MIX_LEN = Clean
+    int cleanFadePos = MIX_LEN;               // DSP thread: fade-in of a restarted Clean
+    double cleanBw = 8000.0;                  // DSP thread: bandwidth Clean is set for
+    std::atomic<double> chanBwNow{8000.0};    // rebuildChannelFilter publishes the bandwidth
+    std::atomic<bool> cleanLockedA{false}, cleanHasA{false};
+    std::atomic<float> cleanOffA{0.0f};
     std::vector<float> audioAcc;              // pending output samples
 
     // -------- v2.1.3: the unsquelched local tap, /sdr/audio_raw --------
@@ -896,6 +875,36 @@ private:
     bool rawOpenNow = true;                   // DSP thread: gate state of the newest block
     bool rawOpenEmit = true;                  // DSP thread: gate state at the next chunk to send
     std::deque<std::pair<uint64_t, bool>> rawEdges; // DSP thread: (sample index, open) not yet sent
+    // -------- v2.3.0: the raw-signal tap, /sdr/iq (clean-audio bench) --------
+    // dec2's output, 48 kHz complex BEFORE the channel filter, so a recording can be replayed
+    // through any audio chain at any bandwidth. Same rules as the raw audio tap (loopback only,
+    // gap-free or closed, a stop or stall closes every reader), with its own readers and queues.
+    // Index i = dec2 samples since the engine started; it never resets, and samples lost at a
+    // stop still count, so a recorder can tell a gap from a splice. Frames: text
+    //   {"iq":1,"fs":48000,"i":I,"run":R,"utc":U,"sq":0|1,"set":SET} first,
+    //   {"sq":0|1,"i":I} at each squelch edge (the first sample of the block the gate flipped on),
+    //   {"set":SET,"i":I} after any applied control command,
+    // and binary 512 complex samples (4096 B, float32 LE I,Q).
+    std::mutex iqMtx;                             // guards iqSubs + iqAccepting (never held while sending)
+    std::vector<std::shared_ptr<RawClient>> iqSubs;
+    bool iqAccepting = false;
+    std::atomic<int> nIqSubs{0};
+    static constexpr int    IQ_MAX     = 2;
+    static constexpr int    IQ_SNDBUF  = 384000;  // ~1 s in the socket (kernel doubles it)
+    static constexpr size_t IQ_QMAX    = 768000;  // + ~2 s queued, then the reader is closed
+    static constexpr size_t IQ_CHUNK   = 512;     // complex samples per binary frame
+    uint64_t iqAbs = 0;                       // DSP thread: dec2 samples since the engine started
+    std::vector<float> iqAcc;                 // DSP thread: pending complex samples (only while readers)
+    uint64_t iqAccFirst = 0;                  // DSP thread: index of iqAcc[0]
+    bool iqOpenNow = true, iqOpenEmit = true; // DSP thread: gate now / at the next chunk to send
+    std::deque<std::pair<uint64_t, bool>> iqEdges;          // DSP thread: pending edges
+    std::deque<std::pair<uint64_t, std::string>> iqSets;    // DSP thread: pending settings frames
+    std::string iqSetCur;                     // DSP thread: the SET in force (for first frames)
+    uint64_t iqSetGenSeen = 0;                // DSP thread
+    std::mutex setMtx;                        // guards setStr
+    std::string setStr;                       // control thread publishes SET here...
+    std::atomic<uint64_t> setGen{0};          // ...and bumps this; the DSP thread copies on a change
+    const long long runStart = (long long)time(nullptr);   // engine start, unix s
     bool iqSeen = false;                      // DSP thread (reset by the control thread before a start)
     std::chrono::steady_clock::time_point lastIq;
     std::vector<float> dspBufA, dspBufB, dspBufC; // reused work buffers
@@ -913,6 +922,15 @@ private:
         dec1.init(10, 64, 100000.0f / 2400000.0f);  // 2.4M -> 240k, cutoff 100 kHz
         dec2.init(5,  64, 20000.0f  / 240000.0f);   // 240k -> 48k,  cutoff 20 kHz
         rebuildChannelFilter(cfg.bandwidthHz);
+        publishSettings();
+        // v2.3.0: start in the configured demod at once (no fade at start)
+        publishDemod();
+        { std::lock_guard<std::mutex> lk(demodMtx); cleanOpts = demodWantOpts; cleanActive = demodWantClean; demodReconfig = false; }
+        demodGenSeen = demodGen.load();
+        cleanBw = cfg.bandwidthHz;
+        clean.configure(cleanOpts, cleanBw);
+        mixPos = cleanActive ? MIX_LEN : 0;
+        cleanFadePos = MIX_LEN;
         sqEnabled.store(cfg.squelchEnabled);
         sqLevel.store((float)cfg.squelchLevel);
         sqAuto.store(cfg.squelchAuto);
@@ -920,13 +938,15 @@ private:
     }
 
     void rebuildChannelFilter(double bwHz) {
-        double cutoff = std::clamp(bwHz / 2.0, 1500.0, 20000.0);
+        chanBwNow.store(bwHz);
+        double cutoff = pdsp::channelCutoffHz(bwHz);
         std::lock_guard<std::mutex> lk(chanMtx);
         chanFir.init(1, 101, (float)(cutoff / AUDIO_RATE));
         logI("dsp: channel LPF rebuilt (bw %.0f Hz, cutoff %.0f Hz)", bwHz, cutoff);
     }
 
     std::vector<float>* testCapture = nullptr; // --selftest audio tap
+    std::vector<float>* testIq = nullptr;      // --selftest --dump: dec2's output (what /sdr/iq carries)
 
     // demod tap — called from iqHandler with the raw u8 block
     void demodBlock(const uint8_t* data, size_t len) {
@@ -950,11 +970,10 @@ private:
         { std::lock_guard<std::mutex> lk(chanMtx);
           n3 = chanFir.process(dspBufC.data(), n2, dspBufA.data()); }
 
+        if (testIq) testIq->insert(testIq->end(), dspBufC.data(), dspBufC.data() + 2 * n2);
+
         // squelch: smoothed channel power in dBFS (post channel filter)
-        float pow = 0.0f;
-        for (size_t i = 0; i < n3; i++)
-            pow += dspBufA[2*i]*dspBufA[2*i] + dspBufA[2*i+1]*dspBufA[2*i+1];
-        if (n3) pow /= (float)n3;
+        float pow = pdsp::blockPower(dspBufA.data(), n3);
         sqPowSmooth += 0.2f * (pow - sqPowSmooth);
         // dB is computed unconditionally now. It used to be derived only when
         // squelch happened to be enabled and thrown away otherwise — the one
@@ -1002,20 +1021,31 @@ private:
             rawOpenNow = !muted;
             rawEdges.emplace_back(rawPushed + rawAcc.size(), rawOpenNow);
         }
+        iqTapBlock(n2, n3, muted);
 
-        // AM envelope -> DC block -> AGC
+        // AM envelope -> DC block -> AGC -> clip (Classic, dsp.hpp)
+        classicOut.resize(n3);
+        classic.process(dspBufA.data(), n3, classicOut.data());
+        // v2.3.0: Clean (dsp.hpp), when chosen or fading
+        demodApplyPending();
+        const bool cleanRun = cleanActive || mixPos > 0;
+        if (cleanRun) {
+            cleanOut.resize(n3);
+            clean.process(dspBufA.data(), n3, !muted, cleanOut.data());
+            cleanLockedA.store(clean.locked(), std::memory_order_relaxed);
+            cleanHasA.store(clean.hasCarrier(), std::memory_order_relaxed);
+            cleanOffA.store(clean.carrierHz(), std::memory_order_relaxed);
+        }
         for (size_t i = 0; i < n3; i++) {
-            float mag = sqrtf(dspBufA[2*i]*dspBufA[2*i] + dspBufA[2*i+1]*dspBufA[2*i+1]);
-            // one-pole DC blocker (~8 Hz at 48k): strips the AM carrier level
-            float y = mag - dcPrev + 0.999f * dcState;
-            dcPrev = mag; dcState = y;
-            float s = y * agcGain;
-            // AGC: fast attack on overshoot, slow decay toward target
-            float a = fabsf(s);
-            if (a > 0.85f)      agcGain *= 0.98f;
-            else if (a < 0.15f) agcGain *= 1.0002f;
-            agcGain = std::clamp(agcGain, 0.5f, 200.0f);
-            const float sc = std::clamp(s, -1.0f, 1.0f);
+            float sc = classicOut[i];
+            if (cleanRun) {      // exact Classic at mixPos 0, exact Clean at MIX_LEN (no arithmetic)
+                float cl = cleanOut[i];
+                if (cleanFadePos < MIX_LEN) cl *= (float)cleanFadePos++ / MIX_LEN;
+                if (mixPos >= MIX_LEN) sc = cl;
+                else if (mixPos > 0) { const float w = (float)mixPos / MIX_LEN; sc = (1.0f - w) * sc + w * cl; }
+                if (cleanActive && mixPos < MIX_LEN) mixPos++;
+                else if (!cleanActive && mixPos > 0) mixPos--;
+            }
             audioAcc.push_back(muted ? 0.0f : sc);
             rawAcc.push_back(sc);
         }
@@ -1050,6 +1080,142 @@ private:
             off += AUDIO_CHUNK;
         }
         if (off) { rawAcc.erase(rawAcc.begin(), rawAcc.begin() + off); rawPushed += off; }
+    }
+
+    // DSP thread, once per block: keep the IQ tap's index, gate state and SET current, and queue
+    // dspBufC (dec2's n2 samples) for the readers. With no reader only the index moves.
+    void iqTapBlock(size_t n2, size_t n3, bool muted) {
+        const uint64_t blk0 = iqAbs;
+        iqAbs += n2;
+        bool setChanged = false;
+        if (setGen.load(std::memory_order_acquire) != iqSetGenSeen) {
+            std::lock_guard<std::mutex> lk(setMtx);
+            iqSetGenSeen = setGen.load(std::memory_order_relaxed);
+            iqSetCur = setStr;
+            setChanged = true;
+        }
+        if (testCapture || nIqSubs.load(std::memory_order_relaxed) == 0) {
+            iqAcc.clear(); iqEdges.clear(); iqSets.clear();
+            if (n3) iqOpenNow = !muted;
+            iqOpenEmit = iqOpenNow;
+            return;
+        }
+        if (iqAcc.empty()) iqAccFirst = blk0;
+        if (n3 && muted == iqOpenNow) { iqOpenNow = !muted; iqEdges.emplace_back(blk0, iqOpenNow); }
+        if (setChanged) iqSets.emplace_back(blk0, iqSetCur);
+        iqAcc.insert(iqAcc.end(), dspBufC.data(), dspBufC.data() + 2 * n2);
+        size_t off = 0;
+        while (iqAcc.size() - off >= 2 * IQ_CHUNK) {
+            const uint64_t c0 = iqAccFirst + off / 2, c1 = c0 + IQ_CHUNK;
+            const bool openAtC0 = iqOpenEmit;
+            std::vector<std::pair<uint64_t, std::string>> evs;   // text frames in index order
+            std::vector<std::pair<uint64_t, bool>> edges;
+            while (!iqEdges.empty() && iqEdges.front().first < c1) {
+                edges.push_back(iqEdges.front());
+                iqOpenEmit = iqEdges.front().second;
+                iqEdges.pop_front();
+            }
+            std::vector<std::pair<uint64_t, std::string>> sets;
+            while (!iqSets.empty() && iqSets.front().first < c1) { sets.push_back(std::move(iqSets.front())); iqSets.pop_front(); }
+            queueIq(iqAcc.data() + off, c0, openAtC0, edges, sets);
+            off += 2 * IQ_CHUNK;
+        }
+        if (off) { iqAcc.erase(iqAcc.begin(), iqAcc.begin() + off); iqAccFirst += off / 2; }
+    }
+
+    // DSP thread: copy only, never send. A reader too far behind is closed, never skipped.
+    void queueIq(const float* chunk, uint64_t c0, bool openAtC0,
+                 const std::vector<std::pair<uint64_t, bool>>& edges,
+                 const std::vector<std::pair<uint64_t, std::string>>& sets) {
+        std::lock_guard<std::mutex> lk(iqMtx);
+        for (size_t i = 0; i < iqSubs.size();) {
+            auto& c = iqSubs[i];
+            std::vector<uint8_t> fr;
+            size_t e = 0, k = 0;
+            if (!c->started) {                // this reader's first sample is c0
+                c->started = true; c->base = c0;
+                bool st = openAtC0;
+                while (e < edges.size() && edges[e].first == c0) st = edges[e++].second;
+                while (k < sets.size() && sets[k].first == c0) k++;
+                const double lag = (double)(iqAbs - c0) / AUDIO_RATE;
+                const auto t0 = std::chrono::system_clock::now()
+                              - std::chrono::microseconds((long long)(lag * 1e6));
+                std::string first = "{\"iq\":1,\"fs\":" + std::to_string(AUDIO_RATE) + ",\"i\":" + std::to_string(c0)
+                                  + ",\"run\":" + std::to_string(runStart) + ",\"utc\":\"" + utcIsoMs(t0)
+                                  + "\",\"sq\":" + (st ? "1" : "0") + ",\"set\":" + (iqSetCur.empty() ? "{}" : iqSetCur) + "}";
+                appendFrame(fr, 0x1, first.data(), first.size());
+            }
+            while (e < edges.size() || k < sets.size()) {   // merge by index; an edge first on a tie
+                if (k >= sets.size() || (e < edges.size() && edges[e].first <= sets[k].first)) {
+                    char txt[64];
+                    int n = snprintf(txt, sizeof(txt), "{\"sq\":%d,\"i\":%llu}", edges[e].second ? 1 : 0,
+                                     (unsigned long long)edges[e].first);
+                    appendFrame(fr, 0x1, txt, (size_t)n); e++;
+                } else {
+                    std::string t = "{\"set\":" + sets[k].second + ",\"i\":" + std::to_string(sets[k].first) + "}";
+                    appendFrame(fr, 0x1, t.data(), t.size()); k++;
+                }
+            }
+            appendFrame(fr, 0x2, chunk, IQ_CHUNK * 2 * sizeof(float));
+            bool full;
+            { std::lock_guard<std::mutex> ql(c->qmx);
+              full = c->qBytes + fr.size() > IQ_QMAX;
+              if (!full) { c->qBytes += fr.size(); c->q.push_back(std::move(fr)); } }
+            if (full || c->dead.load()) {
+                if (full) logW("iq tap: a reader fell %zu bytes behind - closing it (gap-free or closed)", IQ_QMAX);
+                c->dead = true; c->qcv.notify_all();
+                shutdown(c->fd, SHUT_RDWR);   // handleWS owns the fd and closes it once
+                iqSubs.erase(iqSubs.begin() + i);
+            } else { c->qcv.notify_one(); i++; }
+        }
+        nIqSubs.store((int)iqSubs.size());
+    }
+
+    void dropIqSubs(const char* why, bool accepting) {
+        std::lock_guard<std::mutex> lk(iqMtx);
+        iqAccepting = accepting;
+        if (!iqSubs.empty()) logW("iq tap: closing %d reader(s): %s", (int)iqSubs.size(), why);
+        for (auto& c : iqSubs) { c->dead = true; c->qcv.notify_all(); shutdown(c->fd, SHUT_RDWR); }
+        iqSubs.clear();
+        nIqSubs.store(0);
+    }
+
+    // Control thread: what the DSP thread should play. reconfig: the options changed.
+    void publishDemod(bool reconfig = false) {
+        pdsp::CleanOptions o; std::string err;
+        if (!pdsp::CleanOptions::parse(cfg.cleanOptions, o, err)) o = pdsp::CleanOptions();
+        std::lock_guard<std::mutex> lk(demodMtx);
+        demodWantClean = cfg.demod == "clean";
+        demodWantOpts = o;
+        if (reconfig) demodReconfig = true;
+        demodGen.fetch_add(1, std::memory_order_release);
+    }
+
+    // DSP thread, once per block: take up a new demod / new options / a new bandwidth.
+    void demodApplyPending() {
+        const double bw = chanBwNow.load(std::memory_order_relaxed);
+        if (bw != cleanBw) { cleanBw = bw; clean.setBandwidth(bw); }
+        if (demodGen.load(std::memory_order_acquire) == demodGenSeen) return;
+        bool want, reconf; pdsp::CleanOptions o;
+        { std::lock_guard<std::mutex> lk(demodMtx);
+          demodGenSeen = demodGen.load(std::memory_order_relaxed);
+          want = demodWantClean; reconf = demodReconfig; o = demodWantOpts; demodReconfig = false; }
+        if (want && !cleanActive) {                    // switching to Clean: a fresh start, crossfaded in
+            cleanOpts = o; clean.configure(cleanOpts, cleanBw); cleanFadePos = MIX_LEN;
+        } else if (want && reconf) {                   // new options while Clean plays: restart, fade in from 0
+            cleanOpts = o; clean.configure(cleanOpts, cleanBw); cleanFadePos = 0;
+        } else if (reconf) {
+            cleanOpts = o;                             // used at the next switch
+        }
+        cleanActive = want;
+    }
+
+    // Control thread: publish the settings in force for the IQ tap's SET frames.
+    void publishSettings() {
+        std::string js = settingsJson().dump();
+        std::lock_guard<std::mutex> lk(setMtx);
+        setStr = std::move(js);
+        setGen.fetch_add(1, std::memory_order_release);
     }
 
     static void appendFrame(std::vector<uint8_t>& out, uint8_t op, const void* data, size_t len) {
@@ -1118,18 +1284,23 @@ private:
 
     // Close every raw reader. accepting=false: the radio has stopped, refuse new readers
     // until it streams again. accepting=true: a possible gap - readers reconnect at once.
+    // v2.3.0: the IQ tap follows the same stop/stall rules, so this closes its readers too.
     void dropRawSubs(const char* why, bool accepting) {
-        std::lock_guard<std::mutex> lk(rawMtx);
-        rawAccepting = accepting;
-        if (!rawSubs.empty()) logW("raw tap: closing %d reader(s): %s", (int)rawSubs.size(), why);
-        for (auto& c : rawSubs) { c->dead = true; c->qcv.notify_all(); shutdown(c->fd, SHUT_RDWR); }
-        rawSubs.clear();
-        nRawSubs.store(0);
+        {
+            std::lock_guard<std::mutex> lk(rawMtx);
+            rawAccepting = accepting;
+            if (!rawSubs.empty()) logW("raw tap: closing %d reader(s): %s", (int)rawSubs.size(), why);
+            for (auto& c : rawSubs) { c->dead = true; c->qcv.notify_all(); shutdown(c->fd, SHUT_RDWR); }
+            rawSubs.clear();
+            nRawSubs.store(0);
+        }
+        dropIqSubs(why, accepting);
     }
     void rawStreamStarting() {                // control/acquire thread, before rtl.startStream()
         iqSeen = false;
-        std::lock_guard<std::mutex> lk(rawMtx);
-        rawAccepting = true;
+        { std::lock_guard<std::mutex> lk(rawMtx); rawAccepting = true; }
+        std::lock_guard<std::mutex> lk(iqMtx);
+        iqAccepting = true;
     }
 
 public:
@@ -1137,10 +1308,10 @@ public:
     // VFO offset and demodulate it through the real chain. Fleet installers
     // run `pilnkradio --selftest` to validate DSP on any node, no antenna.
     // Returns 0 on PASS.
-    int selfTest() {
-        initDsp();
-        std::vector<float> out;
-        testCapture = &out;
+    // --dump DIR (v2.3.0) also writes DIR/iq.cf32 (dec2's output, exactly what /sdr/iq carries),
+    // DIR/iq.json (its recorder sidecar) and DIR/classic.f32 (the samples analysed below), so the
+    // bench replay can be checked against the radio sample for sample. Exit codes are unchanged.
+    int selfTest(const std::string& dumpDir = "") {
         // 2 s of u8 IQ at 2.4 MS/s: carrier at +950 kHz (the VFO slot),
         // 30% AM by a 1 kHz tone, amplitude 0.5 FS + light noise floor
         const size_t N = 2 * SAMPLE_RATE;
@@ -1156,27 +1327,89 @@ public:
             iq[2*i+1] = (uint8_t)std::clamp(127.4 + 128.0 * (env * sin(ph) + nz), 0.0, 255.0);
             ph += phStep;
         }
-        for (size_t off = 0; off < N * 2; off += 65536)
-            demodBlock(iq.data() + off, std::min((size_t)65536, N * 2 - off));
-        testCapture = nullptr;
-        if (out.size() < AUDIO_RATE) { logE("selftest: only %zu audio samples out", out.size()); return 1; }
+        // one pass of the whole chain; clean = the output is Clean from the first sample
+        auto pass = [&](bool useClean, std::vector<float>& out, std::vector<float>* iqDump) {
+            initDsp();
+            audioAcc.clear(); rawAcc.clear(); rawEdges.clear();   // a pass starts empty (the first one is anyway)
+            if (useClean) { cleanActive = true; clean.configure(cleanOpts = pdsp::CleanOptions(), cleanBw); mixPos = MIX_LEN; cleanFadePos = MIX_LEN; }
+            testCapture = &out;
+            testIq = iqDump;
+            for (size_t off = 0; off < N * 2; off += 65536)
+                demodBlock(iq.data() + off, std::min((size_t)65536, N * 2 - off));
+            testCapture = nullptr;
+            testIq = nullptr;
+        };
         // analyze the last second (AGC/DC settled): Goertzel at 1 kHz vs total
-        const float* x = out.data() + (out.size() - AUDIO_RATE);
-        const int n = AUDIO_RATE;
-        double total = 0.0;
-        for (int i = 0; i < n; i++) total += (double)x[i] * x[i];
-        double w = 2.0 * M_PI * 1000.0 / AUDIO_RATE, c = 2.0 * cos(w);
-        double s0 = 0, s1 = 0, s2 = 0;
-        for (int i = 0; i < n; i++) { s0 = x[i] + c * s1 - s2; s2 = s1; s1 = s0; }
-        // |X(1kHz)|² = s1²+s2²−c·s1·s2; a real tone of amplitude A gives
-        // |X| = A·n/2, so per-sample tone power A²/2 = 2·|X|²/n²
-        double tonePow = (s1*s1 + s2*s2 - c*s1*s2) * 2.0 / ((double)n * n);
-        double toneFrac = tonePow / (total / n + 1e-12);
-        double rate = out.size() / 2.0;
-        logI("selftest: %zu samples (%.0f sps), 1 kHz tone fraction %.3f", out.size(), rate, toneFrac);
-        bool pass = toneFrac > 0.90 && rate > 47000 && rate < 49000;
-        logLine(pass ? "INF" : "ERR", "selftest: %s", pass ? "PASS — demod chain produces a clean 1 kHz tone" : "FAIL");
-        return pass ? 0 : 1;
+        auto judge = [&](const std::vector<float>& out, const char* label) {
+            if (out.size() < AUDIO_RATE) { logE("selftest%s: only %zu audio samples out", label, out.size()); return false; }
+            const float* x = out.data() + (out.size() - AUDIO_RATE);
+            const int n = AUDIO_RATE;
+            double total = 0.0;
+            for (int i = 0; i < n; i++) total += (double)x[i] * x[i];
+            double w = 2.0 * M_PI * 1000.0 / AUDIO_RATE, c = 2.0 * cos(w);
+            double s0 = 0, s1 = 0, s2 = 0;
+            for (int i = 0; i < n; i++) { s0 = x[i] + c * s1 - s2; s2 = s1; s1 = s0; }
+            // |X(1kHz)|² = s1²+s2²−c·s1·s2; a real tone of amplitude A gives
+            // |X| = A·n/2, so per-sample tone power A²/2 = 2·|X|²/n²
+            double tonePow = (s1*s1 + s2*s2 - c*s1*s2) * 2.0 / ((double)n * n);
+            double toneFrac = tonePow / (total / n + 1e-12);
+            double rate = out.size() / 2.0;
+            logI("selftest%s: %zu samples (%.0f sps), 1 kHz tone fraction %.3f", label, out.size(), rate, toneFrac);
+            bool ok = toneFrac > 0.90 && rate > 47000 && rate < 49000;
+            logLine(ok ? "INF" : "ERR", "selftest%s: %s", label, ok ? "PASS — demod chain produces a clean 1 kHz tone" : "FAIL");
+            return ok;
+        };
+        std::vector<float> out, iqDump, outClean;
+        pass(false, out, dumpDir.empty() ? nullptr : &iqDump);      // Classic: exactly as 2.2.0
+        pass(true, outClean, nullptr);                              // v2.3.0: the same signal through Clean
+        if (!dumpDir.empty() && !writeSelftestDump(dumpDir, iqDump, out, outClean)) return 1;
+        const bool okClassic = judge(out, "");
+        const bool okClean = judge(outClean, " (clean)");
+        return okClassic && okClean ? 0 : 1;
+    }
+
+    // The settings in force, in the shape the IQ tap's frames and the recorder's sidecars carry.
+    json settingsJson() const {
+        return json{{"freq", (long long)llround(cfg.vfoHz)}, {"bw", cfg.bandwidthHz}, {"gain", cfg.gainIndex},
+                    {"agc", cfg.agc}, {"ppm", cfg.ppm}, {"sqEnabled", cfg.squelchEnabled},
+                    {"sqAuto", cfg.squelchAuto}, {"sqLevel", cfg.squelchLevel}, {"sqMargin", cfg.squelchMarginDb},
+                    {"demod", cfg.demod}, {"cleanOptions", cfg.cleanOptions}};
+    }
+
+    static std::string utcIsoMs(std::chrono::system_clock::time_point tp) {
+        const auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(tp.time_since_epoch()).count();
+        const time_t sec = (time_t)(ms / 1000);
+        struct tm tmv; gmtime_r(&sec, &tmv);
+        char b[64];
+        snprintf(b, sizeof b, "%04d-%02d-%02dT%02d:%02d:%02d.%03dZ", tmv.tm_year + 1900, tmv.tm_mon + 1,
+                 tmv.tm_mday, tmv.tm_hour, tmv.tm_min, tmv.tm_sec, (int)(ms % 1000));
+        return b;
+    }
+
+    static bool writeBytes(const std::string& path, const void* p, size_t n) {
+        std::ofstream f(path, std::ios::binary | std::ios::trunc);
+        if (!f) return false;
+        f.write((const char*)p, (std::streamsize)n);
+        return (bool)f;
+    }
+
+    bool writeSelftestDump(const std::string& dir, const std::vector<float>& iqv, const std::vector<float>& audio,
+                           const std::vector<float>& audioClean) {
+        mkdir(dir.c_str(), 0755);   // may already exist
+        const size_t nIq = iqv.size() / 2;
+        json side = {{"format", "cf32le"}, {"fs", AUDIO_RATE}, {"first", 0}, {"n", nIq},
+                     {"utc", utcIsoMs(std::chrono::system_clock::now())}, {"run", 0}, {"set", settingsJson()},
+                     {"sq0", 1}, {"edges", json::array()}, {"mode", "all"}, {"complete", true}};
+        const std::string js = side.dump() + "\n";
+        if (!writeBytes(dir + "/iq.cf32", iqv.data(), iqv.size() * sizeof(float))
+            || !writeBytes(dir + "/iq.json", js.data(), js.size())
+            || !writeBytes(dir + "/classic.f32", audio.data(), audio.size() * sizeof(float))
+            || !writeBytes(dir + "/clean.f32", audioClean.data(), audioClean.size() * sizeof(float))) {
+            logE("selftest: cannot write the dump to %s: %s", dir.c_str(), strerror(errno));
+            return false;
+        }
+        logI("selftest: dump written to %s (%zu IQ samples, %zu audio samples)", dir.c_str(), nIq, audio.size());
+        return true;
     }
 
 private:
@@ -1185,8 +1418,10 @@ private:
     // Same queue shape as the bridge; the drain no longer needs a GUI thread —
     // that constraint (and the whole Xvfb requirement) dies with SDR++.
     struct Command {
-        enum Type { FREQ, MODE, BANDWIDTH, PLAYING, SQUELCH_MODE, SQUELCH_LEVEL, GAIN_INDEX, AGC, SQUELCH_AUTO, SQUELCH_MARGIN } type;
+        enum Type { FREQ, MODE, BANDWIDTH, PLAYING, SQUELCH_MODE, SQUELCH_LEVEL, GAIN_INDEX, AGC, SQUELCH_AUTO, SQUELCH_MARGIN,
+                    DEMOD, CLEAN_OPTIONS } type;   // v2.3.0: DEMOD, CLEAN_OPTIONS (sval)
         double dval = 0; int ival = 0; bool bval = false;
+        std::string sval;
     };
     std::mutex cmdMtx;
     std::deque<Command> cmdQueue;
@@ -1202,6 +1437,7 @@ private:
         float squelchMarginDb = (float)SQ_MARGIN_DEF;
         float squelchThresholdDb = -50.0f;
         bool  squelchOpen = true;
+        std::string demod = "classic", cleanOptions;   // v2.3.0
         std::vector<float> rfGainSteps;  // empty until a device is open (M2) —
                                          // deliberately keeps the "no device"
                                          // tell the tab/watchdog key on
@@ -1263,6 +1499,8 @@ private:
                     if (!c.bval) {                    // DSP thread is joined: its state is ours now
                         dropRawSubs("radio stopped", false);
                         rawAcc.clear(); rawEdges.clear(); rawOpenEmit = rawOpenNow;
+                        iqAcc.clear(); iqEdges.clear(); iqSets.clear(); iqOpenEmit = iqOpenNow;
+                        iqAbs += AUDIO_RATE;   // a stop is a gap: i jumps 1 s, so nothing can look contiguous across it
                         sqGateOpen = false; sqOpenRun = 0; sqHangLeft = SQ_HANG_SAMPLES;   // a start begins closed
                     }
                     logI("control: playing -> %s", c.bval ? "true" : "false");
@@ -1316,9 +1554,20 @@ private:
                     sqFloorReset.store(true);
                     rtl.setAgc(c.bval);
                     break;
+                case Command::DEMOD:
+                    if (cfg.demod != c.sval) logI("control: demod -> %s", c.sval.c_str());
+                    cfg.demod = c.sval;
+                    publishDemod();
+                    break;
+                case Command::CLEAN_OPTIONS:
+                    if (cfg.cleanOptions != c.sval) logI("control: clean options -> %s", c.sval.c_str());
+                    cfg.cleanOptions = c.sval;
+                    publishDemod(true);
+                    break;
             }
         }
         cfg.save(); // persist every applied change (incl. consent)
+        publishSettings();   // v2.3.0: the IQ tap sends a settings frame at the next block
     }
 
     void refreshStatus() {
@@ -1332,6 +1581,8 @@ private:
         s.squelchLevel = (float)cfg.squelchLevel;
         s.squelchAuto = cfg.squelchAuto;
         s.squelchMarginDb = (float)cfg.squelchMarginDb;
+        s.demod = cfg.demod;
+        s.cleanOptions = cfg.cleanOptions;
         // The floor is read once, so noiseFloorDb and an auto threshold in the same status agree.
         const bool  floorValid = sqFloorValid.load(std::memory_order_relaxed);
         const float floorDb    = sqFloorDb.load(std::memory_order_relaxed);
@@ -1396,6 +1647,16 @@ private:
         j["denoise"] = dn;
         // v2.1.3: the local unsquelched tap (/sdr/audio_raw, loopback only)
         j["rawTap"] = { {"clients", nRawSubs.load()}, {"max", RAW_MAX} };
+        // v2.3.0: the local raw-signal tap (/sdr/iq, loopback only)
+        j["iqTap"] = { {"clients", nIqSubs.load()}, {"max", IQ_MAX} };
+        // v2.3.0: the audio chain, and while Clean is chosen, its carrier lock
+        j["demod"] = s.demod;
+        j["cleanOptions"] = s.cleanOptions;
+        if (s.demod == "clean") {
+            json off = nullptr;
+            if (cleanHasA.load()) off = std::round(cleanOffA.load() * 10.0f) / 10.0f;
+            j["clean"] = { {"locked", cleanLockedA.load()}, {"offsetHz", off} };
+        }
         return j.dump();
     }
 
@@ -1855,6 +2116,23 @@ private:
             long long maxIx = steps ? (long long)steps - 1 : 63;     // no tuner yet: any plausible index
             if (ix < 0 || ix > maxIx) return "index out of range";
             c.type = Command::GAIN_INDEX; c.ival = (int)ix; out.push_back(c);
+        } else if (path == "/sdr/demod" && (b.contains("demod") || b.contains("options"))) {
+            // v2.3.0: {"demod":"classic"|"clean"} and/or {"options":"<CleanOptions>"}, whole or not at all
+            std::vector<Command> two;
+            if (b.contains("demod")) {
+                const json& x = b["demod"];
+                if (!x.is_string() || (x.get<std::string>() != "classic" && x.get<std::string>() != "clean"))
+                    return "demod must be classic or clean";
+                Command d; d.type = Command::DEMOD; d.sval = x.get<std::string>(); two.push_back(d);
+            }
+            if (b.contains("options")) {
+                const json& x = b["options"];
+                if (!x.is_string()) return "options must be a string";
+                pdsp::CleanOptions o; std::string why;
+                if (!pdsp::CleanOptions::parse(x.get<std::string>(), o, why)) return "options: " + why;
+                Command d; d.type = Command::CLEAN_OPTIONS; d.sval = o.str(); two.push_back(d);
+            }
+            for (auto& d : two) out.push_back(d);
         } else if (path == "/sdr/agc" && b.contains("on")) {
             c.type = Command::AGC;
             if (!(e = flag("on", c.bval)).empty()) return e;
@@ -1908,12 +2186,19 @@ private:
 
     // v2.1.3: why a raw-tap request is refused ("" = allowed). Node-local only: a reader
     // on this machine, not a web page, not something forwarded from elsewhere.
-    std::string rawRefusal(int fd, const std::string& req) {
+    // v2.3.0: the IQ tap (iq = true) has the same rules, its own readers and its own limit.
+    std::string rawRefusal(int fd, const std::string& req, bool iq = false) {
         std::string origin = header(req, "Origin");
         if (!peerIsLoopback(fd)) return "403";
         if (!origin.empty() && !isLoopbackOrigin(origin)) return "403";
         for (const char* h : {"X-Forwarded-For", "X-Forwarded-Host", "X-Real-IP", "Forwarded", "Via"})
             if (!header(req, h).empty()) return "403";
+        if (iq) {
+            std::lock_guard<std::mutex> lk(iqMtx);
+            if (!iqAccepting) return "503 radio stopped";
+            if ((int)iqSubs.size() >= IQ_MAX) return "503 iq tap full";
+            return "";
+        }
         std::lock_guard<std::mutex> lk(rawMtx);
         if (!rawAccepting) return "503 radio stopped";
         if ((int)rawSubs.size() >= RAW_MAX) return "503 raw tap full";
@@ -1924,10 +2209,11 @@ private:
         std::string key = header(req, "Sec-WebSocket-Key");
         if (key.empty()) { close(fd); return; }
         const bool rawAsked = path.substr(0, path.find('?')) == "/sdr/audio_raw";
-        if (rawAsked) {
-            std::string why = rawRefusal(fd, req);
+        const bool iqAsked = path.substr(0, path.find('?')) == "/sdr/iq";   // v2.3.0
+        if (rawAsked || iqAsked) {
+            std::string why = rawRefusal(fd, req, iqAsked);
             if (why == "403") {
-                logW("raw tap: refused a reader that is not local");
+                logW("%s tap: refused a reader that is not local", iqAsked ? "iq" : "raw");
                 httpResponse(fd, "403 Forbidden", "application/json", "{\"ok\":false,\"error\":\"local only\"}");
                 close(fd); return;
             }
@@ -1966,7 +2252,7 @@ private:
             }
             if (!dn) subs = &audioSubs;   // not asked, not available, or full: plain audio (fail-soft)
         }
-        else if (base != "/sdr/audio_raw") { close(fd); return; }
+        else if (base != "/sdr/audio_raw" && base != "/sdr/iq") { close(fd); return; }
 
         // 2.1.4: broadcast() and plain-listener pongs no longer wait at all (sendFrameNow);
         // this timeout now bounds the denoise/raw workers' own sends and the handshake.
@@ -1993,6 +2279,17 @@ private:
             rawSubs.push_back(raw);
             nRawSubs.store((int)rawSubs.size());
             logI("WS client subscribed to %s (unsquelched, local, %d of %d)", base.c_str(), (int)rawSubs.size(), RAW_MAX);
+        } else if (iqAsked) {     // v2.3.0: same client type and writer as the raw tap
+            int sb = IQ_SNDBUF;
+            setsockopt(fd, SOL_SOCKET, SO_SNDBUF, &sb, sizeof(sb));
+            raw = std::make_shared<RawClient>();
+            raw->fd = fd;
+            std::lock_guard<std::mutex> lk(iqMtx);    // re-check: the radio may have stopped meanwhile
+            if (!iqAccepting || (int)iqSubs.size() >= IQ_MAX) { close(fd); return; }
+            raw->worker = std::thread(&PilnkRadioDaemon::rawWorker, this, raw);
+            iqSubs.push_back(raw);
+            nIqSubs.store((int)iqSubs.size());
+            logI("WS client subscribed to %s (raw signal, local, %d of %d)", base.c_str(), (int)iqSubs.size(), IQ_MAX);
         } else if (dn) {
             dn->worker = std::thread(&PilnkRadioDaemon::dnWorker, this, dn);
             logI("WS client subscribed to %s (denoised, %d of %d)", base.c_str(), nDnSubs.load(), DN_MAX);
@@ -2068,10 +2365,17 @@ private:
             // Stop the writer BEFORE closing (same reason as the denoise worker above).
             raw->dead = true; raw->qcv.notify_all();
             if (raw->worker.joinable()) raw->worker.join();
-            std::lock_guard<std::mutex> lk(rawMtx);
-            auto it = std::find(rawSubs.begin(), rawSubs.end(), raw);
-            if (it != rawSubs.end()) rawSubs.erase(it);
-            nRawSubs.store((int)rawSubs.size());
+            if (iqAsked) {
+                std::lock_guard<std::mutex> lk(iqMtx);
+                auto it = std::find(iqSubs.begin(), iqSubs.end(), raw);
+                if (it != iqSubs.end()) iqSubs.erase(it);
+                nIqSubs.store((int)iqSubs.size());
+            } else {
+                std::lock_guard<std::mutex> lk(rawMtx);
+                auto it = std::find(rawSubs.begin(), rawSubs.end(), raw);
+                if (it != rawSubs.end()) rawSubs.erase(it);
+                nRawSubs.store((int)rawSubs.size());
+            }
         } else {
             std::lock_guard<std::mutex> lk(subsMtx);
             auto it = std::find(subs->begin(), subs->end(), fd);
@@ -2079,7 +2383,7 @@ private:
             refreshSubCounts();
         }
         close(fd);
-        logI("WS client left %s%s", base.c_str(), dn ? " (denoised)" : raw ? " (unsquelched)" : "");
+        logI("WS client left %s%s", base.c_str(), dn ? " (denoised)" : iqAsked ? " (raw signal)" : raw ? " (unsquelched)" : "");
     }
 
     void broadcast(std::vector<int>& subs, const uint8_t* data, size_t len) {
@@ -2114,11 +2418,15 @@ int main(int argc, char** argv) {
         if (a == "--config" && i + 1 < argc) cfgPath = argv[++i];
         else if (a == "--version") { printf("pilnkradio %s\n", PILNKRADIO_VERSION); return 0; }
         else if (a == "--selftest") {
+            std::string dump;
+            if (i + 2 < argc && std::string(argv[i + 1]) == "--dump") dump = argv[i + 2];
+            else if (i + 1 < argc && std::string(argv[i + 1]) == "--dump") {
+                fprintf(stderr, "usage: pilnkradio --selftest [--dump <dir>]\n"); return 2; }
             Config tcfg; tcfg.path = "/dev/null";
             PilnkRadioDaemon d(tcfg);
-            return d.selfTest();
+            return d.selfTest(dump);
         }
-        else { fprintf(stderr, "usage: pilnkradio [--config <path>] [--version] [--selftest]\n"); return 2; }
+        else { fprintf(stderr, "usage: pilnkradio [--config <path>] [--version] [--selftest [--dump <dir>]]\n"); return 2; }
     }
 
     logI("pilnkradio %s starting (config: %s)", PILNKRADIO_VERSION, cfgPath.c_str());

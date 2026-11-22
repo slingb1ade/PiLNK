@@ -229,13 +229,29 @@ fi
 # MISSING cannot notice STALE. The mtime check below closes that: git only
 # touches main.cpp's mtime when the pull actually changes it, so a release that
 # leaves the engine alone still rebuilds nothing.
+#
+# Engine 2.3.0 split the DSP out of main.cpp into dsp.hpp, so "the source" is every file the
+# engine is built from, not main.cpp alone: a release that changed only dsp.hpp must rebuild too.
+# >>> radio-sources
+# radio_src_newer DIR BIN: prints the first of DIR/*.cpp, *.hpp, *.h, CMakeLists.txt that is newer
+# than BIN and returns 0; returns 1 when none is (or DIR is missing). Backups (main.cpp.pre*.bak)
+# and the build/ directory do not count.
+radio_src_newer() {
+    local dir="$1" bin="$2" f
+    [ -d "$dir" ] || return 1
+    for f in "$dir"/*.cpp "$dir"/*.hpp "$dir"/*.h "$dir"/CMakeLists.txt; do
+        [ -f "$f" ] || continue
+        if [ "$f" -nt "$bin" ]; then basename "$f"; return 0; fi
+    done
+    return 1
+}
+# <<< radio-sources
 PILNKRADIO_BIN=/usr/local/bin/pilnkradio
-PILNKRADIO_SRC="$PILNK_DIR/pilnkradio/main.cpp"
 RADIO_BUILD_WHY=""
 if [ ! -x "$PILNKRADIO_BIN" ]; then
     RADIO_BUILD_WHY="engine not present"
-elif [ -f "$PILNKRADIO_SRC" ] && [ "$PILNKRADIO_SRC" -nt "$PILNKRADIO_BIN" ]; then
-    RADIO_BUILD_WHY="engine source is newer than the installed binary"
+elif RADIO_SRC_FILE=$(radio_src_newer "$PILNK_DIR/pilnkradio" "$PILNKRADIO_BIN"); then
+    RADIO_BUILD_WHY="engine source is newer than the installed binary ($RADIO_SRC_FILE)"
 fi
 # powerfloor v1 — aircraft-only boards (Pi 3, under 1.5 GiB) never build the engine. An engine
 # that is already there is left alone: not stopped, not deleted, just never rebuilt. Step 3.7

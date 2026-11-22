@@ -1416,6 +1416,115 @@ def _coverage_save_if_due():
 
 _coverage_load()
 
+# ── Signal Border (22 Nov 2026) ─────────────────────────────────────────────
+# How far this receiver hears, in every direction: 360 one-degree bins of range, kept for the
+# last 24 hours and for all time. Asked for by a member with two cell towers to his south-west
+# who wanted to see the hole they make. All the rules live in signal_border.py: only positions
+# this node decoded itself from ADS-B count (no MLAT, TIS-B or ADS-R), and only once the same
+# aircraft has confirmed them with a second fix 5-60 s later, so one bad frame can never set a
+# bin. This block just feeds it the decoder's file every BORDER_SAMPLE_S and hands the numbers
+# to /api/coverage and the ping. The 15 s ping snapshot is too slow for this: a far contact can
+# come and go between two pings.
+# The 36-sector coverage above is untouched (Horizon view, older pilnk.io readers).
+# Fenced off: a missing or broken signal_border.py must never stop the dashboard.
+BORDER_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'signal_border.json')
+BORDER_SAMPLE_S = 3          # seconds between looks at aircraft.json (one small local read, no network)
+BORDER_STALE_S = 30          # decoder file older than this = decoder not running = nothing to learn
+BORDER = None
+try:
+    import signal_border as _signal_border
+    BORDER = _signal_border.Border(BORDER_FILE)
+    BORDER.load(time.time())
+except Exception as _border_err:   # never let the outline cost the dashboard
+    BORDER = None
+    logging.warning('[border] Signal Border disabled: %s', _border_err)
+
+
+def _border_reject(ac, dist_nm):
+    """True = leave this position out. The same sanity gates as the all-time records
+    (impossible for the airframe, or further than radio can reach at that altitude), but
+    stricter about altitude: the records fall back to a flat 400 nm cap when they have no
+    altitude, and an outline that never decays cannot afford that. So:
+      - pressure altitude first (alt_baro; 'alt' on old decoders), GPS altitude (alt_geom) if there is none;
+      - 'ground', or at/below sea level: only as far as a receiver can see along the ground;
+      - no altitude at all: left out, because it cannot be checked."""
+    try:
+        alt_raw = ac.get('alt_baro')
+        if alt_raw is None:
+            alt_raw = ac.get('alt')
+        if alt_raw is None:
+            alt_raw = ac.get('alt_geom')
+        if alt_raw is None:
+            return True
+        alt = 0 if alt_raw == 'ground' else int(alt_raw)
+        speed = int(ac.get('gs', 0) or 0)
+    except (TypeError, ValueError):
+        return True
+    hex_code = ac.get('hex') or ''
+    # _beyond_radio_horizon() treats alt <= 0 as "unknown" (flat cap); 1 ft makes it the ground-level horizon instead.
+    return bool(_airframe_implausible(hex_code.upper(), alt, speed)) or _beyond_radio_horizon(dist_nm, alt if alt > 0 else 1)
+
+
+_border_stale_said = 0.0
+
+
+def _border_tick():
+    """One look at the decoder's file. Returns how many positions counted."""
+    global _border_stale_said
+    if BORDER is None:
+        return 0
+    counted = 0
+    lat, lon = RX_LAT, RX_LON
+    if lat is not None and lon is not None:
+        data = None
+        try:
+            with open(DUMP1090_AIRCRAFT_JSON, 'rb') as f:
+                data = json.loads(f.read())     # caught mid-write? skip this look, the next is 3 s away
+        except Exception:
+            data = None
+        if isinstance(data, dict) and isinstance(data.get('aircraft'), list):
+            wall = time.time()
+            now = data.get('now')
+            if isinstance(now, bool) or not isinstance(now, (int, float)):
+                now = wall                      # a decoder that does not stamp its file
+            # seen_pos counts from the decoder's own clock, so that is the clock a fix is timed by.
+            # A file that has stopped moving is a decoder that has stopped: skip it.
+            if abs(wall - now) <= BORDER_STALE_S:
+                counted = BORDER.sample(data['aircraft'], now, (lat, lon), _border_reject)
+            elif abs(wall - _border_stale_said) >= 3600:       # say why the outline is not growing, once an hour
+                _border_stale_said = wall
+                logging.warning('[border] decoder file is %d s out of step with this clock: not sampling '
+                                '(decoder stopped, or its clock is wrong)', int(abs(wall - now)))
+    BORDER.save_if_due(time.time())
+    return counted
+
+
+def _border_loop():
+    warned = 0.0
+    while True:
+        try:
+            _border_tick()
+        except Exception as e:                  # never let one bad look end the loop
+            if abs(time.time() - warned) > 3600:
+                warned = time.time()
+                logging.warning('[border] sampler: %s', e)
+        time.sleep(BORDER_SAMPLE_S)
+
+
+def _border_cov(cov):
+    """Add border_24h / border_all / border_hours to a coverage dict (left alone when the module is off)."""
+    if BORDER is not None:
+        try:
+            cov.update(BORDER.snapshot(time.time()))
+        except Exception:
+            pass
+    return cov
+
+
+if BORDER is not None:
+    threading.Thread(target=_border_loop, name='border-sampler', daemon=True).start()
+
+
 def compute_node_stats(aircraft):
     """Update running stats from current aircraft snapshot."""
     import math
@@ -1559,7 +1668,7 @@ def get_stats_payload():
             'squawk': node_stats['squawk'],
             'top_types': [{'type': t, 'count': c} for t, c in sorted_types],
             'hour_counts': node_stats['hour_counts'],
-            'coverage': {'max_nm': coverage['max_nm'], 'min_elev': coverage['min_elev']},
+            'coverage': _border_cov({'max_nm': coverage['max_nm'], 'min_elev': coverage['min_elev']}),
             'records': records
         }
 
@@ -2778,6 +2887,24 @@ def api_arrival_paths():
             out = dict(_ARRIVAL_CACHE['data']); out['stale'] = True
             return jsonify(out)
         return jsonify(unavailable)
+
+# ── Hub tile store for the 3D views (21 Nov 2026) ──────────────────────────
+# 3D Approach and 3D Sky ask this node for their terrain and map tiles (static/tile-hub.js). The node keeps
+# one shared copy in ~/.cache/pilnk/tiles for every device in the house and, between 01:00 and 05:00 at the
+# receiver, fetches the terrain the camera is likely to need (runway approaches + learned arrival paths + a
+# coarse circle) - only if the 3D views were used in the last 14 days. Everything lives in tile_store.py;
+# config.json keys tile_store / tile_store_mb / tile_prewarm. Fenced off: a fault here must never stop the dashboard.
+def _tile_paths():
+    """Learned arrival paths this node already has (from /api/arrival-paths' cache): lines only, no network."""
+    d = _ARRIVAL_CACHE.get('data') or {}
+    return [p.get('line') for p in (d.get('paths') or []) if isinstance(p, dict) and p.get('line')]
+
+
+try:
+    import tile_store as _tile_store
+    _TILES = _tile_store.start(app, CONFIG_PATH, lambda: (RX_LAT, RX_LON), _tile_paths, _RUNNING_VERSION)
+except Exception as _tile_err:
+    logging.warning('[tiles] hub tile store not started: %s', _tile_err)
 
 # ── Airport live cams near this node (v1.5.51, 3 Oct 2026) ──────────────────
 # pilnk.io keeps a hand-verified list of airport live streams and re-checks
@@ -5823,12 +5950,23 @@ def get_stats_daily():
 @app.route('/api/coverage')
 def get_coverage():
     with node_stats_lock:
-        return jsonify({
+        cov = {
             'sectors': COVERAGE_SECTORS,
-            'max_nm': coverage['max_nm'],
-            'min_elev': coverage['min_elev'],
+            'max_nm': list(coverage['max_nm']),
+            'min_elev': list(coverage['min_elev']),
             'elev_min_nm': COVERAGE_ELEV_MIN_NM
-        })
+        }
+    return jsonify(_border_cov(cov))     # + Signal Border: border_24h, border_all (360 x nm), border_hours
+
+@app.route('/api/coverage/reset-all', methods=['POST'])
+def coverage_reset_all():
+    """Signal Border -> "Reset all time". Forgets the all-time outline; the last 24 h is kept."""
+    if BORDER is None:
+        return jsonify({'error': 'off'}), 503
+    now = time.time()
+    BORDER.reset_all(now)
+    BORDER.save_if_due(now)
+    return jsonify(BORDER.snapshot(now))
 
 @app.route('/api/power')
 def api_power():

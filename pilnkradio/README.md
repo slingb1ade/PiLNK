@@ -32,6 +32,44 @@ STT), not for browsers. Same frames as `/sdr/audio` (binary float32 LE, mono,
   the squelch disabled it stays 1.
 - It keeps streaming through retunes. At most 4 readers (`rawTap` in `/sdr/status`).
 
+## Local raw-signal tap (engine 2.3.0)
+
+`ws://127.0.0.1:5656/sdr/iq` carries the radio's raw signal for the hub's radio bench (it
+records, then replays the recording through any audio chain). It is the 48 kHz complex signal
+**before** the channel filter, so a replay can use any bandwidth.
+
+- **Local only, gap-free or closed** — the same rules as `/sdr/audio_raw`. At most 2 readers
+  (`iqTap` in `/sdr/status`); a third gets 503 `iq tap full`. Raw signal never leaves the node.
+- **Frames.** Text `{"iq":1,"fs":48000,"i":I,"run":R,"utc":U,"sq":0|1,"set":SET}` first, then
+  `{"sq":0|1,"i":I}` at each squelch edge and `{"set":SET,"i":I}` after any applied control
+  command; binary frames hold 512 complex samples (4096 B, float32 LE I,Q pairs).
+- `i` is an absolute sample index since the engine started (`run`, unix seconds). It never
+  resets. A stop jumps it by 1 s and a stalled reader is closed while it keeps counting, so a
+  gap always shows as a gap: two recordings are contiguous only if nothing was lost between them.
+- `SET` = `{"freq","bw","gain","agc","ppm","sqEnabled","sqAuto","sqLevel","sqMargin","demod","cleanOptions"}`.
+
+## Audio chain: Classic or Clean (engine 2.3.0)
+
+`demod` picks what `/sdr/audio` and `/sdr/audio_raw` carry. **Classic** (the default) is the
+chain every node has always had: AM envelope, DC blocker, AGC, clip. **Clean** finds and
+tracks the carrier, uses the coherent detector while locked, and levels by the carrier
+instead of an AGC (no hiss wind-up between calls, no burst when a call starts). Both live in
+`dsp.hpp`, which the bench replay tool compiles too. Classic always runs, so switching never
+loses its state; a switch crossfades over 10 ms.
+
+```
+curl -s -X POST http://127.0.0.1:5656/sdr/demod -d '{"demod":"clean"}'
+curl -s -X POST http://127.0.0.1:5656/sdr/demod -d '{"options":"detector=auto,hpf=250,lpf=3400"}'
+```
+
+- `options`: `detector=envelope|sync|auto`, `hpf` 50-1000 Hz, `lpf` 1500-8000 Hz,
+  `lpf` at least `hpf` + 500. Keys are optional; status shows the canonical form.
+- A bad body changes nothing and returns 400. Both settings are saved in the config
+  (`demod`, `cleanOptions`); a bad stored value falls back to the default with a warning.
+- `/sdr/status` shows `demod` and `cleanOptions`, and while Clean is chosen
+  `"clean":{"locked":bool,"offsetHz":Hz|null}` (the carrier's offset from the VFO).
+- Fleet nodes stay on Classic. A node switches only by this setting.
+
 ## Squelch modes (engine 2.2.0)
 
 | `squelchEnabled` | `squelchAuto` | Mode | Gate |
@@ -102,7 +140,8 @@ make -C rtl-sdr-blog/build -j4 && sudo make -C rtl-sdr-blog/build install && sud
 # 2. the daemon
 cmake -B build . -DRTLSDR_PREFIX=/usr/local
 make -C build -j4
-build/pilnkradio --selftest        # validates the DSP chain, no antenna needed
+build/pilnkradio --selftest        # validates both audio chains, no antenna needed
+# --selftest --dump DIR also writes DIR/iq.cf32 (+ iq.json), classic.f32 and clean.f32 (bench checks)
 sudo make -C build install
 ```
 
