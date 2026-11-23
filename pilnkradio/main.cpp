@@ -61,7 +61,7 @@
 
 using nlohmann::json;
 
-#define PILNKRADIO_VERSION "2.3.0"
+#define PILNKRADIO_VERSION "2.3.1"
 #define PILNK_FFT_SIZE     1024
 #define PILNK_FFT_RATE     25.0
 
@@ -195,6 +195,7 @@ struct Config {
     double      squelchMarginDb = SQ_MARGIN_DEF;
     std::string demod    = "classic";                   // v2.3.0: "classic" | "clean"
     std::string cleanOptions = "detector=auto,hpf=250,lpf=3400";   // v2.3.0: canonical CleanOptions
+    std::string rawDemod = "classic";                   // v2.3.1: /sdr/audio_raw carries "classic" | "follow" (= demod)
     bool        playing  = false;      // consent: off by default, persisted
     int         port     = 5656;
     std::vector<std::string> allowedOrigins; // M3 enforcement lands in milestone 5
@@ -223,10 +224,12 @@ struct Config {
         pick(j, "squelchAuto", squelchAuto); pick(j, "squelchMarginDb", squelchMarginDb);
         pick(j, "playing", playing); pick(j, "port", port); pick(j, "token", token);
         pick(j, "allowedOrigins", allowedOrigins);
-        pick(j, "demod", demod); pick(j, "cleanOptions", cleanOptions);
+        pick(j, "demod", demod); pick(j, "cleanOptions", cleanOptions); pick(j, "rawDemod", rawDemod);
         const Config d;   // the defaults
         if (demod != "classic" && demod != "clean") {
             logW("config: demod '%s' is not classic or clean — using classic", demod.c_str()); demod = d.demod; }
+        if (rawDemod != "classic" && rawDemod != "follow") {
+            logW("config: rawDemod '%s' is not classic or follow — using classic", rawDemod.c_str()); rawDemod = d.rawDemod; }
         {
             pdsp::CleanOptions o; std::string err;
             if (pdsp::CleanOptions::parse(cleanOptions, o, err)) cleanOptions = o.str();
@@ -270,7 +273,7 @@ struct Config {
         j["squelchAuto"] = squelchAuto; j["squelchMarginDb"] = squelchMarginDb;
         j["playing"] = playing; j["port"] = port;
         j["allowedOrigins"] = allowedOrigins; j["token"] = token;
-        j["demod"] = demod; j["cleanOptions"] = cleanOptions;
+        j["demod"] = demod; j["cleanOptions"] = cleanOptions; j["rawDemod"] = rawDemod;
         const std::string text = j.dump(4) + "\n", tmp = path + ".tmp";
         int fd = ::open(tmp.c_str(), O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0644);
         if (fd < 0) { logE("config: save failed, cannot open %s: %s", tmp.c_str(), strerror(errno)); return false; }
@@ -834,6 +837,11 @@ private:
     double cleanBw = 8000.0;                  // DSP thread: bandwidth Clean is set for
     std::atomic<double> chanBwNow{8000.0};    // rebuildChannelFilter publishes the bandwidth
     std::atomic<bool> cleanLockedA{false}, cleanHasA{false};
+    // v2.3.1: /sdr/audio_raw carries Classic unless rawDemod is "follow" (then whatever the listeners
+    // get). STT asked for this (22 Nov): their decoder was trained on Classic. A change crossfades
+    // over MIX_LEN like a demod change, so a reader never sees a step.
+    std::atomic<bool> rawFollowA{false};      // control thread writes, DSP thread reads once per block
+    int rawMix = 0;                           // DSP thread: 0 = Classic .. MIX_LEN = what the listeners get
     std::atomic<float> cleanOffA{0.0f};
     std::vector<float> audioAcc;              // pending output samples
 
@@ -931,6 +939,8 @@ private:
         clean.configure(cleanOpts, cleanBw);
         mixPos = cleanActive ? MIX_LEN : 0;
         cleanFadePos = MIX_LEN;
+        rawFollowA.store(cfg.rawDemod == "follow");
+        rawMix = rawFollowA.load() ? MIX_LEN : 0;
         sqEnabled.store(cfg.squelchEnabled);
         sqLevel.store((float)cfg.squelchLevel);
         sqAuto.store(cfg.squelchAuto);
@@ -1029,6 +1039,7 @@ private:
         // v2.3.0: Clean (dsp.hpp), when chosen or fading
         demodApplyPending();
         const bool cleanRun = cleanActive || mixPos > 0;
+        const bool rawFollow = rawFollowA.load(std::memory_order_relaxed);
         if (cleanRun) {
             cleanOut.resize(n3);
             clean.process(dspBufA.data(), n3, !muted, cleanOut.data());
@@ -1047,7 +1058,13 @@ private:
                 else if (!cleanActive && mixPos > 0) mixPos--;
             }
             audioAcc.push_back(muted ? 0.0f : sc);
-            rawAcc.push_back(sc);
+            // exact Classic at rawMix 0, exactly the listeners' sample at MIX_LEN (no arithmetic)
+            float rv = classicOut[i];
+            if (rawMix >= MIX_LEN) rv = sc;
+            else if (rawMix > 0) { const float w = (float)rawMix / MIX_LEN; rv = (1.0f - w) * rv + w * sc; }
+            if (rawFollow && rawMix < MIX_LEN) rawMix++;
+            else if (!rawFollow && rawMix > 0) rawMix--;
+            rawAcc.push_back(rv);
         }
 
         // emit fixed 512-sample chunks (same cadence the v1 packer produced)
@@ -1419,7 +1436,7 @@ private:
     // that constraint (and the whole Xvfb requirement) dies with SDR++.
     struct Command {
         enum Type { FREQ, MODE, BANDWIDTH, PLAYING, SQUELCH_MODE, SQUELCH_LEVEL, GAIN_INDEX, AGC, SQUELCH_AUTO, SQUELCH_MARGIN,
-                    DEMOD, CLEAN_OPTIONS } type;   // v2.3.0: DEMOD, CLEAN_OPTIONS (sval)
+                    DEMOD, CLEAN_OPTIONS, RAW_DEMOD } type;   // v2.3.0: DEMOD, CLEAN_OPTIONS; v2.3.1: RAW_DEMOD (sval)
         double dval = 0; int ival = 0; bool bval = false;
         std::string sval;
     };
@@ -1438,6 +1455,7 @@ private:
         float squelchThresholdDb = -50.0f;
         bool  squelchOpen = true;
         std::string demod = "classic", cleanOptions;   // v2.3.0
+        std::string rawDemod = "classic";               // v2.3.1
         std::vector<float> rfGainSteps;  // empty until a device is open (M2) —
                                          // deliberately keeps the "no device"
                                          // tell the tab/watchdog key on
@@ -1564,6 +1582,11 @@ private:
                     cfg.cleanOptions = c.sval;
                     publishDemod(true);
                     break;
+                case Command::RAW_DEMOD:
+                    if (cfg.rawDemod != c.sval) logI("control: raw tap -> %s", c.sval.c_str());
+                    cfg.rawDemod = c.sval;
+                    rawFollowA.store(c.sval == "follow");
+                    break;
             }
         }
         cfg.save(); // persist every applied change (incl. consent)
@@ -1583,6 +1606,7 @@ private:
         s.squelchMarginDb = (float)cfg.squelchMarginDb;
         s.demod = cfg.demod;
         s.cleanOptions = cfg.cleanOptions;
+        s.rawDemod = cfg.rawDemod;
         // The floor is read once, so noiseFloorDb and an auto threshold in the same status agree.
         const bool  floorValid = sqFloorValid.load(std::memory_order_relaxed);
         const float floorDb    = sqFloorDb.load(std::memory_order_relaxed);
@@ -1646,7 +1670,10 @@ private:
         if (!dfn::api.ok) dn["why"] = dfn::api.why;
         j["denoise"] = dn;
         // v2.1.3: the local unsquelched tap (/sdr/audio_raw, loopback only)
-        j["rawTap"] = { {"clients", nRawSubs.load()}, {"max", RAW_MAX} };
+        // v2.3.1: and which chain it carries (rawDemod "classic" = always Classic, "follow" = demod)
+        j["rawTap"] = { {"clients", nRawSubs.load()}, {"max", RAW_MAX},
+                        {"demod", s.rawDemod == "follow" ? s.demod : std::string("classic")} };
+        j["rawDemod"] = s.rawDemod;
         // v2.3.0: the local raw-signal tap (/sdr/iq, loopback only)
         j["iqTap"] = { {"clients", nIqSubs.load()}, {"max", IQ_MAX} };
         // v2.3.0: the audio chain, and while Clean is chosen, its carrier lock
@@ -2116,8 +2143,9 @@ private:
             long long maxIx = steps ? (long long)steps - 1 : 63;     // no tuner yet: any plausible index
             if (ix < 0 || ix > maxIx) return "index out of range";
             c.type = Command::GAIN_INDEX; c.ival = (int)ix; out.push_back(c);
-        } else if (path == "/sdr/demod" && (b.contains("demod") || b.contains("options"))) {
+        } else if (path == "/sdr/demod" && (b.contains("demod") || b.contains("options") || b.contains("raw"))) {
             // v2.3.0: {"demod":"classic"|"clean"} and/or {"options":"<CleanOptions>"}, whole or not at all
+            // v2.3.1: and/or {"raw":"classic"|"follow"}: what /sdr/audio_raw carries
             std::vector<Command> two;
             if (b.contains("demod")) {
                 const json& x = b["demod"];
@@ -2131,6 +2159,12 @@ private:
                 pdsp::CleanOptions o; std::string why;
                 if (!pdsp::CleanOptions::parse(x.get<std::string>(), o, why)) return "options: " + why;
                 Command d; d.type = Command::CLEAN_OPTIONS; d.sval = o.str(); two.push_back(d);
+            }
+            if (b.contains("raw")) {
+                const json& x = b["raw"];
+                if (!x.is_string() || (x.get<std::string>() != "classic" && x.get<std::string>() != "follow"))
+                    return "raw must be classic or follow";
+                Command d; d.type = Command::RAW_DEMOD; d.sval = x.get<std::string>(); two.push_back(d);
             }
             for (auto& d : two) out.push_back(d);
         } else if (path == "/sdr/agc" && b.contains("on")) {

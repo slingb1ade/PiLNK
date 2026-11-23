@@ -5222,45 +5222,89 @@ def _openaip_cache_key(endpoint, params):
     return endpoint + '?' + '&'.join('%s=%s' % kv for kv in sorted(p.items()))
 
 
+# 23 Nov 2026: the node asks pilnk.io, not OpenAIP. On 24 Oct 2026 OpenAIP
+# switched off area searches (pos/dist, bbox) on its API for every client, so
+# this proxy had been getting refusals ever since and nodes were showing
+# whatever they had cached before then (new or moved nodes got nothing).
+# pilnk.io now keeps a weekly copy of OpenAIP's public export files and answers
+# the same question in the same shape (api/openaip.php). No OpenAIP key is
+# needed or kept on the node any more.
+#
+# What leaves the node: the layer name, the receiver position ROUNDED to 0.1
+# degree (about 11 km), the radius padded by 8 km so the rounding can never
+# cut the area short, and the item limit. Nothing else from the browser's
+# query string is forwarded.
+_OPENAIP_TYPES = ('airports', 'airspaces', 'navaids', 'reporting-points')
+_OPENAIP_URL = 'https://pilnk.io/api/openaip.php'
+_OPENAIP_PAD_M = 8000          # covers the worst rounding offset (~7.9 km at 0.05 deg each way)
+_OPENAIP_MAX_M = 500000
+
+
+def _openaip_upstream_params(endpoint, args):
+    """The only parameters sent to pilnk.io, or (None, error) for a bad request."""
+    import math   # not imported at module level in app.py
+    if endpoint not in _OPENAIP_TYPES:
+        return None, 'unknown OpenAIP layer'
+    try:
+        lat_s, lon_s = str(args.get('pos', '')).split(',')
+        lat, lon = float(lat_s), float(lon_s)
+    except (ValueError, TypeError):
+        return None, 'pos must be lat,lon'
+    if not (math.isfinite(lat) and math.isfinite(lon)) or abs(lat) > 90 or abs(lon) > 180:
+        return None, 'pos out of range'
+    try:
+        dist = float(args.get('dist', 150000))
+        if not math.isfinite(dist):
+            raise ValueError
+    except (ValueError, TypeError):
+        dist = 150000.0
+    out = {'type': endpoint,
+           'pos': '%.1f,%.1f' % (lat, lon),
+           'dist': int(min(_OPENAIP_MAX_M, max(1000, dist) + _OPENAIP_PAD_M))}
+    lim = str(args.get('limit', ''))
+    if lim.isdigit() and 0 < int(lim) <= 1000:
+        out['limit'] = int(lim)
+    return out, None
+
+
 @app.route('/api/openaip/<path:endpoint>')
 def openaip_proxy(endpoint):
-    OPENAIP_KEY = '7670c503a1c0929ee8e87ad581d9119e'
-    params = request.args.to_dict()
+    params, bad = _openaip_upstream_params(endpoint, request.args)
+    if bad:
+        return jsonify({'error': bad}), (404 if bad == 'unknown OpenAIP layer' else 400)
     cache_key = _openaip_cache_key(endpoint, params)
 
     hit = _OPENAIP_CACHE.get(cache_key)
     if hit and (time.time() - hit[0]) < _OPENAIP_TTL:
         return jsonify(hit[1])
 
-    # Rate-limited recently? Don't ask again yet — each refused call during a
-    # 429 window digs the hole deeper for every node on the shared key. Stale
-    # data if we have it; otherwise an honest rate-limited error.
+    # Refused recently? Don't ask again yet. Stale data if we have it;
+    # otherwise an honest error.
     if time.time() < _OPENAIP_BACKOFF['until']:
         if hit:
             return jsonify(hit[1])
-        return jsonify({'error': 'upstream HTTP 429 (backing off)', 'rate_limited': True}), 502
-
-    params['apiKey'] = OPENAIP_KEY
-    url = f'https://api.core.openaip.net/api/{endpoint}'
+        return jsonify({'error': 'upstream busy (backing off)', 'rate_limited': True}), 502
 
     last_err = None
     for attempt in (1, 2):
         try:
-            r = requests.get(url, params=params, timeout=10)
+            r = requests.get(_OPENAIP_URL, params=params, timeout=10,
+                             headers={'User-Agent': 'PiLNK/1.0'})
             if r.status_code == 200:
                 data = r.json()
+                if not isinstance(data, dict) or not isinstance(data.get('items'), list):
+                    raise ValueError('unexpected payload')
                 _OPENAIP_CACHE[cache_key] = (time.time(), data)
                 _openaip_save_disk()
                 return jsonify(data)
             last_err = 'upstream HTTP %s' % r.status_code
-            # 429 is rate limiting, not a blip. Retrying 1.5s later just spends
-            # another request on a refusal and digs the hole deeper — and so
-            # does the NEXT reload, so back off for a while too.
-            if r.status_code == 429:
+            # 429 = slow down; 503 = pilnk.io has no copy loaded right now.
+            # Either way asking again 1.5 s later only adds load, so back off.
+            if r.status_code in (429, 503):
                 _OPENAIP_BACKOFF['until'] = time.time() + _OPENAIP_BACKOFF_SECS
                 break
         except Exception as e:
-            last_err = str(e)
+            last_err = str(e) or e.__class__.__name__
         if attempt == 1:
             time.sleep(1.5)
 
@@ -5287,6 +5331,84 @@ def adsbdb_proxy(callsign):
         return jsonify(r.json())
     except Exception as e:
         return jsonify({'error': str(e)}), 500
+
+# ── Route lookup via adsb.lol routeset (JG, forum thread 97, 23 Nov 2026) ──
+# adsbdb answers by flight number alone, so a reused or stale number gives a route the
+# aircraft is not flying (FFT2082 over Georgia "SFO -> LAS"). routeset is given the
+# aircraft's position as well and says whether the route fits it (plausible). The page
+# asks here first and only shows a route that fits; adsbdb is its fallback.
+# Sends adsb.lol the callsign and the aircraft's position rounded to 0.1 deg, nothing else.
+_ROUTE_URL = 'https://api.adsb.lol/api/0/routeset'
+_ROUTE_BACKOFF = {'until': 0.0}
+
+
+def _route_clean_callsign(raw):
+    cs = (raw or '').strip().upper()
+    return cs if re.fullmatch(r'[A-Z0-9]{2,8}', cs) else None
+
+
+def _route_airport(a):
+    """One airport of a routeset answer, or None if it has no usable position."""
+    if not isinstance(a, dict):
+        return None
+    try:
+        lat, lon = float(a.get('lat')), float(a.get('lon'))
+    except (TypeError, ValueError):
+        return None
+    if not (-90 <= lat <= 90 and -180 <= lon <= 180):
+        return None
+    txt = lambda v: v.strip() or None if isinstance(v, str) else None
+    return {'icao': txt(a.get('icao')), 'iata': txt(a.get('iata')), 'name': txt(a.get('name')),
+            'location': txt(a.get('location')), 'lat': lat, 'lon': lon, 'cc': txt(a.get('countryiso2'))}
+
+
+@app.route('/api/route/<path:callsign>')
+def route_proxy(callsign):
+    cs = _route_clean_callsign(callsign)
+    if not cs:
+        return jsonify({'error': 'bad callsign'}), 400
+    try:
+        lat, lon = float(request.args.get('lat', '')), float(request.args.get('lon', ''))
+    except ValueError:
+        return jsonify({'error': 'lat and lon required'}), 400
+    if not (-90 <= lat <= 90 and -180 <= lon <= 180):      # also refuses nan; inf is out of range
+        return jsonify({'error': 'lat and lon required'}), 400
+    if time.time() < _ROUTE_BACKOFF['until']:
+        return jsonify({'error': 'adsb.lol asked us to wait'}), 503
+    try:
+        r = requests.post(_ROUTE_URL, json={'planes': [{'callsign': cs, 'lat': round(lat, 1), 'lng': round(lon, 1)}]},
+                          headers={'User-Agent': 'PiLNK node (+https://pilnk.io)'}, timeout=6)
+    except Exception:
+        return jsonify({'error': 'adsb.lol unreachable'}), 502
+    if r.status_code == 429:
+        try:
+            wait = int(r.headers.get('Retry-After', '300'))
+        except (TypeError, ValueError):
+            wait = 300
+        _ROUTE_BACKOFF['until'] = time.time() + min(max(wait, 30), 3600)
+        return jsonify({'error': 'adsb.lol asked us to wait'}), 503
+    if not 200 <= r.status_code < 300:          # adsb.lol answers this POST with 201
+        return jsonify({'error': 'adsb.lol HTTP %d' % r.status_code}), 502
+    if not (getattr(r, 'content', None) or b'').strip():
+        data = []                                # adsb.lol today: 201 with an empty body = no route known
+    else:
+        try:
+            data = r.json()
+        except Exception:
+            return jsonify({'error': 'adsb.lol sent a bad answer'}), 502
+    if not isinstance(data, list):
+        return jsonify({'error': 'adsb.lol sent a bad answer'}), 502
+    entry = next((e for e in data if isinstance(e, dict) and str(e.get('callsign') or '').strip().upper() == cs), None)
+    out = {'source': 'adsb.lol', 'callsign': cs, 'plausible': False, 'airline_code': None, 'airports': []}
+    if entry:
+        out['plausible'] = entry.get('plausible') is True or entry.get('plausible') == 1
+        ac = entry.get('airline_code')
+        out['airline_code'] = ac.strip() or None if isinstance(ac, str) else None
+        codes = str(entry.get('airport_codes') or '').strip().lower()
+        aps = [_route_airport(a) for a in (entry.get('_airports') or [])] if codes and codes != 'unknown' else []
+        if len(aps) >= 2 and all(aps):          # a route needs both ends, each with a position
+            out['airports'] = aps
+    return jsonify(out)
 
 # ── RainViewer proxy — avoids CORS issues in browser ──────
 @app.route('/api/rainviewer')

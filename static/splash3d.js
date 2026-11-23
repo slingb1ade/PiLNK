@@ -82,7 +82,8 @@
     try { var lose = gl.getExtension('WEBGL_lose_context'); if (lose) lose.loseContext(); } catch (e) {}
     return true;
   }
-  function late(run) { return now() - run.t0 > run.windowMs; }
+  /* the window only runs while the page can be seen: a tab opened in the background gets no frames (AJ, 23 Nov 2026) */
+  function late(run) { return !run.waiting && now() - run.t0 > run.windowMs; }
 
   /* The radar face, drawn in 2D each frame and used as the screen disc's texture. */
   function drawScreen(g, t) {
@@ -123,6 +124,7 @@
     if (run.tornDown) return; run.tornDown = true;
     if (run.raf) W.cancelAnimationFrame(run.raf);
     clearTimeout(run.deadline);
+    if (run.onVis) { W.document.removeEventListener('visibilitychange', run.onVis); run.onVis = null; }
     if (run.onResize) W.removeEventListener('resize', run.onResize);
     if (run.scene) run.scene.traverse(function (o) {
       if (o.geometry) o.geometry.dispose();
@@ -159,8 +161,16 @@
       /* AJ 9 Oct: no flat radar while the 3D is on its way; teardown brings it back if the 3D never comes */
       el.classList.add('ps-3d-pending');
     } catch (e) { finish('flat:error'); return run.promise; }
-    var t0 = run.t0;
-    run.deadline = setTimeout(function () { if (!run.shown) finish('flat:timeout'); }, windowMs);
+    function arm() { run.deadline = setTimeout(function () { if (!run.shown) finish('flat:timeout'); }, windowMs); }
+    if (W.document.hidden) {   /* start the clock when the page is first seen, not while it loads out of sight */
+      run.waiting = true;
+      run.onVis = function () {
+        if (W.document.hidden || run.reason) return;
+        W.document.removeEventListener('visibilitychange', run.onVis); run.onVis = null;
+        run.waiting = false; run.t0 = now(); arm();
+      };
+      W.document.addEventListener('visibilitychange', run.onVis);
+    } else arm();
     ensureThree(run, base).then(function () {
       if (run.reason) return null;
       return new Promise(function (ok, bad) { new W.THREE.GLTFLoader().load(base + 'splash/console.glb', ok, undefined, bad); });
@@ -168,12 +178,12 @@
       if (!gltf) return;
       if (run.reason) { gltf.scene.traverse(function (o) { if (o.geometry) o.geometry.dispose(); if (o.material) o.material.dispose(); }); return; }
       if (late(run)) { finish('flat:timeout'); return; }
-      build(run, gltf, t0);
+      build(run, gltf);
     }).catch(function () { finish('flat:error'); });
     return run.promise;
   }
 
-  function build(run, gltf, t0) {
+  function build(run, gltf) {
     var T = W.THREE, el = run.el;
     var box = el.querySelector('.ps-3d');
     if (!box) { box = document.createElement('div'); box.className = 'ps-3d'; box.setAttribute('aria-hidden', 'true'); el.insertBefore(box, el.firstChild); }
@@ -240,7 +250,7 @@
     function tick() {
       if (run.reason) return;
       run.raf = W.requestAnimationFrame(tick);
-      var t = now() - t0;
+      var t = now() - run.t0;   /* run.t0 moves to the moment the page was first seen */
       if (tShow === null) tShow = t;
       var e = Math.min(1, (t - tShow) / RISE_MS); e = 1 - Math.pow(1 - e, 3);
       rig.position.y = -0.15 * (1 - e);

@@ -4284,26 +4284,30 @@ function routeIsPlausible(c, a) {
   return viaNm <= (legNm * 1.25) + 150;   // 150 nm slack for short legs and diversions
 }
 
+// Wrong info is worse than no info (AJ, 23 Nov 2026 — JG, forum thread 97: FFT2082 over Georgia shown as SFO → LAS).
+// A schedule route is shown only when it can be checked AND it fits: the aircraft has a position, both ends have
+// coordinates, and the ellipse test passes. Anything else shows no route at all — no warning, nothing.
+function routeFits(c, a) {
+  if (!c || !c.route || !a || a.lat == null || a.lon == null) return false;
+  if (c.oLat == null || c.oLon == null || c.dLat == null || c.dLon == null) return false;
+  return routeIsPlausible(c, a);
+}
 // The route line plus its provenance, as ONE block. The attribution is not
-// decoration — it has to survive a screenshot, because a screenshot is how the
-// wrong claim left the building.
+// decoration — it has to survive a screenshot. Only ever called for a route that fits.
 function routeHtmlFor(c, a, prefix) {
-  var ok = routeIsPlausible(c, a);
   return '<span>' + (prefix || '') + avEsc(c.route) + '</span>' +
-         '<span class="route-src' + (ok ? '' : ' route-suspect') + '">' + routeSrcText(ok) + '</span>';
+         '<span class="route-src">' + routeSrcText(c) + '</span>';
 }
 // The provenance line's words — the 2D HTML above and the 3D box's plain-text copy (ttFields) say the same thing.
-function routeSrcText(ok) {
-  return ok ? 'scheduled route · adsbdb, not from this aircraft'
-            : '⚠ scheduled route disagrees with observed position · adsbdb';
+function routeSrcText(c) {
+  return 'scheduled route · ' + (c && c.src === 'adsb.lol' ? 'adsb.lol' : 'adsbdb') + ', not from this aircraft';
 }
 // To/from for the map tag and the card (AJ, 12 Nov 2026). dlText: the route the aircraft itself sent (datalink),
-// '' when none. info: an adsbdb cache entry or null. kind: 'dl' | 'sched' | 'suspect' | null (nothing to show).
+// '' when none. info: a route cache entry or null. kind: 'dl' | 'sched' | null (nothing to show).
 function routeView(dlText, info, a) {
   if (dlText) return { kind: 'dl', text: dlText, src: 'from the aircraft · datalink' };
-  if (!info || !info.route) return { kind: null, text: '', src: '' };
-  var ok = routeIsPlausible(info, a);
-  return { kind: ok ? 'sched' : 'suspect', text: info.route, src: routeSrcText(ok) };
+  if (!routeFits(info, a)) return { kind: null, text: '', src: '' };
+  return { kind: 'sched', text: info.route, src: routeSrcText(info) };
 }
 // A route cache entry still inside ROUTE_TTL_MS, else null (the rule lookupRoute uses).
 function routeCached(cs) {
@@ -4319,7 +4323,7 @@ function ccShowRoute(a, cs) {
   document.getElementById('ccRouteTxt').textContent = '✈ ' + rv.text;
   var src = document.getElementById('ccRouteSrc');
   src.textContent = rv.src;
-  src.className = 'route-src' + (rv.kind === 'suspect' ? ' route-suspect' : '');
+  src.className = 'route-src';
   el.style.display = '';
 }
 
@@ -4331,6 +4335,31 @@ function lookupRoute(callsign, callback) {
   }
   var hit = routeCache[cs];
   if (hit !== undefined && (Date.now() - hit.ts) < ROUTE_TTL_MS) { callback(hit); return; }
+  // adsb.lol first (AJ, 23 Nov 2026): given the aircraft's position (rounded to 0.1 degree by the node), it says
+  // whether the route fits. It is taken only if it says so AND it passes our own check; otherwise adsbdb.
+  var hasPos = la && la.lat != null && la.lon != null;
+  var fromLol = !hasPos ? Promise.resolve(null) :
+    fetch('/api/route/' + encodeURIComponent(cs) + '?lat=' + (Math.round(la.lat * 10) / 10) + '&lon=' + (Math.round(la.lon * 10) / 10))
+      .then(function (r) { return r.ok ? r.json() : null; })
+      .then(function (j) {
+        if (!j || j.plausible !== true || !Array.isArray(j.airports) || j.airports.length < 2) return null;
+        var aps = j.airports, o = aps[0], d = aps[aps.length - 1];
+        var code = function (p) { return (p && (p.iata || p.icao)) || null; };
+        if (aps.some(function (p) { return !code(p) || p.lat == null || p.lon == null; })) return null;
+        var e = { route: aps.map(code).join(' → '), reg: null, airline: null, ts: Date.now(), src: 'adsb.lol',
+                  oLat: o.lat, oLon: o.lon, dLat: d.lat, dLon: d.lon,
+                  oCC: o.cc || (window.TrafficFilter ? TrafficFilter.icaoCountry(o.icao) : null),
+                  dCC: d.cc || (window.TrafficFilter ? TrafficFilter.icaoCountry(d.icao) : null) };
+        return routeFits(e, lastAircraft[cs] || la) ? e : null;
+      })
+      .catch(function () { return null; });
+  fromLol.then(function (e) {
+    if (e) { routeCache[cs] = e; callback(e); return; }
+    lookupRouteAdsbdb(cs, callback);
+  });
+}
+
+function lookupRouteAdsbdb(cs, callback) {
   fetch('/api/adsbdb/' + cs)
     .then(function(r){ return r.json(); })
     .then(function(data) {
@@ -4354,7 +4383,7 @@ function lookupRoute(callsign, callback) {
       // Endpoint COORDINATES are the whole point of keeping this: without them
       // there is no way to ask whether the claimed route matches reality.
       routeCache[cs] = {
-        route: route, reg: reg, airline: airline, ts: Date.now(),
+        route: route, reg: reg, airline: airline, ts: Date.now(), src: 'adsbdb',
         oLat: o && o.latitude  != null ? o.latitude  : null,
         oLon: o && o.longitude != null ? o.longitude : null,
         dLat: d && d.latitude  != null ? d.latitude  : null,
@@ -4457,7 +4486,9 @@ function redrawAvOverlay() {
   var dark = document.documentElement.getAttribute('data-theme')==='dark';
   var showNav = document.getElementById('avNavaids').checked;
   var showAw  = document.getElementById('avAirways').checked;
-  avLayerGroup = L.featureGroup([]).addTo(map);
+  // OpenAIP's data is CC BY-NC 4.0: the group carries the credit, so Leaflet shows it in the map's
+  // attribution while the overlay is drawn and drops it when the group is removed. 23 Nov 2026.
+  avLayerGroup = L.featureGroup([], {attribution: '<a href="https://www.openaip.net/" target="_blank" rel="noopener">Aviation data © OpenAIP</a> (CC BY-NC 4.0)'}).addTo(map);
   if (typeof drawArrivalPaths === 'function') drawArrivalPaths();
 
   if (showNav && avData.navaids) {
@@ -5448,7 +5479,7 @@ var TT_CAT={'A1':'Light','A2':'Small','A3':'Large','A4':'High Vortex','A5':'Heav
 function ttFields(cs, info){
   var a=lastAircraft[cs]; if(!a) return null;
   var ph=getPhase(a,cs), vr=a.baro_rate||a.geom_rate||0, pc=ph.color==='#ffffff'?'#dc2626':ph.color;
-  var hasRoute=!!(info&&info.route), ok=routeIsPlausible(info,a);
+  var hasRoute=routeFits(info,a);   // a route that doesn't fit where the aircraft is, isn't shown (AJ, 23 Nov 2026)
   // The aircraft's own datalink (static/datalink-card.js) beats a schedule lookup for the route, and adds ETA/runway.
   var dlb=(typeof datalinkBrief==='function')?datalinkBrief(a.datalink, Date.now()/1000):null, dlr=!!(dlb&&dlb.route);
   return { cs:cs, flag:getFlag(cs), color:pc, phase:ph.label,
@@ -5459,8 +5490,8 @@ function ttFields(cs, info){
     typ: a.t?a.t:(a.category?TT_CAT[a.category]||a.category:'--'),
     sqk: a.squawk?a.squawk:'--',
     reg: (info&&info.reg)?info.reg:'--',
-    route: dlr?'✈ '+dlb.route:(hasRoute?'✈ '+info.route:''), rsrc: dlr?'from the aircraft · datalink':(hasRoute?routeSrcText(ok):''),
-    rsus: !dlr&&hasRoute&&!ok, dl: dlb?dlb.line:'' };
+    route: dlr?'✈ '+dlb.route:(hasRoute?'✈ '+info.route:''), rsrc: dlr?'from the aircraft · datalink':(hasRoute?routeSrcText(info):''),
+    rsus: false, dl: dlb?dlb.line:'' };
 }
 function showTooltip(cs,ll){
   if(ccVisible) return; // never show tooltip while cinematic card is open
@@ -5482,7 +5513,7 @@ function showTooltip(cs,ll){
   document.querySelector('.tt-inner').style.boxShadow='0 6px 24px '+pc+'44';
   document.getElementById('ttArrow').style.borderTopColor=pc;
   lookupRoute(cs, function(info){
-    if(info.route){document.getElementById('ttRoute').innerHTML=routeHtmlFor(info,a,'✈ ');document.getElementById('ttRoute').style.display='block';}
+    if(routeFits(info,lastAircraft[cs]||a)){document.getElementById('ttRoute').innerHTML=routeHtmlFor(info,a,'✈ ');document.getElementById('ttRoute').style.display='block';}
     if(info.reg){document.getElementById('ttReg').textContent=info.reg;}
   });
   var pt=map.latLngToContainerPoint(ll), mapR=document.getElementById('map').getBoundingClientRect();
@@ -6148,7 +6179,7 @@ function updateFlights(){
       // Dense scanning list: a marker only, no attribution line — the full
       // provenance lives on the tooltip and the card, where people read before
       // they screenshot. A silent row that is quietly wrong is the thing to avoid.
-      var routeHtml=cached&&cached.route?'<div class="flight-route'+(routeIsPlausible(cached,a)?'':' route-suspect')+'">'+avEsc(cached.route)+(routeIsPlausible(cached,a)?'':' ⚠')+'</div>':'';
+      var routeHtml=routeFits(cached,a)?'<div class="flight-route">'+avEsc(cached.route)+'</div>':'';   // only a route that fits (AJ, 23 Nov 2026)
       return '<div class="flight-item '+(sel?'selected ':'')+(tx?'transmitting':'')+'" style="border-left:3px solid '+col+';" onclick="sidebarSelect(\''+cs+'\')">' +
         '<div class="flight-cs" style="color:'+col+';">'+function(){var f=getFlag(cs);return f==='✈'?em+' '+cs:f+' '+em+' '+cs;}()+(sqInfo?'<span class="flight-sqk-badge" style="background:'+sqInfo.color+';">'+sqInfo.icon+' '+a.squawk+'</span>':'')+'</div>' +
         '<div class="flight-details">'+(a.alt_baro?Math.round(a.alt_baro)+'ft':'--')+' · '+(a.gs?Math.round(a.gs)+'kt':'--')+' · '+(a.track?Math.round(a.track)+'°':'--')+'</div>' +
@@ -7026,7 +7057,7 @@ function ccLiveRefresh(a, cs) {
   var btn = document.getElementById('ccLiveBtn');
   if (!btn) return;
   var info = routeCache[cs];
-  ccCam = pickLiveCam(a, info && info.ts ? info : null);
+  ccCam = pickLiveCam(a, info && info.ts && routeFits(info, a) ? info : null);   // a cam at a wrong route's airport would mislead too
   btn.style.display = ccCam ? '' : 'none';
   btn.textContent = '🔴 LIVE STREAM';
   if (ccCam) btn.title = 'Watch ' + (ccCam.label || ccCam.icao) + ' live' + (ccCam.channel_name ? ' — stream by ' + ccCam.channel_name : '');
@@ -8414,7 +8445,7 @@ function tfHome(){ var ap=(typeof nearestAirport!=='undefined')?nearestAirport:n
 function tfGroup(a){
   if(!window.TrafficFilter) return 'all';
   var cs=(a.flight||'').trim(), r=routeCache[cs], route=null;
-  if(r&&r.oCC&&r.dCC&&(typeof routeIsPlausible!=='function'||routeIsPlausible(r,a))) route={o:r.oCC,d:r.dCC};   // a route that doesn't fit the track is ignored
+  if(r&&r.oCC&&r.dCC&&routeFits(r,a)) route={o:r.oCC,d:r.dCC};   // a route that doesn't fit the track is ignored
   return TrafficFilter.classify(a,{home:tfHome(),cat:getCat(a.t,a.category),airlineIso:TrafficFilter.flagIso(getFlag(cs)),route:route}).group;
 }
 function tfPaint(c){

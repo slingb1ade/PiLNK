@@ -50,12 +50,20 @@ records, then replays the recording through any audio chain). It is the 48 kHz c
 
 ## Audio chain: Classic or Clean (engine 2.3.0)
 
-`demod` picks what `/sdr/audio` and `/sdr/audio_raw` carry. **Classic** (the default) is the
+`demod` picks what `/sdr/audio` carries (and `/sdr/audio_raw` too, only if `rawDemod` is
+`follow`; see below). **Classic** (the default) is the
 chain every node has always had: AM envelope, DC blocker, AGC, clip. **Clean** finds and
 tracks the carrier, uses the coherent detector while locked, and levels by the carrier
 instead of an AGC (no hiss wind-up between calls, no burst when a call starts). Both live in
 `dsp.hpp`, which the bench replay tool compiles too. Classic always runs, so switching never
 loses its state; a switch crossfades over 10 ms.
+
+Engine 2.3.1 adds a peak guard to Clean, just before its soft limiter: when a stronger station
+keys up over a weaker one (or a call is much stronger than the recent ones) the audio is turned
+down by exactly as much as it stands over the guard level, instead of being driven flat into the
+limiter. Ordinary calls never reach the guard and are bit-identical to 2.3.0. Classic is unchanged.
+The radio bench chose and confirmed Clean with this guard (`detector=auto,hpf=200,lpf=3000`,
+22-23 Nov 2026).
 
 ```
 curl -s -X POST http://127.0.0.1:5656/sdr/demod -d '{"demod":"clean"}'
@@ -69,6 +77,20 @@ curl -s -X POST http://127.0.0.1:5656/sdr/demod -d '{"options":"detector=auto,hp
 - `/sdr/status` shows `demod` and `cleanOptions`, and while Clean is chosen
   `"clean":{"locked":bool,"offsetHz":Hz|null}` (the carrier's offset from the VFO).
 - Fleet nodes stay on Classic. A node switches only by this setting.
+
+**What `/sdr/audio_raw` carries (engine 2.3.1).** `rawDemod` = `classic` (the default) keeps the
+raw tap on Classic whatever the listeners hear, because the STT's decoder was trained on Classic
+(their choice, 22 Nov 2026). `follow` makes it carry the same chain as `/sdr/audio`. A change
+crossfades over 10 ms like a demod change, and readers stay connected.
+
+```
+curl -s -X POST http://127.0.0.1:5656/sdr/demod -d '{"raw":"follow"}'
+curl -s -X POST http://127.0.0.1:5656/sdr/demod -d '{"raw":"classic"}'
+```
+
+Saved in the config as `rawDemod` (a bad stored value falls back to `classic` with a warning).
+`/sdr/status` shows `rawDemod`, and `rawTap.demod` names the chain the tap carries right now.
+On a node that has never chosen Clean nothing changes: both settings mean Classic.
 
 ## Squelch modes (engine 2.2.0)
 

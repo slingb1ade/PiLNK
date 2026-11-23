@@ -231,6 +231,16 @@ public:
     static constexpr int ACQ_EVERY = 2048;       // while there is no carrier estimate
     static constexpr int XFADE = 960;            // detector crossfade, samples
     static constexpr int MAX_HOLD_BLOCKS = 6000; // a stretch longer than 60 s never sets the hold
+    // Peak guard (engine 2.3.1). The level Clean works to follows the carrier it is tracking, and that takes
+    // ~100 ms to notice a change. When a stronger station keyed up over a weaker one, or a call was stronger
+    // than the recent ones, the new voice arrived at many times the reference and was driven flat into the
+    // limiter: the bench found 4.5-17% of real calls clipped that way (22 Nov 2026). The guard sits on the
+    // filtered audio, just before the soft limiter: a peak follower (instant attack, GUARD_RELEASE_S release)
+    // that turns the audio down by exactly as much as its peak stands over GUARD. Nothing an ordinary call
+    // produces reaches GUARD (100% modulation is 1.0), so ordinary calls are unchanged bit for bit; past it the
+    // output now tops out at softLimit(GUARD / 2) = 0.93 of full scale where it used to pin at 1.0.
+    static constexpr double GUARD = 2.0;
+    static constexpr double GUARD_RELEASE_S = 0.05;
 
     CleanDemod() { configure(CleanOptions(), 8000.0); }
 
@@ -243,6 +253,7 @@ public:
         bEnv = 1.0 - exp(-1.0 / (0.02 * FS));
         bNoise = 1.0 - exp(-1.0 / (1.0 * FS));
         bRef = 1.0 - exp(-1.0 / (0.01 * FS));
+        bGuard = 1.0 - exp(-1.0 / (GUARD_RELEASE_S * FS));
         for (int k = 0; k < NFFT; k++) hann[k] = 0.5f - 0.5f * (float)cos(2.0 * M_PI * k / (NFFT - 1));
         setBandwidth(bwHz);
         txL.reserve(MAX_HOLD_BLOCKS + 1);       // allocated once, never on the DSP thread later
@@ -261,7 +272,7 @@ public:
         ring.assign(NFFT, std::complex<float>(0, 0)); ringPos = 0; since = 0;
         hasEst = false; f = 0; phase = 0; c = 0; cprev = 0; havePrev = false;
         rhos = 0; lockDbV = -100; on = off = gone = 0; lockedF = false;
-        L = M = Md = Lenv = Lnoise = 0; lrefV = 0; lrefInit = false;
+        L = M = Md = Lenv = Lnoise = 0; lrefV = 0; lrefInit = false; pk = 0;
         nHold = 0; holdPos = 0;
         openState = false; txSamples = 0; txBlocks = 0; txLocked = 0; txL.clear();
         blkN = 0; blkP = 0; w = 0; seeded = false;
@@ -284,13 +295,14 @@ public:
         return m;
     }
     float lref() const { return (float)lrefV; }
+    float guardPeak() const { return (float)pk; }                      // above GUARD = the guard is turning the audio down
     size_t holdCandidates() const { return txL.size(); }             // tests: the open stretch's L samples
     size_t holdCandidatesCapacity() const { return txL.capacity(); }
 
 private:
     CleanOptions opt;
     Biquad hp1, hp2, lp1, lp2;
-    double alpha = 0, beta = 0, bEnv = 0, bNoise = 0, bRef = 0, cutoff = 4000, g = 1;
+    double alpha = 0, beta = 0, bEnv = 0, bNoise = 0, bRef = 0, bGuard = 0, cutoff = 4000, g = 1;
     std::array<float, NFFT> hann{};
     std::vector<std::complex<float>> ring, fftBuf;
     size_t ringPos = 0;
@@ -299,7 +311,7 @@ private:
     double f = 0, phase = 0, rhos = 0, lockDbV = -100;
     std::complex<double> c = 0, cprev = 0;
     int on = 0, off = 0, gone = 0;
-    double L = 0, M = 0, Md = 0, Lenv = 0, Lnoise = 0, lrefV = 0;
+    double L = 0, M = 0, Md = 0, Lenv = 0, Lnoise = 0, lrefV = 0, pk = 0;
     float hold[8] = {0};
     int nHold = 0, holdPos = 0;
     long long txSamples = 0;
@@ -399,6 +411,9 @@ private:
         if (w < wt) w = std::min(wt, w + 1.0 / XFADE); else if (w > wt) w = std::max(wt, w - 1.0 / XFADE);
         const double v = (1.0 - w) * vEnv + w * vSync;
         float y = lp2.step(lp1.step(hp2.step(hp1.step((float)v))));
+        const double ay = fabs((double)y);                              // peak guard: see GUARD
+        pk = ay > pk ? ay : pk + bGuard * (ay - pk);
+        if (pk > GUARD) y = (float)(y * (GUARD / pk));
         y = std::clamp(softLimit(0.5f * y), -1.0f, 1.0f);
         if (!std::isfinite(y)) { reset(); return 0.0f; }
         if (open) txSamples++;
