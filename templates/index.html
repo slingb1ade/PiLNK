@@ -1660,6 +1660,11 @@
               .sdr-sqldot{width:8px;height:8px;border-radius:50%;background:#3a3f4b;flex:0 0 auto;transition:background .1s;}
               .sdr-sqldot.open{background:#00ff88;box-shadow:0 0 5px #00ff88;}
               .sdr-pending{font-size:0.5rem;color:#f59e0b;letter-spacing:0.03em;}
+              .sa-recent-n{flex:1 0 100%;order:9;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:0.6rem;color:var(--text);cursor:pointer;}
+              .sa-recent-n.auto{color:var(--text-dim);font-style:italic;}
+              .sa-recent-e{background:none;border:none;color:var(--text-dim);cursor:pointer;font-size:0.65rem;line-height:1;padding:0 2px;flex:0 0 auto;}
+              .sa-recent-e:hover,.sa-recent-x:hover{color:var(--blue-mid);}
+              .sa-recent-in{flex:1 0 100%;order:9;box-sizing:border-box;min-width:0;font-family:inherit;font-size:0.6rem;padding:1px 4px;border:1px solid var(--blue-mid);border-radius:3px;background:var(--bg-card);color:var(--text);}
               /* Tune my radio (radio-autotune.md). The card's data-state picks which parts show. */
               .sdr-tune-btn{margin-top:10px;width:100%;padding:8px;border:1px solid var(--blue-mid);background:transparent;border-radius:6px;color:var(--blue-mid);font-family:'Orbitron',sans-serif;font-size:0.6rem;font-weight:700;letter-spacing:0.12em;cursor:pointer;}
               .sdr-tune-btn:disabled{opacity:.4;cursor:not-allowed;}
@@ -1801,6 +1806,14 @@
               <div class="panel-title" style="display:flex;justify-content:space-between;align-items:center;">Recent
                 <button id="saRecentClear" title="remove every recent frequency" style="display:none;background:none;border:none;color:var(--text-dim);font-family:'Share Tech Mono',monospace;font-size:0.5rem;cursor:pointer;padding:0;">Clear all</button>
               </div>
+              <!-- Names (MME1, thread 53, 23 Nov 2026). Typed names stay in this browser. The switch is OPT-IN: when on,
+                   the dashboard asks pilnk.io once a day for the frequencies of airports near the receiver (position
+                   rounded to 0.1 degree, through the node's own proxy) and names each row from the nearest one. -->
+              <div style="display:flex;align-items:center;gap:7px;margin:0 0 6px;">
+                <button class="sdr-tgl" id="saFreqAuto" role="switch" aria-checked="false" title="name Recent frequencies from the airports near your receiver (asks pilnk.io once a day)"><span class="knob"></span></button>
+                <span style="font-size:0.55rem;color:var(--text-dim);">Name from nearby airports</span>
+              </div>
+              <div id="saFreqAutoNote" style="display:none;font-size:0.52rem;color:var(--text-dim);margin:-2px 0 6px;line-height:1.4;"></div>
               <div id="saRecent" style="font-size:0.62rem;color:var(--text-dim);">No recent frequencies</div>
             </div>
 
@@ -2460,6 +2473,7 @@ function loadRxLocation(attempt) {
       if(typeof drawRxMarker === 'function') drawRxMarker();
       if(typeof drawRings === 'function' && typeof ringsOn !== 'undefined' && ringsOn) drawRings();
       if(typeof updateWxSource === 'function') updateWxSource();
+      if(typeof window.saFreqNamesLocated === 'function') window.saFreqNamesLocated();
       return;
     }
     // Endpoint answered but the node genuinely has no location on file.
@@ -10899,30 +10913,120 @@ setInterval(raPoll, 5000);
     renderRecent();
   }
   function saveRecent(){ try{ localStorage.setItem('pilnk-recent-freqs', JSON.stringify(recentFreqs)); }catch(e){} }
+  // ---- names for Recent frequencies (MME1, forum thread 53; AJ approved 23 Nov 2026) ----
+  // Typed names: this browser only, keyed by the MHz string Recent uses ("118.700"), kept when a frequency leaves
+  // Recent so the name comes back with it. Automatic names: OPT-IN switch, off by default. One request to pilnk.io
+  // through the node's own proxy with the receiver position rounded to 0.1 degree (about 11 km; pilnk.io already holds
+  // the node's exact location), answer kept for a day. A typed name always wins. Every name is drawn as text.
+  var FN_NAMES='pilnk-freq-names', FN_AUTO='pilnk-freq-auto', FN_NEAR='pilnk-freq-near', FN_MAX=32, FN_DAY=86400000, FN_TOL_KHZ=4;
+  function fnRead(k){ try{ return JSON.parse(localStorage.getItem(k)); }catch(e){ return null; } }
+  function fnClean(v, max){ return (typeof v==='string'?v:'').replace(/[\u0000-\u001f\u007f]/g,' ').replace(/\s+/g,' ').trim().slice(0, max||FN_MAX).trim(); }
+  var freqNames=(function(){ var o=fnRead(FN_NAMES), out={};
+    if(o && typeof o==='object' && !Array.isArray(o)) for(var k in o){ if(Object.prototype.hasOwnProperty.call(o,k)){ var v=fnClean(o[k]); if(v) out[k]=v; } }
+    return out; })();
+  var fnAutoOn=(function(){ try{ return localStorage.getItem(FN_AUTO)==='1'; }catch(e){ return false; } })();
+  var fnNear=null, fnState='', fnBusy=0, fnEditing=false, fnDirty=false;
+  // MHz -> the frequency it stands for, in kHz. 8.33 kHz channel NAMES (x.x05/x.x10/x.x15 in each 25 kHz block) are not
+  // the frequencies themselves: 121.805 is 121.800, 119.730 is 119.725. Anything else is taken as tuned.
+  function fnPhys(mhz){ var k=Math.round(parseFloat(mhz)*1000); if(!isFinite(k)) return NaN;
+    var r=((k%25)+25)%25, b=k-r; return r===5?b:r===10?b+25/3:r===15?b+50/3:k; }
+  function fnMatch(mhz){ var p=fnPhys(mhz), best=null, bk=null; if(!isFinite(p)||!fnNear) return null;
+    for(var i=0;i<fnNear.length;i++){ var e=fnNear[i]; if(!e||typeof e!=='object') continue;
+      var q=fnPhys(e.mhz), df=Math.abs(q-p); if(!isFinite(q)||df>FN_TOL_KHZ) continue;
+      var k=[Math.round(df), isFinite(+e.nm)?+e.nm:1e9];   // the closest channel first, then the nearest airport
+      if(!best||k[0]<bk[0]||(k[0]===bk[0]&&k[1]<bk[1])){ best=e; bk=k; } }
+    return best; }
+  function fnLabel(mhz){
+    if(freqNames[mhz]) return {text:freqNames[mhz], auto:false, title:'Your name for '+mhz+' MHz'};
+    if(!fnAutoOn) return null;
+    var m=fnMatch(mhz), name=m&&fnClean(m.name,48); if(!name) return null;
+    var nm=+m.nm, where=fnClean(m.airport,80), icao=fnClean(m.icao,8);
+    return {text:name, auto:true, title:name+(where?' — '+where:'')+(icao?' ('+icao+')':'')+(isFinite(nm)?', '+Math.round(nm)+' nm away':'')+'. From airport data near your receiver (OurAirports).'};
+  }
+  function fnSave(mhz, text){ var v=fnClean(text); if(v) freqNames[mhz]=v; else delete freqNames[mhz];
+    try{ localStorage.setItem(FN_NAMES, JSON.stringify(freqNames)); }catch(e){} }
+  function fnNote(){ var el=$('saFreqAutoNote'); if(!el) return;
+    var t=!fnAutoOn?'':fnState==='noloc'?'Waiting for your receiver location. Set it at pilnk.io, Profile, Node.'
+      :fnState==='loading'?'Looking up airports near your receiver…'
+      :fnState==='none'?'No airport frequencies on file near your receiver. Type your own names with ✎.'
+      :fnState==='error'?"Couldn't reach pilnk.io. Typed names still work.":'';
+    el.textContent=t; el.style.display=t?'':'none'; }
+  function fnSwitch(){ var b=$('saFreqAuto'); if(!b) return; b.classList.toggle('on',fnAutoOn); b.setAttribute('aria-checked',fnAutoOn?'true':'false'); }
+  function fnHere(){ if((typeof RX_UNSET!=='undefined'&&RX_UNSET)||typeof RX_LAT!=='number'||typeof RX_LON!=='number'||!isFinite(RX_LAT)||!isFinite(RX_LON)) return null;
+    return {lat:+RX_LAT.toFixed(1), lon:+RX_LON.toFixed(1)}; }
+  function fnLoad(){
+    if(!fnAutoOn){ fnNear=null; fnState=''; fnNote(); return; }
+    var at=fnHere(); if(!at){ fnState='noloc'; fnNote(); return; }
+    var c=fnRead(FN_NEAR);
+    if(c&&typeof c==='object'&&Array.isArray(c.list)&&c.lat===at.lat&&c.lon===at.lon&&typeof c.t==='number'&&Date.now()-c.t>=0&&Date.now()-c.t<FN_DAY){
+      fnNear=c.list; fnState=c.list.length?'ok':'none'; fnNote(); renderRecent(); return; }
+    var ticket=++fnBusy; fnState='loading'; fnNote();
+    fetch('/api/pilnkio/frequencies.php?lat='+at.lat+'&lon='+at.lon).then(function(r){ return r.json(); }).then(function(d){
+      if(ticket!==fnBusy||!fnAutoOn) return;                 // switched off (or asked again) while waiting: drop it
+      var list=(d&&typeof d==='object'&&Array.isArray(d.frequencies))?d.frequencies.slice(0,600):null;
+      if(!list){ fnState='error'; fnNote(); return; }        // [] or junk = pilnk.io could not answer; not kept, asked again next load
+      fnNear=list; fnState=list.length?'ok':'none';
+      try{ localStorage.setItem(FN_NEAR, JSON.stringify({t:Date.now(), lat:at.lat, lon:at.lon, list:list})); }catch(e){}
+      fnNote(); renderRecent();
+    }).catch(function(){ if(ticket===fnBusy&&fnAutoOn){ fnState='error'; fnNote(); } });
+  }
+  function fnSetAuto(on){ fnAutoOn=!!on; try{ localStorage.setItem(FN_AUTO, fnAutoOn?'1':'0'); }catch(e){}
+    fnSwitch(); if(fnAutoOn) fnLoad(); else { fnBusy++; fnNear=null; fnState=''; fnNote(); } renderRecent(); }
+  window.saFreqNamesLocated=function(){ if(fnAutoOn&&!fnNear) fnLoad(); };
+  function fnEdit(row, n, mhz){
+    if(fnEditing||!n||n.parentNode!==row) return;
+    var lab=fnLabel(mhz), inp=document.createElement('input'), done=false;
+    inp.type='text'; inp.className='sa-recent-in'; inp.maxLength=FN_MAX; inp.value=freqNames[mhz]||'';
+    inp.placeholder=(lab&&lab.auto)?lab.text:'Name this frequency'; inp.setAttribute('aria-label','Name for '+mhz+' MHz');
+    // Put the name back in place rather than redrawing the list: blur fires on mousedown, and a redraw then would
+    // swallow the click that caused it (another row's pencil, frequency or x). Redraw only if the list changed meanwhile.
+    function finish(save){ if(done) return; done=true; fnEditing=false; if(save) fnSave(mhz, inp.value);
+      if(fnDirty||!inp.parentNode){ fnDirty=false; renderRecent(); return; }
+      inp.parentNode.replaceChild(fnNameEl(mhz), inp); }
+    inp.onkeydown=function(k){ k.stopPropagation(); if(k.key==='Enter'){ k.preventDefault(); finish(true); } else if(k.key==='Escape'){ k.preventDefault(); finish(false); } };
+    inp.onkeyup=inp.onkeypress=function(k){ k.stopPropagation(); };
+    inp.onblur=function(){ finish(true); };
+    inp.onclick=function(e){ e.stopPropagation(); };
+    fnEditing=true; row.replaceChild(inp, n); inp.focus(); inp.select();
+  }
+  // The name line under a Recent frequency: text only; hidden when there is no name. Clicking it tunes, like the frequency.
+  function fnNameEl(mhz){
+    var lab=fnLabel(mhz), n=document.createElement('span');
+    n.className='sa-recent-n'+(lab&&lab.auto?' auto':'');
+    n.textContent=lab?lab.text:''; if(lab) n.title=lab.title; else n.style.display='none';
+    n.onclick=function(){ window.saSetFreq(Math.round(parseFloat(mhz)*1e6)); };
+    return n;
+  }
   function renderRecent(){
+    if(fnEditing){ fnDirty=true; return; }                   // never throw away a name being typed; redrawn when it is done
     var el=$('saRecent'); if(!el) return;
     var clr=$('saRecentClear'); if(clr) clr.style.display=recentFreqs.length?'':'none';
     if(!recentFreqs.length){ el.innerHTML='<div style="font-size:0.62rem;color:var(--text-dim);">No recent frequencies</div>'; return; }
-    // Built from DOM nodes, not an HTML string: the list comes from localStorage.
+    // Built from DOM nodes, not an HTML string: the list and its names come from localStorage and pilnk.io.
     el.innerHTML='';
     recentFreqs.forEach(function(r){
       var ago=Math.round((Date.now()-r.time)/60000);
+      var tune=function(){ window.saSetFreq(Math.round(parseFloat(r.freq)*1e6)); };
       var row=document.createElement('div');
       row.dataset.recent=r.freq;
-      row.style.cssText='display:flex;justify-content:space-between;align-items:center;gap:6px;padding:4px 0;border-bottom:1px solid var(--border);';
+      row.style.cssText='display:flex;flex-wrap:wrap;align-items:center;gap:2px 6px;padding:4px 0;border-bottom:1px solid var(--border);';
       var f=document.createElement('span'); f.className='sa-recent-f';
-      f.style.cssText='flex:1;font-size:0.65rem;color:var(--blue-mid);font-weight:700;cursor:pointer;';
+      f.style.cssText='flex:0 0 auto;font-size:0.65rem;color:var(--blue-mid);font-weight:700;cursor:pointer;';
       f.textContent=r.freq+' MHz';
-      f.onclick=function(){ window.saSetFreq(Math.round(parseFloat(r.freq)*1e6)); };
+      f.onclick=tune;
+      var n=fnNameEl(r.freq);
       var t=document.createElement('span');
-      t.style.cssText='font-size:0.5rem;color:var(--text-dim);';
+      t.style.cssText='flex:0 0 auto;margin-left:auto;font-size:0.5rem;color:var(--text-dim);';
       t.textContent=ago<1?'just now':ago+'m ago';
+      var e=document.createElement('button'); e.className='sa-recent-e'; e.title='Name '+r.freq+' MHz';
+      e.textContent='✎';
+      e.onclick=function(ev){ ev.stopPropagation(); fnEdit(row, row.querySelector('.sa-recent-n'), r.freq); };
       var x=document.createElement('button'); x.className='sa-recent-x'; x.title='remove '+r.freq+' MHz';
       x.style.cssText='background:none;border:none;color:var(--text-dim);cursor:pointer;font-size:0.75rem;line-height:1;padding:0 2px;';
       x.textContent='×';
-      x.onclick=function(e){ e.stopPropagation();
+      x.onclick=function(ev){ ev.stopPropagation();
         recentFreqs=recentFreqs.filter(function(q){ return q.freq!==r.freq; }); saveRecent(); renderRecent(); };
-      row.appendChild(f); row.appendChild(t); row.appendChild(x);
+      row.appendChild(f); row.appendChild(n); row.appendChild(t); row.appendChild(e); row.appendChild(x);
       el.appendChild(row);
     });
   }
@@ -11114,6 +11218,8 @@ setInterval(raPoll, 5000);
     }
     var ban=$('sdrAudioBanner'); if(ban) ban.addEventListener('click', ensureAudio);
     var rc=$('saRecentClear'); if(rc) rc.onclick=function(){ recentFreqs=[]; saveRecent(); renderRecent(); };
+    var fa=$('saFreqAuto'); if(fa) fa.onclick=function(){ fnSetAuto(!fnAutoOn); };
+    fnSwitch(); fnLoad();
     renderRecent();
     refreshControls();
     setInterval(function(){ if(!recording) return; var sr=st.audioSampleRate||48000; recInfo('REC '+fmtDur(recSamples/sr)+' · '+(recSamples*2/1048576).toFixed(1)+' MB'); }, 500);
