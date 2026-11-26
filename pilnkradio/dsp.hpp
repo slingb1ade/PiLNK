@@ -129,9 +129,9 @@ private:
 
 struct CleanOptions {
     enum class Detector { Envelope, Sync, Auto } detector = Detector::Auto;
-    float hpfHz = 250, lpfHz = 3400;
+    float hpfHz = 200, lpfHz = 3000;   // 2.3.2: the radio bench's pick (was 250 / 3400)
 
-    // "detector=auto,hpf=250,lpf=3400", every key optional. hpf 50-1000 Hz, lpf 1500-8000 Hz,
+    // "detector=auto,hpf=200,lpf=3000", every key optional (a missing key takes the default above). hpf 50-1000 Hz, lpf 1500-8000 Hz,
     // lpf >= hpf + 500. An unknown key or value refuses the whole string (o is left alone).
     static bool parse(const std::string& s, CleanOptions& o, std::string& err) {
         CleanOptions r;

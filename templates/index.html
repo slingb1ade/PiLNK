@@ -4,9 +4,9 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>PiLNK</title>
-<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
-<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+<link rel="stylesheet" href="/static/lib/leaflet-1.9.4/leaflet.css"/>
+<script src="/static/lib/leaflet-1.9.4/leaflet.js"></script>
+<script src="/static/lib/chart-4.4.0/chart.umd.js"></script>
 <!-- Type-specific aircraft silhouettes (RexKramer1/AircraftShapesSVG). Sets
      window.AIRCRAFT_SHAPES; makeIcon() uses it when a type shape exists and
      falls back to category silhouettes when it doesn't, so a missing/late file
@@ -1781,6 +1781,12 @@
                 <span id="sdrAfSqDot" class="sdr-sqldot" title="green = passing audio"></span>
                 <span style="font-size:0.5rem;color:var(--text-dim);">mutes static between transmissions</span>
               </div>
+              <div id="sdrDemodRow" style="display:none;align-items:center;gap:7px;margin-bottom:9px;">
+                <span id="sdrDemodLabel" style="font-size:0.6rem;color:var(--text-dim);width:64px;flex:0 0 auto;">Audio</span>
+                <button class="sdr-tgl" id="sdrDemod" role="switch" aria-checked="false" title="on = Clean (tracks the carrier, no hiss build-up between calls); off = Classic, the original chain"><span class="knob"></span></button>
+                <span class="sdr-tglst" id="sdrDemodState">CLASSIC</span>
+                <span id="sdrDemodHint" style="font-size:0.5rem;color:var(--text-dim);">Clean: clearer voices, less hiss</span>
+              </div>
               <div style="display:flex;align-items:center;gap:7px;flex-wrap:wrap;">
                 <span style="font-size:0.6rem;color:var(--text-dim);width:64px;flex:0 0 auto;">RF Gain</span>
                 <input type="range" min="0" max="1" value="0" id="sdrRfGain" disabled style="flex:1;min-width:80px;"/>
@@ -2661,13 +2667,13 @@ function renderRankPanel(rank) {
     sub = 'Maximum rank';
   } else if (rank.gate_blocked) {
     pct = 100;
-    sub = 'XP ready — ' + rank.gate_need + ' more capture' + (rank.gate_need === 1 ? '' : 's') + ' to make ' + rank.next_name;
+    sub = 'XP ready — ' + watchEsc(rank.gate_need) + ' more capture' + (rank.gate_need === 1 ? '' : 's') + ' to make ' + watchEsc(rank.next_name);   // L2: pilnk.io text
   } else {
     // progress within the current band: this rank's threshold → the next's
     // (both come from the server so the ladder lives in one place)
     var lo = rank.cur_xp || 0, hi = rank.next_xp || lo;
     pct = hi > lo ? Math.max(0, Math.min(100, Math.round((xp - lo) / (hi - lo) * 100))) : 100;
-    sub = xp.toLocaleString() + ' XP · ' + (rank.xp_remaining || 0).toLocaleString() + ' to ' + rank.next_name;
+    sub = xp.toLocaleString() + ' XP · ' + (rank.xp_remaining || 0).toLocaleString() + ' to ' + watchEsc(rank.next_name);
   }
   host.innerHTML =
     '<div style="display:flex;align-items:center;gap:14px;background:#0d1117;border:1px solid #1d3f62;border-radius:14px;padding:12px 14px;margin-bottom:14px;">'
@@ -2721,8 +2727,8 @@ function toastAwards(awards) {
           pt.style.cssText = 'display:flex;align-items:center;gap:12px;background:#0d1117;border:1px solid #d4af37;border-radius:14px;padding:10px 16px 10px 10px;cursor:pointer;box-shadow:0 6px 24px rgba(0,0,0,0.55);max-width:320px;';
           pt.innerHTML = '<div style="flex:0 0 auto;">' + PilnkRanks.insignia(a.rank_index || 0, 56) + '</div>'
             + '<div><div style="font-family:\'Share Tech Mono\',monospace;font-size:0.55rem;letter-spacing:0.18em;color:#d4af37;">PROMOTED</div>'
-            + '<div style="font-family:\'Orbitron\',sans-serif;font-size:0.78rem;font-weight:700;color:#e6e8ea;">' + (a.name || 'New rank') + '</div>'
-            + (a.next_name ? '<div style="font-family:\'Share Tech Mono\',monospace;font-size:0.55rem;color:#8a929c;">' + (a.xp_remaining || 0).toLocaleString() + ' XP to ' + a.next_name + '</div>' : '')
+            + '<div style="font-family:\'Orbitron\',sans-serif;font-size:0.78rem;font-weight:700;color:#e6e8ea;">' + watchEsc(a.name || 'New rank') + '</div>'
+            + (a.next_name ? '<div style="font-family:\'Share Tech Mono\',monospace;font-size:0.55rem;color:#8a929c;">' + watchEsc((a.xp_remaining || 0).toLocaleString()) + ' XP to ' + watchEsc(a.next_name) + '</div>' : '')
             + '</div>';
           pt.addEventListener('click', function () { navPick('badges', 'Badges'); pt.remove(); });
           host.appendChild(pt);
@@ -2734,8 +2740,8 @@ function toastAwards(awards) {
         t.style.cssText = 'display:flex;align-items:center;gap:12px;background:#0d1117;border:1px solid ' + (mil ? '#6b7245' : '#1d4232') + ';border-radius:14px;padding:10px 16px 10px 10px;cursor:pointer;box-shadow:0 6px 24px rgba(0,0,0,0.55);max-width:320px;';
         t.innerHTML = PilnkBadges.scopeSVG({ glyph: (a.icon in PilnkBadges.GLYPHS) ? a.icon : 'crowdfav', tier: a.tier || (mil ? 3 : 2), military: mil, sweep: true, size: 56 })
           + '<div><div style="font-family:\'Share Tech Mono\',monospace;font-size:0.55rem;letter-spacing:0.18em;color:' + (mil ? '#f0a832' : '#39e58c') + ';">' + (mil ? 'HONOUR AWARDED' : 'BADGE EARNED') + '</div>'
-          + '<div style="font-family:\'Orbitron\',sans-serif;font-size:0.78rem;font-weight:700;color:#e6e8ea;">' + (a.name || a.slug) + '</div>'
-          + (a.serial ? '<div style="font-family:\'Orbitron\',sans-serif;font-size:0.6rem;font-weight:900;letter-spacing:0.14em;color:#f0a832;">#' + ('0000' + a.serial).slice(-4) + '</div>' : '')
+          + '<div style="font-family:\'Orbitron\',sans-serif;font-size:0.78rem;font-weight:700;color:#e6e8ea;">' + watchEsc(a.name || a.slug) + '</div>'
+          + (a.serial ? '<div style="font-family:\'Orbitron\',sans-serif;font-size:0.6rem;font-weight:900;letter-spacing:0.14em;color:#f0a832;">#' + watchEsc(('0000' + a.serial).slice(-4)) + '</div>' : '')
           + '</div>';
         t.addEventListener('click', function () { navPick('badges', 'Badges'); t.remove(); });
         host.appendChild(t);
@@ -3096,7 +3102,7 @@ function renderHistoryList() {
       var bits = [];
       if (a.t) bits.push(a.t);
       if (a.r) bits.push(a.r);
-      typeReg = '<div style="font-size:0.5rem;color:var(--text-dim);margin-top:2px;">' + bits.join(' · ') + '</div>';
+      typeReg = '<div style="font-size:0.5rem;color:var(--text-dim);margin-top:2px;">' + bits.map(watchEsc).join(' · ') + '</div>';   // L2: tar1090-db text
     }
     return '<div style="padding:6px 0;border-bottom:1px solid var(--border);font-size:0.65rem;">' +
       '<div style="display:flex;align-items:center;gap:8px;">' +
@@ -4823,9 +4829,9 @@ function searchAirports(){
       var iata=ap.iata_code?'('+ap.iata_code+')':'';
       var div=document.createElement('div');div.className='airport-item';
       div.innerHTML='<span class="airport-dist">'+Math.round(distKm)+'km</span>'+
-        '<div class="airport-icao">'+ap.ident+' '+iata+'</div>'+
-        '<div class="airport-name">'+ap.name+'</div>'+
-        '<div class="airport-city">'+(ap.municipality||'')+', '+(ap.iso_country||'')+'</div>';
+        '<div class="airport-icao">'+watchEsc(ap.ident)+' '+watchEsc(iata)+'</div>'+
+        '<div class="airport-name">'+watchEsc(ap.name)+'</div>'+
+        '<div class="airport-city">'+watchEsc(ap.municipality||'')+', '+watchEsc(ap.iso_country||'')+'</div>';   // L2: OurAirports text, never markup
       div.onclick=function(){selectAirport(ap,div);};
       list.appendChild(div);
     });
@@ -4866,7 +4872,7 @@ function showFrequencies(ap){
     document.getElementById('freqList').innerHTML=sortedTypes.map(function(type){
       return grouped[type].map(function(f){
         var mhz=parseFloat(f.frequency_mhz);
-        return '<button class="atc-freq-btn '+(tunedFreq===mhz?'tuned':'')+'" onclick="tuneToFreq('+mhz+',this)"><span>'+(f.description||type)+'</span><span class="atc-freq-mhz">'+mhz.toFixed(3)+'</span></button>';
+        return '<button class="atc-freq-btn '+(tunedFreq===mhz?'tuned':'')+'" onclick="tuneToFreq('+mhz+',this)"><span>'+watchEsc(f.description||type)+'</span><span class="atc-freq-mhz">'+mhz.toFixed(3)+'</span></button>';
       }).join('');
     }).join('');
   }
@@ -5579,7 +5585,7 @@ function updateMarker(a){
   function fillPicker(){
     var sel=document.getElementById('apInsetSel'); if(!sel) return;
     buildList();
-    sel.innerHTML=apList.map(function(o){return '<option value="'+o.icao+'">'+o.icao+' &mdash; '+o.name+' ('+Math.round(o.d)+' nm)</option>';}).join('');
+    sel.innerHTML=apList.map(function(o){return '<option value="'+watchEsc(o.icao)+'">'+watchEsc(o.icao)+' &mdash; '+watchEsc(o.name)+' ('+Math.round(o.d)+' nm)</option>';}).join('');   // L2: OurAirports text, never markup
     if(!userPicked) insetAirport=apList[0];
     else if(insetAirport && !apList.some(function(o){return o.icao===insetAirport.icao;})) insetAirport=apList[0];
     if(insetAirport) sel.value=insetAirport.icao;
@@ -5840,7 +5846,7 @@ function updateMarker(a){
 
   function fillPicker(){
     var sel=document.getElementById('gsSel'); if(!sel) return;
-    sel.innerHTML=gsAirports.map(function(a){ return '<option value="'+a.icao+'">'+a.icao+' — '+a.name+' ('+a.dist_nm+' nm)</option>'; }).join('');
+    sel.innerHTML=gsAirports.map(function(a){ return '<option value="'+watchEsc(a.icao)+'">'+watchEsc(a.icao)+' — '+watchEsc(a.name)+' ('+watchEsc(a.dist_nm)+' nm)</option>'; }).join('');   // L2: pilnk.io text, never markup
     if(!userPicked && gsAirports.length) selIcao=gsAirports[0].icao;
     if(selIcao) sel.value=selIcao;
   }
@@ -6102,6 +6108,7 @@ function nocsKey(a){
   var keep=csForHex[h];
   if(keep && lastAircraft[keep] && !lastAircraft[keep]._csFromReg){ a.flight=keep; return a; }
   var reg=a.r?String(a.r).trim():'';
+  if(!/^[A-Za-z0-9][A-Za-z0-9.\/-]{0,11}$/.test(reg)) reg='';   // L2: the reg (tar1090-db text) becomes the callsign key, which reaches markup and onclick strings
   if(!reg || !h) return null;
   a.flight=reg; a._csFromReg=true; csForHex[h]=reg;
   return a;
@@ -6184,7 +6191,7 @@ function updateFlights(){
         '<div class="flight-cs" style="color:'+col+';">'+function(){var f=getFlag(cs);return f==='✈'?em+' '+cs:f+' '+em+' '+cs;}()+(sqInfo?'<span class="flight-sqk-badge" style="background:'+sqInfo.color+';">'+sqInfo.icon+' '+a.squawk+'</span>':'')+'</div>' +
         '<div class="flight-details">'+(a.alt_baro?Math.round(a.alt_baro)+'ft':'--')+' · '+(a.gs?Math.round(a.gs)+'kt':'--')+' · '+(a.track?Math.round(a.track)+'°':'--')+'</div>' +
         routeHtml+
-        '<div style="font-size:0.6rem;color:var(--text-dim);">'+(a.t?a.t+' · ':'')+ph.label+'</div>' +
+        '<div style="font-size:0.6rem;color:var(--text-dim);">'+(a.t?watchEsc(a.t)+' · ':'')+ph.label+'</div>' +   // L2: t is tar1090-db text
         '</div>';
     }).join('');
   }).catch(function(){});
@@ -6812,7 +6819,7 @@ function openCinematicCard(cs, auto) {
   else meta.push(getCatDisplay(cat));
   if (a.squawk) meta.push('SQK ' + a.squawk);
   document.getElementById('ccMeta').innerHTML = meta.map(function(m){
-    return '<span class="cc-tag">'+m+'</span>';
+    return '<span class="cc-tag">'+watchEsc(m)+'</span>';   // L2: type and reg are tar1090-db text
   }).join('');
 
   // Show/hide Watch Approach button based on phase
@@ -7483,7 +7490,7 @@ function updateLabel(a) {
   }
   var icon = L.divIcon({
     className: '',
-    html: '<div class="ac-label">' + text + (dlr ? '<div class="ac-label-dl">' + dlr + '</div>' : '')
+    html: '<div class="ac-label">' + avEsc(text) + (dlr ? '<div class="ac-label-dl">' + dlr + '</div>' : '')
         + (sched ? '<div class="ac-label-sched">' + sched + '</div>' : '') + '</div>',
     iconSize: null,
     iconAnchor: [-4, (dlr || sched) ? 50 : 38] // centered above aircraft icon (two lines sit a little higher)
@@ -7817,10 +7824,10 @@ function renderMETAR(m) {
   var cl = wxClouds(m);
   var ceilStr = (cl.ceiling !== null) ? cl.ceiling.toLocaleString() + ' ft' : 'None';
   var wx = decodeWx(m.wxString);
-  var fc = (m.fltCat || '').toUpperCase();
+  var fc = String(m.fltCat || '').toUpperCase().replace(/[^A-Z]/g, '');   // L2: AWC text goes into a class name and the badge
   var fcBadge = fc ? '<span class="wx-flight-rule wx-' + fc + '">' + fc + '</span>' : '';
 
-  function row(l, v) { return '<div class="metar-row"><span class="metar-label">' + l + '</span><span class="metar-val">' + v + '</span></div>'; }
+  function row(l, v) { return '<div class="metar-row"><span class="metar-label">' + l + '</span><span class="metar-val">' + watchEsc(v) + '</span></div>'; }   // L2: every value is AWC text
 
   el.innerHTML =
     (fcBadge ? '<div style="margin-bottom:6px;">' + fcBadge + '</div>' : '') +
@@ -7831,7 +7838,7 @@ function renderMETAR(m) {
     row('Ceiling', ceilStr) +
     row('Temp / Dew', temp + ' / ' + dew) +
     row('QNH', qnh) +
-    (m.rawOb ? '<div class="metar-conditions" style="margin-top:8px;white-space:normal;word-break:break-word;line-height:1.35;">' + m.rawOb + '</div>' : '');
+    (m.rawOb ? '<div class="metar-conditions" style="margin-top:8px;white-space:normal;word-break:break-word;line-height:1.35;">' + watchEsc(m.rawOb) + '</div>' : '');
 
   var timeEl = document.getElementById('metarTime');
   if (timeEl && m.reportTime) {
@@ -8041,7 +8048,7 @@ function updateAdvTypeChart() {
   if (list && top5.length > 0) {
     list.innerHTML = top5.map(function(t, i) {
       var pct = total > 0 ? Math.round(t.count / total * 100) : 0;
-      return '<div class="stats-type-row"><div class="stats-type-dot" style="background:' + colors[i] + ';"></div><div class="stats-type-name">' + t.type + '</div><div class="stats-type-count">' + t.count + '</div><div class="stats-type-pct">' + pct + '%</div></div>';
+      return '<div class="stats-type-row"><div class="stats-type-dot" style="background:' + colors[i] + ';"></div><div class="stats-type-name">' + watchEsc(t.type) + '</div><div class="stats-type-count">' + t.count + '</div><div class="stats-type-pct">' + pct + '%</div></div>';
     }).join('');
   }
 }
@@ -9968,20 +9975,21 @@ var wxPanel = (function() {
     var ceilStr = (cl.ceiling !== null) ? cl.ceiling.toLocaleString() + ' ft' : 'None';
     var wx = decodeWx(m.wxString);
     var visNum = parseFloat(m.visib); if (isNaN(visNum)) visNum = 10;
-    var fr = m.fltCat ? m.fltCat.toUpperCase() : flightRule(visNum, cl.ceiling == null ? 9999 : cl.ceiling);
+    var fr = m.fltCat ? String(m.fltCat).toUpperCase().replace(/[^A-Z]/g, '') : flightRule(visNum, cl.ceiling == null ? 9999 : cl.ceiling);   // L2: class name
 
-    var html = '<div class="wx-station">' + (m.name || station) + '</div>';
-    html += '<div class="wx-time">' + (m.reportTime || m.observation_time || '') + '</div>';
+    var E = watchEsc;   // L2: everything below is AWC text, never markup
+    var html = '<div class="wx-station">' + E(m.name || station) + '</div>';
+    html += '<div class="wx-time">' + E(m.reportTime || m.observation_time || '') + '</div>';
     html += '<span class="wx-flight-rule wx-' + fr + '">' + fr + '</span>';
     html += '<div class="wx-section-title">METAR</div>';
-    html += '<div class="wx-raw">' + raw + '</div>';
-    html += '<div class="wx-row"><span class="wx-lbl">Wind</span><span class="wx-val">' + wind + '</span></div>';
-    html += '<div class="wx-row"><span class="wx-lbl">Visibility</span><span class="wx-val">' + vis + '</span></div>';
-    html += '<div class="wx-row"><span class="wx-lbl">Weather</span><span class="wx-val">' + wx + '</span></div>';
-    if (clouds) html += '<div class="wx-row"><span class="wx-lbl">Clouds</span><span class="wx-val">' + clouds + '</span></div>';
-    html += '<div class="wx-row"><span class="wx-lbl">Ceiling</span><span class="wx-val">' + ceilStr + '</span></div>';
-    html += '<div class="wx-row"><span class="wx-lbl">Temp / Dew</span><span class="wx-val">' + temp + ' / ' + dewp + '</span></div>';
-    html += '<div class="wx-row"><span class="wx-lbl">QNH</span><span class="wx-val">' + alt + '</span></div>';
+    html += '<div class="wx-raw">' + E(raw) + '</div>';
+    html += '<div class="wx-row"><span class="wx-lbl">Wind</span><span class="wx-val">' + E(wind) + '</span></div>';
+    html += '<div class="wx-row"><span class="wx-lbl">Visibility</span><span class="wx-val">' + E(vis) + '</span></div>';
+    html += '<div class="wx-row"><span class="wx-lbl">Weather</span><span class="wx-val">' + E(wx) + '</span></div>';
+    if (clouds) html += '<div class="wx-row"><span class="wx-lbl">Clouds</span><span class="wx-val">' + E(clouds) + '</span></div>';
+    html += '<div class="wx-row"><span class="wx-lbl">Ceiling</span><span class="wx-val">' + E(ceilStr) + '</span></div>';
+    html += '<div class="wx-row"><span class="wx-lbl">Temp / Dew</span><span class="wx-val">' + E(temp) + ' / ' + E(dewp) + '</span></div>';
+    html += '<div class="wx-row"><span class="wx-lbl">QNH</span><span class="wx-val">' + E(alt) + '</span></div>';
 
     content.innerHTML = html;
   }
@@ -9996,7 +10004,7 @@ var wxPanel = (function() {
     if (/^\d{4}\/\d{2}\/\d{2}/.test(lines[0])) lines.shift();
     var taf = lines.join('\n').replace(/^TAF\s+TAF\b/, 'TAF').trim();
     var html = '<div class="wx-section-title">TAF</div>';
-    html += '<div class="wx-raw">' + taf.replace(/\n\s*/g, '<br>') + '</div>';
+    html += '<div class="wx-raw">' + watchEsc(taf).replace(/\n\s*/g, '<br>') + '</div>';   // L2: escape first, then keep the line breaks
     content.innerHTML += html;
   }
 
@@ -10561,7 +10569,8 @@ setInterval(raPoll, 5000);
   var sqOn=false, sqLevel=-65, sqAuto=false;
   var gateNode=null, afsqOn=(localStorage.getItem('pilnk-afsq')==='1'), afsqFloor=null, afsqSmooth=null, afsqSlow=null, afsqHold=0, afsqLast=1;
   var rfSteps=null, rfIndex=0, rfAgc=false;
-  var caps={squelch:false, rfgain:false, sqauto:false};
+  var caps={squelch:false, rfgain:false, sqauto:false, demod:false};
+  var demodClean=false, demodHoldUntil=0;   // engine 2.3.0+: Clean / Classic; a click holds the shown value for a few polls
   var audioOpenUntil=0, sqLastOpen=null;
   var st={centerHz:0,vfoHz:118700000,mode:'AM',bandwidthHz:0,playing:false,audioSampleRate:48000};
   var recentFreqs = JSON.parse(localStorage.getItem('pilnk-recent-freqs') || '[]');
@@ -10892,6 +10901,12 @@ setInterval(raPoll, 5000);
       caps.sqauto=true;
       if(typeof st.squelchAuto==='boolean') sqAuto=st.squelchAuto;
     }
+    // engine 2.3.2+ (demodSet in status). 2.3.0/2.3.1 also report demod, but a pick saved there has no demodSet and the
+    // 2.3.2 one-time switch would move it to Clean, e.g. in the minutes after an update while the engine rebuilds.
+    if((st.demod==='clean' || st.demod==='classic') && ('demodSet' in st)){
+      caps.demod=true;
+      if(Date.now()>=demodHoldUntil) demodClean=(st.demod==='clean');   // follows the engine, except just after a click
+    }
     if(!caps.rfgain && Array.isArray(st.rfGainSteps) && st.rfGainSteps.length){
       caps.rfgain=true; rfSteps=st.rfGainSteps;
       if(typeof st.rfGainIndex==='number') rfIndex=st.rfGainIndex;
@@ -10920,6 +10935,10 @@ setInterval(raPoll, 5000);
         : 'floor measuring\u2026';
     }
     if(san) san.style.display=(caps.sqauto && sqAuto)?'':'none';
+    var dr=$('sdrDemodRow'), db=$('sdrDemod'), dsx=$('sdrDemodState');
+    if(dr) dr.style.display=caps.demod?'flex':'none';
+    if(db){ db.classList.toggle('on',demodClean); db.setAttribute('aria-checked',demodClean); }
+    if(dsx) dsx.textContent=demodClean?'CLEAN':'CLASSIC';
     var rp=$('sdrRfPending'); if(rp) rp.style.display=caps.rfgain?'none':'inline';
     var rg=$('sdrRfGain'), ra=$('sdrRfAgc');
     if(rg){ rg.disabled=!caps.rfgain||rfAgc; }
@@ -11232,6 +11251,7 @@ setInterval(raPoll, 5000);
     var af=$('sdrAfGain'); if(af) af.oninput=function(e){ afGainDb=+e.target.value; var v=$('sdrAfGainVal'); if(v)v.textContent=(afGainDb>0?'+':'')+afGainDb+' dB'; applyAfGain(); };
     var sb=$('sdrSqBtn'); if(sb) sb.onclick=function(){ if(!caps.squelch) return; sqOn=!sqOn; refreshControls(); post('/sdr/squelch',{enabled:sqOn,level:sqLevel}); };
     var sab=$('sdrSqAuto'); if(sab) sab.onclick=function(){ if(!caps.sqauto) return; sqAuto=!sqAuto; refreshControls(); post('/sdr/squelch',{auto:sqAuto}); };
+    var dmb=$('sdrDemod'); if(dmb) dmb.onclick=function(){ if(!caps.demod) return; demodClean=!demodClean; demodHoldUntil=Date.now()+5000; refreshControls(); post('/sdr/demod',{demod:demodClean?'clean':'classic'}); };
     var sl=$('sdrSqLevel'); if(sl){ sl.oninput=function(e){ sqLevel=+e.target.value; var v=$('sdrSqLevelVal'); if(v)v.textContent=Math.round(sqLevel)+' dBFS'; }; sl.onchange=function(){ if(caps.squelch) post('/sdr/squelch',{enabled:sqOn,level:sqLevel}); }; }
     var rg=$('sdrRfGain'); if(rg){ rg.oninput=function(e){ rfIndex=+e.target.value; if(rfSteps&&rfSteps[rfIndex]!=null){ var v=$('sdrRfGainVal'); if(v)v.textContent=rfSteps[rfIndex].toFixed(1)+' dB'; } }; rg.onchange=function(){ if(caps.rfgain) post('/sdr/gain',{index:rfIndex}); }; }
     var ra=$('sdrRfAgc'); if(ra) ra.onclick=function(){ if(!caps.rfgain) return; rfAgc=!rfAgc; refreshControls(); post('/sdr/agc',{on:rfAgc}); };

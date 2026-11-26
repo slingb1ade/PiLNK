@@ -61,7 +61,7 @@
 
 using nlohmann::json;
 
-#define PILNKRADIO_VERSION "2.3.1"
+#define PILNKRADIO_VERSION "2.3.2"
 #define PILNK_FFT_SIZE     1024
 #define PILNK_FFT_RATE     25.0
 
@@ -193,8 +193,10 @@ struct Config {
     double      squelchLevel   = -50.0;
     bool        squelchAuto    = false;                 // v2.2.0: opt-in automatic squelch
     double      squelchMarginDb = SQ_MARGIN_DEF;
-    std::string demod    = "classic";                   // v2.3.0: "classic" | "clean"
-    std::string cleanOptions = "detector=auto,hpf=250,lpf=3400";   // v2.3.0: canonical CleanOptions
+    std::string demod    = "clean";                     // v2.3.0: "classic" | "clean"; v2.3.2: Clean by default
+    bool        demodSet = false;                       // v2.3.2: the demod in the file is a real choice
+    bool        demodMigrated = false;                  // v2.3.2: load() moved an old default; main() saves once
+    std::string cleanOptions = "detector=auto,hpf=200,lpf=3000";   // v2.3.0: canonical CleanOptions; v2.3.2: the bench pick
     std::string rawDemod = "classic";                   // v2.3.1: /sdr/audio_raw carries "classic" | "follow" (= demod)
     bool        playing  = false;      // consent: off by default, persisted
     int         port     = 5656;
@@ -225,9 +227,21 @@ struct Config {
         pick(j, "playing", playing); pick(j, "port", port); pick(j, "token", token);
         pick(j, "allowedOrigins", allowedOrigins);
         pick(j, "demod", demod); pick(j, "cleanOptions", cleanOptions); pick(j, "rawDemod", rawDemod);
+        pick(j, "demodSet", demodSet);
         const Config d;   // the defaults
         if (demod != "classic" && demod != "clean") {
-            logW("config: demod '%s' is not classic or clean — using classic", demod.c_str()); demod = d.demod; }
+            logW("config: demod '%s' is not classic or clean — using %s", demod.c_str(), d.demod.c_str()); demod = d.demod; }
+        // v2.3.2: a file with no demodSet key was written by an engine before 2.3.2, whose "classic" was
+        // the built-in default (the dashboard offered no choice). Move it to Clean once and mark the
+        // file, so it never moves again; an owner's later pick (POST /sdr/demod) is marked too and sticks.
+        if (!j.contains("demodSet")) {
+            if (demod == "classic") {
+                logI("config: demod was the old default (classic) — now clean (the new default)");
+                demod = "clean";
+            }
+            demodSet = true;
+            demodMigrated = true;
+        }
         if (rawDemod != "classic" && rawDemod != "follow") {
             logW("config: rawDemod '%s' is not classic or follow — using classic", rawDemod.c_str()); rawDemod = d.rawDemod; }
         {
@@ -235,6 +249,12 @@ struct Config {
             if (pdsp::CleanOptions::parse(cleanOptions, o, err)) cleanOptions = o.str();
             else { logW("config: cleanOptions '%s' refused (%s) — using %s", cleanOptions.c_str(), err.c_str(),
                         d.cleanOptions.c_str()); cleanOptions = d.cleanOptions; }
+        }
+        // v2.3.2: the old built-in Clean filters move with the old demod default, once (same marker).
+        // Anything else an owner set is kept.
+        if (demodMigrated && cleanOptions == "detector=auto,hpf=250,lpf=3400") {
+            logI("config: cleanOptions were the old default — now %s (the new default)", d.cleanOptions.c_str());
+            cleanOptions = d.cleanOptions;
         }
         if (!(std::isfinite(vfoHz) && vfoHz >= VFO_MIN_HZ && vfoHz <= VFO_MAX_HZ)) {
             logW("config: vfoHz %g out of range — using %.0f", vfoHz, d.vfoHz); vfoHz = d.vfoHz; }
@@ -274,6 +294,7 @@ struct Config {
         j["playing"] = playing; j["port"] = port;
         j["allowedOrigins"] = allowedOrigins; j["token"] = token;
         j["demod"] = demod; j["cleanOptions"] = cleanOptions; j["rawDemod"] = rawDemod;
+        j["demodSet"] = demodSet;
         const std::string text = j.dump(4) + "\n", tmp = path + ".tmp";
         int fd = ::open(tmp.c_str(), O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0644);
         if (fd < 0) { logE("config: save failed, cannot open %s: %s", tmp.c_str(), strerror(errno)); return false; }
@@ -1349,6 +1370,7 @@ public:
             initDsp();
             audioAcc.clear(); rawAcc.clear(); rawEdges.clear();   // a pass starts empty (the first one is anyway)
             if (useClean) { cleanActive = true; clean.configure(cleanOpts = pdsp::CleanOptions(), cleanBw); mixPos = MIX_LEN; cleanFadePos = MIX_LEN; }
+            else { cleanActive = false; mixPos = 0; }   // v2.3.2: initDsp() starts in the default (Clean); this pass is Classic
             testCapture = &out;
             testIq = iqDump;
             for (size_t off = 0; off < N * 2; off += 65536)
@@ -1456,6 +1478,7 @@ private:
         bool  squelchOpen = true;
         std::string demod = "classic", cleanOptions;   // v2.3.0
         std::string rawDemod = "classic";               // v2.3.1
+        bool demodSet = false;                          // v2.3.2
         std::vector<float> rfGainSteps;  // empty until a device is open (M2) —
                                          // deliberately keeps the "no device"
                                          // tell the tab/watchdog key on
@@ -1575,6 +1598,7 @@ private:
                 case Command::DEMOD:
                     if (cfg.demod != c.sval) logI("control: demod -> %s", c.sval.c_str());
                     cfg.demod = c.sval;
+                    cfg.demodSet = true;                 // v2.3.2: a pick is a real choice (load() has already marked the file; kept explicit)
                     publishDemod();
                     break;
                 case Command::CLEAN_OPTIONS:
@@ -1607,6 +1631,7 @@ private:
         s.demod = cfg.demod;
         s.cleanOptions = cfg.cleanOptions;
         s.rawDemod = cfg.rawDemod;
+        s.demodSet = cfg.demodSet;
         // The floor is read once, so noiseFloorDb and an auto threshold in the same status agree.
         const bool  floorValid = sqFloorValid.load(std::memory_order_relaxed);
         const float floorDb    = sqFloorDb.load(std::memory_order_relaxed);
@@ -1679,6 +1704,9 @@ private:
         // v2.3.0: the audio chain, and while Clean is chosen, its carrier lock
         j["demod"] = s.demod;
         j["cleanOptions"] = s.cleanOptions;
+        // v2.3.2: always present, so its presence tells a dashboard the engine marks real choices (the Audio
+        // switch waits for it: a pick saved by 2.3.0/2.3.1 has no marker and 2.3.2 would move it to Clean)
+        j["demodSet"] = s.demodSet;
         if (s.demod == "clean") {
             json off = nullptr;
             if (cleanHasA.load()) off = std::round(cleanOffA.load() * 10.0f) / 10.0f;
@@ -2468,7 +2496,10 @@ int main(int argc, char** argv) {
     if (!cfg.load(cfgPath)) {
         logW("config: %s not found — writing defaults", cfgPath.c_str());
         cfg.path = cfgPath;
+        cfg.demodSet = true;                             // v2.3.2: a fresh install starts on the default, marked
         cfg.save();
+    } else if (cfg.demodMigrated) {
+        cfg.save();                                      // v2.3.2: once, so the move to Clean is never repeated
     }
     logI("config: serial=%s vfo=%.0f mode=%s bw=%.0f gainIdx=%d ppm=%d squelch=%s@%.1f playing=%s port=%d",
          cfg.serial.c_str(), cfg.vfoHz, cfg.mode.c_str(), cfg.bandwidthHz, cfg.gainIndex, cfg.ppm,

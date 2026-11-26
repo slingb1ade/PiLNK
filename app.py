@@ -5694,6 +5694,7 @@ def photo_img_proxy():
             os.utime(path, None)                      # touch = recently used
             resp = make_response(data)
             resp.headers['Content-Type']  = PHOTO_CACHE_TYPES[ext]
+            resp.headers['X-Content-Type-Options'] = 'nosniff'
             resp.headers['Cache-Control'] = 'public, max-age=31536000'
             resp.headers['X-PiLNK-Photo-Cache'] = 'hit'
             return resp
@@ -5703,7 +5704,9 @@ def photo_img_proxy():
     # Cold: fetch once, store, serve.
     try:
         os.makedirs(PHOTO_CACHE_DIR, exist_ok=True)
-        r = requests.get(raw, timeout=20, headers={
+        # L3: never follow a redirect. The allowlist above checked THIS url only, so a 3xx
+        # could otherwise walk the node to any host. A redirect is an upstream error here.
+        r = requests.get(raw, timeout=20, allow_redirects=False, headers={
             'User-Agent': 'Mozilla/5.0 (PiLNK community ADS-B tracker; https://pilnk.io)'})
         if r.status_code != 200 or not r.content:
             logging.info(f'[photo-cache] upstream {r.status_code} for {raw}')
@@ -5714,7 +5717,10 @@ def photo_img_proxy():
         os.replace(tmp, path)                         # atomic: no half-written entries
         _photo_cache_prune()
         resp = make_response(r.content)
-        resp.headers['Content-Type']  = r.headers.get('Content-Type', PHOTO_CACHE_TYPES[ext])
+        # L3: the type comes from the extension, never from upstream, so this route
+        # only ever answers as an image (same as the warm path).
+        resp.headers['Content-Type']  = PHOTO_CACHE_TYPES[ext]
+        resp.headers['X-Content-Type-Options'] = 'nosniff'
         resp.headers['Cache-Control'] = 'public, max-age=31536000'
         resp.headers['X-PiLNK-Photo-Cache'] = 'miss'
         return resp
@@ -5799,18 +5805,21 @@ except Exception as _ct_e:   # the deck falls back to default thicknesses withou
     print('cloudtops: off -', _ct_e)
 
 # ── PiLNK.io API Proxy — avoids CORS from local IP ───────
-@app.route('/api/pilnkio/<path:endpoint>', methods=['GET','POST','OPTIONS'])
+# L4: only the two pilnk.io endpoints the dashboard reads, GET only. It used to
+# forward any path and POST bodies, which let a page on the LAN reach any
+# pilnk.io API through the node. The dashboard is same-origin, so no CORS header.
+PILNKIO_PROXY_ALLOW = frozenset({'notams.php', 'frequencies.php'})
+
+
+@app.route('/api/pilnkio/<path:endpoint>', methods=['GET'])
 def pilnkio_proxy(endpoint):
+    if endpoint not in PILNKIO_PROXY_ALLOW:
+        return jsonify({'error': 'not found'}), 404
     url = 'https://pilnk.io/api/' + endpoint
     try:
-        if request.method == 'POST':
-            r = requests.post(url, json=request.get_json(), timeout=10,
-                headers={'Content-Type': 'application/json'})
-        else:
-            r = requests.get(url, params=request.args.to_dict(), timeout=10)
+        r = requests.get(url, params=request.args.to_dict(), timeout=10)
         resp = make_response(r.content)
         resp.headers['Content-Type'] = 'application/json'
-        resp.headers['Access-Control-Allow-Origin'] = '*'
         return resp
     except Exception as e:
         return jsonify({'error': str(e)}), 500

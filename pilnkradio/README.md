@@ -51,8 +51,9 @@ records, then replays the recording through any audio chain). It is the 48 kHz c
 ## Audio chain: Classic or Clean (engine 2.3.0)
 
 `demod` picks what `/sdr/audio` carries (and `/sdr/audio_raw` too, only if `rawDemod` is
-`follow`; see below). **Classic** (the default) is the
-chain every node has always had: AM envelope, DC blocker, AGC, clip. **Clean** finds and
+`follow`; see below). **Classic** is the
+chain every node had until engine 2.3.2: AM envelope, DC blocker, AGC, clip. **Clean** (the
+default since engine 2.3.2) finds and
 tracks the carrier, uses the coherent detector while locked, and levels by the carrier
 instead of an AGC (no hiss wind-up between calls, no burst when a call starts). Both live in
 `dsp.hpp`, which the bench replay tool compiles too. Classic always runs, so switching never
@@ -63,7 +64,7 @@ keys up over a weaker one (or a call is much stronger than the recent ones) the 
 down by exactly as much as it stands over the guard level, instead of being driven flat into the
 limiter. Ordinary calls never reach the guard and are bit-identical to 2.3.0. Classic is unchanged.
 The radio bench chose and confirmed Clean with this guard (`detector=auto,hpf=200,lpf=3000`,
-22-23 Nov 2026).
+22-23 Nov 2026); since engine 2.3.2 those are the default options.
 
 ```
 curl -s -X POST http://127.0.0.1:5656/sdr/demod -d '{"demod":"clean"}'
@@ -71,12 +72,18 @@ curl -s -X POST http://127.0.0.1:5656/sdr/demod -d '{"options":"detector=auto,hp
 ```
 
 - `options`: `detector=envelope|sync|auto`, `hpf` 50-1000 Hz, `lpf` 1500-8000 Hz,
-  `lpf` at least `hpf` + 500. Keys are optional; status shows the canonical form.
+  `lpf` at least `hpf` + 500. Keys are optional (a missing key takes the default); status shows
+  the canonical form.
 - A bad body changes nothing and returns 400. Both settings are saved in the config
   (`demod`, `cleanOptions`); a bad stored value falls back to the default with a warning.
-- `/sdr/status` shows `demod` and `cleanOptions`, and while Clean is chosen
+- `/sdr/status` shows `demod`, `cleanOptions` and (2.3.2+) `demodSet`, and while Clean is chosen
   `"clean":{"locked":bool,"offsetHz":Hz|null}` (the carrier's offset from the VFO).
-- Fleet nodes stay on Classic. A node switches only by this setting.
+- Engine 2.3.2 makes Clean the default. A config saved by an older engine (it has no `demodSet`
+  key) that says `classic` moves to Clean once, at the first start, and the file is marked
+  `demodSet: true` so it never moves again. Its `cleanOptions` move too, but only if they are the
+  old default (`detector=auto,hpf=250,lpf=3400`); every other setting is kept. A demod picked later (this
+  endpoint, or the dashboard's Audio switch) is saved and kept across restarts and updates.
+  `/sdr/audio_raw` is not affected: `rawDemod` stays `classic`.
 
 **What `/sdr/audio_raw` carries (engine 2.3.1).** `rawDemod` = `classic` (the default) keeps the
 raw tap on Classic whatever the listeners hear, because the STT's decoder was trained on Classic
