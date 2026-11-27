@@ -494,14 +494,19 @@ PYEOF
 }
 
 # VHF engine config (serial check, config, udev, service) — no compile.
+# The installer is this script's sibling (Part B: when root runs hw-setup from
+# its signed copy, PILNK_DIR is the user's folder and is only where config.json
+# lives; code always comes from beside this script).
 hw_run_radio_config() {
   [ -n "$VHF_SERIAL" ] || return 0
-  if [ ! -f "$PILNK_DIR/pilnkradio-install.sh" ]; then
-    warn "pilnkradio-install.sh not found in $PILNK_DIR — VHF audio not configured"
+  local here
+  here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+  if [ ! -f "$here/pilnkradio-install.sh" ]; then
+    warn "pilnkradio-install.sh not found beside pilnk-hw-setup.sh ($here) — VHF audio not configured"
     return 0
   fi
   PILNKRADIO_NONINTERACTIVE=1 PILNKRADIO_CONFIG_ONLY=1 PILNKRADIO_SERIAL="$VHF_SERIAL" \
-    bash "$PILNK_DIR/pilnkradio-install.sh" \
+    bash "$here/pilnkradio-install.sh" \
     || warn "VHF audio config did not finish — PiLNK is unaffected; it is retried on the next run"
   return 0
 }

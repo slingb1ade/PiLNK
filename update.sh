@@ -65,11 +65,36 @@ fi
 RESET_TARGET=origin/main
 SKIP_RULE28=0
 SIG_TOKEN=error; SIG_RUN=none; SIGNED_VERSION=""; SIGNED_COMMIT=""
+# SIG_WHY: when SIG_TOKEN is error, the step that failed (26 Nov 2026: one node
+# refused every update with a bare "error" and only its owner could say why).
+#   tmp      no temp folder
+#   fetch:N  curl exit code N (6 = name not found, 7 = refused, 28 = timed out,
+#            35 / 60 = TLS or certificate)
+#   parse    the reply was not the release JSON
+#   check    release-check.sh gave no answer; otherwise release-check.sh's own reason
+SIG_WHY=""
 REL_TMP=$(mktemp -d 2>/dev/null) || REL_TMP=""
 trap '[ -n "$REL_TMP" ] && rm -rf "$REL_TMP"' EXIT
-if [ -n "$REL_TMP" ] \
-   && curl -fsS --max-time 15 -H 'User-Agent: PiLNK-OTA/1.0' -o "$REL_TMP/version.json" "$RELEASE_URL" 2>> "$LOG_FILE" \
-   && python3 - "$REL_TMP" <<'PY' 2>> "$LOG_FILE"
+if [ -z "$REL_TMP" ]; then
+    SIG_WHY=tmp
+else
+    # Up to three tries, 5 s apart: one slow reply from pilnk.io must not cost
+    # the node its update (26 Nov 2026: a single 15 s timeout did, and the app
+    # then waited out its 1-hour cooldown). Worst case adds 40 s, well inside
+    # the app's 120 s limit for this script.
+    RETRY_DELAY="${PILNK_RELEASE_RETRY_DELAY:-5}"
+    for TRY in 1 2 3; do
+        CURL_RC=0
+        curl -fsS --max-time 15 -H 'User-Agent: PiLNK-OTA/1.0' -o "$REL_TMP/version.json" "$RELEASE_URL" 2>> "$LOG_FILE" \
+            || CURL_RC=$?
+        [ "$CURL_RC" = 0 ] && break
+        [ "$TRY" = 3 ] && break
+        log "Release details download failed (curl $CURL_RC), trying again in ${RETRY_DELAY}s"
+        sleep "$RETRY_DELAY" 2>/dev/null
+    done
+    if [ "$CURL_RC" != 0 ]; then
+        SIG_WHY="fetch:$CURL_RC"
+    elif ! python3 - "$REL_TMP" <<'PY' 2>> "$LOG_FILE"
 import json, os, sys
 d = sys.argv[1]
 rel = json.load(open(os.path.join(d, 'version.json'))).get('release')
@@ -81,28 +106,36 @@ for name in ('statement', 'sig'):
     with open(os.path.join(d, name), 'wb') as f:
         f.write(text(name))
 PY
-then
-    CHECK_OUT=$(PILNK_DIR="$PILNK_DIR" bash "$PILNK_DIR/release-check.sh" --fetched \
-                    "$REL_TMP/statement" "$REL_TMP/sig" 2>> "$LOG_FILE")
-    SIG_TOKEN=$(printf '%s\n' "$CHECK_OUT" | sed -n 's/^ota_sig=//p')
-    SIG_RUN=$(printf '%s\n' "$CHECK_OUT" | sed -n 's/^ota_sig_run=//p')
-    SIGNED_VERSION=$(printf '%s\n' "$CHECK_OUT" | sed -n 's/^signed_version=//p')
-    SIGNED_COMMIT=$(printf '%s\n' "$CHECK_OUT" | sed -n 's/^signed_commit=//p')
-    [ -n "$SIG_TOKEN" ] || { SIG_TOKEN=error; SIG_RUN=none; }
+    then
+        SIG_WHY=parse
+    else
+        CHECK_OUT=$(PILNK_DIR="$PILNK_DIR" bash "$PILNK_DIR/release-check.sh" --fetched \
+                        "$REL_TMP/statement" "$REL_TMP/sig" 2>> "$LOG_FILE")
+        SIG_TOKEN=$(printf '%s\n' "$CHECK_OUT" | sed -n 's/^ota_sig=//p')
+        SIG_RUN=$(printf '%s\n' "$CHECK_OUT" | sed -n 's/^ota_sig_run=//p')
+        SIGNED_VERSION=$(printf '%s\n' "$CHECK_OUT" | sed -n 's/^signed_version=//p')
+        SIGNED_COMMIT=$(printf '%s\n' "$CHECK_OUT" | sed -n 's/^signed_commit=//p')
+        SIG_WHY=$(printf '%s\n' "$CHECK_OUT" | sed -n 's/^ota_sig_why=//p')
+        [ -n "$SIG_TOKEN" ] || { SIG_TOKEN=error; SIG_RUN=none; SIG_WHY=check; }
+    fi
 fi
+[ "$SIG_TOKEN" = error ] || SIG_WHY=""
+# Only a short token ever reaches the state file, the log and the ping.
+[[ $SIG_WHY =~ ^[a-z]{1,12}(:[0-9]{1,3})?$ ]] || SIG_WHY=""
 # release_state.json: what the app reports in its ping. Written to a temp file
 # and renamed, so the app never reads half a file.
 python3 - "$PILNK_DIR/release_state.json" "$SIG_TOKEN" "${SIG_RUN:-none}" "$POLICY" \
-        "$SIGNED_VERSION" "$SIGNED_COMMIT" <<'PY' 2>> "$LOG_FILE" || log "could not write release_state.json (continuing)"
+        "$SIGNED_VERSION" "$SIGNED_COMMIT" "$SIG_WHY" <<'PY' 2>> "$LOG_FILE" || log "could not write release_state.json (continuing)"
 import json, os, sys, time
-path, tok, run, mode, ver, commit = sys.argv[1:7]
+path, tok, run, mode, ver, commit, why = sys.argv[1:8]
 tmp = '%s.tmp.%d' % (path, os.getpid())
 with open(tmp, 'w') as f:
     json.dump({'ota_sig': tok, 'ota_sig_run': run, 'mode': mode, 'signed_version': ver,
-               'signed_commit': commit, 'checked_at': int(time.time()), 'by': 'update'}, f)
+               'signed_commit': commit, 'ota_sig_why': why,
+               'checked_at': int(time.time()), 'by': 'update'}, f)
 os.replace(tmp, path)
 PY
-log "Release signature: ota_sig=$SIG_TOKEN ota_sig_run=${SIG_RUN:-none} mode=$POLICY signed=${SIGNED_VERSION:-none}"
+log "Release signature: ota_sig=$SIG_TOKEN ota_sig_run=${SIG_RUN:-none} mode=$POLICY signed=${SIGNED_VERSION:-none}${SIG_WHY:+ why=$SIG_WHY}"
 
 if [ "$POLICY" = enforce ]; then
     refuse() {
@@ -111,7 +144,7 @@ if [ "$POLICY" = enforce ]; then
         exit 6
     }
     ver_lt() { [ "$1" != "$2" ] && [ "$(printf '%s\n%s\n' "$1" "$2" | sort -V | head -n 1)" = "$1" ]; }
-    [ "$SIG_TOKEN" = ok ] || refuse "$SIG_TOKEN"
+    [ "$SIG_TOKEN" = ok ] || refuse "$SIG_TOKEN${SIG_WHY:+ ($SIG_WHY)}"
     ver_lt "$SIGNED_VERSION" "$OLD_VERSION" && refuse downgrade
     if [ "$SIGNED_VERSION" = "$OLD_VERSION" ]; then
         if [ "$(git rev-parse HEAD 2>/dev/null)" = "$SIGNED_COMMIT" ]; then

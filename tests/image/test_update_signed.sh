@@ -43,6 +43,21 @@ setup report; testkey other; release_to 1.0.1 other; serve_release; run_update
 ok "report: bad sig still updates, state says bad" '[ "$RC" = 0 ] && [ "$(ver)" = 1.0.1 ] && [ "$(st ota_sig)" = bad ]'
 setup report; release_to 1.0.1; export PILNK_RELEASE_URL="file://$ROOT/nope.json"; run_update
 ok "report: version.php unreachable -> error, still updates" '[ "$RC" = 0 ] && [ "$(ver)" = 1.0.1 ] && [ "$(st ota_sig)" = error ] && [ "$(st ota_sig_run)" = none ]'
+ok "report: unreachable version.php says why: fetch + curl's code" '[ "$(st ota_sig_why)" = fetch:37 ]'
+ok "report: the log line names the failed step" 'grep -q "Release signature: ota_sig=error ota_sig_run=none mode=report signed=none why=fetch:37" "$LOGF"'
+setup report; release_to 1.0.1; echo 'not json' > "$ROOT/version.json"; run_update
+ok "report: version.php not JSON -> error, why parse, still updates" '[ "$RC" = 0 ] && [ "$(st ota_sig)" = error ] && [ "$(st ota_sig_why)" = parse ]'
+setup report; release_to 1.0.1; serve_release; fakebin mktemp 'exit 1'; run_update; rm -f "$BIN/mktemp"
+ok "report: no temp folder -> error, why tmp, still updates" '[ "$RC" = 0 ] && [ "$(ver)" = 1.0.1 ] && [ "$(st ota_sig)" = error ] && [ "$(st ota_sig_why)" = tmp ]'
+setup report; release_to 1.0.1; serve_release; printf '#!/bin/bash\nexit 0\n' > "$HOME/pilnk/release-check.sh"; run_update
+ok "report: check gave no answer -> error, why check" '[ "$(st ota_sig)" = error ] && [ "$(st ota_sig_why)" = check ]'
+setup report; release_to 1.0.1; serve_release
+printf '#!/bin/bash\necho ota_sig=error; echo ota_sig_run=none; echo "ota_sig_why=\$(touch /tmp/pwn) x y"\n' > "$HOME/pilnk/release-check.sh"; run_update
+ok "report: a why that is not a short token never reaches the state or the log" '[ "$(st ota_sig)" = error ] && [ -z "$(st ota_sig_why)" ] && ! grep -q "why=" "$LOGF"'
+setup report; release_to 1.0.1; serve_release; rm -f "$HOME/pilnk/release_signers"; run_update
+ok "report: release-check's own why passes through (signers)" '[ "$(st ota_sig)" = error ] && [ "$(st ota_sig_why)" = signers ]'
+setup report; release_to 1.0.1; serve_release; run_update
+ok "report: good signature -> empty why" '[ "$(st ota_sig)" = ok ] && [ -z "$(st ota_sig_why)" ] && grep -q "signed=1.0.1$" "$LOGF"'
 setup report; ( cd "$ROOT/up" && echo x >> app.py && G commit -qam same-version ); serve_null; run_restart
 ok "report: Rule #28 abort still fires (exit 3)" '[ "$RC" = 3 ]'
 setup report; release_to 1.0.1; serve_release; : > "$HOME/pilnk/.git/index.lock"; run_update
@@ -87,7 +102,24 @@ serve_release; TREE0=$(treehash); run_update
 ok "enforce: mismatch refused, exit 6, tree byte-identical" '[ "$RC" = 6 ] && grep -q "SIGNATURE REFUSED: mismatch" "$LOGF" && [ "$(treehash)" = "$TREE0" ]'
 setup enforce; release_to 1.0.1; export PILNK_RELEASE_URL="file://$ROOT/nope.json"; TREE0=$(treehash); run_update
 ok "enforce: error (no version.php) refused, exit 6, tree byte-identical" '[ "$RC" = 6 ] && grep -q "SIGNATURE REFUSED: error" "$LOGF" && [ "$(treehash)" = "$TREE0" ]'
+ok "enforce: the refusal names the failed step" 'grep -q "SIGNATURE REFUSED: error (fetch:37)" "$LOGF"'
 ok "enforce: refusal names itself for the app's ota_fail" 'grep -q "SIGNATURE REFUSED" <<<"$OUT"'
+
+# ===== the download retries (26 Nov 2026: one 15 s timeout cost MITKURT an hour) =====
+REALCURL=$(PATH="$ORIG_PATH" command -v curl)
+# flaky_curl N: fake curl that times out (exit 28) N times, then hands over to the real one
+flaky_curl() { fakebin curl "n=\$(cat \"\$ROOT/.curln\" 2>/dev/null || echo 0); n=\$((n+1)); echo \$n > \"\$ROOT/.curln\"; [ \$n -gt $1 ] || exit 28; exec $REALCURL \"\$@\""; }
+curls() { grep -c '^curl ' "$CALLS"; }
+setup enforce; release_to 1.0.1; SIGNED=$(git -C "$ROOT/up" rev-parse HEAD); serve_release; flaky_curl 2; run_update
+ok "retry: two timeouts then an answer -> updates to the signed commit" '[ "$RC" = 0 ] && [ "$(head_)" = "$SIGNED" ] && [ "$(st ota_sig)" = ok ]'
+ok "retry: three tries in all, no why left behind" '[ "$(curls)" = 3 ] && [ -z "$(st ota_sig_why)" ]'
+ok "retry: each failed try is logged" '[ "$(grep -c "trying again" "$LOGF")" = 2 ] && grep -q "curl 28" "$LOGF"'
+setup enforce; release_to 1.0.1; serve_release; flaky_curl 9; TREE0=$(treehash); run_update
+ok "retry: still failing after three tries -> refused, why fetch:28, tree untouched" '[ "$RC" = 6 ] && [ "$(st ota_sig_why)" = fetch:28 ] && [ "$(treehash)" = "$TREE0" ]'
+ok "retry: gives up after exactly three tries, no wait after the last" '[ "$(curls)" = 3 ] && [ "$(grep -c "trying again" "$LOGF")" = 2 ]'
+setup enforce; release_to 1.0.1; serve_release; flaky_curl 0; run_update
+ok "retry: a first-time answer is fetched once" '[ "$RC" = 0 ] && [ "$(curls)" = 1 ] && ! grep -q "trying again" "$LOGF"'
+ok "retry: waits 5 s between tries by default" 'grep -q "PILNK_RELEASE_RETRY_DELAY:-5}" "$REPO/update.sh"'
 
 # ===== plumbing =====
 ok "state file written via an atomic rename" 'grep -q "os.replace" "$REPO/update.sh"'

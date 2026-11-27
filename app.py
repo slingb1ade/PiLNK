@@ -1925,6 +1925,14 @@ except Exception as _rs_err:
     release_status = None
     logging.warning('[ota] release_status unavailable: %s', _rs_err)
 
+# Root's own signed copy (Part B spec 5.6): the ping says where root's PiLNK
+# code comes from. Read-only, and guarded the same way.
+try:
+    import root_status
+except Exception as _rst_err:
+    root_status = None
+    logging.warning('[ota] root_status unavailable: %s', _rst_err)
+
 # ── GUARDRAIL #2 (May 2026): Persistent OTA cooldown ──
 # ota_last_update used to be a plain module variable that reset to 0
 # on every process restart. update.sh restarts the service as its
@@ -1992,15 +2000,20 @@ def _reconcile_pending_ota_result():
         else:
             _save_ota_state(last_result='interrupted')
 
+# Part B: a switched node builds as root from its signed copy and keeps the
+# state in root's own folder; the old path is read for one more release.
+ROOT_AUDIO_BUILD_STATE_FILE = '/var/lib/pilnk/state/audio_build_state.json'
 AUDIO_BUILD_STATE_FILE = os.path.join(PILNK_DIR, 'audio_build_state.json')
 
 def _audio_build_state():
-    """The raw audio-build state file, or None if absent/unreadable."""
-    try:
-        with open(AUDIO_BUILD_STATE_FILE) as f:
-            return json.load(f)
-    except Exception:
-        return None
+    """The raw audio-build state file (root's first, then the old one), or None."""
+    for path in (ROOT_AUDIO_BUILD_STATE_FILE, AUDIO_BUILD_STATE_FILE):
+        try:
+            with open(path) as f:
+                return json.load(f)
+        except Exception:
+            continue
+    return None
 
 def _audio_build_err():
     """WHY the last audio build failed. Empty string when it did not.
@@ -2269,6 +2282,8 @@ def _ota_ping_features():
       ota_sig_run:    on_signed | behind | ahead | dirty | none
       ota_sig_mode:   report | enforce           (release_policy in this tree)
       svc_sudo:       full | scoped | none       (passwordless root for this account)
+      root:           signed:<v> | user:<v> | none | unsafe | error:<why>   (Part B)
+      root_match:     y | n   (only before the switch: user tree's root files = root's copy)
       (the last four: signed releases, spec 5.6 / 5.11; '' on a tree without them)
 
     ota_last_result says an attempt broke; ota_fail says where. update.sh has
@@ -2299,6 +2314,11 @@ def _ota_ping_features():
         feats.update(release_status.ping_fields(
             release_status.load_state(PILNK_DIR),
             release_status.read_policy(PILNK_DIR), _svc_sudo()))
+    if root_status is not None:
+        try:
+            feats.update(root_status.ping_fields(root_status.load(), PILNK_DIR, root_status.CURRENT))
+        except Exception as e:
+            logging.warning('[ota] root_status.ping_fields failed: %s', e)
     return feats
 
 ota_last_update = _load_ota_last_update()

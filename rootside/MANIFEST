@@ -1,0 +1,16 @@
+# Every script root runs for PiLNK (Part B). rootsync.sh refuses a signed
+# release in which any of these is missing or does not parse (bash -n), and
+# pilnk-sign.sh flags them as root-relevant.
+sdr-recover.sh
+pilnk-dashboard-watchdog.sh
+pilnkradio-install.sh
+denoise-install.sh
+datalink-install.sh
+pilnk-hw-setup.sh
+bootstrap-selfheal.sh
+hwtier.sh
+pilnk-radio-watchdog.sh
+release-check.sh
+rootsync.sh
+image/firstboot/pilnk-firstboot.sh
+rootside/rootsync-run

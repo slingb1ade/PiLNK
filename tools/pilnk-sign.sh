@@ -56,14 +56,18 @@ EOF
 
 # Files that run as root on every node (spec 5.3 step 4). release-check.sh is added:
 # update.sh runs it as root and it decides whether a release is trusted.
+# Part B adds what root runs or renders from its own signed copy: rootside/*
+# (templates, MANIFEST, rootsync-run), root_policy, rootsync.sh, the pinned
+# rtl-sdr-blog commit, and every rootside/MANIFEST script.
 is_root_relevant() {
   case "$1" in
-    image/firstboot/*|*.service|*.timer|*.rules) return 0 ;;
+    image/firstboot/*|rootside/*|*.service|*.timer|*.rules|pilnkradio/rtl-sdr-blog.commit) return 0 ;;
   esac
   case "${1##*/}" in
     update.sh|release_signers|release_policy|release-check.sh|bootstrap-selfheal.sh|\
     sdr-recover.sh|pilnk-dashboard-watchdog.sh|pilnkradio-install.sh|denoise-install.sh|\
-    datalink-install.sh|install.sh|pilnk-hw-setup.sh|pilnk-sign.sh) return 0 ;;
+    datalink-install.sh|install.sh|pilnk-hw-setup.sh|pilnk-sign.sh|\
+    root_policy|rootsync.sh|hwtier.sh|pilnk-radio-watchdog.sh) return 0 ;;
   esac
   return 1
 }

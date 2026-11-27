@@ -92,10 +92,13 @@ ok "interactive: answer 2 -> second line" '[ "$(f ADSB_SERIAL)" = 00000007 ] && 
 ok "interactive: prompt went to tty not stdout" 'grep -q "Which line" "$ROOT/dev/tty" && ! printf "%s" "$OUT" | grep -q "Which line"'
 
 # --- apply ---
+# hw-setup runs the radio installer that sits beside it, so a test that fakes the
+# installer runs a copy of hw-setup from the same folder (as a real tree does).
 apply() {
-  OUT=$(env PILNK_ROOT="$ROOT" PILNK_DIR="$ROOT/pilnk" PILNK_HW_NONINTERACTIVE=1 bash "$HW" --apply 2>"$ROOT/.stderr"); RC=$?
+  local hw="$HW"; [ -f "$ROOT/pilnk/pilnk-hw-setup.sh" ] && hw="$ROOT/pilnk/pilnk-hw-setup.sh"
+  OUT=$(env PILNK_ROOT="$ROOT" PILNK_DIR="$ROOT/pilnk" PILNK_HW_NONINTERACTIVE=1 bash "$hw" --apply 2>"$ROOT/.stderr"); RC=$?
 }
-mkdir_pilnk() { mkdir -p "$ROOT/pilnk"; fakebin_radio; }
+mkdir_pilnk() { mkdir -p "$ROOT/pilnk"; cp "$HW" "$ROOT/pilnk/"; fakebin_radio; }
 fakebin_radio() { printf '#!/bin/bash\necho "RADIO CONFIG_ONLY=${PILNKRADIO_CONFIG_ONLY:-} NONINT=${PILNKRADIO_NONINTERACTIVE:-} SERIAL=${PILNKRADIO_SERIAL:-}" >> "$CALLS"\n' > "$ROOT/pilnk/pilnkradio-install.sh"; }
 
 mkroot; mkdir_pilnk; rtl 00000002 00001090

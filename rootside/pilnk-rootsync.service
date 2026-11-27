@@ -1,0 +1,13 @@
+# Installed by rootsync (Part B). Do not edit here.
+[Unit]
+Description=PiLNK rootsync: root's own signed copy of PiLNK
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/bin/bash /usr/local/lib/pilnk/rootsync-run
+# The first sync fetches up to 200 commits of history.
+TimeoutStartSec=1800
+Nice=10
+IOSchedulingClass=idle

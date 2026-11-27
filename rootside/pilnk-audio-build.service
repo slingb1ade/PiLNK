@@ -1,0 +1,28 @@
+# Rendered by rootsync from root's signed copy (Part B). Do not edit here.
+[Unit]
+# PiLNK one-shot ATC audio engine build. The sudoers rule lets the PiLNK user
+# start THIS unit only; it runs one script, from root's signed copy, and builds
+# in /var/lib/pilnk/build. Nothing in the user's folder is run or written.
+Description=PiLNK ATC audio engine build (one-shot, root's signed copy)
+Documentation=https://pilnk.io
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=no
+User=root
+Environment=HOME=/root PILNK_ROOT_BUILD=/var/lib/pilnk/build PILNKRADIO_STATE_FILE=/var/lib/pilnk/state/audio_build_state.json PILNK_APP_DIR=__PILNK_APP_DIR__ PILNK_AUDIO_TASK_FILE=__PILNK_APP_DIR__/.audio_build_task
+Environment=PILNKRADIO_NONINTERACTIVE=1
+Environment=PYTHONIOENCODING=utf-8
+# A source build on a Pi 4 takes several minutes.
+TimeoutStartSec=2700
+# Bring root's copy up to the newest signed release first (never fails the build).
+ExecStartPre=-/usr/local/lib/pilnk/rootsync --quick
+ExecStart=/bin/bash __ROOT_CURRENT__/pilnkradio-install.sh
+# Never able to affect flight tracking.
+Nice=10
+IOSchedulingClass=idle
+
+[Install]
+WantedBy=multi-user.target

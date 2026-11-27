@@ -235,6 +235,11 @@ FT="$(flag_table update.sh release_signers release_policy bootstrap-selfheal.sh 
   tools/pilnk-sign.sh release-check.sh app.py static/index.html README.md tools/install.sh.md)"
 ok "every spec 5.3 step 4 file (and release-check.sh) is flagged" '[ "$(grep -c "^Y " <<<"$FT")" = 17 ]'
 ok "ordinary files are not flagged" 'grep -q "^N app.py" <<<"$FT" && grep -q "^N static/index.html" <<<"$FT" && grep -q "^N README.md" <<<"$FT" && grep -q "^N tools/install.sh.md" <<<"$FT"'
+# Part B: everything root runs or renders from its signed copy is root-relevant too
+PB_FILES="$(grep -v '^#' "$REPO/rootside/MANIFEST" | grep .; (cd "$REPO" && ls rootside/*); echo root_policy; echo rootsync.sh; echo pilnkradio/rtl-sdr-blog.commit)"
+# shellcheck disable=SC2086
+PB_FT="$(flag_table $PB_FILES)"
+ok "sign_flags_manifest_files" '[ -n "$PB_FILES" ] && ! grep -q "^N " <<<"$PB_FT" && [ "$(grep -c "^Y " <<<"$PB_FT")" = "$(wc -l <<<"$PB_FILES")" ]'
 
 # ---- --init: a FIDO key on the YubiKey (Task 1, Ruling S1) ------------------------------
 init_scenario() {

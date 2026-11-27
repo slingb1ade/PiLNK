@@ -1,0 +1,17 @@
+# Rendered by rootsync from root's signed copy (Part B). Do not edit here.
+[Unit]
+Description=PiLNK dashboard/ping-loop watchdog (restarts pilnk if the worker wedges or the ping thread dies)
+After=pilnk.service
+Wants=pilnk.service
+
+[Service]
+# Runs as root (no User=) so `systemctl restart pilnk` needs no sudo. The script
+# comes from root's signed copy; the app folder is passed in only so it can read
+# the dashboard port from config.json, as data.
+Environment=PILNK_APP_DIR=__PILNK_APP_DIR__
+ExecStart=/bin/bash __ROOT_CURRENT__/pilnk-dashboard-watchdog.sh
+Restart=always
+RestartSec=15
+
+[Install]
+WantedBy=multi-user.target

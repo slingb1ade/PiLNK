@@ -74,6 +74,15 @@ AIRSPY_VID="1d50:60a1"
 
 log() { echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*" >> "$LOG" 2>/dev/null; }
 
+# ── Part B one-time self-install (spec 5.4) ─────────────────────────────────
+# Run as root with no rootsync yet, this hands root its own signed copy: the
+# rootsync beside this script installs itself, pins the release keys and starts
+# its timer. It never syncs inline. Once rootsync exists this does nothing.
+if [ "$(id -u)" = "${PILNK_ROOTSYNC_UID:-0}" ] && [ ! -x "${PILNK_ROOTSYNC_PREFIX:-}/usr/local/lib/pilnk/rootsync" ] \
+   && [ -f "$(dirname "$0")/rootsync.sh" ]; then
+    timeout 30 bash "$(dirname "$0")/rootsync.sh" --install-self || true
+fi
+
 # ── helpers ──────────────────────────────────────────────────────────────────
 
 svc_active() { systemctl is-active --quiet "$1" 2>/dev/null; }

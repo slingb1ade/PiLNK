@@ -57,6 +57,17 @@ svc_enable_start() {
   fi
 }
 
+# Part B: once root's signed copy has switched this node, rootsync renders every
+# root file below from /var/lib/pilnk/current. Writing them here would put the
+# user's tree back in charge, so stop. status.json is read as data, never sourced.
+RS_STATUS="${PILNK_ROOTSYNC_PREFIX:-}/var/lib/pilnk/state/status.json"
+if [ -f "$RS_STATUS" ] && timeout 5 python3 -I -c '
+import json, sys
+sys.exit(0 if json.load(open(sys.argv[1])).get("switched") is True else 1)' "$RS_STATUS" 2>/dev/null; then
+  log "root units, udev rules and sudoers are managed by rootsync on this node (switched) - nothing to do"
+  exit 0
+fi
+
 # Confirm we can actually use privilege before trying anything destructive.
 if [ "$(id -u)" -ne 0 ] && ! sudo -n true 2>/dev/null; then
   log "no passwordless sudo available — skipping self-heal wiring (will retry next OTA)"

@@ -16,6 +16,10 @@
 
 R="${PILNK_ROOT:-}"
 PILNK_DIR="${PILNK_DIR:-/home/pilnk/pilnk}"
+# Where root's own PiLNK code comes from (hw-setup, self-heal). rootsync renders
+# this line to /var/lib/pilnk/current once the node has switched (Part B); keep
+# it exactly as it is, rootsync matches the whole line.
+ROOT_CODE="${PILNK_ROOT_CODE:-$PILNK_DIR}"
 NET_WAIT="${PILNK_NET_WAIT:-90}"
 POLL="${PILNK_POLL_SLEEP:-5}"
 STATE="$R/var/lib/pilnk-firstboot"
@@ -188,7 +192,7 @@ stage_receiver() {
   home=$(dirname "$PILNK_DIR")
   # shellcheck disable=SC2097,SC2098  # PILNK_DIR value is identical; the prefix exports it to the child
   out=$(HOME="$home" PILNKRADIO_STATE_FILE="$PILNK_DIR/audio_build_state.json" PILNK_DIR="$PILNK_DIR" \
-        PILNK_ROOT="$R" PILNK_HW_NONINTERACTIVE=1 bash "$PILNK_DIR/pilnk-hw-setup.sh" --apply); rc=$?
+        PILNK_ROOT="$R" PILNK_HW_NONINTERACTIVE=1 bash "$ROOT_CODE/pilnk-hw-setup.sh" --apply); rc=$?
   printf '%s\n' "$out"
   case "$rc" in
     0) # the image ships readsb disabled: an unpinned readsb would grab a dongle.
@@ -205,7 +209,7 @@ stage_receiver() {
        rm -f "$PILNK_DIR/.no_receiver"
        # NO_BLOCK: self-heal must not start units that are After=pilnk.service
        # shellcheck disable=SC2097,SC2098  # value is identical; the prefix exports it to the child
-       PILNK_DIR="$PILNK_DIR" PILNK_SELFHEAL_NO_BLOCK=1 PILNK_SELFHEAL_LOG="$LOG" bash "$PILNK_DIR/bootstrap-selfheal.sh" || log "receiver: self-heal failed"
+       PILNK_DIR="$PILNK_DIR" PILNK_SELFHEAL_NO_BLOCK=1 PILNK_SELFHEAL_LOG="$LOG" bash "$ROOT_CODE/bootstrap-selfheal.sh" || log "receiver: self-heal failed"
        log "receiver: bound" ;;
     2) touch "$PILNK_DIR/.no_receiver"
        log "receiver: none found; will retry at next boot"; return 1 ;;

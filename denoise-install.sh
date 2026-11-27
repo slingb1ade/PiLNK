@@ -56,6 +56,11 @@ LIB_SRC="$SRC/$ARCH/libdf.so"
 MODEL_SRC="$SRC/DeepFilterNet3_onnx.tar.gz"
 LIB_DST="${PILNK_DF_LIB_DST:-/usr/local/lib/pilnk/libdf.so}"
 MODEL_DST="${PILNK_DF_MODEL_DST:-/usr/local/share/pilnk/DeepFilterNet3_onnx.tar.gz}"
+# Part B root-build mode: this script runs from root's signed copy, which must
+# stay exactly as signed, so the state goes next to the audio build's.
+if [ -z "${PILNK_DENOISE_STATE:-}" ] && [ -n "${PILNK_ROOT_BUILD:-}" ] && [ -n "${PILNKRADIO_STATE_FILE:-}" ]; then
+    PILNK_DENOISE_STATE="$(dirname "$PILNKRADIO_STATE_FILE")/denoise_state.json"
+fi
 STATE="${PILNK_DENOISE_STATE:-$HERE/denoise_state.json}"
 SYSTEMCTL="${PILNK_SYSTEMCTL:-systemctl}"
 

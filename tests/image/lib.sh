@@ -25,6 +25,8 @@ mkroot() {
   export ROOT BIN CALLS PATH
   # hermetic: update.sh never asks the real pilnk.io for a release signature
   export PILNK_RELEASE_URL="file://$ROOT/.no-release.json"
+  # ... and does not wait between its download retries
+  export PILNK_RELEASE_RETRY_DELAY=0
   # default fakes: no active services, no USB, no dongles
   fakebin systemctl 'case "$1" in is-active) grep -qx "${@: -1}" "$ROOT/.active" 2>/dev/null;; esac'
   fakebin lsusb 'cat "$ROOT/.lsusb" 2>/dev/null; true'

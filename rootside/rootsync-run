@@ -1,0 +1,57 @@
+#!/bin/bash
+# rootsync-run: what pilnk-rootsync.service runs (Part B, spec 5.2).
+#
+# Runs /usr/local/lib/pilnk/rootsync with the same arguments. If it has failed
+# with an internal error three runs in a row, this run uses rootsync.prev
+# instead: still signed code from the same key, kept by rootsync's self-update.
+#
+# Counted by outcome: 0 resets the count. So does 1, but only when this run
+# wrote state/status.json with a reason from outside the code: fetch[:N] (pilnk.io
+# unreachable), git (GitHub unreachable) or older. Anything else counts: other
+# exit codes (3 internal, 2 won't parse, 126/127 can't run), or 1 with no new
+# status (a crash, e.g. an unbound variable) or any other reason. Running
+# rootsync.prev on a false count is harmless: it is signed code from the same
+# key. Count: state/internal_fails.
+#
+# Env (tests only): PILNK_ROOTSYNC_PREFIX, prepended to every absolute path.
+set -u
+umask 022
+
+P="${PILNK_ROOTSYNC_PREFIX:-}"
+LIB="$P/usr/local/lib/pilnk"
+STATE="$P/var/lib/pilnk/state"
+COUNT="$STATE/internal_fails"
+STATUS="$STATE/status.json"
+# status.json is replaced by rename on every write, so a new inode = written this run
+ino() { stat -c %i "$STATUS" 2>/dev/null || echo none; }
+reason() { python3 -I -c 'import json, sys
+try:
+    print(str(json.load(open(sys.argv[1])).get("reason", "")))
+except Exception:
+    print("")' "$STATUS" 2>/dev/null; }
+
+n=0
+[ -f "$COUNT" ] && read -r n < "$COUNT" 2>/dev/null
+[[ $n =~ ^[0-9]{1,4}$ ]] || n=0
+
+PROG="$LIB/rootsync"
+if [ "$n" -ge 3 ] && [ -f "$LIB/rootsync.prev" ]; then
+    echo "rootsync-run: rootsync failed $n runs in a row, running rootsync.prev" >&2
+    PROG="$LIB/rootsync.prev"
+fi
+
+BEFORE=$(ino)
+bash "$PROG" "$@"
+rc=$?
+
+if [ "$rc" = 0 ]; then
+    n=0
+elif [ "$rc" = 1 ] && [ "$(ino)" != "$BEFORE" ] && [[ $(reason) =~ ^(fetch(:[0-9]{1,3})?|git|older)$ ]]; then
+    n=0
+else
+    n=$((n + 1))
+fi
+if [ -d "$STATE" ]; then
+    printf '%s\n' "$n" > "$COUNT.new" && mv -f "$COUNT.new" "$COUNT"
+fi
+exit "$rc"

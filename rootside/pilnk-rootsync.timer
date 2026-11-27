@@ -1,0 +1,13 @@
+# Installed by rootsync (Part B). Do not edit here.
+[Unit]
+Description=PiLNK rootsync: check for a new signed release every 10 minutes
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=10min
+RandomizedDelaySec=60
+Persistent=false
+Unit=pilnk-rootsync.service
+
+[Install]
+WantedBy=timers.target

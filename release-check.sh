@@ -4,22 +4,25 @@
 #   release-check.sh [--fetched] STATEMENT_FILE SIG_FILE
 #
 # STATEMENT_FILE / SIG_FILE hold the `release` object's statement and armored
-# signature exactly as pilnk.io served them. Prints exactly four lines:
+# signature exactly as pilnk.io served them. Prints exactly five lines:
 #   ota_sig=ok|missing|bad|not_on_main|mismatch|no_tool|error
 #   ota_sig_run=on_signed|behind|ahead|dirty|none
 #   signed_version=<V or empty>
 #   signed_commit=<40-hex or empty>
+#   ota_sig_why=signers|touch   (only with ota_sig=error: which step failed)
 # and exits 0. Exit 2 = usage error only.
 #
 # The signature is checked against release_signers in the tree this node RUNS
 # now, never one that came down with a fetch: only a signed release can change
-# who may sign. --fetched (update.sh, after its git fetch) also checks the
+# who may sign. RELEASE_SIGNERS names a different signers file: rootsync.sh
+# (root's own signed copy, Part B) passes root's pinned trust/release_signers. --fetched (update.sh, after its git fetch) also checks the
 # commit is on origin/main and that its VERSION matches the statement; the
 # app's periodic run has fetched nothing, so it skips those two.
 #
 # Read-only: never writes to the working tree, the index or the refs.
 # Spec: pilnk-tasks/signed-releases-spec.md section 5.5.
 PILNK_DIR="${PILNK_DIR:-$HOME/pilnk}"
+SIGNERS="${RELEASE_SIGNERS:-$PILNK_DIR/release_signers}"
 FETCHED=0
 if [ "${1:-}" = "--fetched" ]; then FETCHED=1; shift; fi
 if [ "$#" -ne 2 ]; then
@@ -27,11 +30,11 @@ if [ "$#" -ne 2 ]; then
     exit 2
 fi
 ST="$1"; SIG="$2"
-TOKEN=""; RUN="none"; VER=""; COMMIT=""
+TOKEN=""; RUN="none"; VER=""; COMMIT=""; WHY=""
 
 emit() {
-    printf 'ota_sig=%s\nota_sig_run=%s\nsigned_version=%s\nsigned_commit=%s\n' \
-        "$TOKEN" "$RUN" "$VER" "$COMMIT"
+    printf 'ota_sig=%s\nota_sig_run=%s\nsigned_version=%s\nsigned_commit=%s\nota_sig_why=%s\n' \
+        "$TOKEN" "$RUN" "$VER" "$COMMIT" "$WHY"
     exit 0
 }
 
@@ -107,8 +110,8 @@ run_state() {
 
 command -v ssh-keygen >/dev/null 2>&1 || { TOKEN=no_tool; emit; }
 { [ -s "$ST" ] && [ -s "$SIG" ]; } || { TOKEN=missing; emit; }
-{ [ -f "$PILNK_DIR/release_signers" ] && [ -r "$PILNK_DIR/release_signers" ]; } || { TOKEN=error; emit; }
-if ! ssh-keygen -Y verify -f "$PILNK_DIR/release_signers" -I release -n pilnk-release \
+{ [ -f "$SIGNERS" ] && [ -r "$SIGNERS" ]; } || { TOKEN=error; WHY=signers; emit; }
+if ! ssh-keygen -Y verify -f "$SIGNERS" -I release -n pilnk-release \
         -s "$SIG" < "$ST" >/dev/null 2>&1; then
     TOKEN=bad; emit
 fi
@@ -116,7 +119,7 @@ touch_check; tc=$?
 case "$tc" in
     0) ;;
     1|2) TOKEN=bad; emit ;;
-    *) TOKEN=error; emit ;;
+    *) TOKEN=error; WHY=touch; emit ;;
 esac
 parse_statement || { TOKEN=not_on_main; VER=""; COMMIT=""; emit; }
 

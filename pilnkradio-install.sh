@@ -26,6 +26,53 @@ err()  { printf "${RED}✗ %s${RESET}\n" "$1"; }
 step() { CURRENT_STEP="$1"; _state running; printf "\n${BOLD}${BLUE}[ %s ]${RESET}\n" "$1"; }
 die()  { LAST_ERR="$1"; err "$1"; exit 1; }
 
+# ── Part B one-time self-install (spec 5.4) ─────────────────────────────────
+# Run as root with no rootsync yet, this hands root its own signed copy: the
+# rootsync beside this script installs itself, pins the release keys and starts
+# its timer. It never syncs inline. Once rootsync exists this does nothing.
+if [ "$(id -u)" = "${PILNK_ROOTSYNC_UID:-0}" ] && [ ! -x "${PILNK_ROOTSYNC_PREFIX:-}/usr/local/lib/pilnk/rootsync" ] \
+   && [ -f "$(dirname "$0")/rootsync.sh" ]; then
+    timeout 30 bash "$(dirname "$0")/rootsync.sh" --install-self || true
+fi
+
+# ── Part B: the PiLNK user's files, read as data only ────────
+# Root runs this script from its own signed copy. The task file and
+# config.json belong to the PiLNK user, so each is read the same careful way:
+# a regular file (never a symlink or FIFO), small, inside a timeout, and never
+# sourced or run. Anything else means the safe default.
+#
+# read_task_word PATH: "denoise" only for a file whose first line is exactly
+# that word; "full" for anything else (missing, symlink, FIFO, > 64 bytes).
+read_task_word() {
+    local f="$1" n w
+    if [ ! -f "$f" ] || [ -L "$f" ]; then echo full; return 0; fi
+    n="$(stat -c %s -- "$f" 2>/dev/null || echo 999)"
+    if ! [ "$n" -le 64 ] 2>/dev/null; then echo full; return 0; fi
+    w="$(timeout 2 head -c 64 -- "$f" 2>/dev/null | head -n 1)" || w=""
+    if [ "$w" = denoise ]; then echo denoise; else echo full; fi
+}
+# read_dash_port PATH: dashboard_port from config.json (1-65535), else 5000.
+read_dash_port() {
+    timeout 5 python3 -I -c '
+import json, os, stat, sys
+try:
+    fd = os.open(sys.argv[1], os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    st = os.fstat(fd)
+    if not stat.S_ISREG(st.st_mode) or st.st_size > 65536:
+        raise ValueError("not a small regular file")
+    data = os.read(fd, 65537)
+    if len(data) > 65536:
+        raise ValueError("too big")
+    p = json.loads(data.decode("utf-8")).get("dashboard_port", 5000)
+    if isinstance(p, bool):
+        raise ValueError("not a port")
+    p = int(p)
+    print(p if 1 <= p <= 65535 else 5000)
+except Exception:
+    print(5000)
+' "$1" 2>/dev/null || echo 5000
+}
+
 # ── Build outcome, recorded where the fleet can see it ───────
 # Three fleet-wide killers of this build — the root guard, the hardcoded
 # FORK_LIB path, and the `ls … | head` exit status — each hid for WEEKS for
@@ -103,10 +150,20 @@ _stuck_pkgs() {
 # pilnk-audio-build. Install those files and stop — no compile, and the engine
 # build state above is left exactly as it was (hence BEFORE the EXIT trap).
 AUDIO_TASK_FILE="${PILNK_AUDIO_TASK_FILE:-$HOME/pilnk/.audio_build_task}"
-if [ -n "${PILNKRADIO_NONINTERACTIVE:-}" ] && [ -f "$AUDIO_TASK_FILE" ] \
-   && [ "$(cat "$AUDIO_TASK_FILE" 2>/dev/null)" = "denoise" ]; then
-    rm -f "$AUDIO_TASK_FILE"
-    exec bash "$(dirname "$0")/denoise-install.sh"
+if [ -n "${PILNKRADIO_NONINTERACTIVE:-}" ] && [ "$(read_task_word "$AUDIO_TASK_FILE")" = denoise ]; then
+    if [ -n "${PILNK_ROOT_BUILD:-}" ]; then
+        # Part B: the task file is the user's, so root never deletes it. A
+        # request is acted on once: its fingerprint is kept in root's own state.
+        TASK_SEEN="$(dirname "$AUDIO_BUILD_STATE")/audio_task_seen"
+        TASK_FP="$(stat -c '%d:%i:%y:%s' -- "$AUDIO_TASK_FILE" 2>/dev/null || true)"
+        if [ -n "$TASK_FP" ] && [ "$TASK_FP" != "$(head -c 200 "$TASK_SEEN" 2>/dev/null || true)" ]; then
+            printf '%s' "$TASK_FP" > "$TASK_SEEN" 2>/dev/null || true
+            exec bash "$(dirname "$0")/denoise-install.sh"
+        fi
+    else
+        rm -f "$AUDIO_TASK_FILE"
+        exec bash "$(dirname "$0")/denoise-install.sh"
+    fi
 fi
 # powerfloor v1 — aircraft-only boards never build the engine. Gated HERE as well as in update.sh
 # because the OTA that delivers this gate runs the OLD update.sh, whose step 3.6 starts
@@ -153,6 +210,15 @@ if [ -n "${PILNKRADIO_CONFIG_ONLY:-}" ]; then
 else
 # ── [1/8] locate pilnkradio source ─────────────────────────
 step "1/8 locate pilnkradio source"
+if [ -n "${PILNK_ROOT_BUILD:-}" ]; then
+    # Part B: root builds only what is in its own signed copy, which is this
+    # script's folder. No other source, and no fallback clone of main.
+    SRC="$(cd "$(dirname "$0")" && pwd)"
+    if [ ! -f "$SRC/pilnkradio/main.cpp" ]; then
+        CURRENT_STEP="source"
+        die "pilnkradio source not found beside this script ($SRC)"
+    fi
+else
 SRC="$HOME/pilnk"
 if [ ! -f "$SRC/pilnkradio/main.cpp" ]; then
     warn "~/pilnk has no pilnkradio/ source (node not on v1.3.0+ yet?)"
@@ -160,6 +226,7 @@ if [ ! -f "$SRC/pilnkradio/main.cpp" ]; then
     SRC=$(mktemp -d /tmp/pilnk-src.XXXXXX)
     git clone --depth 1 --branch main https://github.com/slingb1ade/PiLNK "$SRC" \
         || die "clone failed — update the node to v1.3.0+ and re-run"
+fi
 fi
 [ -f "$SRC/pilnkradio/main.cpp" ] || die "pilnkradio source not found in $SRC"
 ok "source: $SRC/pilnkradio"
@@ -206,9 +273,34 @@ ok "deps installed"
 # The RTL-SDR Blog V4 REQUIRES this fork. With stock librtlsdr the node
 # "works" but is ~10 dB deaf with no error anywhere. Never skip this.
 step "3/8 rtl-sdr-blog driver fork (~3-5 min on a Pi 4 — compile output below)"
-if [ ! -d "$HOME/rtl-sdr-blog" ]; then
-    git clone --depth 1 https://github.com/rtlsdrblog/rtl-sdr-blog "$HOME/rtl-sdr-blog"
+# The fork is pinned (Part B): pilnkradio/rtl-sdr-blog.commit in this release
+# names the one upstream commit we build, checked after the fetch, instead of
+# whatever upstream has today. A bump is a one-line change in a release.
+rtlsdr_pinned() {  # DIR
+    local d="$1" pin head
+    pin="$(head -c 64 "$SRC/pilnkradio/rtl-sdr-blog.commit" 2>/dev/null | tr -d '[:space:]' || true)"
+    if [[ ! $pin =~ ^[0-9a-f]{40}$ ]]; then
+        CURRENT_STEP="rtlsdr"; die "rtl-sdr-blog pin missing or not a commit (pilnkradio/rtl-sdr-blog.commit)"
+    fi
+    _rg() { git -c core.hooksPath=/dev/null -c core.fsmonitor= -C "$d" "$@"; }
+    [ -d "$d/.git" ] || git -c core.hooksPath=/dev/null init -q "$d" || die "git init $d failed"
+    _rg remote remove origin >/dev/null 2>&1 || true
+    _rg remote add origin https://github.com/rtlsdrblog/rtl-sdr-blog || die "git remote add failed in $d"
+    _rg fetch -q --depth 1 origin "$pin" || { CURRENT_STEP="rtlsdr"; die "could not fetch rtl-sdr-blog $pin"; }
+    _rg checkout -q --force --detach "$pin" || { CURRENT_STEP="rtlsdr"; die "could not check out rtl-sdr-blog $pin"; }
+    head="$(_rg rev-parse HEAD 2>/dev/null || true)"
+    if [ "$head" != "$pin" ]; then
+        CURRENT_STEP="rtlsdr"; die "rtl-sdr-blog is at ${head:-nothing}, not the pinned $pin"
+    fi
+    ok "rtl-sdr-blog at the pinned commit ${pin:0:12}"
+}
+if [ -n "${PILNK_ROOT_BUILD:-}" ]; then
+    # Part B: root's own build area. Nothing in the user's home.
+    RTL_DIR="$PILNK_ROOT_BUILD/rtl-sdr-blog"
+else
+    RTL_DIR="$HOME/rtl-sdr-blog"
 fi
+mkdir -p "$RTL_DIR"
 # When the OTA build (root) meets a checkout owned by the node's user, git
 # 2.30.3+ refuses: "detected dubious ownership". The fork's CMakeLists runs
 # `git describe` for its version, the refusal empties it, and cmake dies with
@@ -218,13 +310,15 @@ fi
 # systemd unit chowns the tree back to the user afterwards whatever happens.
 # chown (not `git config --global safe.directory`) because HOME here is the
 # USER'S home — a global write as root would root-own their ~/.gitconfig.
-if [ "$(id -u)" -eq 0 ]; then
-    chown -R root:root "$HOME/rtl-sdr-blog"
+# (Root-build mode needs none of this: root's build area is root's own.)
+if [ -z "${PILNK_ROOT_BUILD:-}" ] && [ "$(id -u)" -eq 0 ]; then
+    chown -R root:root "$RTL_DIR"
 fi
-cmake -B "$HOME/rtl-sdr-blog/build" "$HOME/rtl-sdr-blog" \
+rtlsdr_pinned "$RTL_DIR"
+cmake -B "$RTL_DIR/build" "$RTL_DIR" \
     -DINSTALL_UDEV_RULES=ON -DDETACH_KERNEL_DRIVER=ON
-make -C "$HOME/rtl-sdr-blog/build" -j"$J"
-sudo make -C "$HOME/rtl-sdr-blog/build" install
+make -C "$RTL_DIR/build" -j"$J"
+sudo make -C "$RTL_DIR/build" install
 sudo ldconfig
 echo 'blacklist dvb_usb_rtl28xxu' | sudo tee /etc/modprobe.d/blacklist-rtl.conf >/dev/null
 # WHERE under /usr/local the fork lands depends on the distro's multiarch
@@ -252,8 +346,15 @@ ok "driver fork installed to $(dirname "$FORK_LIB")"
 
 # ── [4/8] build pilnkradio ─────────────────────────────────
 step "4/8 build pilnkradio (~1-2 min)"
-cmake -B "$SRC/pilnkradio/build" "$SRC/pilnkradio" -DRTLSDR_PREFIX=/usr/local
-make -C "$SRC/pilnkradio/build" -j"$J"
+if [ -n "${PILNK_ROOT_BUILD:-}" ]; then
+    # Part B: out-of-source, in root's build area; the signed copy stays as signed.
+    ENG_BUILD="$PILNK_ROOT_BUILD/pilnkradio"
+    cmake -S "$SRC/pilnkradio" -B "$ENG_BUILD" -DRTLSDR_PREFIX=/usr/local
+else
+    ENG_BUILD="$SRC/pilnkradio/build"
+    cmake -B "$ENG_BUILD" "$SRC/pilnkradio" -DRTLSDR_PREFIX=/usr/local
+fi
+make -C "$ENG_BUILD" -j"$J"
 # hard gate: the binary must link the fork, not stock librtlsdr.
 # Matches an optional multiarch subdirectory (see the note at [3/8]). The
 # /usr/local prefix is what distinguishes fork from stock — stock lives at
@@ -271,7 +372,7 @@ make -C "$SRC/pilnkradio/build" -j"$J"
 # This is the SAME trap as killer #3 (`ls … | head`) documented at [3/8], a few
 # lines above. The lesson was written down and the shape survived anyway.
 # So: capture ONCE, then test a variable. No pipeline, no exit status to lose.
-LDD_OUT="$(ldd "$SRC/pilnkradio/build/pilnkradio" 2>/dev/null || true)"
+LDD_OUT="$(ldd "$ENG_BUILD/pilnkradio" 2>/dev/null || true)"
 if [[ ! "$LDD_OUT" =~ /usr/local/lib(/[^/]+)?/librtlsdr ]]; then
     printf '%s\n' "$LDD_OUT" | grep rtlsdr || true
     die "binary linked STOCK librtlsdr — node would be ~10 dB deaf. Aborting."
@@ -280,9 +381,9 @@ ok "built and linked against the fork"
 
 # ── [5/8] DSP selftest (no antenna needed) ─────────────────
 step "5/8 DSP selftest"
-"$SRC/pilnkradio/build/pilnkradio" --selftest || die "selftest FAILED — do not deploy this build"
+"$ENG_BUILD/pilnkradio" --selftest || die "selftest FAILED — do not deploy this build"
 ok "selftest PASS"
-sudo make -C "$SRC/pilnkradio/build" install >/dev/null
+sudo make -C "$ENG_BUILD" install >/dev/null
 ok "installed /usr/local/bin/pilnkradio"
 
 fi  # PILNKRADIO_CONFIG_ONLY
@@ -478,11 +579,9 @@ else
     # v1.3.2 (so the updater can't reset it), and a PiAware image pushes PiLNK to
     # 5001+. Hardcoding 5000 here installs a radio engine whose CORS allowlist
     # rejects its own dashboard's control requests. Read the real port (default 5000).
-    DASH_PORT="$(python3 -c 'import json,sys
-try:
- print(int(json.load(open(sys.argv[1])).get("dashboard_port",5000)))
-except Exception:
- print(5000)' "$HOME/pilnk/config.json" 2>/dev/null || echo 5000)"
+    # Read as data only (read_dash_port above); the app folder comes from the
+    # unit (PILNK_APP_DIR) when root builds from its signed copy.
+    DASH_PORT="$(read_dash_port "${PILNK_APP_DIR:-$HOME/pilnk}/config.json")"
     case "$DASH_PORT" in ''|*[!0-9]*) DASH_PORT=5000 ;; esac
     ORIGINS="\"http://localhost:$DASH_PORT\""
     for ip in $(hostname -I 2>/dev/null); do

@@ -71,6 +71,20 @@ r = rs.check(node, rel, runner=lambda a, **k: Fake("ota_sig=pwned\nota_sig_run=o
 ok("check: unknown token from the script -> error", r["ota_sig"] == "error" and r["ota_sig_run"] == "none")
 r = rs.check(node + "/nope", rel)
 ok("check: no release-check.sh -> error", r["ota_sig"] == "error")
+# --- why an error happened (26 Nov 2026: one node refused with a bare "error")
+ok("check: no script -> why noscript", r.get("ota_sig_why") == "noscript")
+ok("check: timeout -> why timeout", rs.check(node, rel, runner=slow).get("ota_sig_why") == "timeout")
+ok("check: unknown token -> why output",
+   rs.check(node, rel, runner=lambda a, **k: Fake("ota_sig=pwned\nota_sig_run=on_signed\n")).get("ota_sig_why") == "output")
+def oserr(argv, **kw): raise OSError("no bash")
+ok("check: runner blows up -> why exception", rs.check(node, rel, runner=oserr).get("ota_sig_why") == "exception")
+ok("check: good release -> empty why", rs.check(node, rel).get("ota_sig_why") == "")
+ok("check passes release-check's own why through",
+   rs.check(node, rel, runner=lambda a, **k: Fake("ota_sig=error\nota_sig_run=none\nsigned_version=\nsigned_commit=\nota_sig_why=signers\n")).get("ota_sig_why") == "signers")
+ok("check: a why that is not a short token is dropped",
+   rs.check(node, rel, runner=lambda a, **k: Fake("ota_sig=error\nota_sig_run=none\nota_sig_why=rm -rf /\n")).get("ota_sig_why") == "")
+ok("check: a why on a non-error answer is dropped",
+   rs.check(node, rel, runner=lambda a, **k: Fake("ota_sig=bad\nota_sig_run=none\nota_sig_why=touch\n")).get("ota_sig_why") == "")
 
 # dirty tree (the hub): the periodic check must not touch index or tracked files
 open(node + "/app.py", "w").write("print(2)\n"); os.utime(node + "/VERSION", (1577836800, 1577836800))
@@ -101,6 +115,10 @@ wrote = rs.save_state(d, {"ota_sig": "ok", "ota_sig_run": "on_signed", "signed_v
 ok("save_state skips an unchanged write (SD card wear)", wrote is False and os.stat(d + "/release_state.json").st_mtime_ns == mt)
 wrote = rs.save_state(d, {"ota_sig": "bad", "ota_sig_run": "none", "signed_version": "", "signed_commit": ""}, "report")
 ok("save_state writes when something changed", wrote is True and rs.load_state(d)["ota_sig"] == "bad")
+wrote = rs.save_state(d, {"ota_sig": "bad", "ota_sig_run": "none", "signed_version": "", "signed_commit": "", "ota_sig_why": ""}, "report")
+ok("save_state: an empty why is no change", wrote is False)
+wrote = rs.save_state(d, {"ota_sig": "error", "ota_sig_run": "none", "signed_version": "", "signed_commit": "", "ota_sig_why": "fetch:6"}, "report")
+ok("save_state writes the why", wrote is True and rs.load_state(d).get("ota_sig_why") == "fetch:6")
 
 # --- policy
 open(d + "/release_policy", "w").write("enforced\n")
@@ -143,6 +161,10 @@ ok("ping fields: exactly the four keys", sorted(pf) == ["ota_sig", "ota_sig_mode
 ok("ping fields fit", len(json.dumps(pf)) <= 110 and all(len(v) <= 16 for v in pf.values()))
 ok("ping fields: long values cut to 16", len(rs.ping_fields({"ota_sig": "y" * 99}, "x" * 99, "z" * 99)["ota_sig"]) == 16)
 ok("ping fields: empty state -> ''", rs.ping_fields({}, "report", "none")["ota_sig"] == "")
+pw = rs.ping_fields({"ota_sig": "error", "ota_sig_run": "none", "ota_sig_why": "fetch:6"}, "enforce", "scoped")
+ok("ping fields: an error with a why sends ota_sig_why", pw.get("ota_sig_why") == "fetch:6" and len(pw) == 5)
+ok("ping fields: the why is cut to 16", len(rs.ping_fields({"ota_sig": "error", "ota_sig_why": "w" * 40}, "x", "y")["ota_sig_why"]) == 16)
+ok("ping fields: no why key on a healthy node", "ota_sig_why" not in rs.ping_fields({"ota_sig": "ok", "ota_sig_why": ""}, "enforce", "full"))
 
 # --- update.sh's fetched verdict survives the app's 5-minute check (final review I1)
 # The app checks WITHOUT --fetched, so it cannot see ancestry or VERSION-at-commit;
@@ -170,8 +192,10 @@ if callable(kfv):
        rs.signed_update_available("enforce", "1.0.0", "1.0.1", rel2, kfv(upd, app_r), gt)[0] is False)
 
 # --- node_features is never stored as cut (invalid) JSON (final review I2)
-# node.php keeps 500 chars of PHP's json_encode ('/' -> '\/', non-ASCII -> \uXXXX),
-# after shortening audio_build_err to 60; anything longer is cut mid-JSON.
+# node.php keeps N chars of PHP's json_encode ('/' -> '\/', non-ASCII -> \uXXXX),
+# after shortening audio_build_err to 60; anything longer is cut mid-JSON. These
+# check the fitting at the old 500 (passed explicitly); Part B raised the default
+# to 2000 (tests/image/test_root_status.py).
 fit = getattr(rs, "fit_features", None)
 ok("fit_features exists", callable(fit))
 if callable(fit):
@@ -187,7 +211,7 @@ if callable(fit):
                "ota_sig": "not_on_main", "ota_sig_run": "on_signed", "ota_sig_mode": "enforce", "svc_sudo": "scoped"}
     ok("(the trouble case really is over 500 before fitting)", php_len(trouble) > 500)
     before = dict(trouble)
-    out = fit(trouble)
+    out = fit(trouble, 500)
     ok("a node in trouble fits node_features (PHP-measured)", php_len(out) <= 500)
     ok("... keeping the diagnosis fields", all(out.get(k) == trouble[k] for k in
        ("ota_sig", "ota_fail", "ota_last_result", "audio_build", "power", "ota_check")))
@@ -197,10 +221,10 @@ if callable(fit):
     near = dict(trouble); near.pop("power"); near.pop("throttled"); near.pop("uv_now"); near.pop("volts")
     near["audio_build_err"] = "x" * (60 + 501 - php_len(dict(near, audio_build_err="x" * 60)))
     ok("(the near case is just over 500)", php_len(near) > 500)
-    out2 = fit(near)
+    out2 = fit(near, 500)
     ok("just over 500: audio_build_err cut to 60, every other key kept",
        out2.get("audio_build_err") == "x" * 60 and set(out2) == set(near) and php_len(out2) <= 500)
     huge = {("k%03d" % i): "v/" * 15 for i in range(40)}
-    ok("anything at all comes out under 500 as valid JSON", php_len(fit(huge)) <= 500)
+    ok("anything at all comes out under 500 as valid JSON", php_len(fit(huge, 500)) <= 500)
 
 for r_ in ROOTS: shutil.rmtree(r_, ignore_errors=True)

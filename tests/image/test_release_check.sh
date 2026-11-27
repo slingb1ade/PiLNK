@@ -15,7 +15,8 @@ snap() { ( cd "$HOME/pilnk" && "$REALGIT" rev-parse HEAD; "$REALGIT" for-each-re
 mkroot; mkrepo; release_to 1.0.1; node_pull; chk --fetched "$ROOT/st" "$ROOT/st.sig"
 ok "good signature, node on it" '[ "$(f ota_sig)" = ok ] && [ "$(f ota_sig_run)" = on_signed ]'
 ok "reports the signed version and commit" '[ "$(f signed_version)" = 1.0.1 ] && [ "$(f signed_commit)" = "$(git -C "$ROOT/up" rev-parse HEAD)" ]'
-ok "exactly four output lines, exit 0" '[ "$RC" = 0 ] && [ "$(printf "%s\n" "$out" | wc -l)" = 4 ]'
+ok "exactly five output lines, exit 0" '[ "$RC" = 0 ] && [ "$(printf "%s\n" "$out" | wc -l)" = 5 ]'
+ok "ok carries an empty why line" 'printf "%s\n" "$out" | grep -qx "ota_sig_why=" && [ -z "$(f ota_sig_why)" ]'
 touch -d 2020-01-01 "$HOME/pilnk/app.py"   # stale stat: a plain `git status` would rewrite the index
 before=$(snap); chk --fetched "$ROOT/st" "$ROOT/st.sig"; after=$(snap)
 ok "read-only: HEAD, refs, index and tracked files unchanged" '[ "$before" = "$after" ]'
@@ -29,6 +30,7 @@ ok "no release object (absent files) -> missing" '[ "$(f ota_sig)" = missing ]'
 # --- signatures that must not verify
 mkroot; mkrepo; testkey other; release_to 1.0.1 other; node_fetch; chk --fetched "$ROOT/st" "$ROOT/st.sig"
 ok "unknown key -> bad/none" '[ "$(f ota_sig)" = bad ] && [ "$(f ota_sig_run)" = none ]'
+ok "only error carries a why (bad has none)" '[ -z "$(f ota_sig_why)" ]'
 mkroot; mkrepo; release_to 1.0.1; sed -i 's/version 1.0.1/version 1.0.2/' "$ROOT/st"; chk "$ROOT/st" "$ROOT/st.sig"
 ok "tampered statement (one byte) -> bad" '[ "$(f ota_sig)" = bad ]'
 mkroot; mkrepo; release_to 1.0.1; sign aj "$ROOT/st" other-namespace; chk "$ROOT/st" "$ROOT/st.sig"
@@ -61,6 +63,7 @@ out=$(PATH="$ROOT/nokeygen" PILNK_DIR="$HOME/pilnk" /bin/bash "$CHK" "$ROOT/st" 
 ok "no ssh-keygen on PATH -> no_tool" '[ "$(f ota_sig)" = no_tool ]'
 rm -f "$HOME/pilnk/release_signers"; chk "$ROOT/st" "$ROOT/st.sig"
 ok "release_signers missing -> error" '[ "$(f ota_sig)" = error ] && [ "$(f ota_sig_run)" = none ]'
+ok "... and says why: signers" '[ "$(f ota_sig_why)" = signers ]'
 
 # --- signed but malformed statements (R3): parse failures are not_on_main, git never sees them
 mkroot; mkrepo; release_to 1.0.1; node_pull; c=$(git -C "$ROOT/up" rev-parse HEAD)
@@ -108,6 +111,7 @@ chk --fetched "$SK/statement" "$SK/notouch.sig"
 ok "... with --fetched too" '[ "$(f ota_sig)" = bad ]'
 sk_node "$SK/touch.pub"; fakebin python3 'exit 127'; chk "$SK/statement" "$SK/touch.sig"
 ok "touch check cannot run (no python3) -> error, never ok" '[ "$(f ota_sig)" = error ] && [ "$(f ota_sig_run)" = none ]'
+ok "... and says why: touch" '[ "$(f ota_sig_why)" = touch ]'
 # final review (FIDO delta) I1: a struct.py in the current folder must not decide the touch check
 sk_node "$SK/notouch.pub"; mkdir -p "$ROOT/plant"; printf 'import sys\nsys.exit(0)\n' > "$ROOT/plant/struct.py"
 cd "$ROOT/plant" && chk "$SK/statement" "$SK/notouch.sig"; cd - >/dev/null
@@ -117,3 +121,11 @@ ok "every python3 call in release-check runs isolated (-I)" '! grep -nE "python3
 # --- usage
 bash "$CHK" >/dev/null 2>&1; RC=$?
 ok "no arguments -> exit 2" '[ "$RC" = 2 ]'
+
+# --- RELEASE_SIGNERS: rootsync points the check at root's own pinned signers (Part B, Task 1)
+mkroot; mkrepo; testkey other; release_to 1.0.1 other; node_pull
+signers_line other > "$ROOT/root_signers"
+out=$(PILNK_DIR="$HOME/pilnk" RELEASE_SIGNERS="$ROOT/root_signers" bash "$CHK" "$ROOT/st" "$ROOT/st.sig" 2>/dev/null)
+ok "rc_release_signers_env_override: verifies against RELEASE_SIGNERS" '[ "$(f ota_sig)" = ok ]'
+chk "$ROOT/st" "$ROOT/st.sig"
+ok "rc_release_signers_default_is_tree: without it, the tree signers decide (bad)" '[ "$(f ota_sig)" = bad ]'

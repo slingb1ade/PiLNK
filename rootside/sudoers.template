@@ -1,0 +1,4 @@
+# PiLNK: fixed commands the PiLNK user may run as root (rendered by rootsync
+# from root's signed copy, Part B). Every unit named here runs signed code only.
+# Validated with visudo -c before install.
+__PILNK_USER__ ALL=(root) NOPASSWD: __SYSTEMCTL__ restart pilnk, __SYSTEMCTL__ start pilnk, __SYSTEMCTL__ stop pilnk, __SYSTEMCTL__ daemon-reload, __SYSTEMCTL__ start pilnk-audio-build, __SYSTEMCTL__ start --no-block pilnk-audio-build, __SYSTEMCTL__ start pilnk-rootsync, __SYSTEMCTL__ restart pilnkradio, __SYSTEMCTL__ restart readsb, __SYSTEMCTL__ restart dump1090-fa, __SYSTEMCTL__ reboot

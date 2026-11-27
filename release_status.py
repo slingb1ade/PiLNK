@@ -24,11 +24,17 @@ TOKENS = ('ok', 'missing', 'bad', 'not_on_main', 'mismatch', 'no_tool', 'error')
 RUNS = ('on_signed', 'behind', 'ahead', 'dirty', 'none')
 _VER = re.compile(r'^[0-9]+(\.[0-9]+){1,3}$')
 _HEX40 = re.compile(r'^[0-9a-f]{40}$')
-_KEYS = ('ota_sig', 'ota_sig_run', 'signed_version', 'signed_commit')
+_KEYS = ('ota_sig', 'ota_sig_run', 'signed_version', 'signed_commit', 'ota_sig_why')
+# ota_sig_why says which step failed when ota_sig is 'error' (26 Nov 2026: a node
+# refused every update with a bare "error" and nobody could tell why). A short
+# token only: signers | touch (release-check.sh), tmp | fetch:N | parse | check
+# (update.sh), noscript | timeout | exception | output (this module).
+_WHY = re.compile(r'^[a-z]{1,12}(:[0-9]{1,3})?$')
 
 
-def _error():
-    return {'ota_sig': 'error', 'ota_sig_run': 'none', 'signed_version': '', 'signed_commit': ''}
+def _error(why=''):
+    return {'ota_sig': 'error', 'ota_sig_run': 'none', 'signed_version': '', 'signed_commit': '',
+            'ota_sig_why': why}
 
 
 def _text_bytes(v):
@@ -44,12 +50,14 @@ def parse_output(text):
         if sep and k in _KEYS:
             got[k] = v.strip()
     if got.get('ota_sig') not in TOKENS or got.get('ota_sig_run') not in RUNS:
-        return _error()
+        return _error('output')
+    why = got.get('ota_sig_why', '')
     return {
         'ota_sig': got['ota_sig'],
         'ota_sig_run': got['ota_sig_run'],
         'signed_version': got.get('signed_version', '') if _VER.match(got.get('signed_version', '')) else '',
         'signed_commit': got.get('signed_commit', '') if _HEX40.match(got.get('signed_commit', '')) else '',
+        'ota_sig_why': why if got['ota_sig'] == 'error' and _WHY.match(why) else '',
     }
 
 
@@ -59,7 +67,7 @@ def check(pilnk_dir, release, timeout=20.0, runner=subprocess.run):
         rel = release if isinstance(release, dict) else {}
         script = os.path.join(pilnk_dir, 'release-check.sh')
         if not os.path.isfile(script):
-            return _error()
+            return _error('noscript')
         with tempfile.TemporaryDirectory(prefix='pilnk-release-') as d:
             st = os.path.join(d, 'statement')
             sig = os.path.join(d, 'sig')
@@ -71,8 +79,10 @@ def check(pilnk_dir, release, timeout=20.0, runner=subprocess.run):
             r = runner(['bash', script, st, sig], capture_output=True, text=True,
                        timeout=timeout, env=env)
         return parse_output(getattr(r, 'stdout', ''))
+    except subprocess.TimeoutExpired:
+        return _error('timeout')
     except Exception:
-        return _error()
+        return _error('exception')
 
 
 def read_policy(pilnk_dir):
@@ -152,11 +162,16 @@ def svc_sudo_probe(runner=subprocess.run, geteuid=os.geteuid):
 
 
 def ping_fields(state, mode, svc_sudo):
-    """Four low-cardinality strings for the ping's node_features (varchar 500)."""
+    """Four low-cardinality strings for the ping's node_features (varchar 500),
+    plus ota_sig_why when an error says which step failed."""
     s = state if isinstance(state, dict) else {}
     cut = lambda v: str(v or '')[:16]
-    return {'ota_sig': cut(s.get('ota_sig')), 'ota_sig_run': cut(s.get('ota_sig_run')),
-            'ota_sig_mode': cut(mode), 'svc_sudo': cut(svc_sudo)}
+    out = {'ota_sig': cut(s.get('ota_sig')), 'ota_sig_run': cut(s.get('ota_sig_run')),
+           'ota_sig_mode': cut(mode), 'svc_sudo': cut(svc_sudo)}
+    # Only when there is one: healthy nodes send the same four fields as before.
+    if s.get('ota_sig_why'):
+        out['ota_sig_why'] = cut(s.get('ota_sig_why'))
+    return out
 
 
 # update.sh checks with --fetched (ancestry + VERSION-at-commit); the app's
@@ -175,11 +190,13 @@ def keep_fetched_verdict(old, result):
     return r
 
 
-# node.php stores json_encode($features) in a varchar(500) and cuts anything
-# longer mid-JSON (final review I2). Measure the way PHP will ('/' -> '\/',
-# non-ASCII -> \uXXXX) and drop the least useful keys first; never mutate the
-# caller's dict.
-_FEATURE_LIMIT = 500
+# node.php stores json_encode($features) and cuts anything over its column
+# mid-JSON (final review I2). Measure the way PHP will ('/' -> '\/', non-ASCII
+# -> \uXXXX) and drop the least useful keys first; never mutate the caller's
+# dict. Part B widened the column to TEXT and node.php's cap to 2000; root is
+# kept to the very last.
+_FEATURE_LIMIT = 2000
+_KEEP_LAST = ('root', 'root_match')
 _DROP_FIRST = ('svc_sudo', 'ota_sig_mode', 'stt_bench', 'ota_sig_run', 'audio_build_err')
 
 
@@ -198,5 +215,6 @@ def fit_features(feats, limit=_FEATURE_LIMIT):
             return d
         d.pop(k, None)
     while d and _php_json_len(d) > limit:
-        d.pop(next(reversed(d)))
+        rest = [k for k in reversed(d) if k not in _KEEP_LAST]
+        d.pop(rest[0] if rest else next(reversed(d)))
     return d

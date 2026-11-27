@@ -24,22 +24,40 @@
 # the node's home is (aj here, pi on most nodes).
 PILNK_DIR="$(cd "$(dirname "$0")" 2>/dev/null && pwd)"
 [ -z "$PILNK_DIR" ] && PILNK_DIR="/home/aj/pilnk"
-CONFIG="$PILNK_DIR/config.json"
+# Part B: when it runs from root's signed copy, the unit passes the app folder
+# in (PILNK_APP_DIR, rendered from pilnk.service). config.json is the PiLNK
+# user's file, so only the port is read from it, as data.
+CONFIG="${PILNK_APP_DIR:-$PILNK_DIR}/config.json"
 
 # Dashboard port from config.json (default 5000). NEVER hardcode 5000: a PiAware
 # node runs its own service on 5000 and PiLNK is pushed to 5001+ at install, so a
 # hardcoded port would watch the wrong thing entirely (the #100 lesson).
+# A regular file only (no symlink, no FIFO), at most 64 KB, inside 5 s; a port
+# of 1-65535. Anything else is 5000. Never sourced or run.
 read_port() {
-    python3 - "$CONFIG" <<'PY' 2>/dev/null || echo 5000
-import json, sys
+    timeout 5 python3 -I -c '
+import json, os, stat, sys
 try:
-    with open(sys.argv[1]) as f:
-        print(int(json.load(f).get("dashboard_port", 5000)))
+    fd = os.open(sys.argv[1], os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    st = os.fstat(fd)
+    if not stat.S_ISREG(st.st_mode) or st.st_size > 65536:
+        raise ValueError("not a small regular file")
+    data = os.read(fd, 65537)
+    if len(data) > 65536:
+        raise ValueError("too big")
+    p = json.loads(data.decode("utf-8")).get("dashboard_port", 5000)
+    if isinstance(p, bool):
+        raise ValueError("not a port")
+    p = int(p)
+    print(p if 1 <= p <= 65535 else 5000)
 except Exception:
     print(5000)
-PY
+' "$CONFIG" 2>/dev/null || echo 5000
 }
 PORT="$(read_port)"
+if [ "${1:-}" = "--print-port" ]; then   # tests and support: the port it would watch
+    echo "$PORT"; exit 0
+fi
 HEALTH_URL="http://127.0.0.1:${PORT}/api/health"
 
 POLL=20            # seconds between checks
